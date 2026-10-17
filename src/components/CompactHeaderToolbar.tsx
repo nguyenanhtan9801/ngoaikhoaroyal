@@ -38,6 +38,7 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     
     // Nhóm 2: Đào Tạo & Vận Hành
     sub_term_subjects: { parent: 'Đào Tạo & Vận Hành', title: 'Môn Học & Khóa Học (Trung Tâm)', icon: School, badge: 'Môn & Khóa Học' },
+    sub_pricing: { parent: 'Đào Tạo & Vận Hành', title: 'Ma Trận Biểu Phí Cơ Sở', icon: DollarSign, badge: 'Cơ Sở × Khóa × Môn' },
     sub_classes: { parent: 'Đào Tạo & Vận Hành', title: 'Lớp Học Ngoại Khóa (Cơ Sở)', icon: Calendar, badge: 'Phòng Sân & GV' },
     sub_attendance: { parent: 'Đào Tạo & Vận Hành', title: 'Sổ Điểm Danh & Dạy Thay', icon: CheckCircle2, badge: 'Chuyên Cần & Bù Trừ' },
     sub_snacks: { parent: 'Đào Tạo & Vận Hành', title: 'Báo Cáo Đối Soát Bánh Sữa', icon: Coffee, badge: 'Độc Quyền Royal' },
@@ -53,7 +54,6 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     sub_finance_transfer: { parent: 'Tài Chính & Kế Toán', title: 'Biến Động Chuyển Lớp & Phụ Thu', icon: ArrowRightLeft, badge: 'Bù Trừ Chênh Lệch' },
     
     // Nhóm 5: Hệ Thống & Danh Mục
-    sub_pricing: { parent: 'Hệ Thống & Danh Mục', title: 'Ma Trận Biểu Phí Cơ Sở', icon: DollarSign, badge: 'Cơ Sở × Khóa × Môn' },
     sub_settings: { parent: 'Hệ Thống & Danh Mục', title: 'Quản Trị Dữ Liệu & Master Excel', icon: Settings, badge: 'Quản Trị Viên' },
     
     // Fallback legacy routes

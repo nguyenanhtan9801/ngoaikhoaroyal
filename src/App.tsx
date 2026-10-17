@@ -180,19 +180,21 @@ export default function App() {
           onPrintReport={handlePrintSnacksSlip}
         />
 
-        {/* Quick Filter Bar (Ultra-compact, sleek horizontal bar) */}
-        <QuickFilterBar
-          campuses={store.campuses}
-          terms={store.terms}
-          selectedCampusId={selectedCampusId}
-          onSelectCampus={setSelectedCampusId}
-          selectedTermId={selectedTermId}
-          onSelectTerm={setSelectedTermId}
-          timeRange={timeRange}
-          onChangeTimeRange={setTimeRange}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-        />
+        {/* Quick Filter Bar - Ẩn tại trang Môn Học & Khóa Học theo yêu cầu */}
+        {currentRoute !== 'sub_term_subjects' && (
+          <QuickFilterBar
+            campuses={store.campuses}
+            terms={store.terms}
+            selectedCampusId={selectedCampusId}
+            onSelectCampus={setSelectedCampusId}
+            selectedTermId={selectedTermId}
+            onSelectTerm={setSelectedTermId}
+            timeRange={timeRange}
+            onChangeTimeRange={setTimeRange}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+          />
+        )}
 
         {/* Content Display pushed higher up for maximum vertical density */}
         <div className="pt-1 transition-all duration-200">
@@ -214,7 +216,17 @@ export default function App() {
               currentRole={currentRole}
               onUpdateStore={updateStore}
               initialSection="pricing"
-              initialSubTab="term_subjects"
+              initialSubTab="subjects"
+            />
+          )}
+
+          {currentRoute === 'sub_pricing' && (
+            <SettingsDataTab
+              store={store}
+              currentRole={currentRole}
+              onUpdateStore={updateStore}
+              initialSection="pricing"
+              initialSubTab="matrix"
             />
           )}
 
@@ -320,16 +332,6 @@ export default function App() {
           )}
 
           {/* Nhóm 5: HỆ THỐNG & DANH MỤC */}
-          {currentRoute === 'sub_pricing' && (
-            <SettingsDataTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              initialSection="pricing"
-              initialSubTab="matrix"
-            />
-          )}
-
           {currentRoute === 'sub_settings' && (
             <SettingsDataTab
               store={store}

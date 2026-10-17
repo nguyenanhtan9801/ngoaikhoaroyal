@@ -30,7 +30,14 @@ import {
   Sliders,
   AlertTriangle,
   Percent,
-  Tag
+  Tag,
+  School,
+  GraduationCap,
+  Search,
+  Filter,
+  Activity,
+  Palette,
+  Code
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -48,6 +55,7 @@ import {
   Campus, 
   AcademicTerm, 
   TermStatus, 
+  Subject,
   TermSubjectConfig, 
   CampusTermPricing,
   DiscountType 
@@ -59,7 +67,7 @@ interface SettingsDataTabProps {
   currentRole: UserRole;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase';
-  initialSubTab?: 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
+  initialSubTab?: 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
 export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
@@ -74,9 +82,178 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('cards');
 
   // Sub-tabs for Section 1: Cấu hình Khóa học & Biểu phí cơ sở
-  const [hierarchySubTab, setHierarchySubTab] = useState<'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
+  const [hierarchySubTab, setHierarchySubTab] = useState<'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
   const [selectedConfigTermId, setSelectedConfigTermId] = useState<string>(store.terms[0]?.id || 'term_fall_2026');
   const [selectedConfigCampusId, setSelectedConfigCampusId] = useState<string>(store.campuses[0]?.id || 'camp_pmh');
+
+  // ViewMode, Filters & Modal for Subtab 1: Danh Mục Môn Học (Subjects Catalog)
+  const [subjectsViewMode, setSubjectsViewMode] = useState<ViewMode>('cards');
+  const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<string>('all');
+  const [subjectSearchQuery, setSubjectSearchQuery] = useState<string>('');
+  const [showSubjectModal, setShowSubjectModal] = useState<boolean>(false);
+  const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
+  const [subjectFormData, setSubjectFormData] = useState({
+    code: '',
+    name: '',
+    category: 'Thể thao' as Subject['category'],
+    standard_duration: '90 phút',
+    description: '',
+  });
+
+  const handleOpenAddSubject = () => {
+    setEditingSubject(null);
+    setSubjectFormData({
+      code: '',
+      name: '',
+      category: 'Thể thao',
+      standard_duration: '90 phút',
+      description: '',
+    });
+    setShowSubjectModal(true);
+  };
+
+  const handleOpenEditSubject = (subject: Subject) => {
+    setEditingSubject(subject);
+    setSubjectFormData({
+      code: subject.code,
+      name: subject.name,
+      category: subject.category,
+      standard_duration: subject.standard_duration || '90 phút',
+      description: subject.description || '',
+    });
+    setShowSubjectModal(true);
+  };
+
+  const handleDeleteSubject = (subject: Subject) => {
+    const relatedClasses = store.classes.filter(c => c.subject_id === subject.id);
+    if (relatedClasses.length > 0) {
+      alert(`Không thể xóa môn học "${subject.name}" (${subject.code}) vì hiện có ${relatedClasses.length} lớp học ngoại khóa đang mở cho môn này. Vui lòng chuyển hoặc xóa các lớp học liên quan trước.`);
+      return;
+    }
+
+    const activeTerms = store.termSubjects.filter(ts => ts.subject_id === subject.id && ts.is_active);
+    const msg = activeTerms.length > 0
+      ? `Môn "${subject.name}" (${subject.code}) đang được kích hoạt ở ${activeTerms.length} khóa học. Bạn có chắc chắn muốn xóa môn học này cùng cấu hình biểu phí liên quan khỏi hệ thống?`
+      : `Bạn có chắc chắn muốn xóa môn học "${subject.name}" (${subject.code}) khỏi Danh mục Môn học?`;
+
+    const ok = window.confirm(msg);
+    if (!ok) return;
+
+    onUpdateStore(prev => ({
+      ...prev,
+      subjects: prev.subjects.filter(s => s.id !== subject.id),
+      termSubjects: prev.termSubjects.filter(ts => ts.subject_id !== subject.id),
+      campusPricings: prev.campusPricings.filter(cp => cp.subject_id !== subject.id),
+      pricings: prev.pricings.filter(p => p.subject_id !== subject.id),
+    }));
+  };
+
+  const handleSaveSubject = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanCode = subjectFormData.code.trim().toUpperCase();
+    const cleanName = subjectFormData.name.trim();
+
+    if (!cleanCode || !cleanName) {
+      alert('Vui lòng nhập đầy đủ Mã môn học và Tên môn học.');
+      return;
+    }
+
+    const duplicate = store.subjects.find(
+      s => s.code.toUpperCase() === cleanCode && s.id !== editingSubject?.id
+    );
+    if (duplicate) {
+      alert(`Mã môn "${cleanCode}" đã tồn tại cho môn "${duplicate.name}". Vui lòng chọn mã khác.`);
+      return;
+    }
+
+    if (editingSubject) {
+      onUpdateStore(prev => ({
+        ...prev,
+        subjects: prev.subjects.map(s => 
+          s.id === editingSubject.id
+            ? {
+                ...s,
+                ...subjectFormData,
+                code: cleanCode,
+                name: cleanName,
+              }
+            : s
+        ),
+      }));
+    } else {
+      const newSubId = `sub_${cleanCode.toLowerCase()}_${Date.now()}`;
+      const newSubject: Subject = {
+        id: newSubId,
+        ...subjectFormData,
+        code: cleanCode,
+        name: cleanName,
+      };
+
+      onUpdateStore(prev => {
+        const newTermConfigs: TermSubjectConfig[] = prev.terms.map(t => ({
+          id: `ts_${t.id}_${cleanCode.toLowerCase()}`,
+          term_id: t.id,
+          subject_id: newSubId,
+          is_active: true,
+          standard_sessions: 24,
+          standard_course_fee: 3600000,
+          standard_session_rate: 150000,
+          discount_type: 'none',
+          discount_value: 0,
+          notes: `${cleanName} - Khóa ${t.name}`,
+        }));
+
+        return {
+          ...prev,
+          subjects: [...prev.subjects, newSubject],
+          termSubjects: [...prev.termSubjects, ...newTermConfigs],
+        };
+      });
+    }
+
+    setShowSubjectModal(false);
+    setEditingSubject(null);
+  };
+
+  const getSubjectCategoryBadge = (category: Subject['category']) => {
+    switch (category) {
+      case 'Thể thao':
+        return {
+          badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+          icon: Activity,
+        };
+      case 'Nghệ thuật':
+        return {
+          badge: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
+          icon: Palette,
+        };
+      case 'Kỹ năng số':
+        return {
+          badge: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
+          icon: Code,
+        };
+      case 'Học thuật':
+        return {
+          badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+          icon: GraduationCap,
+        };
+      default:
+        return {
+          badge: 'bg-slate-700/50 text-slate-300 border-slate-600',
+          icon: BookOpen,
+        };
+    }
+  };
+
+  const filteredSubjects = store.subjects.filter(s => {
+    const matchesCategory = subjectCategoryFilter === 'all' || s.category === subjectCategoryFilter;
+    const query = subjectSearchQuery.trim().toLowerCase();
+    const matchesQuery = !query || 
+      s.code.toLowerCase().includes(query) || 
+      s.name.toLowerCase().includes(query) ||
+      (s.description && s.description.toLowerCase().includes(query));
+    return matchesCategory && matchesQuery;
+  });
 
   // Term Modal (Create / Edit)
   const [showTermModal, setShowTermModal] = useState<boolean>(false);
@@ -429,53 +606,342 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             {/* Sub-tab Navigation */}
             <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-slate-900/90 border border-slate-800 overflow-x-auto">
               <button
+                onClick={() => setHierarchySubTab('subjects')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  hierarchySubTab === 'subjects'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <School className="w-3.5 h-3.5" />
+                <span>1. Danh Mục Môn Học ({store.subjects.length})</span>
+              </button>
+              <button
                 onClick={() => setHierarchySubTab('terms')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   hierarchySubTab === 'terms'
                     ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
                 <Calendar className="w-3.5 h-3.5" />
-                <span>1. Khóa Học & Vòng Đời</span>
+                <span>2. Khóa Học & Vòng Đời ({store.terms.length})</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('term_subjects')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   hierarchySubTab === 'term_subjects'
                     ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
                 <BookOpen className="w-3.5 h-3.5" />
-                <span>2. Kích Hoạt Môn Khóa</span>
+                <span>3. Kích Hoạt Môn Khóa</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('campus_pricing')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   hierarchySubTab === 'campus_pricing'
                     ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
                 <Building2 className="w-3.5 h-3.5" />
-                <span>3. Biểu Phí Cơ Sở</span>
+                <span>4. Biểu Phí Cơ Sở</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('matrix')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
                   hierarchySubTab === 'matrix'
                     ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
                 <DollarSign className="w-3.5 h-3.5" />
-                <span>4. Ma Trận Toàn Trường</span>
+                <span>5. Ma Trận Toàn Trường</span>
               </button>
             </div>
           </div>
 
-          {/* SUB-VIEW 1: QUẢN LÝ VÒNG ĐỜI KHÓA HỌC & NHÂN BẢN (TERMS LIFECYCLE) */}
+          {/* SUB-VIEW 1: DANH MỤC MÔN HỌC (SUBJECTS CATALOG - CẤP TRUNG TÂM) */}
+          {hierarchySubTab === 'subjects' && (
+            <div className="space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 p-4 rounded-2xl bg-[#111827]/80 border border-slate-800">
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <School className="w-4 h-4 text-amber-400" />
+                    <span>Danh Mục Môn Học Tổng Thể ({filteredSubjects.length} môn)</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    Cấp Trung Tâm &rarr; Khởi tạo danh mục môn học toàn trường, phân loại môn, thời lượng giảng dạy chuẩn và nội dung đào tạo.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Category Filter Pills */}
+                  <div className="flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-[11px]">
+                    <button
+                      onClick={() => setSubjectCategoryFilter('all')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                        subjectCategoryFilter === 'all'
+                          ? 'bg-amber-500 text-slate-950 shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Tất cả ({store.subjects.length})
+                    </button>
+                    {(['Thể thao', 'Nghệ thuật', 'Kỹ năng số', 'Học thuật'] as Subject['category'][]).map(cat => {
+                      const count = store.subjects.filter(s => s.category === cat).length;
+                      return (
+                        <button
+                          key={cat}
+                          onClick={() => setSubjectCategoryFilter(cat)}
+                          className={`px-2 py-1 rounded-lg font-medium transition-all ${
+                            subjectCategoryFilter === cat
+                              ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {cat} ({count})
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={subjectSearchQuery}
+                      onChange={(e) => setSubjectSearchQuery(e.target.value)}
+                      placeholder="Tìm mã hoặc tên môn..."
+                      className="pl-8 pr-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 w-44"
+                    />
+                  </div>
+
+                  {/* ViewToggle */}
+                  <ViewToggle
+                    viewMode={subjectsViewMode}
+                    onViewModeChange={setSubjectsViewMode}
+                  />
+
+                  {/* Add Subject Button */}
+                  <button
+                    onClick={handleOpenAddSubject}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Thêm Môn Học Mới</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Cards View */}
+              {subjectsViewMode === 'cards' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredSubjects.map(subject => {
+                    const activeTermsCount = store.termSubjects.filter(ts => ts.subject_id === subject.id && ts.is_active).length;
+                    const relatedClassesCount = store.classes.filter(c => c.subject_id === subject.id).length;
+                    const catBadge = getSubjectCategoryBadge(subject.category);
+                    const CatIcon = catBadge.icon;
+
+                    return (
+                      <div
+                        key={subject.id}
+                        className="rounded-2xl p-4 bg-[#111827]/90 border border-slate-800 hover:border-slate-700 shadow-xl flex flex-col justify-between transition-all group backdrop-blur-md"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-xs font-black text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-lg border border-amber-500/20">
+                                {subject.code}
+                              </span>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1 ${catBadge.badge}`}>
+                                <CatIcon className="w-3 h-3" />
+                                <span>{subject.category}</span>
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => handleOpenEditSubject(subject)}
+                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-500/20 text-slate-400 hover:text-amber-400 transition-colors"
+                                title="Chỉnh sửa môn học"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteSubject(subject)}
+                                className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                                title="Xóa môn học"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div>
+                            <h4 className="text-base font-extrabold text-white group-hover:text-amber-300 transition-colors">
+                              {subject.name}
+                            </h4>
+                            <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                              <span className="flex items-center gap-1 text-slate-300 font-medium">
+                                <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                                {subject.standard_duration || '90 phút'}
+                              </span>
+                            </div>
+                            {subject.description ? (
+                              <p className="text-[11px] text-slate-400 mt-2 line-clamp-2 leading-relaxed">
+                                {subject.description}
+                              </p>
+                            ) : (
+                              <p className="text-[11px] text-slate-500 mt-2 italic">
+                                Chương trình đào tạo ngoại khóa theo tiêu chuẩn quốc tế Royal School.
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800/80 grid grid-cols-2 gap-2 text-center text-xs">
+                            <div>
+                              <span className="text-[10px] text-slate-400 block">Khóa kích hoạt</span>
+                              <strong className="text-amber-400 font-mono text-sm">{activeTermsCount}</strong>
+                              <span className="text-[10px] text-slate-500"> / {store.terms.length}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-slate-400 block">Lớp ngoại khóa mở</span>
+                              <strong className="text-cyan-400 font-mono text-sm">{relatedClassesCount}</strong>
+                              <span className="text-[10px] text-slate-500"> lớp</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-3 mt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                          <button
+                            onClick={() => {
+                              setHierarchySubTab('term_subjects');
+                            }}
+                            className="text-amber-400 hover:underline font-semibold flex items-center gap-1"
+                          >
+                            <span>Kích hoạt khóa &rarr;</span>
+                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleOpenEditSubject(subject)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold transition-all"
+                            >
+                              Sửa
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSubject(subject)}
+                              className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-bold border border-rose-500/30 transition-all"
+                            >
+                              Xóa
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* Table View */
+                <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-[#111827]/90 shadow-xl">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 bg-slate-900/90 text-slate-400 text-[11px] uppercase tracking-wider font-semibold">
+                        <th className="py-3 px-4">Mã Môn</th>
+                        <th className="py-3 px-4">Tên Môn Học & Nội Dung</th>
+                        <th className="py-3 px-4">Phân Loại</th>
+                        <th className="py-3 px-4">Thời Lượng Chuẩn</th>
+                        <th className="py-3 px-4 text-center">Khóa Đang Kích Hoạt</th>
+                        <th className="py-3 px-4 text-center">Lớp Học Mở</th>
+                        <th className="py-3 px-4 text-right">Thao Tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800 text-slate-200">
+                      {filteredSubjects.map(subject => {
+                        const activeTermsCount = store.termSubjects.filter(ts => ts.subject_id === subject.id && ts.is_active).length;
+                        const relatedClassesCount = store.classes.filter(c => c.subject_id === subject.id).length;
+                        const catBadge = getSubjectCategoryBadge(subject.category);
+                        const CatIcon = catBadge.icon;
+
+                        return (
+                          <tr key={subject.id} className="hover:bg-slate-850/50 transition-colors">
+                            <td className="py-3 px-4 font-mono font-black text-amber-400">
+                              {subject.code}
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-extrabold text-white text-xs">{subject.name}</div>
+                              {subject.description ? (
+                                <div className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">{subject.description}</div>
+                              ) : (
+                                <div className="text-[11px] text-slate-500 italic mt-0.5">Chương trình chuẩn Hoàng Gia</div>
+                              )}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 ${catBadge.badge}`}>
+                                <CatIcon className="w-3 h-3" />
+                                <span>{subject.category}</span>
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-medium text-slate-300">
+                              <span className="flex items-center gap-1">
+                                <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                                {subject.standard_duration || '90 phút'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono">
+                              <span className="text-amber-400 font-bold">{activeTermsCount}</span>
+                              <span className="text-slate-500 text-[10px]"> / {store.terms.length}</span>
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono font-bold text-cyan-400">
+                              {relatedClassesCount}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleOpenEditSubject(subject)}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-all"
+                                  title="Sửa môn học"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteSubject(subject)}
+                                  className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition-all"
+                                  title="Xóa môn học"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {filteredSubjects.length === 0 && (
+                <div className="p-8 text-center rounded-2xl bg-slate-900/50 border border-slate-800 text-slate-400 space-y-2">
+                  <p className="text-sm font-semibold">Không tìm thấy môn học nào phù hợp với bộ lọc.</p>
+                  <button
+                    onClick={() => {
+                      setSubjectCategoryFilter('all');
+                      setSubjectSearchQuery('');
+                    }}
+                    className="text-xs text-amber-400 hover:underline font-bold"
+                  >
+                    Xóa bộ lọc tìm kiếm
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SUB-VIEW 2: QUẢN LÝ VÒNG ĐỜI KHÓA HỌC & NHÂN BẢN (TERMS LIFECYCLE) */}
           {hierarchySubTab === 'terms' && (
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-[#111827]/80 border border-slate-800">
@@ -1774,6 +2240,125 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20"
                 >
                   {editingCampus ? 'Lưu Thay Đổi' : 'Thêm Cơ Sở'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE / EDIT SUBJECT MODAL */}
+      {showSubjectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                <School className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-white">
+                  {editingSubject ? 'Cập Nhật Môn Học' : 'Thêm Môn Học Mới Vào Danh Mục'}
+                </h3>
+                <p className="text-xs text-slate-400">Danh mục Môn học cấp Trung Tâm toàn trường Royal School.</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveSubject} className="space-y-3.5 text-xs">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-1">
+                  <label className="block text-slate-400 font-medium mb-1">Mã môn *</label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={10}
+                    value={subjectFormData.code}
+                    onChange={(e) => setSubjectFormData({ ...subjectFormData, code: e.target.value.toUpperCase() })}
+                    placeholder="VD: BASK"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-slate-400 font-medium mb-1">Phân loại môn *</label>
+                  <select
+                    value={subjectFormData.category}
+                    onChange={(e) => setSubjectFormData({ ...subjectFormData, category: e.target.value as Subject['category'] })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="Thể thao">Thể thao (Sports)</option>
+                    <option value="Nghệ thuật">Nghệ thuật & Âm nhạc (Art & Music)</option>
+                    <option value="Kỹ năng số">Kỹ năng số & STEM Robotics</option>
+                    <option value="Học thuật">Học thuật & Ngôn ngữ (Academics)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Tên môn học *</label>
+                <input
+                  type="text"
+                  required
+                  value={subjectFormData.name}
+                  onChange={(e) => setSubjectFormData({ ...subjectFormData, name: e.target.value })}
+                  placeholder="VD: Bóng rổ Hoàng Gia (Royal Basketball)"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Thời lượng chuẩn mỗi buổi</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {['45 phút', '60 phút', '75 phút', '90 phút'].map(dur => (
+                    <button
+                      type="button"
+                      key={dur}
+                      onClick={() => setSubjectFormData({ ...subjectFormData, standard_duration: dur })}
+                      className={`py-1.5 px-2 rounded-xl text-center font-medium transition-all ${
+                        subjectFormData.standard_duration === dur
+                          ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
+                          : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {dur}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={subjectFormData.standard_duration}
+                  onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_duration: e.target.value })}
+                  placeholder="Hoặc nhập thời lượng tùy ý (VD: 120 phút)"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 mt-2 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Mô tả chương trình đào tạo</label>
+                <textarea
+                  rows={3}
+                  value={subjectFormData.description}
+                  onChange={(e) => setSubjectFormData({ ...subjectFormData, description: e.target.value })}
+                  placeholder="Tóm tắt mục tiêu môn học, giáo trình hoặc trang thiết bị yêu cầu..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSubjectModal(false);
+                    setEditingSubject(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20 flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{editingSubject ? 'Lưu Thay Đổi' : 'Thêm Môn Học'}</span>
                 </button>
               </div>
             </form>

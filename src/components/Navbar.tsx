@@ -115,6 +115,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           desc: 'Quản lý danh mục môn, kích hoạt môn cho từng khóa, đóng/mở niên khóa' 
         },
         { 
+          id: 'sub_pricing', 
+          label: 'Ma Trận Biểu Phí Cơ Sở', 
+          icon: DollarSign, 
+          desc: 'Cấu hình học phí theo Cơ sở × Khóa × Môn, công thức Ceil đơn giá buổi' 
+        },
+        { 
           id: 'sub_classes', 
           label: 'Lớp Học Ngoại Khóa (Cơ Sở)', 
           icon: Calendar, 
@@ -189,12 +195,6 @@ export const Navbar: React.FC<NavbarProps> = ({
       title: 'HỆ THỐNG & DANH MỤC',
       icon: Settings,
       items: [
-        { 
-          id: 'sub_pricing', 
-          label: 'Ma Trận Biểu Phí Cơ Sở', 
-          icon: DollarSign, 
-          desc: 'Cấu hình học phí theo Cơ sở × Khóa × Môn, công thức Ceil đơn giá buổi' 
-        },
         { 
           id: 'sub_settings', 
           label: 'Quản Trị Dữ Liệu & Master Excel', 
