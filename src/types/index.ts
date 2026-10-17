@@ -31,11 +31,22 @@ export interface AcademicTerm {
   description?: string;
 }
 
+export interface SubjectCategory {
+  id: string;
+  code: string;
+  name: string;
+  color: 'amber' | 'purple' | 'cyan' | 'emerald' | 'blue' | 'rose' | 'indigo' | 'orange';
+  icon: string;
+  description?: string;
+  status: 'active' | 'inactive';
+  order?: number;
+}
+
 export interface Subject {
   id: string;
   code: string;
   name: string;
-  category: 'Thể thao' | 'Nghệ thuật' | 'Học thuật' | 'Kỹ năng số';
+  category: string;
   standard_duration: string;
   description?: string;
 }

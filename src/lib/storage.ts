@@ -3,6 +3,7 @@ import {
   AcademicTerm,
   TermStatus,
   Subject,
+  SubjectCategory,
   DiscountType,
   TermSubjectConfig,
   CampusTermPricing,
@@ -28,6 +29,7 @@ import {
   initialCampuses,
   initialTerms,
   initialSubjects,
+  initialSubjectCategories,
   initialTermSubjects,
   initialCampusPricings,
   initialPricings,
@@ -48,6 +50,7 @@ import {
 export interface AppStore {
   campuses: Campus[];
   terms: AcademicTerm[];
+  subjectCategories: SubjectCategory[];
   subjects: Subject[];
   termSubjects: TermSubjectConfig[];
   campusPricings: CampusTermPricing[];
@@ -85,6 +88,7 @@ export function getInitialStore(): AppStore {
   return {
     campuses: initialCampuses,
     terms: initialTerms,
+    subjectCategories: initialSubjectCategories,
     subjects: initialSubjects,
     termSubjects: initialTermSubjects,
     campusPricings: initialCampusPricings,
@@ -134,6 +138,11 @@ export function loadStore(): AppStore {
       status: t.status || (t.is_active ? 'open_enrollment' : 'draft'),
     }));
 
+    const subjectCategories: SubjectCategory[] = 
+      parsed.subjectCategories && parsed.subjectCategories.length > 0
+        ? parsed.subjectCategories
+        : initial.subjectCategories;
+
     const termSubjects: TermSubjectConfig[] = 
       parsed.termSubjects && parsed.termSubjects.length > 0
         ? parsed.termSubjects
@@ -148,6 +157,7 @@ export function loadStore(): AppStore {
       ...initial,
       ...parsed,
       terms,
+      subjectCategories,
       termSubjects,
       campusPricings,
     };

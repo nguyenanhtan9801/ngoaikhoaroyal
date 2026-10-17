@@ -37,7 +37,12 @@ import {
   Filter,
   Activity,
   Palette,
-  Code
+  Code,
+  HeartPulse,
+  Music,
+  Trophy,
+  Smile,
+  Compass
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -56,6 +61,7 @@ import {
   AcademicTerm, 
   TermStatus, 
   Subject,
+  SubjectCategory,
   TermSubjectConfig, 
   CampusTermPricing,
   DiscountType 
@@ -67,7 +73,7 @@ interface SettingsDataTabProps {
   currentRole: UserRole;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase';
-  initialSubTab?: 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
+  initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
 export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
@@ -82,11 +88,308 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('cards');
 
   // Sub-tabs for Section 1: Cấu hình Khóa học & Biểu phí cơ sở
-  const [hierarchySubTab, setHierarchySubTab] = useState<'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
+  const [hierarchySubTab, setHierarchySubTab] = useState<'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
   const [selectedConfigTermId, setSelectedConfigTermId] = useState<string>(store.terms[0]?.id || 'term_fall_2026');
   const [selectedConfigCampusId, setSelectedConfigCampusId] = useState<string>(store.campuses[0]?.id || 'camp_pmh');
 
-  // ViewMode, Filters & Modal for Subtab 1: Danh Mục Môn Học (Subjects Catalog)
+  // Filters for Subtab 6: Ma Trận Biểu Phí Hiệu Lực Toàn Trường (Full Matrix View)
+  const [matrixFilterTermId, setMatrixFilterTermId] = useState<string>('all');
+  const [matrixFilterCampusId, setMatrixFilterCampusId] = useState<string>('all');
+  const [matrixFilterCategory, setMatrixFilterCategory] = useState<string>('all');
+  const [matrixFilterSource, setMatrixFilterSource] = useState<'all' | 'campus_override' | 'term_standard'>('all');
+  const [matrixSearchQuery, setMatrixSearchQuery] = useState<string>('');
+
+  // Fallback categories list if store.subjectCategories is empty
+  const categoriesList: SubjectCategory[] = store.subjectCategories && store.subjectCategories.length > 0
+    ? store.subjectCategories
+    : [
+        {
+          id: 'cat_sports',
+          code: 'SPORTS',
+          name: 'Thể thao',
+          color: 'amber',
+          icon: 'Activity',
+          description: 'Rèn luyện thể lực, phản xạ, tinh thần đồng đội và nâng cao sức bền (Bóng rổ, Bơi lội, Cầu lông, Bóng đá mini).',
+          status: 'active',
+          order: 1,
+        },
+        {
+          id: 'cat_arts',
+          code: 'ARTS',
+          name: 'Nghệ thuật',
+          color: 'purple',
+          icon: 'Palette',
+          description: 'Nuôi dưỡng cảm xúc thẩm mỹ, sáng tạo không gian và phát triển năng khiếu âm nhạc, hội họa (Piano, Hội họa, Thanh nhạc).',
+          status: 'active',
+          order: 2,
+        },
+        {
+          id: 'cat_tech',
+          code: 'DIGITAL',
+          name: 'Kỹ năng số',
+          color: 'cyan',
+          icon: 'Code',
+          description: 'Tư duy logic thuật toán, ứng dụng công nghệ tương lai và kỹ năng chế tạo (Robotics VEX IQ, Lập trình Scratch, AI & IoT).',
+          status: 'active',
+          order: 3,
+        },
+        {
+          id: 'cat_academic',
+          code: 'ACADEMIC',
+          name: 'Học thuật',
+          color: 'emerald',
+          icon: 'GraduationCap',
+          description: 'Phát triển tư duy ngôn ngữ học, hùng biện, kỹ năng tranh biện quốc tế và toán học tư duy ứng dụng.',
+          status: 'active',
+          order: 4,
+        },
+        {
+          id: 'cat_lifeskills',
+          code: 'LIFESKILLS',
+          name: 'Kỹ năng sống & Sinh tồn',
+          color: 'rose',
+          icon: 'HeartPulse',
+          description: 'Kỹ năng tự vệ, sơ cấp cứu học đường, ứng biến tình huống khẩn cấp và giao tiếp tự tin.',
+          status: 'active',
+          order: 5,
+        },
+      ];
+
+  const getCategoryColorDetails = (color: string) => {
+    switch (color) {
+      case 'amber':
+        return {
+          badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+          cardBorder: 'border-amber-500/30 hover:border-amber-500/60',
+          bgSubtle: 'bg-amber-500/10',
+          text: 'text-amber-400',
+          dot: 'bg-amber-400',
+          previewBg: 'bg-amber-500',
+        };
+      case 'purple':
+        return {
+          badge: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
+          cardBorder: 'border-purple-500/30 hover:border-purple-500/60',
+          bgSubtle: 'bg-purple-500/10',
+          text: 'text-purple-400',
+          dot: 'bg-purple-400',
+          previewBg: 'bg-purple-500',
+        };
+      case 'cyan':
+        return {
+          badge: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30',
+          cardBorder: 'border-cyan-500/30 hover:border-cyan-500/60',
+          bgSubtle: 'bg-cyan-500/10',
+          text: 'text-cyan-400',
+          dot: 'bg-cyan-400',
+          previewBg: 'bg-cyan-500',
+        };
+      case 'emerald':
+        return {
+          badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+          cardBorder: 'border-emerald-500/30 hover:border-emerald-500/60',
+          bgSubtle: 'bg-emerald-500/10',
+          text: 'text-emerald-400',
+          dot: 'bg-emerald-400',
+          previewBg: 'bg-emerald-500',
+        };
+      case 'rose':
+        return {
+          badge: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+          cardBorder: 'border-rose-500/30 hover:border-rose-500/60',
+          bgSubtle: 'bg-rose-500/10',
+          text: 'text-rose-400',
+          dot: 'bg-rose-400',
+          previewBg: 'bg-rose-500',
+        };
+      case 'blue':
+        return {
+          badge: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
+          cardBorder: 'border-blue-500/30 hover:border-blue-500/60',
+          bgSubtle: 'bg-blue-500/10',
+          text: 'text-blue-400',
+          dot: 'bg-blue-400',
+          previewBg: 'bg-blue-500',
+        };
+      case 'indigo':
+        return {
+          badge: 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
+          cardBorder: 'border-indigo-500/30 hover:border-indigo-500/60',
+          bgSubtle: 'bg-indigo-500/10',
+          text: 'text-indigo-400',
+          dot: 'bg-indigo-400',
+          previewBg: 'bg-indigo-500',
+        };
+      case 'orange':
+        return {
+          badge: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
+          cardBorder: 'border-orange-500/30 hover:border-orange-500/60',
+          bgSubtle: 'bg-orange-500/10',
+          text: 'text-orange-400',
+          dot: 'bg-orange-400',
+          previewBg: 'bg-orange-500',
+        };
+      default:
+        return {
+          badge: 'bg-slate-700/50 text-slate-300 border-slate-600',
+          cardBorder: 'border-slate-800 hover:border-slate-700',
+          bgSubtle: 'bg-slate-800/40',
+          text: 'text-slate-300',
+          dot: 'bg-slate-400',
+          previewBg: 'bg-slate-600',
+        };
+    }
+  };
+
+  const getCategoryIconComponent = (iconName: string) => {
+    switch (iconName) {
+      case 'Activity': return Activity;
+      case 'Palette': return Palette;
+      case 'Code': return Code;
+      case 'GraduationCap': return GraduationCap;
+      case 'HeartPulse': return HeartPulse;
+      case 'Music': return Music;
+      case 'Sparkles': return Sparkles;
+      case 'Trophy': return Trophy;
+      case 'Smile': return Smile;
+      case 'Compass': return Compass;
+      default: return Tag;
+    }
+  };
+
+  // ViewMode, Filters & Modal for Subtab 1: Phân Loại Môn Học (Subject Categories)
+  const [categoriesViewMode, setCategoriesViewMode] = useState<ViewMode>('cards');
+  const [categorySearchQuery, setCategorySearchQuery] = useState<string>('');
+  const [showCategoryModal, setShowCategoryModal] = useState<boolean>(false);
+  const [editingCategory, setEditingCategory] = useState<SubjectCategory | null>(null);
+  const [categoryFormData, setCategoryFormData] = useState({
+    code: '',
+    name: '',
+    color: 'amber' as SubjectCategory['color'],
+    icon: 'Activity',
+    description: '',
+    status: 'active' as 'active' | 'inactive',
+  });
+
+  const handleOpenAddCategory = () => {
+    setEditingCategory(null);
+    setCategoryFormData({
+      code: '',
+      name: '',
+      color: 'amber',
+      icon: 'Activity',
+      description: '',
+      status: 'active',
+    });
+    setShowCategoryModal(true);
+  };
+
+  const handleOpenEditCategory = (cat: SubjectCategory) => {
+    setEditingCategory(cat);
+    setCategoryFormData({
+      code: cat.code,
+      name: cat.name,
+      color: cat.color,
+      icon: cat.icon,
+      description: cat.description || '',
+      status: cat.status,
+    });
+    setShowCategoryModal(true);
+  };
+
+  const handleDeleteCategory = (cat: SubjectCategory) => {
+    const relatedSubjects = store.subjects.filter(
+      s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
+           s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
+    );
+
+    if (relatedSubjects.length > 0) {
+      alert(`Không thể xóa phân loại "${cat.name}" (${cat.code}) vì hiện đang có ${relatedSubjects.length} môn học trực thuộc (${relatedSubjects.map(s => s.name).join(', ')}). Vui lòng chuyển các môn học này sang phân loại khác trước khi xóa.`);
+      return;
+    }
+
+    const ok = window.confirm(`Bạn có chắc chắn muốn xóa phân loại "${cat.name}" (${cat.code}) khỏi hệ thống?`);
+    if (!ok) return;
+
+    onUpdateStore(prev => ({
+      ...prev,
+      subjectCategories: (prev.subjectCategories || categoriesList).filter(c => c.id !== cat.id),
+    }));
+  };
+
+  const handleSaveCategory = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanCode = categoryFormData.code.trim().toUpperCase();
+    const cleanName = categoryFormData.name.trim();
+
+    if (!cleanCode || !cleanName) {
+      alert('Vui lòng nhập đầy đủ Mã phân loại và Tên phân loại.');
+      return;
+    }
+
+    const currentList = store.subjectCategories || categoriesList;
+    const duplicate = currentList.find(
+      c => (c.code.toUpperCase() === cleanCode || c.name.toLowerCase() === cleanName.toLowerCase()) && 
+           c.id !== editingCategory?.id
+    );
+    if (duplicate) {
+      alert(`Mã phân loại "${cleanCode}" hoặc Tên "${cleanName}" đã tồn tại. Vui lòng chọn giá trị khác.`);
+      return;
+    }
+
+    if (editingCategory) {
+      const oldName = editingCategory.name;
+      onUpdateStore(prev => {
+        const updatedCategories = (prev.subjectCategories || categoriesList).map(c =>
+          c.id === editingCategory.id
+            ? {
+                ...c,
+                ...categoryFormData,
+                code: cleanCode,
+                name: cleanName,
+              }
+            : c
+        );
+
+        const updatedSubjects = oldName !== cleanName
+          ? prev.subjects.map(s => s.category === oldName ? { ...s, category: cleanName } : s)
+          : prev.subjects;
+
+        return {
+          ...prev,
+          subjectCategories: updatedCategories,
+          subjects: updatedSubjects,
+        };
+      });
+    } else {
+      const newCatId = `cat_${cleanCode.toLowerCase()}_${Date.now()}`;
+      const newCategory: SubjectCategory = {
+        id: newCatId,
+        ...categoryFormData,
+        code: cleanCode,
+        name: cleanName,
+        order: currentList.length + 1,
+      };
+
+      onUpdateStore(prev => ({
+        ...prev,
+        subjectCategories: [...(prev.subjectCategories || categoriesList), newCategory],
+      }));
+    }
+
+    setShowCategoryModal(false);
+    setEditingCategory(null);
+  };
+
+  const filteredCategories = categoriesList.filter(c => {
+    const q = categorySearchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return c.code.toLowerCase().includes(q) ||
+           c.name.toLowerCase().includes(q) ||
+           (c.description && c.description.toLowerCase().includes(q));
+  });
+
+  // ViewMode, Filters & Modal for Subtab 2: Danh Mục Môn Học (Subjects Catalog)
   const [subjectsViewMode, setSubjectsViewMode] = useState<ViewMode>('cards');
   const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<string>('all');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState<string>('');
@@ -95,17 +398,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [subjectFormData, setSubjectFormData] = useState({
     code: '',
     name: '',
-    category: 'Thể thao' as Subject['category'],
+    category: categoriesList[0]?.name || 'Thể thao',
     standard_duration: '90 phút',
     description: '',
   });
 
-  const handleOpenAddSubject = () => {
+  const handleOpenAddSubject = (presetCategory?: string | React.MouseEvent) => {
+    const defaultCat = (typeof presetCategory === 'string' && presetCategory)
+      ? presetCategory
+      : (categoriesList[0]?.name || 'Thể thao');
     setEditingSubject(null);
     setSubjectFormData({
       code: '',
       name: '',
-      category: 'Thể thao',
+      category: defaultCat,
       standard_duration: '90 phút',
       description: '',
     });
@@ -215,7 +521,22 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     setEditingSubject(null);
   };
 
-  const getSubjectCategoryBadge = (category: Subject['category']) => {
+  const getSubjectCategoryBadge = (category: string) => {
+    const found = categoriesList.find(
+      c => c.name.trim().toLowerCase() === category.trim().toLowerCase() ||
+           c.code.trim().toLowerCase() === category.trim().toLowerCase()
+    );
+
+    if (found) {
+      const colorDetails = getCategoryColorDetails(found.color);
+      const IconComp = getCategoryIconComponent(found.icon);
+      return {
+        badge: colorDetails.badge,
+        icon: IconComp,
+        categoryObj: found,
+      };
+    }
+
     switch (category) {
       case 'Thể thao':
         return {
@@ -597,7 +918,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <div>
                   <h3 className="text-base font-extrabold text-white">Quản Trị Phân Cấp Khóa Học & Biểu Phí Cơ Sở</h3>
                   <p className="text-xs text-slate-400">
-                    Mô hình chuẩn: Trung Tâm &rarr; Danh Mục Môn &rarr; Khóa Học &rarr; Cơ Sở &rarr; Lớp Học
+                    Mô hình chuẩn: Trung Tâm &rarr; Phân Loại Môn &rarr; Danh Mục Môn &rarr; Khóa Học &rarr; Cơ Sở &rarr; Lớp Học
                   </p>
                 </div>
               </div>
@@ -605,6 +926,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
             {/* Sub-tab Navigation */}
             <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-slate-900/90 border border-slate-800 overflow-x-auto">
+              <button
+                onClick={() => setHierarchySubTab('categories')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  hierarchySubTab === 'categories'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Tag className="w-3.5 h-3.5" />
+                <span>1. Phân Loại Môn ({categoriesList.length})</span>
+              </button>
               <button
                 onClick={() => setHierarchySubTab('subjects')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
@@ -614,7 +946,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 }`}
               >
                 <School className="w-3.5 h-3.5" />
-                <span>1. Danh Mục Môn Học ({store.subjects.length})</span>
+                <span>2. Danh Mục Môn Học ({store.subjects.length})</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('terms')}
@@ -625,7 +957,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 }`}
               >
                 <Calendar className="w-3.5 h-3.5" />
-                <span>2. Khóa Học & Vòng Đời ({store.terms.length})</span>
+                <span>3. Khóa Học & Vòng Đời ({store.terms.length})</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('term_subjects')}
@@ -636,7 +968,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 }`}
               >
                 <BookOpen className="w-3.5 h-3.5" />
-                <span>3. Kích Hoạt Môn Khóa</span>
+                <span>4. Kích Hoạt Môn Khóa</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('campus_pricing')}
@@ -647,7 +979,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 }`}
               >
                 <Building2 className="w-3.5 h-3.5" />
-                <span>4. Biểu Phí Cơ Sở</span>
+                <span>5. Biểu Phí Cơ Sở</span>
               </button>
               <button
                 onClick={() => setHierarchySubTab('matrix')}
@@ -658,12 +990,319 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 }`}
               >
                 <DollarSign className="w-3.5 h-3.5" />
-                <span>5. Ma Trận Toàn Trường</span>
+                <span>6. Ma Trận Toàn Trường</span>
               </button>
             </div>
           </div>
 
-          {/* SUB-VIEW 1: DANH MỤC MÔN HỌC (SUBJECTS CATALOG - CẤP TRUNG TÂM) */}
+          {/* SUB-VIEW 1: PHÂN LOẠI MÔN HỌC (SUBJECT CATEGORIES - CẤP TRUNG TÂM) */}
+          {hierarchySubTab === 'categories' && (
+            <div className="space-y-4">
+              {/* Header & Controls */}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 p-4 rounded-2xl bg-[#111827]/80 border border-slate-800">
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-amber-400" />
+                    <span>Quản Lý Phân Loại Môn Học Toàn Trường ({filteredCategories.length} nhóm)</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    Cấp Trung Tâm &rarr; Thiết lập các nhóm năng khiếu & lĩnh vực đào tạo (Thể thao, Nghệ thuật, STEM, Kỹ năng sống...), quy định màu nhận diện và icon đặc trưng.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Search input */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={categorySearchQuery}
+                      onChange={(e) => setCategorySearchQuery(e.target.value)}
+                      placeholder="Tìm mã hoặc tên nhóm..."
+                      className="pl-8 pr-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 w-44"
+                    />
+                  </div>
+
+                  {/* ViewToggle */}
+                  <ViewToggle
+                    viewMode={categoriesViewMode}
+                    onViewModeChange={setCategoriesViewMode}
+                  />
+
+                  {/* Add Category Button */}
+                  <button
+                    onClick={handleOpenAddCategory}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Thêm Phân Loại Mới</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* KPI Mini-Bar for Categories */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">Tổng Nhóm Phân Loại</span>
+                    <span className="text-lg font-black text-white">{categoriesList.length}</span>
+                  </div>
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold">
+                    <Tag className="w-4 h-4" />
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">Đang Hoạt Động</span>
+                    <span className="text-lg font-black text-emerald-400">
+                      {categoriesList.filter(c => c.status === 'active').length}
+                    </span>
+                  </div>
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold">
+                    <CheckCircle2 className="w-4 h-4" />
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">Tổng Môn Học Trực Thuộc</span>
+                    <span className="text-lg font-black text-cyan-400">{store.subjects.length}</span>
+                  </div>
+                  <div className="w-8 h-8 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center font-bold">
+                    <School className="w-4 h-4" />
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">Lớp Ngoại Khóa Đang Mở</span>
+                    <span className="text-lg font-black text-purple-400">{store.classes.length}</span>
+                  </div>
+                  <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Cards View */}
+              {categoriesViewMode === 'cards' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredCategories.map(cat => {
+                    const relatedSubjects = store.subjects.filter(
+                      s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
+                           s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
+                    );
+                    const colorStyle = getCategoryColorDetails(cat.color);
+                    const IconComp = getCategoryIconComponent(cat.icon);
+
+                    return (
+                      <div
+                        key={cat.id}
+                        className={`p-4 rounded-3xl bg-[#111827]/90 border ${colorStyle.cardBorder} backdrop-blur-md transition-all shadow-md flex flex-col justify-between space-y-3.5`}
+                      >
+                        {/* Card Header */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5">
+                            <div className={`w-10 h-10 rounded-2xl ${colorStyle.bgSubtle} ${colorStyle.text} flex items-center justify-center border ${colorStyle.badge}`}>
+                              <IconComp className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold uppercase border ${colorStyle.badge}`}>
+                                  {cat.code}
+                                </span>
+                                {cat.status === 'active' ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                    Hoạt động
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+                                    Tạm dừng
+                                  </span>
+                                )}
+                              </div>
+                              <h5 className="text-sm font-bold text-white mt-1">{cat.name}</h5>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleOpenEditCategory(cat)}
+                              title="Chỉnh sửa phân loại"
+                              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteCategory(cat)}
+                              title="Xóa phân loại"
+                              className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Description */}
+                        <p className="text-xs text-slate-400 leading-relaxed min-h-[36px]">
+                          {cat.description || 'Chưa có mô tả chi tiết cho nhóm phân loại này.'}
+                        </p>
+
+                        {/* Direct Subjects List */}
+                        <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-400">Môn học trực thuộc:</span>
+                            <span className="font-bold text-white flex items-center gap-1">
+                              <span className={`w-2 h-2 rounded-full ${colorStyle.dot}`}></span>
+                              {relatedSubjects.length} môn
+                            </span>
+                          </div>
+
+                          {relatedSubjects.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto scrollbar-none">
+                              {relatedSubjects.map(sub => (
+                                <span
+                                  key={sub.id}
+                                  className="px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-800 text-[10px] text-slate-300 font-medium"
+                                >
+                                  {sub.name}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-slate-500 italic">
+                              Chưa có môn học nào thuộc phân loại này.
+                            </div>
+                          )}
+
+                          {/* Quick Link to filter subjects */}
+                          <div className="flex items-center justify-between pt-1">
+                            <button
+                              onClick={() => {
+                                setSubjectCategoryFilter(cat.name);
+                                setHierarchySubTab('subjects');
+                              }}
+                              className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors"
+                            >
+                              <span>Xem danh sách môn ({relatedSubjects.length})</span>
+                              <ChevronRight className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => handleOpenAddSubject(cat.name)}
+                              className="text-[10px] px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium transition-colors"
+                            >
+                              + Thêm môn vào nhóm
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* Table View */
+                <div className="rounded-3xl bg-[#111827]/90 border border-slate-800 overflow-hidden shadow-lg">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-slate-300">
+                      <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-semibold tracking-wider border-b border-slate-800">
+                        <tr>
+                          <th className="py-3 px-3.5">Mã Nhóm</th>
+                          <th className="py-3 px-3.5">Tên Phân Loại & Icon</th>
+                          <th className="py-3 px-3.5">Màu Nhận Diện</th>
+                          <th className="py-3 px-3.5">Mô Tả & Định Hướng Đào Tạo</th>
+                          <th className="py-3 px-3.5 text-center">Số Môn Trực Thuộc</th>
+                          <th className="py-3 px-3.5 text-center">Trạng Thái</th>
+                          <th className="py-3 px-3.5 text-center">Thao Tác</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        {filteredCategories.map(cat => {
+                          const relatedSubjects = store.subjects.filter(
+                            s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
+                                 s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
+                          );
+                          const colorStyle = getCategoryColorDetails(cat.color);
+                          const IconComp = getCategoryIconComponent(cat.icon);
+
+                          return (
+                            <tr key={cat.id} className="hover:bg-slate-900/50 transition-colors">
+                              <td className="py-3 px-3.5">
+                                <span className={`px-2 py-1 rounded-lg text-[10px] font-mono font-bold uppercase border ${colorStyle.badge}`}>
+                                  {cat.code}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3.5 font-bold text-white">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-7 h-7 rounded-lg ${colorStyle.bgSubtle} ${colorStyle.text} flex items-center justify-center border ${colorStyle.badge}`}>
+                                    <IconComp className="w-3.5 h-3.5" />
+                                  </div>
+                                  <span>{cat.name}</span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-3.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-3 h-3 rounded-full ${colorStyle.dot}`}></span>
+                                  <span className="capitalize text-slate-300 text-[11px]">{cat.color}</span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-3.5 text-slate-400 max-w-xs truncate">
+                                {cat.description || '-'}
+                              </td>
+                              <td className="py-3 px-3.5 text-center">
+                                <button
+                                  onClick={() => {
+                                    setSubjectCategoryFilter(cat.name);
+                                    setHierarchySubTab('subjects');
+                                  }}
+                                  className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-amber-500/20 text-slate-300 hover:text-amber-400 font-bold border border-slate-800 transition-all text-xs"
+                                >
+                                  {relatedSubjects.length} môn
+                                </button>
+                              </td>
+                              <td className="py-3 px-3.5 text-center">
+                                {cat.status === 'active' ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                    Hoạt động
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-700/50 text-slate-400 border border-slate-600">
+                                    Tạm dừng
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 px-3.5 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    onClick={() => handleOpenEditCategory(cat)}
+                                    title="Sửa"
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteCategory(cat)}
+                                    title="Xóa"
+                                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SUB-VIEW 2: DANH MỤC MÔN HỌC (SUBJECTS CATALOG - CẤP TRUNG TÂM) */}
           {hierarchySubTab === 'subjects' && (
             <div className="space-y-4">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 p-4 rounded-2xl bg-[#111827]/80 border border-slate-800">
@@ -690,19 +1329,22 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     >
                       Tất cả ({store.subjects.length})
                     </button>
-                    {(['Thể thao', 'Nghệ thuật', 'Kỹ năng số', 'Học thuật'] as Subject['category'][]).map(cat => {
-                      const count = store.subjects.filter(s => s.category === cat).length;
+                    {categoriesList.map(cat => {
+                      const count = store.subjects.filter(
+                        s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
+                             s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
+                      ).length;
                       return (
                         <button
-                          key={cat}
-                          onClick={() => setSubjectCategoryFilter(cat)}
+                          key={cat.id}
+                          onClick={() => setSubjectCategoryFilter(cat.name)}
                           className={`px-2 py-1 rounded-lg font-medium transition-all ${
-                            subjectCategoryFilter === cat
+                            subjectCategoryFilter === cat.name
                               ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
                               : 'text-slate-400 hover:text-white'
                           }`}
                         >
-                          {cat} ({count})
+                          {cat.name} ({count})
                         </button>
                       );
                     })}
@@ -1661,105 +2303,450 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </div>
           )}
 
-          {/* SUB-VIEW 4: MA TRẬN BIỂU PHÍ TOÀN TRƯỜNG (FULL MATRIX VIEW) */}
-          {hierarchySubTab === 'matrix' && (
-            <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
-              <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                    <DollarSign className="w-4 h-4 text-amber-400" />
-                    <span>Ma Trận Biểu Phí Hiệu Lực: Khóa Học &times; Cơ Sở &times; Môn Học</span>
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Hệ thống tự động tính toán theo thứ tự ưu tiên: <strong>Cơ Sở Override &gt; Khóa Chuẩn &gt; Mặc Định</strong>. Đơn giá buổi làm tròn Ceil đến hàng nghìn đồng.
-                  </p>
-                </div>
-                <ViewToggle viewMode={pricingViewMode} onViewModeChange={setPricingViewMode} />
-              </div>
+          {/* SUB-VIEW 6: MA TRẬN BIỂU PHÍ TOÀN TRƯỜNG (FULL MATRIX VIEW) */}
+          {(() => {
+            // Compute all matrix combinations
+            const allMatrixCombinations = store.terms.flatMap(term => 
+              store.campuses.flatMap(campus => 
+                store.subjects.map(subject => {
+                  const eff = getEffectivePrice(term.id, campus.id, subject.id, store);
+                  const termConfig = store.termSubjects.find(ts => ts.term_id === term.id && ts.subject_id === subject.id);
+                  const campusConfig = store.campusPricings.find(cp => cp.term_id === term.id && cp.campus_id === campus.id && cp.subject_id === subject.id);
+                  const isTermActive = termConfig ? termConfig.is_active : false;
+                  const isOfferedAtCampus = campusConfig !== undefined ? campusConfig.is_offered_at_campus : isTermActive;
 
-              {pricingViewMode === 'cards' ? (
-                <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {store.terms.flatMap(term => 
-                    store.campuses.flatMap(campus => 
-                      store.subjects.map(subject => {
-                        const eff = getEffectivePrice(term.id, campus.id, subject.id, store);
-                        const termConfig = store.termSubjects.find(ts => ts.term_id === term.id && ts.subject_id === subject.id);
-                        const isTermActive = termConfig ? termConfig.is_active : false;
+                  return {
+                    term,
+                    campus,
+                    subject,
+                    eff,
+                    termConfig,
+                    campusConfig,
+                    isTermActive,
+                    isOfferedAtCampus,
+                  };
+                })
+              )
+            );
+
+            // Filter combinations
+            const filteredMatrixCombinations = allMatrixCombinations.filter(item => {
+              if (matrixFilterTermId !== 'all' && item.term.id !== matrixFilterTermId) {
+                return false;
+              }
+              if (matrixFilterCampusId !== 'all' && item.campus.id !== matrixFilterCampusId) {
+                return false;
+              }
+              if (matrixFilterCategory !== 'all') {
+                const matchCat = item.subject.category.trim().toLowerCase() === matrixFilterCategory.trim().toLowerCase();
+                if (!matchCat) return false;
+              }
+              if (matrixFilterSource !== 'all' && item.eff.source !== matrixFilterSource) {
+                return false;
+              }
+              const q = matrixSearchQuery.trim().toLowerCase();
+              if (q) {
+                const match = 
+                  item.subject.name.toLowerCase().includes(q) ||
+                  item.subject.code.toLowerCase().includes(q) ||
+                  item.campus.name.toLowerCase().includes(q) ||
+                  item.campus.code.toLowerCase().includes(q) ||
+                  item.term.name.toLowerCase().includes(q) ||
+                  item.term.code.toLowerCase().includes(q);
+                if (!match) return false;
+              }
+              return true;
+            });
+
+            const hasActiveFilters = 
+              matrixFilterTermId !== 'all' || 
+              matrixFilterCampusId !== 'all' || 
+              matrixFilterCategory !== 'all' || 
+              matrixFilterSource !== 'all' || 
+              matrixSearchQuery.trim() !== '';
+
+            const resetMatrixFilters = () => {
+              setMatrixFilterTermId('all');
+              setMatrixFilterCampusId('all');
+              setMatrixFilterCategory('all');
+              setMatrixFilterSource('all');
+              setMatrixSearchQuery('');
+            };
+
+            return (
+              hierarchySubTab === 'matrix' && (
+                <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl space-y-4">
+                  {/* Header */}
+                  <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <DollarSign className="w-4 h-4 text-amber-400" />
+                        <span>Ma Trận Biểu Phí Hiệu Lực: Khóa Học &times; Cơ Sở &times; Môn Học</span>
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        Hệ thống tự động tính toán theo thứ tự ưu tiên: <strong>Cơ Sở Override &gt; Khóa Chuẩn &gt; Mặc Định</strong>. Đơn giá buổi làm tròn Ceil đến hàng nghìn đồng.
+                      </p>
+                    </div>
+                    <ViewToggle viewMode={pricingViewMode} onViewModeChange={setPricingViewMode} />
+                  </div>
+
+                  {/* Filter Toolbar (Khóa Học, Cơ Sở, Phân Loại, Nguồn, Tìm Kiếm) */}
+                  <div className="px-4">
+                    <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+                        
+                        {/* 1. Lọc Khóa Học */}
+                        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <Calendar className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[9px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
+                              Khóa Học
+                            </label>
+                            <select
+                              value={matrixFilterTermId}
+                              onChange={(e) => setMatrixFilterTermId(e.target.value)}
+                              className="w-full bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer mt-0.5"
+                            >
+                              <option value="all" className="bg-[#111827] text-white">
+                                Tất cả khóa học ({store.terms.length})
+                              </option>
+                              {store.terms.map(term => (
+                                <option key={term.id} value={term.id} className="bg-[#111827] text-white">
+                                  {term.name} ({term.code})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* 2. Lọc Cơ Sở */}
+                        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <Building2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[9px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
+                              Cơ Sở
+                            </label>
+                            <select
+                              value={matrixFilterCampusId}
+                              onChange={(e) => setMatrixFilterCampusId(e.target.value)}
+                              className="w-full bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer mt-0.5"
+                            >
+                              <option value="all" className="bg-[#111827] text-white">
+                                Tất cả cơ sở ({store.campuses.length})
+                              </option>
+                              {store.campuses.map(campus => (
+                                <option key={campus.id} value={campus.id} className="bg-[#111827] text-white">
+                                  {campus.name} ({campus.code})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* 3. Lọc Phân Loại Môn */}
+                        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <Tag className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[9px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
+                              Phân Loại Môn
+                            </label>
+                            <select
+                              value={matrixFilterCategory}
+                              onChange={(e) => setMatrixFilterCategory(e.target.value)}
+                              className="w-full bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer mt-0.5"
+                            >
+                              <option value="all" className="bg-[#111827] text-white">
+                                Tất cả phân loại
+                              </option>
+                              {categoriesList.map(cat => (
+                                <option key={cat.id} value={cat.name} className="bg-[#111827] text-white">
+                                  {cat.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* 4. Lọc Nguồn Biểu Phí */}
+                        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <Sliders className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[9px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
+                              Nguồn Biểu Phí
+                            </label>
+                            <select
+                              value={matrixFilterSource}
+                              onChange={(e) => setMatrixFilterSource(e.target.value as any)}
+                              className="w-full bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer mt-0.5"
+                            >
+                              <option value="all" className="bg-[#111827] text-white">
+                                Tất cả nguồn
+                              </option>
+                              <option value="campus_override" className="bg-[#111827] text-white">
+                                ★ Cơ sở Override
+                              </option>
+                              <option value="term_standard" className="bg-[#111827] text-white">
+                                ✓ Chuẩn Khóa Học
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* 5. Tìm Kiếm Môn */}
+                        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800">
+                          <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[9px] font-semibold text-slate-400 uppercase tracking-wider leading-none">
+                              Tìm Kiếm Môn
+                            </label>
+                            <input
+                              type="text"
+                              value={matrixSearchQuery}
+                              onChange={(e) => setMatrixSearchQuery(e.target.value)}
+                              placeholder="Mã hoặc tên môn..."
+                              className="w-full bg-transparent text-xs font-bold text-white placeholder-slate-500 focus:outline-none mt-0.5"
+                            />
+                          </div>
+                          {matrixSearchQuery && (
+                            <button
+                              onClick={() => setMatrixSearchQuery('')}
+                              className="text-slate-500 hover:text-white"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+
+                      </div>
+
+                      {/* Active Filter Tags & Count Bar */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-slate-400">
+                            Đang hiển thị: <strong className="text-amber-400 font-mono">{filteredMatrixCombinations.length}</strong> / <span className="font-mono">{allMatrixCombinations.length}</span> tổ hợp biểu phí
+                          </span>
+
+                          {matrixFilterTermId !== 'all' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[10px]">
+                              <span>Khóa: {store.terms.find(t => t.id === matrixFilterTermId)?.code || matrixFilterTermId}</span>
+                              <button onClick={() => setMatrixFilterTermId('all')} className="hover:text-white"><X className="w-3 h-3" /></button>
+                            </span>
+                          )}
+
+                          {matrixFilterCampusId !== 'all' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px]">
+                              <span>Cơ sở: {store.campuses.find(c => c.id === matrixFilterCampusId)?.code || matrixFilterCampusId}</span>
+                              <button onClick={() => setMatrixFilterCampusId('all')} className="hover:text-white"><X className="w-3 h-3" /></button>
+                            </span>
+                          )}
+
+                          {matrixFilterCategory !== 'all' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-purple-500/15 text-purple-300 border border-purple-500/30 text-[10px]">
+                              <span>Nhóm: {matrixFilterCategory}</span>
+                              <button onClick={() => setMatrixFilterCategory('all')} className="hover:text-white"><X className="w-3 h-3" /></button>
+                            </span>
+                          )}
+
+                          {matrixFilterSource !== 'all' && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px]">
+                              <span>Nguồn: {matrixFilterSource === 'campus_override' ? 'Cơ sở Override' : 'Chuẩn Khóa'}</span>
+                              <button onClick={() => setMatrixFilterSource('all')} className="hover:text-white"><X className="w-3 h-3" /></button>
+                            </span>
+                          )}
+                        </div>
+
+                        {hasActiveFilters && (
+                          <button
+                            onClick={resetMatrixFilters}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-rose-400 hover:text-rose-300 font-bold transition-all text-[11px]"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Đặt lại bộ lọc</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Body: Cards / Table / Empty */}
+                  {filteredMatrixCombinations.length === 0 ? (
+                    <div className="p-12 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-2xl bg-slate-800/80 text-slate-400 flex items-center justify-center mx-auto">
+                        <Filter className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-sm font-bold text-white">Không tìm thấy tổ hợp biểu phí nào phù hợp</h4>
+                      <p className="text-xs text-slate-400 max-w-md mx-auto">
+                        Không có biểu phí môn học nào khớp với các điều kiện lọc (Khóa học, Cơ sở, Phân loại, Tìm kiếm) hiện tại.
+                      </p>
+                      <button
+                        onClick={resetMatrixFilters}
+                        className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md transition-all inline-flex items-center gap-1.5"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Xem Tất Cả ({allMatrixCombinations.length} tổ hợp)</span>
+                      </button>
+                    </div>
+                  ) : pricingViewMode === 'cards' ? (
+                    /* CARDS VIEW */
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {filteredMatrixCombinations.map(item => {
+                        const { term, campus, subject, eff, isTermActive, isOfferedAtCampus } = item;
+                        const catBadge = getSubjectCategoryBadge(subject.category);
+                        const hasDiscount = eff.discount_type !== 'none' && eff.discount_amount > 0;
 
                         return (
-                          <div key={`${term.id}_${campus.id}_${subject.id}`} className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2.5">
-                            <div className="flex items-center justify-between">
-                              <span className="font-extrabold text-white text-sm">{subject.name}</span>
-                              <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-800 text-slate-300 font-mono">
-                                {campus.code}
-                              </span>
-                            </div>
-
-                            <div className="text-[11px] text-slate-400 flex items-center justify-between">
-                              <span>Khóa học: <strong className="text-amber-400">{term.name}</strong></span>
-                              <span className={`px-2 py-0.2 rounded-full text-[9px] font-bold ${
-                                eff.source === 'campus_override'
-                                  ? 'bg-amber-500/20 text-amber-300'
-                                  : 'bg-cyan-500/20 text-cyan-300'
-                              }`}>
-                                {eff.source === 'campus_override' ? 'Cơ sở Override' : 'Chuẩn Khóa'}
-                              </span>
-                            </div>
-
-                            <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1 text-xs">
-                              <div className="flex justify-between">
-                                <span className="text-slate-400">Học phí trọn khóa:</span>
-                                <span className="font-mono font-extrabold text-amber-400">{formatVND(eff.course_fee)}</span>
+                          <div
+                            key={`${term.id}_${campus.id}_${subject.id}`}
+                            className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 space-y-3 transition-all shadow-md flex flex-col justify-between"
+                          >
+                            <div>
+                              {/* Top Bar: Subject Name & Campus Code */}
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <div className="flex items-center gap-1.5 mb-1">
+                                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${catBadge.badge}`}>
+                                      {subject.category}
+                                    </span>
+                                    <span className="font-mono text-[10px] text-slate-400 font-bold">
+                                      {subject.code}
+                                    </span>
+                                  </div>
+                                  <h5 className="font-extrabold text-white text-sm leading-tight">
+                                    {subject.name}
+                                  </h5>
+                                </div>
+                                <span className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono shrink-0">
+                                  {campus.code}
+                                </span>
                               </div>
-                              <div className="flex justify-between text-slate-400">
+
+                              {/* Term & Source Badges */}
+                              <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2.5">
+                                <span className="flex items-center gap-1 text-slate-300">
+                                  <Calendar className="w-3 h-3 text-cyan-400" />
+                                  <strong className="text-white">{term.name}</strong>
+                                </span>
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                                  eff.source === 'campus_override'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                }`}>
+                                  {eff.source === 'campus_override' ? '★ Override Cơ sở' : '✓ Chuẩn Khóa'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Pricing Box */}
+                            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-xs">
+                              {/* Original fee & discount if any */}
+                              {hasDiscount && (
+                                <div className="flex justify-between items-center text-[11px]">
+                                  <span className="text-slate-500">Học phí gốc:</span>
+                                  <span className="font-mono text-slate-400 line-through">
+                                    {formatVND(eff.base_course_fee)}
+                                  </span>
+                                </div>
+                              )}
+
+                              {hasDiscount && (
+                                <div className="flex justify-between items-center text-[11px]">
+                                  <span className="text-rose-400 font-medium">
+                                    Ưu đãi {eff.discount_type === 'percentage' ? `(${eff.discount_value}%)` : ''}:
+                                  </span>
+                                  <span className="font-mono font-bold text-rose-400">
+                                    -{formatVND(eff.discount_amount)}
+                                  </span>
+                                </div>
+                              )}
+
+                              <div className="flex justify-between items-center pt-1 border-t border-slate-800/80">
+                                <span className="text-slate-300 font-semibold">Học phí trọn khóa:</span>
+                                <span className="font-mono font-extrabold text-amber-400 text-sm">
+                                  {formatVND(eff.course_fee)}
+                                </span>
+                              </div>
+
+                              <div className="flex justify-between text-slate-400 text-[11px]">
                                 <span>Số buổi học:</span>
                                 <span className="font-mono font-bold text-white">{eff.total_sessions} buổi</span>
                               </div>
-                              <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800">
+
+                              <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800 text-[11px]">
                                 <span>Đơn giá buổi (Ceil):</span>
-                                <span className="font-mono font-bold text-emerald-400">{formatVND(eff.session_rate)}/b</span>
+                                <span className="font-mono font-bold text-emerald-400 text-xs">
+                                  {formatVND(eff.session_rate)}/buổi
+                                </span>
                               </div>
                             </div>
 
-                            <div className="text-[10px] text-slate-500 italic">
-                              {eff.notes || (isTermActive ? 'Kích hoạt bình thường' : 'Chưa kích hoạt trong khóa này')}
+                            {/* Status & Notes */}
+                            <div className="flex items-center justify-between text-[10px] pt-1 border-t border-slate-800/60">
+                              <span className={`inline-flex items-center gap-1 font-bold ${
+                                isOfferedAtCampus && isTermActive
+                                  ? 'text-emerald-400'
+                                  : 'text-rose-400'
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${
+                                  isOfferedAtCampus && isTermActive ? 'bg-emerald-400' : 'bg-rose-400'
+                                }`}></span>
+                                {isOfferedAtCampus && isTermActive ? 'Mở tuyển sinh' : 'Không mở tại CS'}
+                              </span>
+
+                              <span className="text-slate-500 truncate max-w-[150px] italic">
+                                {eff.discount_reason || eff.notes || (isTermActive ? 'Chuẩn' : 'Chưa kích hoạt')}
+                              </span>
                             </div>
                           </div>
                         );
-                      })
-                    )
-                  )}
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-900/80 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
-                      <tr>
-                        <th className="py-3 px-4">Khóa Học</th>
-                        <th className="py-3 px-4">Cơ Sở</th>
-                        <th className="py-3 px-4">Môn Học</th>
-                        <th className="py-3 px-4">Nguồn Biểu Phí</th>
-                        <th className="py-3 px-4 text-center">Tổng Buổi</th>
-                        <th className="py-3 px-4 font-mono">Học Phí Trọn Khóa</th>
-                        <th className="py-3 px-4 font-mono">Đơn Giá Buổi (Ceil)</th>
-                        <th className="py-3 px-4">Tình Trạng</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60">
-                      {store.terms.flatMap(term => 
-                        store.campuses.flatMap(campus => 
-                          store.subjects.map(subject => {
-                            const eff = getEffectivePrice(term.id, campus.id, subject.id, store);
-                            const termConfig = store.termSubjects.find(ts => ts.term_id === term.id && ts.subject_id === subject.id);
-                            const isTermActive = termConfig ? termConfig.is_active : false;
+                      })}
+                    </div>
+                  ) : (
+                    /* TABLE VIEW */
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
+                          <tr>
+                            <th className="py-3 px-3.5">Khóa Học</th>
+                            <th className="py-3 px-3.5">Cơ Sở</th>
+                            <th className="py-3 px-3.5">Môn Học</th>
+                            <th className="py-3 px-3.5">Nguồn Biểu Phí</th>
+                            <th className="py-3 px-3.5 text-center">Số Buổi</th>
+                            <th className="py-3 px-3.5 font-mono text-right">Học Phí Gốc</th>
+                            <th className="py-3 px-3.5 font-mono text-right">Ưu Đãi / Giảm Giá</th>
+                            <th className="py-3 px-3.5 font-mono text-right">Học Phí Áp Dụng</th>
+                            <th className="py-3 px-3.5 font-mono text-right">Đơn Giá Buổi (Ceil)</th>
+                            <th className="py-3 px-3.5 text-center">Tình Trạng Tuyển Sinh</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {filteredMatrixCombinations.map(item => {
+                            const { term, campus, subject, eff, isTermActive, isOfferedAtCampus } = item;
+                            const hasDiscount = eff.discount_type !== 'none' && eff.discount_amount > 0;
+                            const catBadge = getSubjectCategoryBadge(subject.category);
 
                             return (
-                              <tr key={`${term.id}_${campus.id}_${subject.id}`} className="hover:bg-slate-800/30 transition-colors">
-                                <td className="py-3 px-4 font-semibold text-amber-400">{term.name}</td>
-                                <td className="py-3 px-4 text-white font-bold">{campus.code}</td>
-                                <td className="py-3 px-4 font-medium text-slate-200">{subject.name}</td>
-                                <td className="py-3 px-4">
-                                  <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                              <tr key={`${term.id}_${campus.id}_${subject.id}`} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="py-3 px-3.5">
+                                  <div className="font-semibold text-white">{term.name}</div>
+                                  <div className="text-[10px] font-mono text-slate-400">{term.code}</div>
+                                </td>
+                                <td className="py-3 px-3.5">
+                                  <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono">
+                                    {campus.code}
+                                  </span>
+                                  <div className="text-[10px] text-slate-400 truncate max-w-[130px] mt-0.5">{campus.name}</div>
+                                </td>
+                                <td className="py-3 px-3.5">
+                                  <div className="font-medium text-slate-100">{subject.name}</div>
+                                  <div className="flex items-center gap-1.5 mt-0.5">
+                                    <span className="font-mono text-[10px] text-slate-400">{subject.code}</span>
+                                    <span className={`px-1.5 py-0.2 rounded text-[9px] font-semibold border ${catBadge.badge}`}>
+                                      {subject.category}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3.5">
+                                  <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold whitespace-nowrap ${
                                     eff.source === 'campus_override'
                                       ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                       : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
@@ -1767,29 +2754,51 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                     {eff.source === 'campus_override' ? '★ Override Cơ sở' : '✓ Chuẩn Khóa'}
                                   </span>
                                 </td>
-                                <td className="py-3 px-4 text-center font-mono font-bold text-white">{eff.total_sessions}</td>
-                                <td className="py-3 px-4 font-mono font-extrabold text-amber-400">{formatVND(eff.course_fee)}</td>
-                                <td className="py-3 px-4 font-mono font-bold text-emerald-400">{formatVND(eff.session_rate)}/b</td>
-                                <td className="py-3 px-4">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                    isTermActive && eff.is_offered
-                                      ? 'bg-emerald-500/10 text-emerald-400'
-                                      : 'bg-rose-500/10 text-rose-400'
+                                <td className="py-3 px-3.5 text-center font-mono font-bold text-white">
+                                  {eff.total_sessions}
+                                </td>
+                                <td className="py-3 px-3.5 font-mono text-right text-slate-400">
+                                  {formatVND(eff.base_course_fee)}
+                                </td>
+                                <td className="py-3 px-3.5 font-mono text-right">
+                                  {hasDiscount ? (
+                                    <div>
+                                      <span className="font-bold text-rose-400">-{formatVND(eff.discount_amount)}</span>
+                                      {eff.discount_type === 'percentage' && (
+                                        <span className="text-[10px] text-rose-400/80 ml-1">({eff.discount_value}%)</span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-500">-</span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3.5 font-mono font-extrabold text-amber-400 text-right">
+                                  {formatVND(eff.course_fee)}
+                                </td>
+                                <td className="py-3 px-3.5 font-mono font-bold text-emerald-400 text-right">
+                                  {formatVND(eff.session_rate)}/b
+                                </td>
+                                <td className="py-3 px-3.5 text-center">
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold inline-flex items-center gap-1 ${
+                                    isOfferedAtCampus && isTermActive
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                                   }`}>
-                                    {isTermActive && eff.is_offered ? 'Mở tuyển sinh' : 'Không mở'}
+                                    <span className={`w-1.5 h-1.5 rounded-full ${isOfferedAtCampus && isTermActive ? 'bg-emerald-400' : 'bg-rose-400'}`}></span>
+                                    {isOfferedAtCampus && isTermActive ? 'Mở tuyển sinh' : 'Không mở'}
                                   </span>
                                 </td>
                               </tr>
                             );
-                          })
-                        )
-                      )}
-                    </tbody>
-                  </table>
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+              )
+            );
+          })()}
 
         </div>
       )}
@@ -2281,13 +3290,14 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Phân loại môn *</label>
                   <select
                     value={subjectFormData.category}
-                    onChange={(e) => setSubjectFormData({ ...subjectFormData, category: e.target.value as Subject['category'] })}
+                    onChange={(e) => setSubjectFormData({ ...subjectFormData, category: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="Thể thao">Thể thao (Sports)</option>
-                    <option value="Nghệ thuật">Nghệ thuật & Âm nhạc (Art & Music)</option>
-                    <option value="Kỹ năng số">Kỹ năng số & STEM Robotics</option>
-                    <option value="Học thuật">Học thuật & Ngôn ngữ (Academics)</option>
+                    {categoriesList.map(cat => (
+                      <option key={cat.id} value={cat.name} className="bg-slate-900 text-white">
+                        {cat.name} ({cat.code})
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -2359,6 +3369,179 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 >
                   <Check className="w-4 h-4" />
                   <span>{editingSubject ? 'Lưu Thay Đổi' : 'Thêm Môn Học'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE / EDIT SUBJECT CATEGORY MODAL */}
+      {showCategoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                <Tag className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-white">
+                  {editingCategory ? 'Cập Nhật Phân Loại Môn Học' : 'Thêm Nhóm Phân Loại Môn Mới'}
+                </h3>
+                <p className="text-xs text-slate-400">Định nghĩa nhóm năng khiếu & lĩnh vực đào tạo cấp toàn trường.</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveCategory} className="space-y-3.5 text-xs">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-1">
+                  <label className="block text-slate-400 font-medium mb-1">Mã nhóm *</label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={12}
+                    value={categoryFormData.code}
+                    onChange={(e) => setCategoryFormData({ ...categoryFormData, code: e.target.value.toUpperCase() })}
+                    placeholder="VD: SPORTS"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-slate-400 font-medium mb-1">Tên phân loại môn *</label>
+                  <input
+                    type="text"
+                    required
+                    value={categoryFormData.name}
+                    onChange={(e) => setCategoryFormData({ ...categoryFormData, name: e.target.value })}
+                    placeholder="VD: Thể thao & Vận động"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* Color Picker */}
+              <div>
+                <label className="block text-slate-400 font-medium mb-1.5">Màu sắc nhận diện (Badge & Card Style)</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { id: 'amber', label: 'Hoàng Gia Gold', bg: 'bg-amber-500' },
+                    { id: 'purple', label: 'Nghệ Thuật Tím', bg: 'bg-purple-500' },
+                    { id: 'cyan', label: 'Công Nghệ Cyan', bg: 'bg-cyan-500' },
+                    { id: 'emerald', label: 'Học Thuật Xanh', bg: 'bg-emerald-500' },
+                    { id: 'blue', label: 'Thể Chất Blue', bg: 'bg-blue-500' },
+                    { id: 'rose', label: 'Kỹ Năng Sống Rose', bg: 'bg-rose-500' },
+                    { id: 'indigo', label: 'Tư Duy Indigo', bg: 'bg-indigo-500' },
+                    { id: 'orange', label: 'Sáng Tạo Cam', bg: 'bg-orange-500' },
+                  ].map(c => (
+                    <button
+                      type="button"
+                      key={c.id}
+                      onClick={() => setCategoryFormData({ ...categoryFormData, color: c.id as SubjectCategory['color'] })}
+                      className={`flex items-center gap-1.5 p-1.5 rounded-xl border transition-all text-left ${
+                        categoryFormData.color === c.id
+                          ? 'border-amber-500 bg-amber-500/10 text-white font-bold'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className={`w-3.5 h-3.5 rounded-full ${c.bg} shrink-0`}></span>
+                      <span className="text-[10px] truncate">{c.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Icon Picker */}
+              <div>
+                <label className="block text-slate-400 font-medium mb-1.5">Icon đại diện</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {[
+                    { id: 'Activity', label: 'Thể thao', icon: Activity },
+                    { id: 'Palette', label: 'Nghệ thuật', icon: Palette },
+                    { id: 'Code', label: 'STEM/Code', icon: Code },
+                    { id: 'GraduationCap', label: 'Học thuật', icon: GraduationCap },
+                    { id: 'HeartPulse', label: 'Y tế/Sống', icon: HeartPulse },
+                    { id: 'Music', label: 'Âm nhạc', icon: Music },
+                    { id: 'Sparkles', label: 'Sáng tạo', icon: Sparkles },
+                    { id: 'Trophy', label: 'Thi đấu', icon: Trophy },
+                    { id: 'Smile', label: 'Kỹ năng mềm', icon: Smile },
+                    { id: 'Compass', label: 'Trải nghiệm', icon: Compass },
+                  ].map(item => {
+                    const IconComp = item.icon;
+                    return (
+                      <button
+                        type="button"
+                        key={item.id}
+                        onClick={() => setCategoryFormData({ ...categoryFormData, icon: item.id })}
+                        className={`flex flex-col items-center gap-1 p-2 rounded-xl border transition-all ${
+                          categoryFormData.icon === item.id
+                            ? 'border-amber-500 bg-amber-500/15 text-amber-400 font-bold'
+                            : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <IconComp className="w-4 h-4" />
+                        <span className="text-[9px] text-center leading-tight truncate w-full">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Trạng thái tuyển sinh của nhóm</label>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="cat_status"
+                      checked={categoryFormData.status === 'active'}
+                      onChange={() => setCategoryFormData({ ...categoryFormData, status: 'active' })}
+                      className="text-amber-500 focus:ring-0"
+                    />
+                    <span className="text-emerald-400 font-bold text-xs">Đang mở tuyển sinh (Active)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="cat_status"
+                      checked={categoryFormData.status === 'inactive'}
+                      onChange={() => setCategoryFormData({ ...categoryFormData, status: 'inactive' })}
+                      className="text-amber-500 focus:ring-0"
+                    />
+                    <span className="text-slate-400 text-xs">Tạm dừng (Inactive)</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Mô tả & Định hướng phát triển năng khiếu</label>
+                <textarea
+                  rows={3}
+                  value={categoryFormData.description}
+                  onChange={(e) => setCategoryFormData({ ...categoryFormData, description: e.target.value })}
+                  placeholder="Mô tả mục tiêu bồi dưỡng thể chất, tư duy, thẩm mỹ hoặc kỹ năng cho học sinh..."
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCategoryModal(false);
+                    setEditingCategory(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20"
+                >
+                  {editingCategory ? 'Lưu Thay Đổi' : 'Thêm Phân Loại'}
                 </button>
               </div>
             </form>

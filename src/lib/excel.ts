@@ -191,6 +191,18 @@ export function downloadSampleTemplate() {
           status: 'open_enrollment'
         }
       ],
+      subjectCategories: [
+        {
+          id: 'cat_sports',
+          code: 'SPORTS',
+          name: 'Thể thao',
+          color: 'amber',
+          icon: 'Activity',
+          description: 'Rèn luyện thể lực và tinh thần đồng đội',
+          status: 'active',
+          order: 1
+        }
+      ],
       subjects: [
         {
           id: 'sub_bask',
