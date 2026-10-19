@@ -11,6 +11,7 @@ import {
   Settings,
   Users,
   Calendar,
+  CalendarDays,
   Layers,
   Award,
   DollarSign,
@@ -121,9 +122,15 @@ export const Navbar: React.FC<NavbarProps> = ({
         },
         { 
           id: 'sub_pricing', 
-          label: 'Ma Trận Biểu Phí Cơ Sở', 
+          label: 'Biểu Phí Cơ Sở', 
           icon: DollarSign, 
           desc: 'Cấu hình học phí theo Cơ sở × Khóa × Môn, công thức Ceil đơn giá buổi' 
+        },
+        { 
+          id: 'sub_schedule', 
+          label: 'Lịch Học Ngoại Khóa', 
+          icon: CalendarDays, 
+          desc: 'Lịch tháng: Số lớp học, số học sinh & suất bánh sữa cần cấp theo ngày' 
         },
         { 
           id: 'sub_classes', 

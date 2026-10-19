@@ -9,6 +9,7 @@ import {
   Users,
   School,
   Calendar,
+  CalendarDays,
   DollarSign,
   Coffee,
   BookmarkCheck,
@@ -38,7 +39,8 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     
     // Nhóm 2: Đào Tạo & Vận Hành
     sub_term_subjects: { parent: 'Đào Tạo & Vận Hành', title: 'Môn Học & Khóa Học (Trung Tâm)', icon: School, badge: 'Môn & Khóa Học' },
-    sub_pricing: { parent: 'Đào Tạo & Vận Hành', title: 'Ma Trận Biểu Phí Cơ Sở', icon: DollarSign, badge: 'Cơ Sở × Khóa × Môn' },
+    sub_pricing: { parent: 'Đào Tạo & Vận Hành', title: 'Biểu Phí Cơ Sở', icon: DollarSign, badge: 'Cơ Sở × Khóa × Môn' },
+    sub_schedule: { parent: 'Đào Tạo & Vận Hành', title: 'Lịch Học Ngoại Khóa', icon: CalendarDays, badge: 'Lịch Tháng & Bánh Sữa' },
     sub_classes: { parent: 'Đào Tạo & Vận Hành', title: 'Lớp Học Ngoại Khóa (Cơ Sở)', icon: Calendar, badge: 'Phòng Sân & GV' },
     sub_attendance: { parent: 'Đào Tạo & Vận Hành', title: 'Sổ Điểm Danh & Dạy Thay', icon: CheckCircle2, badge: 'Chuyên Cần & Bù Trừ' },
     sub_snacks: { parent: 'Đào Tạo & Vận Hành', title: 'Báo Cáo Đối Soát Bánh Sữa', icon: Coffee, badge: 'Độc Quyền Royal' },

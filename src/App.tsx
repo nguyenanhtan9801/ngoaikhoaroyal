@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { CompactHeaderToolbar } from './components/CompactHeaderToolbar';
-import { QuickFilterBar } from './components/QuickFilterBar';
 import { OverviewKpiTab } from './components/tabs/OverviewKpiTab';
 import { StudentsTab } from './components/tabs/StudentsTab';
 import { ClassesTab } from './components/tabs/ClassesTab';
+import { ScheduleTab } from './components/tabs/ScheduleTab';
 import { AttendanceTab } from './components/tabs/AttendanceTab';
 import { SnacksTab } from './components/tabs/SnacksTab';
 import { MakeupCreditsTab } from './components/tabs/MakeupCreditsTab';
@@ -354,21 +354,7 @@ export default function App() {
           onPrintReport={handlePrintSnacksSlip}
         />
 
-        {/* Quick Filter Bar - Ẩn tại trang Môn Học & Khóa Học theo yêu cầu */}
-        {currentRoute !== 'sub_term_subjects' && (
-          <QuickFilterBar
-            campuses={store.campuses}
-            terms={store.terms}
-            selectedCampusId={selectedCampusId}
-            onSelectCampus={setSelectedCampusId}
-            selectedTermId={selectedTermId}
-            onSelectTerm={setSelectedTermId}
-            timeRange={timeRange}
-            onChangeTimeRange={setTimeRange}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-          />
-        )}
+
 
         {/* Content Display pushed higher up for maximum vertical density */}
         <div className="pt-1 transition-all duration-200">
@@ -401,6 +387,20 @@ export default function App() {
               onUpdateStore={updateStore}
               initialSection="pricing"
               initialSubTab="matrix"
+            />
+          )}
+
+          {currentRoute === 'sub_schedule' && (
+            <ScheduleTab
+              store={store}
+              currentRole={currentRole}
+              selectedCampusId={selectedCampusId}
+              onSelectCampus={setSelectedCampusId}
+              onNavigateTab={setCurrentRoute}
+              onSelectClassForAttendance={(cls) => {
+                setFocusedClass(cls);
+                setCurrentRoute('sub_attendance');
+              }}
             />
           )}
 
