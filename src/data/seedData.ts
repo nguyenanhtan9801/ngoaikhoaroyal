@@ -579,6 +579,7 @@ export const initialClasses: ExtracurricularClass[] = [
     subject_id: 'sub_bask',
     facility_id: 'fac_bask_gym',
     time_slot_id: 'slot_mon_wed',
+    days_of_week: ['T2', 'T4'],
     primary_teacher_id: 'tch_tuan',
     max_students: 15,
     total_sessions: 24,
@@ -595,6 +596,7 @@ export const initialClasses: ExtracurricularClass[] = [
     subject_id: 'sub_swim',
     facility_id: 'fac_pool_olympic',
     time_slot_id: 'slot_tue_thu',
+    days_of_week: ['T3', 'T5'],
     primary_teacher_id: 'tch_huong',
     max_students: 12,
     total_sessions: 24,
@@ -610,6 +612,7 @@ export const initialClasses: ExtracurricularClass[] = [
     subject_id: 'sub_stem',
     facility_id: 'fac_stem_lab',
     time_slot_id: 'slot_sat_morning',
+    days_of_week: ['T7', 'CN'],
     primary_teacher_id: 'tch_david',
     max_students: 14,
     total_sessions: 20,
@@ -625,6 +628,7 @@ export const initialClasses: ExtracurricularClass[] = [
     subject_id: 'sub_piano',
     facility_id: 'fac_piano_room',
     time_slot_id: 'slot_sun_morning',
+    days_of_week: ['T7', 'CN'],
     primary_teacher_id: 'tch_yen',
     max_students: 8,
     total_sessions: 16,
@@ -640,6 +644,7 @@ export const initialClasses: ExtracurricularClass[] = [
     subject_id: 'sub_art',
     facility_id: 'fac_art_room',
     time_slot_id: 'slot_fri',
+    days_of_week: ['T4', 'T6'],
     primary_teacher_id: 'tch_quynh',
     max_students: 15,
     total_sessions: 20,
@@ -730,10 +735,10 @@ export const initialStudents: Student[] = [
   {
     id: 'std_06',
     code: 'RY-2026-00106',
-    name: 'Lê Hoàng Nam Khánh',
+    name: 'Nguyễn Anh Tân',
     dob: '2015-08-10',
     gender: 'Nam',
-    parent_name: 'Lê Nam Tuấn',
+    parent_name: 'Nguyễn Văn Minh',
     parent_phone: '0909 334 556',
     school_name: 'Royal School PMH',
     regular_class: 'Grade 5A2',
@@ -780,7 +785,7 @@ export const initialEnrollments: Enrollment[] = [
   
   // Class 5: Art (ART-01) - 2 học sinh
   { id: 'enr_11', student_id: 'std_05', class_id: 'cls_art_01', registered_sessions: 20, joined_date: '2026-09-01', status: 'active' },
-  { id: 'enr_12', student_id: 'std_06', class_id: 'cls_art_01', registered_sessions: 20, joined_date: '2026-09-01', status: 'active' },
+  { id: 'enr_12', student_id: 'std_06', class_id: 'cls_art_01', registered_sessions: 20, joined_date: '2026-09-01', status: 'trial', trial_session_date: '2026-09-11', trial_notes: 'Học sinh đang học thử buổi 1 (Mỹ thuật sáng tạo)' },
 ];
 
 export const initialInvoices: TuitionInvoice[] = [
@@ -882,6 +887,22 @@ export const initialInvoices: TuitionInvoice[] = [
     verified_by: 'Học vụ kiêm Kế toán Phú Lâm',
     verified_at: '2026-09-09 10:00:00',
     created_at: '2026-09-03',
+  },
+  {
+    id: 'inv_07',
+    invoice_code: 'INV-2026-0007',
+    student_id: 'std_06',
+    class_id: 'cls_art_01',
+    gross_amount: 3200000,
+    credit_deducted: 0,
+    net_payable: 3200000,
+    paid_amount: 0,
+    outstanding_amount: 3200000,
+    payment_status: 'unpaid',
+    due_date: '2026-09-18',
+    is_trial_pending: true,
+    trial_fee: 0,
+    created_at: '2026-09-01',
   },
 ];
 

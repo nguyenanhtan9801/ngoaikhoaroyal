@@ -85,7 +85,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 }) => {
   const [activeSection, setActiveSection] = useState<'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase'>(initialSection);
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
-  const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('cards');
+  const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
   // Sub-tabs for Section 1: Cấu hình Khóa học & Biểu phí cơ sở
   const [hierarchySubTab, setHierarchySubTab] = useState<'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
@@ -258,7 +258,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   };
 
   // ViewMode, Filters & Modal for Subtab 1: Phân Loại Môn Học (Subject Categories)
-  const [categoriesViewMode, setCategoriesViewMode] = useState<ViewMode>('cards');
+  const [categoriesViewMode, setCategoriesViewMode] = useState<ViewMode>('table');
   const [categorySearchQuery, setCategorySearchQuery] = useState<string>('');
   const [showCategoryModal, setShowCategoryModal] = useState<boolean>(false);
   const [editingCategory, setEditingCategory] = useState<SubjectCategory | null>(null);
@@ -390,7 +390,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   });
 
   // ViewMode, Filters & Modal for Subtab 2: Danh Mục Môn Học (Subjects Catalog)
-  const [subjectsViewMode, setSubjectsViewMode] = useState<ViewMode>('cards');
+  const [subjectsViewMode, setSubjectsViewMode] = useState<ViewMode>('table');
   const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<string>('all');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState<string>('');
   const [showSubjectModal, setShowSubjectModal] = useState<boolean>(false);
@@ -603,7 +603,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   });
 
   // ViewMode for Subtab 3: Biểu phí cơ sở
-  const [campusPricingViewMode, setCampusPricingViewMode] = useState<ViewMode>('cards');
+  const [campusPricingViewMode, setCampusPricingViewMode] = useState<ViewMode>('table');
 
   // Campus Modal (Create / Edit)
   const [showCampusModal, setShowCampusModal] = useState<boolean>(false);

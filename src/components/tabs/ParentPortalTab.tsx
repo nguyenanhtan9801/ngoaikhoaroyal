@@ -44,7 +44,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     'academic_admissions'
   ].includes(currentRole);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'contacted' | 'enrolled' | 'canceled'>('all');
   const [campusFilter, setCampusFilter] = useState<string>('all');

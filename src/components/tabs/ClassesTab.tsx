@@ -22,6 +22,35 @@ import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTer
 import { ExtracurricularClass, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
+const WEEKDAYS = [
+  { code: 'T2', label: 'Thứ 2' },
+  { code: 'T3', label: 'Thứ 3' },
+  { code: 'T4', label: 'Thứ 4' },
+  { code: 'T5', label: 'Thứ 5' },
+  { code: 'T6', label: 'Thứ 6' },
+  { code: 'T7', label: 'Thứ 7' },
+  { code: 'CN', label: 'Chủ Nhật' },
+];
+
+const formatDaysDisplay = (days: string[]): string => {
+  const map: Record<string, string> = {
+    'T2': 'Thứ 2',
+    'T3': 'Thứ 3',
+    'T4': 'Thứ 4',
+    'T5': 'Thứ 5',
+    'T6': 'Thứ 6',
+    'T7': 'Thứ 7',
+    'CN': 'Chủ Nhật',
+  };
+  return days.map(d => map[d] || d).join(' & ');
+};
+
+const getClassDays = (cls: ExtracurricularClass, store: AppStore): string[] => {
+  if (cls.days_of_week && cls.days_of_week.length > 0) return cls.days_of_week;
+  const slot = store.timeSlots.find(t => t.id === cls.time_slot_id);
+  return slot?.days_of_week || ['T2', 'T4'];
+};
+
 interface ClassesTabProps {
   store: AppStore;
   currentRole: UserRole;
@@ -39,9 +68,10 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onUpdateStore,
   onSelectClassForAttendance,
 }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
+  const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
 
   // Check if active selected term is closed (read-only mode)
   const currentSelectedTerm = store.terms.find(t => t.id === selectedTermId);
@@ -59,6 +89,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     subject_id: store.subjects[0]?.id || '',
     facility_id: store.facilities[0]?.id || '',
     time_slot_id: store.timeSlots[0]?.id || '',
+    days_of_week: ['T2', 'T4'] as string[],
     primary_teacher_id: store.teachers[0]?.id || '',
     max_students: 15,
     total_sessions: 24,
@@ -76,32 +107,67 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     return matchCampus && matchTerm;
   });
 
-  // Schedule Conflict Soft Warning Check
+  // Toggle Day Selection (Strict constraint: Exactly 2 days per class)
+  const handleToggleDay = (dayCode: string) => {
+    const current = formData.days_of_week || [];
+    if (current.includes(dayCode)) {
+      // Unselect
+      const updated = current.filter(d => d !== dayCode);
+      setFormData(prev => ({ ...prev, days_of_week: updated }));
+      setDayPickerNotice(null);
+    } else {
+      // Select
+      if (current.length < 2) {
+        const order = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+        const updated = [...current, dayCode].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+        setFormData(prev => ({ ...prev, days_of_week: updated }));
+        setDayPickerNotice(null);
+      } else {
+        setDayPickerNotice('Mỗi môn chỉ học tối đa 2 ngày trong tuần. Hãy bỏ chọn 1 ngày trước nếu muốn thay đổi.');
+        setTimeout(() => setDayPickerNotice(null), 3500);
+      }
+    }
+  };
+
+  // Schedule Conflict Soft Warning Check with Weekdays and Time Slot
   const checkConflicts = (
     facilityId: string, 
     teacherId: string, 
     timeSlotId: string, 
+    daysOfWeek: string[],
+    campusId: string,
     excludeClassId?: string,
     targetTermId: string = formData.term_id
   ) => {
     const conflicts: string[] = [];
 
+    // Find classes in the same campus & term with the same timeSlot
     const existingClassesInSlot = store.classes.filter(
-      c => c.time_slot_id === timeSlotId && c.id !== excludeClassId && c.term_id === targetTermId
+      c => c.id !== excludeClassId && 
+           c.term_id === targetTermId && 
+           c.campus_id === campusId && 
+           c.time_slot_id === timeSlotId
     );
 
-    // Check facility clash
-    const facilityClash = existingClassesInSlot.find(c => c.facility_id === facilityId);
-    if (facilityClash) {
-      const fac = store.facilities.find(f => f.id === facilityId);
-      conflicts.push(`Sân/Phòng [${fac?.name || facilityId}] đã được xếp cho lớp "${facilityClash.name}" trong cùng khung giờ.`);
-    }
+    for (const existing of existingClassesInSlot) {
+      const existingDays = getClassDays(existing, store);
+      // Find overlapping days
+      const overlappingDays = daysOfWeek.filter(d => existingDays.includes(d));
+      if (overlappingDays.length > 0) {
+        const overlapText = formatDaysDisplay(overlappingDays);
 
-    // Check teacher clash
-    const teacherClash = existingClassesInSlot.find(c => c.primary_teacher_id === teacherId);
-    if (teacherClash) {
-      const tch = store.teachers.find(t => t.id === teacherId);
-      conflicts.push(`Giáo viên [${tch?.name || teacherId}] đang đứng lớp "${teacherClash.name}" trong cùng khung giờ.`);
+        // Check facility clash
+        if (existing.facility_id === facilityId) {
+          const fac = store.facilities.find(f => f.id === facilityId);
+          conflicts.push(`Sân/Phòng [${fac?.name || facilityId}] đã được xếp cho lớp "${existing.name}" vào ${overlapText} trong cùng khung giờ.`);
+        }
+
+        // Check teacher clash
+        if (existing.primary_teacher_id === teacherId) {
+          const tch = store.teachers.find(t => t.id === teacherId);
+          conflicts.push(`Giáo viên [${tch?.name || teacherId}] đang đứng lớp "${existing.name}" vào ${overlapText} trong cùng khung giờ.`);
+        }
+      }
     }
 
     return conflicts;
@@ -111,6 +177,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     formData.facility_id,
     formData.primary_teacher_id,
     formData.time_slot_id,
+    formData.days_of_week,
+    formData.campus_id,
     editingClass?.id,
     formData.term_id
   );
@@ -162,6 +230,10 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     const subj = store.subjects.find(s => s.id === initialSubjectId);
     const camp = store.campuses.find(c => c.id === initialCampusId);
 
+    const initialDays = (store.timeSlots[0]?.days_of_week && store.timeSlots[0].days_of_week.length === 2)
+      ? store.timeSlots[0].days_of_week
+      : ['T2', 'T4'];
+
     setEditingClass(null);
     setFormData({
       name: `${subj?.name || 'Lớp ngoại khóa'} - ${camp?.code || ''}`,
@@ -170,18 +242,26 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       subject_id: initialSubjectId,
       facility_id: campusFacilities[0]?.id || store.facilities[0]?.id || '',
       time_slot_id: store.timeSlots[0]?.id || '',
+      days_of_week: initialDays,
       primary_teacher_id: store.teachers[0]?.id || '',
       max_students: 15,
       total_sessions: effectivePricing.total_sessions,
       full_course_fee: effectivePricing.course_fee,
       allow_over_quota: false,
     });
+    setDayPickerNotice(null);
     setShowAddModal(true);
   };
 
   const handleSaveClass = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name) return;
+
+    // Hard constraint: exactly 2 days per class
+    if (!formData.days_of_week || formData.days_of_week.length !== 2) {
+      alert('Vui lòng chọn đúng 2 ngày học trong tuần trước khi lưu lớp!');
+      return;
+    }
 
     // Check if target term is closed
     if (isTermClosed(formData.term_id, store)) {
@@ -213,6 +293,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         subject_id: formData.subject_id,
         facility_id: formData.facility_id,
         time_slot_id: formData.time_slot_id,
+        days_of_week: formData.days_of_week,
         primary_teacher_id: formData.primary_teacher_id,
         max_students: formData.max_students,
         total_sessions: formData.total_sessions,
@@ -318,7 +399,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
                   const enrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
                   const isOverQuota = enrollments.length > cls.max_students;
-                  const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, cls.id);
+                  const classDays = getClassDays(cls, store);
+                  const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
 
                   return (
                     <tr key={cls.id} className="hover:bg-slate-800/30 transition-colors">
@@ -327,7 +409,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                         {conflicts.length > 0 && (
                           <div className="text-[10px] text-amber-400 flex items-center gap-1 mt-0.5">
                             <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-                            <span>Trùng lịch ca này</span>
+                            <span>Trùng lịch ca này ({conflicts.length})</span>
                           </div>
                         )}
                       </td>
@@ -338,7 +420,14 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
                       <td className="py-3 px-4 text-slate-300 font-medium">{subject?.name}</td>
 
-                      <td className="py-3 px-4 text-slate-300">{timeSlot?.name.split(':')[0]} ({timeSlot?.days_of_week.join(',')})</td>
+                      <td className="py-3 px-4 text-slate-300">
+                        <div className="font-semibold text-white">
+                          {formatDaysDisplay(classDays)}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {timeSlot?.start_time} - {timeSlot?.end_time}
+                        </div>
+                      </td>
 
                       <td className="py-3 px-4 text-slate-400">{facility?.name}</td>
 
@@ -366,6 +455,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                                 alert('Khóa học này đã Đóng (Closed). Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.');
                                 return;
                               }
+                              const editDays = getClassDays(cls, store).slice(0, 2);
                               setEditingClass(cls);
                               setFormData({
                                 name: cls.name,
@@ -374,12 +464,14 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                                 subject_id: cls.subject_id,
                                 facility_id: cls.facility_id,
                                 time_slot_id: cls.time_slot_id,
+                                days_of_week: editDays.length === 2 ? editDays : ['T2', 'T4'],
                                 primary_teacher_id: cls.primary_teacher_id,
                                 max_students: cls.max_students,
                                 total_sessions: cls.total_sessions,
                                 full_course_fee: cls.full_course_fee,
                                 allow_over_quota: !!cls.allow_over_quota,
                               });
+                              setDayPickerNotice(null);
                               setShowAddModal(true);
                             }}
                             className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
@@ -419,7 +511,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             const enrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
             const studentCount = enrollments.length;
             const isOverQuota = studentCount > cls.max_students;
-            const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, cls.id);
+            const classDays = getClassDays(cls, store);
+            const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
 
             return (
               <div
@@ -440,7 +533,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                     <div className="mb-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-[11px] text-amber-300 space-y-1">
                       <div className="flex items-center gap-1.5 font-bold">
                         <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        <span>CẢNH BÁO TRÙNG LỊCH:</span>
+                        <span>CẢNH BÁO TRÙNG LỊCH ({conflicts.length}):</span>
                       </div>
                       {conflicts.map((msg, i) => (
                         <p key={i} className="text-amber-200/90 pl-5 text-[10px]">&bull; {msg}</p>
@@ -451,7 +544,9 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   <div className="space-y-2 text-xs text-slate-300">
                     <div className="flex items-center gap-2">
                       <Clock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span>{timeSlot?.name || 'Chưa xếp khung giờ'}</span>
+                      <span className="font-semibold text-white">
+                        {formatDaysDisplay(classDays)} ({timeSlot?.start_time} - {timeSlot?.end_time})
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -504,6 +599,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                         alert('Khóa học này đã Đóng (Closed). Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.');
                         return;
                       }
+                      const editDays = getClassDays(cls, store).slice(0, 2);
                       setEditingClass(cls);
                       setFormData({
                         name: cls.name,
@@ -512,12 +608,14 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                         subject_id: cls.subject_id,
                         facility_id: cls.facility_id,
                         time_slot_id: cls.time_slot_id,
+                        days_of_week: editDays.length === 2 ? editDays : ['T2', 'T4'],
                         primary_teacher_id: cls.primary_teacher_id,
                         max_students: cls.max_students,
                         total_sessions: cls.total_sessions,
                         full_course_fee: cls.full_course_fee,
                         allow_over_quota: !!cls.allow_over_quota,
                       });
+                      setDayPickerNotice(null);
                       setShowAddModal(true);
                     }}
                     className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
@@ -750,13 +848,108 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       <label className="block text-slate-400 font-medium mb-1">Khung giờ học (Time Slot)</label>
                       <select
                         value={formData.time_slot_id}
-                        onChange={(e) => setFormData({ ...formData, time_slot_id: e.target.value })}
-                        className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                        onChange={(e) => {
+                          const slotId = e.target.value;
+                          const slot = store.timeSlots.find(t => t.id === slotId);
+                          setFormData(prev => ({ 
+                            ...prev, 
+                            time_slot_id: slotId,
+                            days_of_week: (slot?.days_of_week && slot.days_of_week.length === 2)
+                              ? slot.days_of_week
+                              : prev.days_of_week
+                          }));
+                        }}
+                        className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
                       >
                         {store.timeSlots.map(t => (
                           <option key={t.id} value={t.id}>{t.name}</option>
                         ))}
                       </select>
+                    </div>
+                  </div>
+
+                  {/* PHẦN 1: THIẾT KẾ GIAO DIỆN BỘ CHỌN THỨ (WEEKDAY PICKER UI) */}
+                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-3 shadow-inner">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                      <label className="text-slate-200 font-bold flex items-center gap-1.5 text-xs">
+                        <Calendar className="w-4 h-4 text-amber-400" />
+                        <span>Lịch học trong tuần (Bắt buộc chọn đúng 2 ngày) *</span>
+                      </label>
+
+                      {/* Nhãn phụ hiển thị trạng thái động */}
+                      <div>
+                        {formData.days_of_week.length < 2 ? (
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-bold inline-flex items-center gap-1 animate-pulse">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                            Đã chọn: {formData.days_of_week.length}/2 ngày (Vui lòng chọn đủ 2 ngày)
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                            ✓ Hợp lệ: [{formData.days_of_week.join(', ')}]
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 7 nút bấm đại diện cho 7 ngày trong tuần */}
+                    <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5 sm:gap-2">
+                      {WEEKDAYS.map(day => {
+                        const isSelected = formData.days_of_week.includes(day.code);
+                        const isDisabled = !isSelected && formData.days_of_week.length >= 2;
+
+                        return (
+                          <button
+                            key={day.code}
+                            type="button"
+                            onClick={() => handleToggleDay(day.code)}
+                            className={`py-2 px-1.5 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-0.5 ${
+                              isSelected
+                                ? 'bg-amber-500 text-slate-950 font-extrabold border border-amber-400 shadow-md shadow-amber-500/25 scale-[1.02]'
+                                : isDisabled
+                                ? 'bg-slate-900 border border-slate-800 text-slate-500 opacity-50 cursor-not-allowed'
+                                : 'bg-slate-900 border border-slate-700/80 text-slate-300 hover:text-white hover:border-slate-500 hover:bg-slate-800'
+                            }`}
+                            title={
+                              isSelected 
+                                ? `Bấm để bỏ chọn ${day.label}` 
+                                : isDisabled 
+                                ? 'Mỗi môn chỉ học tối đa 2 ngày trong tuần. Hãy bỏ chọn 1 ngày trước nếu muốn thay đổi.' 
+                                : `Bấm để chọn ${day.label}`
+                            }
+                          >
+                            <span>{day.label}</span>
+                            <span className={`text-[10px] font-mono ${isSelected ? 'text-slate-950 font-bold' : 'text-slate-500'}`}>
+                              {day.code}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Toast / Thông báo nhẹ khi người dùng cố bấm chọn ngày thứ 3 */}
+                    {dayPickerNotice && (
+                      <div className="p-2.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs flex items-center gap-2 animate-fadeIn">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span>{dayPickerNotice}</span>
+                      </div>
+                    )}
+
+                    {/* Tự động cập nhật nhãn tóm tắt hiển thị */}
+                    <div className="flex items-center justify-between text-xs pt-1.5 border-t border-slate-800">
+                      <span className="text-slate-400">Tóm tắt lịch xếp lớp:</span>
+                      <div>
+                        {formData.days_of_week.length === 2 ? (
+                          <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-amber-500/30 text-amber-400 font-bold font-mono inline-flex items-center gap-1.5 shadow-sm">
+                            <Clock className="w-3.5 h-3.5 text-amber-400" />
+                            {formatDaysDisplay(formData.days_of_week)} ({store.timeSlots.find(t => t.id === formData.time_slot_id)?.start_time || '16:45'} - {store.timeSlots.find(t => t.id === formData.time_slot_id)?.end_time || '18:15'})
+                          </span>
+                        ) : (
+                          <span className="text-amber-400/90 italic font-medium">
+                            Chưa đủ 2 ngày học (vui lòng chọn thêm {2 - formData.days_of_week.length} ngày)
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -848,7 +1041,9 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                     </button>
                     <button
                       type="submit"
-                      className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20"
+                      disabled={formData.days_of_week.length !== 2}
+                      className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold shadow-lg shadow-amber-500/20 transition-all"
+                      title={formData.days_of_week.length !== 2 ? 'Vui lòng chọn đúng 2 ngày học trong tuần trước khi lưu' : undefined}
                     >
                       {editingClass ? 'Lưu Thay Đổi' : 'Tạo Lớp Học'}
                     </button>

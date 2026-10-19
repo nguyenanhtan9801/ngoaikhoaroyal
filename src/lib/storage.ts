@@ -125,6 +125,29 @@ export function getInitialStore(): AppStore {
   };
 }
 
+/**
+ * Deduplicate enrollments to strictly enforce unique constraint: (student_id, class_id)
+ * Keeps the first active enrollment and removes any duplicate active records.
+ */
+export function deduplicateEnrollments(enrollments: Enrollment[] = []): Enrollment[] {
+  const seenActive = new Set<string>();
+  const cleanList: Enrollment[] = [];
+
+  for (const enr of enrollments) {
+    if (enr.status === 'active' || enr.status === 'trial') {
+      const key = `${enr.student_id}_${enr.class_id}`;
+      if (!seenActive.has(key)) {
+        seenActive.add(key);
+        cleanList.push(enr);
+      }
+    } else {
+      cleanList.push(enr);
+    }
+  }
+
+  return cleanList;
+}
+
 export function loadStore(): AppStore {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -166,6 +189,10 @@ export function loadStore(): AppStore {
       users = users.map((u: any) => u.username === 'admin' ? { ...u, password: '123456', role: 'super_admin', status: 'active' } : u);
     }
 
+    // Auto-clean any duplicated enrollments from stored localStorage
+    const rawEnrollments: Enrollment[] = parsed.enrollments || initial.enrollments;
+    const enrollments = deduplicateEnrollments(rawEnrollments);
+
     return {
       ...initial,
       ...parsed,
@@ -174,6 +201,7 @@ export function loadStore(): AppStore {
       subjectCategories,
       termSubjects,
       campusPricings,
+      enrollments,
     };
   } catch (err) {
     console.error('Failed to load store from localStorage', err);
@@ -183,7 +211,11 @@ export function loadStore(): AppStore {
 
 export function saveStore(store: AppStore): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    const cleanStore: AppStore = {
+      ...store,
+      enrollments: deduplicateEnrollments(store.enrollments),
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanStore));
     window.dispatchEvent(new Event('royal_store_updated'));
   } catch (err) {
     console.error('Failed to save store to localStorage', err);

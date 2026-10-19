@@ -13,10 +13,12 @@ import {
   Phone,
   Cake,
   Edit2,
-  Filter
+  Filter,
+  Sparkles,
+  XCircle
 } from 'lucide-react';
-import { AppStore, generateStudentCode, formatVND } from '../../lib/storage';
-import { Student, UserRole, ExtracurricularClass } from '../../types';
+import { AppStore, generateStudentCode, formatVND, deduplicateEnrollments } from '../../lib/storage';
+import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { RoyalLogo } from '../RoyalLogo';
 
@@ -35,7 +37,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   onPrintStudentCard,
   focusHealth = false,
 }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
   const [onlyHealth, setOnlyHealth] = useState(focusHealth);
@@ -43,6 +45,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   React.useEffect(() => {
     setOnlyHealth(focusHealth);
   }, [focusHealth]);
+
+  // Business Rule 3: Auto-cleanup deduplication to strictly enforce Unique Constraint: (student_id, class_id)
+  React.useEffect(() => {
+    const cleaned = deduplicateEnrollments(store.enrollments);
+    if (cleaned.length !== store.enrollments.length) {
+      onUpdateStore(prev => ({
+        ...prev,
+        enrollments: deduplicateEnrollments(prev.enrollments),
+      }));
+    }
+  }, [store.enrollments, onUpdateStore]);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -65,6 +78,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   // Enrollment Modal State
   const [selectedClassId, setSelectedClassId] = useState('');
   const [registeredSessions, setRegisteredSessions] = useState(24);
+  const [isTrialMode, setIsTrialMode] = useState(true);
+  const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
+
+  // Trial Action Modal State (Promote to Active or Drop after Trial)
+  const [trialActionModal, setTrialActionModal] = useState<{
+    type: 'promote' | 'drop';
+    student: Student;
+    enrollment: Enrollment;
+    className: string;
+  } | null>(null);
+  const [trialNotes, setTrialNotes] = useState('');
 
   // Filter students
   const filteredStudents = store.students.filter(s => {
@@ -181,26 +205,70 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     setShowAddModal(true);
   };
 
-  // Enroll in Class
-  const handleConfirmEnrollment = () => {
-    if (!enrollingStudent || !selectedClassId) return;
-    const cls = store.classes.find(c => c.id === selectedClassId);
-    if (!cls) return;
+  // Open Class Enrollment Modal with duplicate checks
+  const handleOpenEnrollModal = (student: Student) => {
+    const studentActiveEnrolledClassIds = new Set(
+      store.enrollments
+        .filter(e => e.student_id === student.id && (e.status === 'active' || e.status === 'trial'))
+        .map(e => e.class_id)
+    );
+    // Find first class student has NOT enrolled in yet
+    const firstAvailable = store.classes.find(c => !studentActiveEnrolledClassIds.has(c.id));
 
-    const newEnrollment = {
+    if (firstAvailable) {
+      setSelectedClassId(firstAvailable.id);
+      setRegisteredSessions(firstAvailable.total_sessions);
+      setEnrollmentError(null);
+    } else {
+      setSelectedClassId('');
+      setRegisteredSessions(24);
+      setEnrollmentError('Học viên này đã ghi danh vào tất cả các lớp học hiện có trong hệ thống!');
+    }
+    setIsTrialMode(true);
+    setEnrollingStudent(student);
+  };
+
+  // Enroll in Class with duplicate validation & Trial Policy
+  const handleConfirmEnrollment = () => {
+    if (!enrollingStudent) return;
+    if (!selectedClassId) {
+      setEnrollmentError('Vui lòng chọn lớp học để ghi danh!');
+      return;
+    }
+    const cls = store.classes.find(c => c.id === selectedClassId);
+    if (!cls) {
+      setEnrollmentError('Không tìm thấy thông tin lớp học được chọn!');
+      return;
+    }
+
+    // Business Rule 1 & 2: Check if student is already enrolled in this class
+    const isAlreadyEnrolled = store.enrollments.some(
+      e => e.student_id === enrollingStudent.id && e.class_id === cls.id && (e.status === 'active' || e.status === 'trial')
+    );
+    if (isAlreadyEnrolled) {
+      setEnrollmentError(`Học viên này đã được ghi danh vào lớp "${cls.name}". Không thể đăng ký trùng lặp!`);
+      return;
+    }
+
+    setEnrollmentError(null);
+
+    const enrollmentStatus: 'trial' | 'active' = isTrialMode ? 'trial' : 'active';
+    const newEnrollment: Enrollment = {
       id: `enr_${Date.now()}`,
       student_id: enrollingStudent.id,
       class_id: cls.id,
       registered_sessions: registeredSessions,
       joined_date: new Date().toISOString().split('T')[0],
-      status: 'active' as const,
+      status: enrollmentStatus,
+      trial_session_date: isTrialMode ? new Date().toISOString().split('T')[0] : undefined,
+      trial_notes: isTrialMode ? 'Học sinh đăng ký học thử 1 buổi đầu tiên' : undefined,
     };
 
     // Calculate mid-course tuition: price_per_session * registeredSessions
     const grossAmount = cls.price_per_session * registeredSessions;
 
     // Create Invoice with separate subject/class
-    const newInvoice = {
+    const newInvoice: TuitionInvoice = {
       id: `inv_${Date.now()}`,
       invoice_code: `INV-${new Date().getFullYear()}-${String(store.invoices.length + 1).padStart(4, '0')}`,
       student_id: enrollingStudent.id,
@@ -210,18 +278,111 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       net_payable: grossAmount,
       paid_amount: 0,
       outstanding_amount: grossAmount,
-      payment_status: 'unpaid' as const,
+      payment_status: 'unpaid',
       due_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0], // 1 week
+      is_trial_pending: isTrialMode,
+      trial_fee: 0,
       created_at: new Date().toISOString().split('T')[0],
     };
 
-    onUpdateStore(prev => ({
-      ...prev,
-      enrollments: [...prev.enrollments, newEnrollment],
-      invoices: [...prev.invoices, newInvoice],
-    }));
+    onUpdateStore(prev => {
+      // Business Rule 3: Filter out any existing active or trial record for this student & class and deduplicate
+      const cleanExisting = prev.enrollments.filter(
+        e => !(e.student_id === enrollingStudent.id && e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'))
+      );
+      const cleanEnrollments = deduplicateEnrollments([...cleanExisting, newEnrollment]);
+      return {
+        ...prev,
+        enrollments: cleanEnrollments,
+        invoices: [...prev.invoices, newInvoice],
+      };
+    });
 
     setEnrollingStudent(null);
+  };
+
+  // Promote Trial Enrollment to Active (Chính thức theo học)
+  const handleConfirmPromoteTrial = (enrollmentId: string) => {
+    onUpdateStore(prev => {
+      const enr = prev.enrollments.find(e => e.id === enrollmentId);
+      if (!enr) return prev;
+      const student = prev.students.find(s => s.id === enr.student_id);
+      const cls = prev.classes.find(c => c.id === enr.class_id);
+
+      return {
+        ...prev,
+        enrollments: prev.enrollments.map(e => 
+          e.id === enrollmentId 
+            ? { ...e, status: 'active', trial_outcome: 'promoted', trial_notes: 'Xác nhận lên học chính thức toàn khóa' } 
+            : e
+        ),
+        invoices: prev.invoices.map(inv => 
+          inv.student_id === enr.student_id && inv.class_id === enr.class_id && inv.is_trial_pending
+            ? { ...inv, is_trial_pending: false }
+            : inv
+        ),
+        notifications: [
+          {
+            id: `notif_${Date.now()}`,
+            type: 'enrollment_over_quota',
+            title: 'Học viên chính thức theo học sau buổi thử 1',
+            message: `Học sinh ${student?.name || ''} đã chuyển sang học CHÍNH THỨC lớp ${cls?.name || ''}. Hóa đơn học phí đã kích hoạt thanh toán.`,
+            date: new Date().toISOString().split('T')[0],
+            severity: 'low',
+            read: false,
+          },
+          ...prev.notifications,
+        ],
+      };
+    });
+    setTrialActionModal(null);
+    setTrialNotes('');
+  };
+
+  // Drop Trial Enrollment (Nghỉ sau buổi học thử 1 - Hủy hóa đơn, không nợ, giải phóng chỗ)
+  const handleConfirmDropTrial = (enrollmentId: string, notes?: string) => {
+    onUpdateStore(prev => {
+      const enr = prev.enrollments.find(e => e.id === enrollmentId);
+      if (!enr) return prev;
+      const student = prev.students.find(s => s.id === enr.student_id);
+      const cls = prev.classes.find(c => c.id === enr.class_id);
+
+      return {
+        ...prev,
+        enrollments: prev.enrollments.map(e => 
+          e.id === enrollmentId 
+            ? { ...e, status: 'trial_dropped', trial_outcome: 'dropped', trial_notes: notes || 'Học sinh dừng học sau buổi thử 1' } 
+            : e
+        ),
+        // Cancel the full-course invoice with 0 fee, no bad debt
+        invoices: prev.invoices.map(inv => 
+          inv.student_id === enr.student_id && inv.class_id === enr.class_id
+            ? { 
+                ...inv, 
+                is_trial_pending: false, 
+                payment_status: 'cancelled', 
+                outstanding_amount: 0,
+                net_payable: 0,
+                payment_reference: 'MIỄN PHÍ BUỔI HỌC THỬ (DỪNG HỌC)',
+              }
+            : inv
+        ),
+        notifications: [
+          {
+            id: `notif_${Date.now()}`,
+            type: 'drop_alert',
+            title: 'Dừng học thử lớp ngoại khóa (Không nợ phí)',
+            message: `Học sinh ${student?.name || ''} dừng học thử lớp ${cls?.name || ''}. Đã hủy hóa đơn, giải phóng sĩ số lớp và không ghi nhận công nợ.`,
+            date: new Date().toISOString().split('T')[0],
+            severity: 'medium',
+            read: false,
+          },
+          ...prev.notifications,
+        ],
+      };
+    });
+    setTrialActionModal(null);
+    setTrialNotes('');
   };
 
   return (
@@ -331,8 +492,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {filteredStudents.map(student => {
-                  const studentEnrollments = store.enrollments.filter(e => e.student_id === student.id && e.status === 'active');
-                  const enrolledClasses = studentEnrollments.map(e => store.classes.find(c => c.id === e.class_id)).filter(Boolean);
+                  const studentEnrollments = store.enrollments.filter(
+                    e => e.student_id === student.id && (e.status === 'active' || e.status === 'trial')
+                  );
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
@@ -395,13 +557,50 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="flex flex-wrap gap-1 max-w-xs">
-                          {enrolledClasses.length > 0 ? (
-                            enrolledClasses.map(c => (
-                              <span key={c!.id} className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px] text-slate-300">
-                                {c!.name.split('-')[0].trim()}
-                              </span>
-                            ))
+                        <div className="flex flex-col gap-1.5 max-w-xs">
+                          {studentEnrollments.length > 0 ? (
+                            studentEnrollments.map(enr => {
+                              const c = store.classes.find(cl => cl.id === enr.class_id);
+                              if (!c) return null;
+                              const isTrial = enr.status === 'trial';
+                              const shortName = c.name.split('-')[0].trim();
+                              return (
+                                <div key={enr.id} className="flex items-center gap-1.5 flex-wrap">
+                                  {isTrial ? (
+                                    <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1 shadow-sm">
+                                      <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                      <span>{shortName} (Học thử buổi 1)</span>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium flex items-center gap-1">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      <span>{shortName} (Chính thức)</span>
+                                    </span>
+                                  )}
+
+                                  {isTrial && (
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        onClick={() => setTrialActionModal({ type: 'promote', student, enrollment: enr, className: c.name })}
+                                        className="px-1.5 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold flex items-center gap-0.5 transition-colors"
+                                        title="Lên chính thức (Kích hoạt hóa đơn toàn khóa)"
+                                      >
+                                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span>Lên CT</span>
+                                      </button>
+                                      <button
+                                        onClick={() => setTrialActionModal({ type: 'drop', student, enrollment: enr, className: c.name })}
+                                        className="px-1.5 py-0.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[9px] font-bold flex items-center gap-0.5 transition-colors"
+                                        title="Nghỉ sau buổi thử (Hủy HĐ, giải phóng chỗ)"
+                                      >
+                                        <XCircle className="w-2.5 h-2.5 text-rose-400" />
+                                        <span>Nghỉ thử</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })
                           ) : (
                             <span className="text-slate-500 text-[10px] italic">Chưa xếp lớp</span>
                           )}
@@ -434,11 +633,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             </button>
                           )}
                           <button
-                            onClick={() => {
-                              setEnrollingStudent(student);
-                              setSelectedClassId(store.classes[0]?.id || '');
-                            }}
-                            className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-[10px] font-bold"
+                            onClick={() => handleOpenEnrollModal(student)}
+                            className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-[10px] font-bold shadow-sm"
+                            title="Ghi danh vào lớp học mới"
                           >
                             + Lớp
                           </button>
@@ -455,8 +652,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         /* VIEW MODE 2: DẠNG THẺ (CARDS VIEW) */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredStudents.map(student => {
-            const studentEnrollments = store.enrollments.filter(e => e.student_id === student.id && e.status === 'active');
-            const enrolledClasses = studentEnrollments.map(e => store.classes.find(c => c.id === e.class_id)).filter(Boolean);
+            const studentEnrollments = store.enrollments.filter(
+              e => e.student_id === student.id && (e.status === 'active' || e.status === 'trial')
+            );
 
             return (
               <div
@@ -525,16 +723,50 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   )}
 
                   <div className="mt-3">
-                    <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                    <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
                       Lớp đang theo học:
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {enrolledClasses.length > 0 ? (
-                        enrolledClasses.map(c => (
-                          <span key={c!.id} className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-800 text-[11px] font-medium text-slate-200">
-                            {c!.name}
-                          </span>
-                        ))
+                    <div className="flex flex-col gap-1.5">
+                      {studentEnrollments.length > 0 ? (
+                        studentEnrollments.map(enr => {
+                          const c = store.classes.find(cl => cl.id === enr.class_id);
+                          if (!c) return null;
+                          const isTrial = enr.status === 'trial';
+                          return (
+                            <div key={enr.id} className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-900/90 border border-slate-800">
+                              {isTrial ? (
+                                <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                  <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                  <span className="truncate">{c.name.split('-')[0].trim()} (Học thử)</span>
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  <span className="truncate">{c.name.split('-')[0].trim()}</span>
+                                </span>
+                              )}
+
+                              {isTrial && (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    onClick={() => setTrialActionModal({ type: 'promote', student, enrollment: enr, className: c.name })}
+                                    className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold transition-colors"
+                                    title="Lên chính thức (Kích hoạt hóa đơn toàn khóa)"
+                                  >
+                                    Lên CT
+                                  </button>
+                                  <button
+                                    onClick={() => setTrialActionModal({ type: 'drop', student, enrollment: enr, className: c.name })}
+                                    className="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[10px] font-bold transition-colors"
+                                    title="Dừng học thử (Hủy HĐ, không nợ)"
+                                  >
+                                    Nghỉ thử
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
                       ) : (
                         <span className="text-[11px] text-slate-500 italic">Chưa ghi danh lớp nào</span>
                       )}
@@ -573,11 +805,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     )}
 
                     <button
-                      onClick={() => {
-                        setEnrollingStudent(student);
-                        setSelectedClassId(store.classes[0]?.id || '');
-                      }}
-                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-[11px] transition-colors"
+                      onClick={() => handleOpenEnrollModal(student)}
+                      className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm"
+                      title="Ghi danh vào lớp học mới"
                     >
                       + Xếp Lớp
                     </button>
@@ -774,92 +1004,304 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       )}
 
       {/* Class Enrollment Modal */}
-      {enrollingStudent && (
+      {enrollingStudent && (() => {
+        // Enforce Unique Constraint: Find classes already actively enrolled or trialed
+        const studentActiveEnrolledClassIds = new Set(
+          store.enrollments
+            .filter(e => e.student_id === enrollingStudent.id && (e.status === 'active' || e.status === 'trial'))
+            .map(e => e.class_id)
+        );
+        const isCurrentClassAlreadyEnrolled = studentActiveEnrolledClassIds.has(selectedClassId);
+        const isAllClassesEnrolled = store.classes.length > 0 && studentActiveEnrolledClassIds.size >= store.classes.length;
+        const currentSelectedClass = store.classes.find(cl => cl.id === selectedClassId);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 animate-fadeIn">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <GraduationCap className="w-5 h-5 text-amber-400" />
+                <span>Ghi Danh Lớp & Tạo Hóa Đơn Tách Biệt</span>
+              </h3>
+
+              <div className="text-xs text-slate-400 flex items-center justify-between pb-2 border-b border-slate-800">
+                <span>
+                  Học sinh: <strong className="text-white">{enrollingStudent.name}</strong> ({enrollingStudent.code})
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono text-[10px]">
+                  Đã học {studentActiveEnrolledClassIds.size} lớp
+                </span>
+              </div>
+
+              {/* Duplicate Enrollment Error Alert */}
+              {enrollmentError && (
+                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2 animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{enrollmentError}</span>
+                </div>
+              )}
+
+              {isCurrentClassAlreadyEnrolled && !enrollmentError && currentSelectedClass && (
+                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2 animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="font-medium leading-relaxed">
+                    Học viên này đã được ghi danh vào lớp "{currentSelectedClass.name}". Không thể đăng ký trùng lặp!
+                  </span>
+                </div>
+              )}
+
+              {isAllClassesEnrolled && (
+                <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Học sinh này đã ghi danh vào tất cả các lớp học hiện có trong hệ thống!</span>
+                </div>
+              )}
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">
+                    Chọn lớp học mở <span className="text-slate-500">(Lớp đã ghi danh sẽ bị vô hiệu hóa)</span>
+                  </label>
+                  <select
+                    value={selectedClassId}
+                    onChange={(e) => {
+                      const classId = e.target.value;
+                      setSelectedClassId(classId);
+                      const isEnrolled = studentActiveEnrolledClassIds.has(classId);
+                      const c = store.classes.find(cl => cl.id === classId);
+                      if (isEnrolled && c) {
+                        setEnrollmentError(`Học viên này đã được ghi danh vào lớp "${c.name}". Không thể đăng ký trùng lặp!`);
+                      } else {
+                        setEnrollmentError(null);
+                      }
+                      if (c) setRegisteredSessions(c.total_sessions);
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-900 border text-white focus:outline-none transition-colors ${
+                      isCurrentClassAlreadyEnrolled || enrollmentError
+                        ? 'border-rose-500/60 focus:border-rose-500' 
+                        : 'border-slate-700 focus:border-amber-500'
+                    }`}
+                  >
+                    <option value="" disabled>-- Chọn lớp học cần ghi danh --</option>
+                    {store.classes.map(c => {
+                      const isEnrolled = studentActiveEnrolledClassIds.has(c.id);
+                      return (
+                        <option 
+                          key={c.id} 
+                          value={c.id} 
+                          disabled={isEnrolled}
+                          className={isEnrolled ? 'text-slate-500 bg-slate-900 font-normal italic' : 'text-white bg-slate-900 font-semibold'}
+                        >
+                          {c.name} {isEnrolled ? '⛔ [ĐÃ GHI DANH - KHÔNG THỂ CHỌN TRÙNG]' : ` - Đơn giá: ${formatVND(c.price_per_session)}/buổi`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">
+                    Số buổi học đăng ký thực tế (Học sinh vào giữa chừng)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={registeredSessions}
+                    onChange={(e) => setRegisteredSessions(Number(e.target.value))}
+                    disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 disabled:opacity-40 text-white focus:outline-none focus:border-amber-500 font-mono"
+                  />
+                </div>
+
+                {/* Trial Session Policy Option */}
+                <div className="p-3 rounded-2xl bg-gradient-to-r from-purple-500/10 via-indigo-500/10 to-transparent border border-purple-500/30 flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    id="trialModeCheckbox"
+                    checked={isTrialMode}
+                    onChange={(e) => setIsTrialMode(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 rounded text-purple-600 focus:ring-purple-500 bg-slate-900 border-slate-700 cursor-pointer"
+                  />
+                  <label htmlFor="trialModeCheckbox" className="text-xs text-slate-300 cursor-pointer select-none">
+                    <div className="font-bold text-white flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Chính sách "Học thử 1 buổi đầu tiên"</span>
+                      <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 text-[9px] font-bold">Mặc định</span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                      Học sinh trải nghiệm 1 buổi đầu tiên. Hóa đơn toàn khóa được tạm hoãn chờ (không nhắc nợ). Khi điểm danh buổi 2 hoặc phụ huynh xác nhận học tiếp, hệ thống sẽ kích hoạt chính thức.
+                    </div>
+                  </label>
+                </div>
+
+                {/* Live Tuition Calculation */}
+                {selectedClassId && (() => {
+                  const c = store.classes.find(cl => cl.id === selectedClassId);
+                  if (!c) return null;
+                  const total = c.price_per_session * registeredSessions;
+                  return (
+                    <div className={`p-3 rounded-2xl space-y-1 ${
+                      isTrialMode 
+                        ? 'bg-purple-950/40 border border-purple-500/40' 
+                        : 'bg-slate-900/90 border border-amber-500/30'
+                    }`}>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Đơn giá buổi (Ceil):</span>
+                        <span className="font-mono text-white">{formatVND(c.price_per_session)}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Số buổi đăng ký:</span>
+                        <span className="font-mono text-white">{registeredSessions} buổi</span>
+                      </div>
+                      {isTrialMode ? (
+                        <>
+                          <div className="flex justify-between text-purple-300 font-bold border-t border-purple-800/60 pt-1 text-sm">
+                            <span>Học phí buổi thử 1:</span>
+                            <span className="font-mono text-emerald-400">0 ₫ (Miễn phí 100%)</span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 italic">
+                            * Hóa đơn toàn khóa ({formatVND(total)}) sẽ ở trạng thái chờ duyệt sau khi học xong buổi 1.
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex justify-between text-amber-400 font-bold border-t border-slate-800 pt-1 text-sm">
+                            <span>Học phí cần thu:</span>
+                            <span className="font-mono">{formatVND(total)}</span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 italic mt-1">
+                            Hệ thống tự động phát hành Hóa đơn độc lập kèm mã VietQR Napas247 riêng biệt.
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  onClick={() => {
+                    setEnrollingStudent(null);
+                    setEnrollmentError(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={handleConfirmEnrollment}
+                  disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled || !!enrollmentError}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20 transition-all"
+                >
+                  Xác Nhận Ghi Danh
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal: Xác nhận Lên Chính Thức hoặc Dừng Học Sau Buổi Thử */}
+      {trialActionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4">
+          <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 animate-fadeIn">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <GraduationCap className="w-5 h-5 text-amber-400" />
-              <span>Ghi Danh Lớp & Tạo Hóa Đơn Tách Biệt</span>
+              {trialActionModal.type === 'promote' ? (
+                <>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                  <span>Xác Nhận Lên Học Chính Thức</span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="w-5 h-5 text-rose-400" />
+                  <span>Xác Nhận Dừng Sau Buổi Học Thử</span>
+                </>
+              )}
             </h3>
 
-            <div className="text-xs text-slate-400">
-              Học sinh: <strong className="text-white">{enrollingStudent.name}</strong> ({enrollingStudent.code})
+            <div className="text-xs text-slate-300 space-y-1.5 p-3 rounded-2xl bg-slate-900 border border-slate-800">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Học sinh:</span>
+                <span className="font-bold text-white">{trialActionModal.student.name} ({trialActionModal.student.code})</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Lớp ngoại khóa:</span>
+                <span className="font-bold text-amber-400">{trialActionModal.className}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Trạng thái hiện tại:</span>
+                <span className="px-2 py-0.2 rounded bg-purple-500/20 text-purple-300 text-[10px] font-bold">Học thử buổi 1</span>
+              </div>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Chọn lớp học mở</label>
-                <select
-                  value={selectedClassId}
-                  onChange={(e) => {
-                    setSelectedClassId(e.target.value);
-                    const c = store.classes.find(cl => cl.id === e.target.value);
-                    if (c) setRegisteredSessions(c.total_sessions);
-                  }}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
-                >
-                  {store.classes.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} - Đơn giá: {formatVND(c.price_per_session)}/buổi
-                    </option>
-                  ))}
-                </select>
+            {trialActionModal.type === 'promote' ? (
+              <div className="space-y-2 text-xs text-slate-300 p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30">
+                <div className="font-bold text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  Quy trình kích hoạt chính thức:
+                </div>
+                <ul className="list-disc pl-5 space-y-1 text-slate-400 text-[11px]">
+                  <li>Chuyển trạng thái ghi danh sang <strong>Chính thức (Active)</strong>.</li>
+                  <li>Kích hoạt hóa đơn học phí toàn khóa & mở khóa thanh toán mã VietQR.</li>
+                  <li>Duy trì quyền lợi bữa phụ bánh sữa (nếu là học sinh Royal) cho toàn bộ khóa học.</li>
+                </ul>
               </div>
-
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">
-                  Số buổi học đăng ký thực tế (Học sinh vào giữa chừng)
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={30}
-                  value={registeredSessions}
-                  onChange={(e) => setRegisteredSessions(Number(e.target.value))}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono"
-                />
-              </div>
-
-              {/* Live Tuition Calculation */}
-              {selectedClassId && (() => {
-                const c = store.classes.find(cl => cl.id === selectedClassId);
-                if (!c) return null;
-                const total = c.price_per_session * registeredSessions;
-                return (
-                  <div className="p-3 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-1">
-                    <div className="flex justify-between text-slate-400">
-                      <span>Đơn giá buổi (Ceil):</span>
-                      <span className="font-mono text-white">{formatVND(c.price_per_session)}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-400">
-                      <span>Số buổi tính học phí:</span>
-                      <span className="font-mono text-white">{registeredSessions} buổi</span>
-                    </div>
-                    <div className="flex justify-between text-amber-400 font-bold border-t border-slate-800 pt-1 text-sm">
-                      <span>Học phí cần thu:</span>
-                      <span className="font-mono">{formatVND(total)}</span>
-                    </div>
-                    <div className="text-[10px] text-slate-500 italic mt-1">
-                      Hệ thống tự động phát hành Hóa đơn độc lập kèm mã VietQR Napas247 riêng biệt.
-                    </div>
+            ) : (
+              <div className="space-y-3 text-xs">
+                <div className="space-y-2 text-xs text-slate-300 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30">
+                  <div className="font-bold text-rose-300 flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-rose-400" />
+                    Chính sách kết thúc học thử:
                   </div>
-                );
-              })()}
-            </div>
+                  <ul className="list-disc pl-5 space-y-1 text-slate-400 text-[11px]">
+                    <li>Đóng hồ sơ học thử lớp này mà <strong>không phát sinh công nợ / nợ xấu</strong>.</li>
+                    <li>Tự động HỦY BỎ hóa đơn học phí của lớp này (về 0 ₫).</li>
+                    <li>Giải phóng sĩ số chỗ học để đón học sinh khác vào lớp.</li>
+                    <li>Hoàn trả định mức suất ăn nhẹ bánh sữa các buổi tiếp theo.</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">
+                    Lý do / Ghi chú phản hồi của phụ huynh / giáo viên:
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={trialNotes}
+                    onChange={(e) => setTrialNotes(e.target.value)}
+                    placeholder="VD: Bé chưa quen môi trường, bị trùng lịch học chính khóa..."
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-rose-500 text-xs"
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
               <button
-                onClick={() => setEnrollingStudent(null)}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                onClick={() => {
+                  setTrialActionModal(null);
+                  setTrialNotes('');
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
               >
-                Hủy
+                Hủy bỏ
               </button>
-              <button
-                onClick={handleConfirmEnrollment}
-                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20"
-              >
-                Xác Nhận Ghi Danh
-              </button>
+              {trialActionModal.type === 'promote' ? (
+                <button
+                  onClick={() => handleConfirmPromoteTrial(trialActionModal.enrollment.id)}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/20 transition-all"
+                >
+                  Xác Nhận Lên Chính Thức
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleConfirmDropTrial(trialActionModal.enrollment.id, trialNotes)}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all"
+                >
+                  Xác Nhận Dừng Học (Hủy HĐ)
+                </button>
+              )}
             </div>
           </div>
         </div>

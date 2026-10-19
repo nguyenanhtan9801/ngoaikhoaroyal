@@ -80,17 +80,10 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   onNavigateTab,
   onSelectClassForAttendance,
 }) => {
-  // Calendar month state: default to September 2026 (the active academic term in seed data)
-  // or current month if active
+  // Calendar month state: default to current month (Tháng hiện hành)
   const [currentDate, setCurrentDate] = useState<Date>(() => {
-    const activeTerm = store.terms.find(t => t.is_active);
-    if (activeTerm && activeTerm.start_date) {
-      const parts = activeTerm.start_date.split('-');
-      if (parts.length === 3) {
-        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-      }
-    }
-    return new Date(2026, 8, 1); // 2026-09-01
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
   });
 
   // Filter States: Hệ thống / Cơ sở, Môn học, Khóa học
@@ -99,36 +92,21 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   const [filterTerm, setFilterTerm] = useState<string>(store.terms.find(t => t.is_active)?.id || 'all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   
-  // Selected day for inspection
-  const [selectedDayStr, setSelectedDayStr] = useState<string | null>(null);
-  
-  // Daily kitchen milk slip modal
-  const [printSlipDayStr, setPrintSlipDayStr] = useState<string | null>(null);
-
   // Month navigation helpers
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
 
   const handlePrevMonth = () => {
     setCurrentDate(new Date(year, month - 1, 1));
-    setSelectedDayStr(null);
   };
 
   const handleNextMonth = () => {
     setCurrentDate(new Date(year, month + 1, 1));
-    setSelectedDayStr(null);
   };
 
-  const handleGoToTermMonth = () => {
-    const activeTerm = store.terms.find(t => t.is_active);
-    if (activeTerm && activeTerm.start_date) {
-      const parts = activeTerm.start_date.split('-');
-      if (parts.length === 3) {
-        setCurrentDate(new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1));
-        return;
-      }
-    }
-    setCurrentDate(new Date(2026, 8, 1));
+  const handleGoToCurrentMonth = () => {
+    const now = new Date();
+    setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
   };
 
   const handleResetFilters = () => {
@@ -190,7 +168,10 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
 
       // 6. Day of week matching
       const timeSlot = store.timeSlots.find(ts => ts.id === cls.time_slot_id);
-      const dayMatches = timeSlot ? matchesTimeSlotDay(dateObj, timeSlot.days_of_week) : false;
+      const classDays = (cls.days_of_week && cls.days_of_week.length > 0)
+        ? cls.days_of_week
+        : (timeSlot?.days_of_week || []);
+      const dayMatches = matchesTimeSlotDay(dateObj, classDays);
       const explicitSession = store.sessions.some(s => s.class_id === cls.id && s.session_date === dateStr);
 
       if (!dayMatches && !explicitSession) {
@@ -340,18 +321,6 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
     };
   }, [calendarCells]);
 
-  // Active selected day data
-  const selectedDayData = useMemo(() => {
-    if (!selectedDayStr) return null;
-    return getDayScheduleData(selectedDayStr);
-  }, [selectedDayStr, filterCampus, filterSubject, filterTerm, searchQuery, store]);
-
-  // Slip print data
-  const printDayData = useMemo(() => {
-    if (!printSlipDayStr) return null;
-    return getDayScheduleData(printSlipDayStr);
-  }, [printSlipDayStr, store]);
-
   const activeCampusObj = store.campuses.find(c => c.id === filterCampus);
   const activeSubjectObj = store.subjects.find(s => s.id === filterSubject);
 
@@ -412,12 +381,12 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
             </div>
 
             <button
-              onClick={handleGoToTermMonth}
-              className="px-3 py-2 rounded-2xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200 transition-all flex items-center gap-1.5"
-              title="Nhảy về tháng khai giảng của khóa học (09/2026)"
+              onClick={handleGoToCurrentMonth}
+              className="px-3 py-2 rounded-2xl bg-amber-500 hover:bg-amber-400 text-xs font-black text-slate-950 transition-all flex items-center gap-1.5 shadow-md shadow-amber-500/20"
+              title="Quay về tháng hiện hành và ngày hôm nay"
             >
-              <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
-              <span>Khóa 09/2026</span>
+              <RotateCcw className="w-3.5 h-3.5 text-slate-950" />
+              <span>Tháng Hiện Hành</span>
             </button>
           </div>
         </div>
@@ -624,7 +593,6 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         {/* 7-column Calendar Month Grid */}
         <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
           {calendarCells.map((cell, idx) => {
-            const isSelected = selectedDayStr === cell.dateStr;
             const hasClasses = cell.data.classCount > 0;
             const todayStr = new Date().toISOString().split('T')[0];
             const isToday = cell.dateStr === todayStr;
@@ -632,28 +600,21 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
             return (
               <div
                 key={idx}
-                onClick={() => {
-                  setSelectedDayStr(cell.dateStr);
-                }}
-                className={`min-h-[105px] sm:min-h-[125px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group relative ${
+                className={`min-h-[105px] sm:min-h-[125px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between group relative ${
                   !cell.isCurrentMonth
-                    ? 'bg-slate-950/40 border-slate-900/80 text-slate-600 opacity-40 hover:opacity-80'
-                    : isSelected
-                    ? 'bg-gradient-to-b from-[#18233C] to-[#0E1726] border-amber-500 ring-2 ring-amber-500/40 shadow-xl shadow-amber-500/15'
+                    ? 'bg-slate-950/40 border-slate-900/80 text-slate-600 opacity-40'
                     : isToday
-                    ? 'bg-gradient-to-b from-slate-900 to-slate-950 border-cyan-500/60 shadow-md'
+                    ? 'bg-gradient-to-b from-slate-900 to-slate-950 border-cyan-500/60 shadow-md ring-1 ring-cyan-500/30'
                     : hasClasses
-                    ? 'bg-gradient-to-b from-[#101623] to-[#0A0E17] border-slate-800/90 hover:border-amber-500/50 hover:shadow-lg hover:shadow-black/40'
-                    : 'bg-slate-950/60 border-slate-900 text-slate-500 hover:border-slate-800'
+                    ? 'bg-gradient-to-b from-[#101623] to-[#0A0E17] border-slate-800/90 hover:border-amber-500/40 hover:shadow-lg hover:shadow-black/40'
+                    : 'bg-slate-950/60 border-slate-900 text-slate-500'
                 }`}
               >
                 {/* Top Row: Date Number & Badges */}
                 <div className="flex items-center justify-between">
                   <span className={`text-xs sm:text-sm font-black font-mono ${
-                    isSelected 
-                      ? 'text-amber-400' 
-                      : isToday 
-                      ? 'text-cyan-400 underline underline-offset-2' 
+                    isToday 
+                      ? 'text-cyan-400 font-extrabold' 
                       : cell.isCurrentMonth 
                       ? 'text-white' 
                       : 'text-slate-600'
@@ -720,311 +681,12 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                   </div>
                 )}
 
-                {/* Bottom Row: View Details Hint */}
-                {hasClasses && (
-                  <div className="text-[9px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-between pt-1 border-t border-slate-800/60">
-                    <span className="text-amber-400 font-bold">Xem chi tiết</span>
-                    <ArrowRight className="w-2.5 h-2.5 text-amber-400" />
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
 
       </div>
-
-      {/* 3. DAY INSPECTOR: CHI TIẾT LỊCH HỌC & ĐIỀU PHỐI BÁNH SỮA TRONG NGÀY */}
-      {selectedDayData && (
-        <div className="p-5 sm:p-6 rounded-3xl bg-[#0D1322] border-2 border-amber-500/40 shadow-2xl space-y-5 animate-fadeIn">
-          
-          {/* Header of Selected Day */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0">
-                <CalendarDays className="w-6 h-6" />
-              </div>
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wider text-amber-400">
-                  CHI TIẾT LỊCH HỌC TRONG NGÀY
-                </div>
-                <h3 className="text-lg sm:text-xl font-extrabold text-white flex items-center gap-2">
-                  <span>
-                    {new Intl.DateTimeFormat('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' }).format(selectedDayData.dateObj)}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 text-xs font-mono">
-                    {selectedDayData.dateStr}
-                  </span>
-                </h3>
-              </div>
-            </div>
-
-            {/* Quick Metrics & Actions */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
-                <div>
-                  <span className="text-slate-400 text-[10px] block">Tổng lớp:</span>
-                  <span className="font-bold text-amber-300 font-mono">{selectedDayData.classCount} lớp</span>
-                </div>
-                <div className="w-px h-6 bg-slate-800" />
-                <div>
-                  <span className="text-slate-400 text-[10px] block">Tổng HS:</span>
-                  <span className="font-bold text-cyan-300 font-mono">{selectedDayData.studentCount} HS</span>
-                </div>
-                <div className="w-px h-6 bg-slate-800" />
-                <div>
-                  <span className="text-slate-400 text-[10px] block">Bánh sữa cần cấp:</span>
-                  <span className="font-bold text-emerald-400 font-mono">{selectedDayData.milkCount} suất</span>
-                </div>
-              </div>
-
-              {selectedDayData.classCount > 0 && (
-                <button
-                  onClick={() => setPrintSlipDayStr(selectedDayData.dateStr)}
-                  className="px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/20 transition-all"
-                  title="In phiếu bàn giao suất bánh sữa cho bếp ăn và giáo viên"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>In Phiếu Cấp Bánh Sữa</span>
-                </button>
-              )}
-
-              <button
-                onClick={() => setSelectedDayStr(null)}
-                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
-                title="Đóng chi tiết"
-              >
-                &times;
-              </button>
-            </div>
-          </div>
-
-          {/* List of Classes Scheduled on this Day */}
-          {selectedDayData.classes.length === 0 ? (
-            <div className="py-8 text-center text-slate-400 text-xs">
-              Không có lớp ngoại khóa nào diễn ra vào ngày này theo điều kiện lọc hiện tại.
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {selectedDayData.classes.map((item, idx) => (
-                <div 
-                  key={idx}
-                  className="p-4 rounded-2xl bg-slate-950 border border-slate-800/90 hover:border-amber-500/40 transition-all flex flex-col justify-between space-y-3"
-                >
-                  {/* Class Header */}
-                  <div>
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 text-[10px] font-bold border border-amber-500/20">
-                          {item.subject?.category || 'Ngoại khóa'} &bull; {item.subject?.code}
-                        </span>
-                        <h4 className="font-extrabold text-white text-sm mt-1">
-                          {item.classItem.name}
-                        </h4>
-                      </div>
-
-                      {onSelectClassForAttendance && (
-                        <button
-                          onClick={() => {
-                            onSelectClassForAttendance(item.classItem);
-                          }}
-                          className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 text-[11px] font-bold border border-slate-700 transition-all flex items-center gap-1 shrink-0"
-                          title="Điểm danh buổi này"
-                        >
-                          <CheckCircle2 className="w-3 h-3 text-amber-400" />
-                          <span>Điểm danh</span>
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Class Metadata: Facility, TimeSlot, Teacher */}
-                    <div className="grid grid-cols-2 gap-2 mt-3 text-[11px] text-slate-300">
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        <span className="truncate">{item.timeSlot?.start_time} - {item.timeSlot?.end_time}</span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                        <span className="truncate">{item.facility?.name}</span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <span className="truncate">{item.campus?.name}</span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <User className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                        <span className="truncate">{item.teacher?.name}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Student & Milk Ration Breakdown */}
-                  <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-medium">Sĩ số học sinh:</span>
-                      <span className="font-bold text-white font-mono">{item.countTotal} học sinh</span>
-                    </div>
-
-                    <div className="flex items-center justify-between text-emerald-400 font-bold bg-emerald-500/10 p-1.5 rounded-lg border border-emerald-500/20">
-                      <span className="flex items-center gap-1">
-                        <Coffee className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Suất bánh sữa cần cấp (Royal):</span>
-                      </span>
-                      <span className="font-mono text-emerald-300 text-sm font-extrabold">
-                        {item.countRoyal} suất
-                      </span>
-                    </div>
-
-                    {item.countOutside > 0 && (
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span>Học sinh ngoài trường (Không áp dụng bánh sữa):</span>
-                        <span className="font-mono text-slate-300">{item.countOutside} em</span>
-                      </div>
-                    )}
-
-                    {/* Students with medical / dietary allergy notes */}
-                    {item.royalStudents.some(s => s.medical_notes) && (
-                      <div className="pt-2 border-t border-slate-800 space-y-1">
-                        <span className="text-[10px] font-bold text-rose-400 uppercase tracking-wider block">
-                          ⚠️ Lưu ý y tế & dị ứng thực phẩm bếp ăn:
-                        </span>
-                        {item.royalStudents
-                          .filter(s => s.medical_notes)
-                          .map(s => (
-                            <div key={s.id} className="text-[11px] text-slate-300 flex items-start gap-1">
-                              <span className="font-bold text-white">&bull; {s.name}:</span>
-                              <span className="text-rose-300">{s.medical_notes}</span>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-        </div>
-      )}
-
-      {/* 4. MODAL IN PHIẾU BÀN GIAO BÁNH SỮA BẾP ĂN */}
-      {printDayData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
-          <div className="w-full max-w-2xl bg-white text-slate-900 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
-            
-            {/* Slip Header */}
-            <div className="flex items-start justify-between border-b pb-4">
-              <div>
-                <div className="text-xs font-black tracking-widest uppercase text-amber-700">
-                  ROYAL SCHOOL &bull; HỆ THỐNG TRƯỜNG SONG NGỮ HOÀNG GIA
-                </div>
-                <h2 className="text-xl font-black text-slate-900 mt-1">
-                  PHIẾU XUẤT CẤP SUẤT ĂN NHẸ & BÁNH SỮA NGOẠI KHÓA
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Ngày áp dụng: <strong>{new Intl.DateTimeFormat('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' }).format(printDayData.dateObj)}</strong>
-                </p>
-              </div>
-
-              <button
-                onClick={() => setPrintSlipDayStr(null)}
-                className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700"
-              >
-                &times;
-              </button>
-            </div>
-
-            {/* Slip Content Table */}
-            <div className="space-y-4 text-xs">
-              <table className="w-full border-collapse border border-slate-300 text-left text-xs">
-                <thead>
-                  <tr className="bg-slate-100 font-bold text-slate-700">
-                    <th className="border border-slate-300 p-2">Lớp Học</th>
-                    <th className="border border-slate-300 p-2">Giờ Học</th>
-                    <th className="border border-slate-300 p-2">Phòng / Sân</th>
-                    <th className="border border-slate-300 p-2 text-center">Tổng HS</th>
-                    <th className="border border-slate-300 p-2 text-center text-amber-700">Bánh Sữa Cấp</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {printDayData.classes.map((cls, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50">
-                      <td className="border border-slate-300 p-2 font-bold">{cls.classItem.name}</td>
-                      <td className="border border-slate-300 p-2">{cls.timeSlot?.start_time} - {cls.timeSlot?.end_time}</td>
-                      <td className="border border-slate-300 p-2">{cls.facility?.name}</td>
-                      <td className="border border-slate-300 p-2 text-center font-mono">{cls.countTotal}</td>
-                      <td className="border border-slate-300 p-2 text-center font-mono font-bold text-amber-700 bg-amber-50">
-                        {cls.countRoyal} suất
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="bg-slate-100 font-extrabold">
-                    <td colSpan={3} className="border border-slate-300 p-2 text-right">TỔNG CỘNG SUẤT CẤP BẾP:</td>
-                    <td className="border border-slate-300 p-2 text-center font-mono">{printDayData.studentCount} HS</td>
-                    <td className="border border-slate-300 p-2 text-center font-mono text-amber-800 text-sm">
-                      {printDayData.milkCount} SUẤT
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              {/* Special dietary notes summary */}
-              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] space-y-1">
-                <span className="font-bold block">⚠️ DANH SÁCH LƯU Ý DỊ ỨNG & CHẾ ĐỘ SỮA TRONG NGÀY:</span>
-                {printDayData.classes.flatMap(c => c.royalStudents.filter(s => s.medical_notes)).length === 0 ? (
-                  <span>Tất cả học sinh dùng suất bánh sữa tiêu chuẩn của trường.</span>
-                ) : (
-                  printDayData.classes.flatMap(c => c.royalStudents.filter(s => s.medical_notes)).map((s, i) => (
-                    <div key={i}>
-                      &bull; <strong>{s.name}</strong> ({s.regular_class || 'Royal School'}): {s.medical_notes}
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Signatures */}
-              <div className="grid grid-cols-3 gap-4 pt-6 text-center text-xs text-slate-600">
-                <div>
-                  <div className="font-bold text-slate-800">BỘ PHẬN BẾP ĂN</div>
-                  <div className="text-[10px] text-slate-400 italic mt-0.5">(Ký và ghi rõ họ tên)</div>
-                  <div className="h-16" />
-                </div>
-                <div>
-                  <div className="font-bold text-slate-800">GIÁO VỤ / ĐIỀU PHỐI</div>
-                  <div className="text-[10px] text-slate-400 italic mt-0.5">(Ký và ghi rõ họ tên)</div>
-                  <div className="h-16" />
-                </div>
-                <div>
-                  <div className="font-bold text-slate-800">GIÁO VIÊN NHẬN BÁNH</div>
-                  <div className="text-[10px] text-slate-400 italic mt-0.5">(Ký và ghi rõ họ tên)</div>
-                  <div className="h-16" />
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div className="flex justify-end gap-2 pt-4 border-t">
-              <button
-                onClick={() => setPrintSlipDayStr(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold"
-              >
-                Đóng
-              </button>
-              <button
-                onClick={() => window.print()}
-                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black flex items-center gap-1.5 shadow-md"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Xác Nhận In Phiếu</span>
-              </button>
-            </div>
-
-          </div>
-        </div>
-      )}
 
     </div>
   );

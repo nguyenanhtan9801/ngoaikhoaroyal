@@ -12,7 +12,8 @@ import {
   Upload,
   Calendar,
   Building2,
-  ExternalLink
+  ExternalLink,
+  Sparkles
 } from 'lucide-react';
 import { AppStore, formatVND } from '../../lib/storage';
 import { generateVietQRUrl } from '../../lib/vietqr';
@@ -39,9 +40,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   initialSection = 'invoices',
 }) => {
   const [activeSection, setActiveSection] = useState<'invoices' | 'payroll' | 'transfer'>(initialSection);
-  const [invoiceViewMode, setInvoiceViewMode] = useState<ViewMode>('cards');
-  const [payrollViewMode, setPayrollViewMode] = useState<ViewMode>('cards');
-  const [transferViewMode, setTransferViewMode] = useState<ViewMode>('cards');
+  const [invoiceViewMode, setInvoiceViewMode] = useState<ViewMode>('table');
+  const [payrollViewMode, setPayrollViewMode] = useState<ViewMode>('table');
+  const [transferViewMode, setTransferViewMode] = useState<ViewMode>('table');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'all' | 'paid' | 'unpaid' | 'trial_pending' | 'cancelled'>('all');
 
   React.useEffect(() => {
     if (initialSection) {
@@ -66,7 +68,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     if (!cls) return true;
     const matchCampus = selectedCampusId === 'all' || cls.campus_id === selectedCampusId;
     const matchTerm = cls.term_id === selectedTermId;
-    return matchCampus && matchTerm;
+    if (!matchCampus || !matchTerm) return false;
+
+    if (invoiceStatusFilter === 'paid') return i.payment_status === 'paid';
+    if (invoiceStatusFilter === 'unpaid') return i.payment_status === 'unpaid' && !i.is_trial_pending;
+    if (invoiceStatusFilter === 'trial_pending') return !!i.is_trial_pending;
+    if (invoiceStatusFilter === 'cancelled') return i.payment_status === 'cancelled';
+    return true;
   });
 
   // Manual Verification of Payment
@@ -252,6 +260,68 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             </div>
           </div>
 
+          {/* Invoice Filter Bar & Trial Policy Note */}
+          <div className="px-4 py-3 bg-slate-900/50 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => setInvoiceStatusFilter('all')}
+                className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
+                  invoiceStatusFilter === 'all'
+                    ? 'bg-amber-500 text-slate-950 font-bold'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Tất cả ({store.invoices.length})
+              </button>
+              <button
+                onClick={() => setInvoiceStatusFilter('trial_pending')}
+                className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 ${
+                  invoiceStatusFilter === 'trial_pending'
+                    ? 'bg-purple-500 text-white font-bold shadow-md shadow-purple-500/20'
+                    : 'bg-slate-800 text-purple-300 hover:text-white border border-purple-500/30'
+                }`}
+              >
+                <Sparkles className="w-3 h-3 text-purple-400" />
+                <span>Chờ học thử ({store.invoices.filter(i => i.is_trial_pending).length})</span>
+              </button>
+              <button
+                onClick={() => setInvoiceStatusFilter('paid')}
+                className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
+                  invoiceStatusFilter === 'paid'
+                    ? 'bg-emerald-500 text-white font-bold'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Đã thanh toán ({store.invoices.filter(i => i.payment_status === 'paid').length})
+              </button>
+              <button
+                onClick={() => setInvoiceStatusFilter('unpaid')}
+                className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
+                  invoiceStatusFilter === 'unpaid'
+                    ? 'bg-rose-500 text-white font-bold'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Chưa nộp ({store.invoices.filter(i => i.payment_status === 'unpaid' && !i.is_trial_pending).length})
+              </button>
+              <button
+                onClick={() => setInvoiceStatusFilter('cancelled')}
+                className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
+                  invoiceStatusFilter === 'cancelled'
+                    ? 'bg-slate-700 text-white font-bold'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                Đã hủy thử ({store.invoices.filter(i => i.payment_status === 'cancelled').length})
+              </button>
+            </div>
+
+            <div className="text-[11px] text-slate-400 flex items-center gap-1.5 bg-slate-950/60 px-3 py-1 rounded-xl border border-slate-800">
+              <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
+              <span>Hóa đơn <strong>"Chờ hoàn thành học thử"</strong> tự động loại trừ khỏi thông báo nhắc nợ (Zalo/SMS).</span>
+            </div>
+          </div>
+
           {/* VIEW 1: INVOICES CARDS VIEW */}
           {invoiceViewMode === 'cards' && (
             <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -275,7 +345,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <span className="text-[10px] text-slate-500 font-mono">{student?.code}</span>
                         </div>
 
-                        {invoice.payment_status === 'paid' ? (
+                        {invoice.is_trial_pending ? (
+                          <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1 shadow-sm" title="Học sinh đang học thử buổi 1 - Hóa đơn tạm hoãn chờ kích hoạt (không nhắc nợ)">
+                            <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                            Chờ hoàn thành học thử
+                          </span>
+                        ) : invoice.payment_status === 'cancelled' ? (
+                          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-medium" title="Học sinh dừng sau buổi học thử - miễn phí 100%">
+                            Đã hủy (Miễn phí thử)
+                          </span>
+                        ) : invoice.payment_status === 'paid' ? (
                           <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                             Đã thanh toán
                           </span>
@@ -420,7 +499,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         </td>
 
                         <td className="py-3 px-4 text-center">
-                          {invoice.payment_status === 'paid' ? (
+                          {invoice.is_trial_pending ? (
+                            <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold inline-flex items-center gap-1 shadow-sm" title="Học sinh đang học thử buổi 1 - Tạm hoãn thu toàn khóa, không gửi nhắc nợ">
+                              <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                              Chờ hoàn thành học thử
+                            </span>
+                          ) : invoice.payment_status === 'cancelled' ? (
+                            <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-medium" title="Học sinh dừng sau buổi học thử - miễn phí 100%">
+                              Đã hủy (Miễn phí thử)
+                            </span>
+                          ) : invoice.payment_status === 'paid' ? (
                             <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                               Đã thanh toán
                             </span>

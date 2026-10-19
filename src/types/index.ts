@@ -173,6 +173,7 @@ export interface ExtracurricularClass {
   subject_id: string;
   facility_id: string;
   time_slot_id: string;
+  days_of_week?: string[]; // e.g. ['T2', 'T4'] - Exactly 2 days per class
   primary_teacher_id: string;
   max_students: number;
   total_sessions: number;
@@ -205,7 +206,10 @@ export interface Enrollment {
   class_id: string;
   registered_sessions: number;
   joined_date: string;
-  status: 'active' | 'transferred' | 'dropped';
+  status: 'trial' | 'active' | 'trial_dropped' | 'transferred' | 'completed' | 'dropped';
+  trial_session_date?: string;          // Ngày diễn ra buổi học thử đầu tiên
+  trial_outcome?: 'promoted' | 'dropped'; // Kết quả sau buổi thử
+  trial_notes?: string;                 // Ghi chú đánh giá sau buổi học thử
 }
 
 export interface TuitionInvoice {
@@ -218,7 +222,7 @@ export interface TuitionInvoice {
   net_payable: number;
   paid_amount: number;
   outstanding_amount: number;
-  payment_status: 'paid' | 'partial' | 'unpaid';
+  payment_status: 'paid' | 'partial' | 'unpaid' | 'cancelled';
   due_date: string;
   vietqr_url?: string;
   payment_reference?: string;
@@ -226,6 +230,8 @@ export interface TuitionInvoice {
   verified_by?: string;
   verified_at?: string;
   created_at: string;
+  is_trial_pending?: boolean; // Tạm hoãn thu toàn khóa cho đến khi qua buổi học thử
+  trial_fee?: number;         // Đơn giá 1 buổi thử (mặc định 0 nếu miễn phí thử)
 }
 
 export interface ClassSession {
@@ -334,7 +340,7 @@ export interface ParentRegistration {
 
 export interface SystemNotification {
   id: string;
-  type: 'debt_warning' | 'credit_expiring' | 'consecutive_absence' | 'enrollment_over_quota' | 'new_lead_registration';
+  type: 'debt_warning' | 'credit_expiring' | 'consecutive_absence' | 'enrollment_over_quota' | 'new_lead_registration' | 'drop_alert';
   title: string;
   message: string;
   date: string;

@@ -19,7 +19,7 @@ export const SnacksTab: React.FC<SnacksTabProps> = ({
   selectedTermId,
   onPrintSnacksReport,
 }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [filterClassId, setFilterClassId] = useState<string>('all');
 
   // Filter classes

@@ -46,8 +46,10 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   const [sessionDate, setSessionDate] = useState<string>('2026-09-23');
   const [savedBanner, setSavedBanner] = useState(false);
 
-  // Enrolled students in this class
-  const classEnrollments = store.enrollments.filter(e => e.class_id === currentClass?.id && e.status === 'active');
+  // Enrolled students in this class (including trial enrollments)
+  const classEnrollments = store.enrollments.filter(
+    e => e.class_id === currentClass?.id && (e.status === 'active' || e.status === 'trial')
+  );
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
     .filter(Boolean) as Student[];
@@ -148,10 +150,56 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
         note: attendanceState[s.id]?.note || '',
       }));
 
+      // Trial Session Policy: Auto-promote to Active upon attending Session 2 with present
+      let updatedEnrollments = [...prev.enrollments];
+      let updatedInvoices = [...prev.invoices];
+      const newlyPromoted: string[] = [];
+
+      enrolledStudents.forEach(s => {
+        const enr = updatedEnrollments.find(e => e.student_id === s.id && e.class_id === currentClass.id);
+        if (enr && enr.status === 'trial') {
+          const currentStatus = attendanceState[s.id]?.status || 'present';
+          if (currentStatus === 'present') {
+            const priorPresentRecords = prev.attendance.filter(
+              a => a.student_id === s.id && a.class_id === currentClass.id && a.session_date !== sessionDate && a.status === 'present'
+            );
+            if (priorPresentRecords.length >= 1 || newSession.session_number >= 2) {
+              updatedEnrollments = updatedEnrollments.map(e => 
+                e.id === enr.id 
+                  ? { ...e, status: 'active', trial_outcome: 'promoted', trial_notes: `Tự động lên chính thức sau buổi học thứ ${priorPresentRecords.length + 1}` }
+                  : e
+              );
+              updatedInvoices = updatedInvoices.map(inv => 
+                inv.student_id === s.id && inv.class_id === currentClass.id && inv.is_trial_pending
+                  ? { ...inv, is_trial_pending: false }
+                  : inv
+              );
+              newlyPromoted.push(s.name);
+            }
+          }
+        }
+      });
+
+      const newNotifications = [...prev.notifications];
+      if (newlyPromoted.length > 0) {
+        newNotifications.unshift({
+          id: `notif_trial_tch_${Date.now()}`,
+          type: 'enrollment_over_quota',
+          title: `Tự động lên Chính thức sau Buổi 2: ${newlyPromoted.join(', ')}`,
+          message: `Giáo viên ${teacher.name} đã điểm danh buổi 2 cho ${newlyPromoted.join(', ')} lớp ${currentClass.name}. Hệ thống đã tự động chuyển sang CHÍNH THỨC và kích hoạt hóa đơn học phí toàn khóa.`,
+          date: sessionDate,
+          severity: 'low',
+          read: false,
+        });
+      }
+
       return {
         ...prev,
         sessions: updatedSessions,
         attendance: [...remainingAttendance, ...newRecords],
+        enrollments: updatedEnrollments,
+        invoices: updatedInvoices,
+        notifications: newNotifications,
       };
     });
 
@@ -263,6 +311,8 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
           {enrolledStudents.map((student, idx) => {
             const st = attendanceState[student.id]?.status || 'present';
             const note = attendanceState[student.id]?.note || '';
+            const enr = store.enrollments.find(e => e.student_id === student.id && e.class_id === currentClass?.id);
+            const isTrial = enr?.status === 'trial';
 
             return (
               <div
@@ -274,6 +324,13 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
                     <span className="font-mono text-xs text-slate-400 font-bold">{idx + 1}.</span>
                     <span className="font-bold text-white text-sm">{student.name}</span>
                     <span className="font-mono text-xs text-amber-400 font-semibold">({student.code})</span>
+
+                    {isTrial && (
+                      <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1 shadow-sm">
+                        <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                        [Học Thử Buổi 1]
+                      </span>
+                    )}
 
                     {student.is_royal_student ? (
                       <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1">

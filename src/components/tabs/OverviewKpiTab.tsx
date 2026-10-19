@@ -31,7 +31,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   onNavigateTab,
   onIssueCreditForStudent,
 }) => {
-  const [alertViewMode, setAlertViewMode] = React.useState<ViewMode>('cards');
+  const [alertViewMode, setAlertViewMode] = React.useState<ViewMode>('table');
   // Filter classes by campus & term
   const filteredClasses = store.classes.filter(c => {
     const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;

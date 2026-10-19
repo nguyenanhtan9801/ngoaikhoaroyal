@@ -14,7 +14,8 @@ import {
   FileText,
   AlertCircle,
   HelpCircle,
-  Lock
+  Lock,
+  Sparkles
 } from 'lucide-react';
 import { AppStore, formatVND } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole } from '../../types';
@@ -44,7 +45,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
     currentClass?.primary_teacher_id || store.teachers[0]?.id || ''
   );
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [isSubstitute, setIsSubstitute] = useState<boolean>(false);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
@@ -56,9 +57,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     );
   }
 
-  // Enrolled students in this class
+  // Enrolled students in this class (active and trial)
   const classEnrollments = store.enrollments.filter(
-    e => e.class_id === currentClass.id && e.status === 'active'
+    e => e.class_id === currentClass.id && (e.status === 'active' || e.status === 'trial')
   );
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
@@ -125,7 +126,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   };
 
   const currentDayCode = getDayCode(selectedDate);
-  const isScheduledDay = timeSlot?.days_of_week.includes(currentDayCode);
+  const classDays = (currentClass.days_of_week && currentClass.days_of_week.length > 0)
+    ? currentClass.days_of_week
+    : (timeSlot?.days_of_week || []);
+  const isScheduledDay = classDays.includes(currentDayCode);
 
   // Royal Snacks live calculation for this session
   // Rule: only Royal students get snacks
@@ -248,10 +252,54 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         }
       });
 
+      // 4. Trial Session Policy: Auto-promote to Active upon attending Session 2
+      let updatedEnrollments = [...prev.enrollments];
+      let updatedInvoices = [...prev.invoices];
+      const newlyPromoted: string[] = [];
+
+      enrolledStudents.forEach(s => {
+        const enr = updatedEnrollments.find(e => e.student_id === s.id && e.class_id === currentClass.id);
+        if (enr && enr.status === 'trial') {
+          const currentStatus = attendanceState[s.id]?.status || 'present';
+          if (currentStatus === 'present') {
+            const priorPresentRecords = prev.attendance.filter(
+              a => a.student_id === s.id && a.class_id === currentClass.id && a.session_date !== selectedDate && a.status === 'present'
+            );
+            if (priorPresentRecords.length >= 1 || newSession.session_number >= 2) {
+              updatedEnrollments = updatedEnrollments.map(e => 
+                e.id === enr.id 
+                  ? { ...e, status: 'active', trial_outcome: 'promoted', trial_notes: `Tự động lên chính thức sau buổi học thứ ${priorPresentRecords.length + 1}` }
+                  : e
+              );
+              updatedInvoices = updatedInvoices.map(inv => 
+                inv.student_id === s.id && inv.class_id === currentClass.id && inv.is_trial_pending
+                  ? { ...inv, is_trial_pending: false }
+                  : inv
+              );
+              newlyPromoted.push(s.name);
+            }
+          }
+        }
+      });
+
+      if (newlyPromoted.length > 0) {
+        newNotifications.unshift({
+          id: `notif_trial_auto_${Date.now()}`,
+          type: 'enrollment_over_quota',
+          title: `Tự động lên Chính thức sau Buổi 2: ${newlyPromoted.join(', ')}`,
+          message: `Học sinh ${newlyPromoted.join(', ')} đã tham gia buổi học thứ 2 lớp ${currentClass.name}. Hệ thống đã tự động chuyển sang CHÍNH THỨC và kích hoạt hóa đơn học phí toàn khóa.`,
+          date: selectedDate,
+          severity: 'low',
+          read: false,
+        });
+      }
+
       return {
         ...prev,
         sessions: updatedSessions,
         attendance: finalAttendance,
+        enrollments: updatedEnrollments,
+        invoices: updatedInvoices,
         notifications: newNotifications,
       };
     });
@@ -383,7 +431,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         {!isScheduledDay && (
           <div className="mt-3 p-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center gap-2 text-amber-300 text-xs font-semibold">
             <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-            <span>LƯU Ý: Ngày được chọn là {currentDayCode}, không trùng với lịch chuẩn của lớp ({timeSlot?.days_of_week.join(', ')}).</span>
+            <span>LƯU Ý: Ngày được chọn là {currentDayCode}, không trùng với lịch chuẩn của lớp ({classDays.join(', ')}).</span>
           </div>
         )}
 
@@ -450,6 +498,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               const invoice = store.invoices.find(
                 i => i.student_id === student.id && i.class_id === currentClass.id
               );
+              const enr = store.enrollments.find(
+                e => e.student_id === student.id && e.class_id === currentClass.id
+              );
+              const isTrial = enr?.status === 'trial';
 
               return (
                 <div 
@@ -469,9 +521,15 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         {student.name.charAt(0)}
                       </div>
                       <div>
-                        <div className="font-bold text-white text-sm flex items-center gap-1.5">
+                        <div className="font-bold text-white text-sm flex items-center gap-1.5 flex-wrap">
                           <span>{student.name}</span>
                           <span className="text-[10px] text-slate-500 font-mono">#{idx + 1}</span>
+                          {isTrial && (
+                            <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[9px] font-bold flex items-center gap-1">
+                              <Sparkles className="w-2.5 h-2.5 text-purple-400" />
+                              [Học Thử Buổi 1]
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className={`px-2 py-0.2 rounded font-mono font-bold text-[10px] ${
@@ -510,7 +568,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   {/* Tuition Status */}
                   <div className="flex items-center justify-between py-1.5 px-2.5 rounded-xl bg-slate-950/60 border border-slate-800 mb-3 text-xs">
                     <span className="text-slate-400 text-[11px]">Học phí:</span>
-                    {invoice ? (
+                    {invoice?.is_trial_pending ? (
+                      <span className="px-2 py-0.2 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                        <Sparkles className="w-2.5 h-2.5 text-purple-400" />
+                        Chờ qua buổi thử
+                      </span>
+                    ) : invoice ? (
                       invoice.payment_status === 'paid' ? (
                         <span className="px-2 py-0.2 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                           Đã hoàn tất
@@ -615,6 +678,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   const invoice = store.invoices.find(
                     i => i.student_id === student.id && i.class_id === currentClass.id
                   );
+                  const enr = store.enrollments.find(
+                    e => e.student_id === student.id && e.class_id === currentClass.id
+                  );
+                  const isTrial = enr?.status === 'trial';
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
@@ -631,7 +698,15 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="font-bold text-white">{student.name}</div>
+                        <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
+                          <span>{student.name}</span>
+                          {isTrial && (
+                            <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[9px] font-bold flex items-center gap-1">
+                              <Sparkles className="w-2.5 h-2.5 text-purple-400" />
+                              [Học Thử Buổi 1]
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[10px] text-slate-500">PH: {student.parent_phone}</div>
                       </td>
 
@@ -660,7 +735,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        {invoice ? (
+                        {invoice?.is_trial_pending ? (
+                          <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5 text-purple-400" />
+                            Chờ hoàn thành thử
+                          </span>
+                        ) : invoice ? (
                           invoice.payment_status === 'paid' ? (
                             <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
                               Đã nộp đủ

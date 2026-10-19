@@ -30,7 +30,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
   onUpdateStore,
   onPrintCreditSlip,
 }) => {
-  const [viewMode, setViewMode] = useState<ViewMode>('cards');
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showIssueModal, setShowIssueModal] = useState(false);
   const [applyingCredit, setApplyingCredit] = useState<MakeupCredit | null>(null);
 
