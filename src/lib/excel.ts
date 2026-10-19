@@ -166,6 +166,7 @@ export function exportMasterWorkbook(store: AppStore, filename = 'RoyalSchool_Ma
 export function downloadSampleTemplate() {
   exportMasterWorkbook(
     {
+      users: [],
       campuses: [
         {
           id: 'camp_pmh',

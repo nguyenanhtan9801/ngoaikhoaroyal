@@ -4,35 +4,24 @@ import {
   Send, 
   CheckCircle2, 
   PhoneCall, 
-  GraduationCap, 
-  School, 
   Clock, 
-  HeartHandshake, 
-  Sparkles,
-  Search,
-  Filter,
-  Check,
-  AlertCircle,
-  QrCode,
+  Search, 
+  Check, 
+  ExternalLink, 
+  MessageSquare, 
+  Phone, 
+  UserCheck, 
+  X, 
+  Copy, 
+  Share2, 
+  ShieldAlert, 
+  Lock,
   Calendar,
-  ExternalLink,
-  MessageSquare,
-  Plus,
-  Eye,
-  Coffee,
-  X,
-  FileText,
-  DollarSign,
-  Phone,
-  Mail,
-  UserCheck,
-  UserX,
-  BookOpen
+  Sparkles
 } from 'lucide-react';
 import { AppStore, generateStudentCode, formatVND, calculateCeilSessionRate, getEffectivePrice } from '../../lib/storage';
 import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
-import { RoyalLogo } from '../RoyalLogo';
 
 interface ParentPortalTabProps {
   store: AppStore;
@@ -47,6 +36,14 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   onUpdateStore,
   onOpenParentPortal,
 }) => {
+  // Check authorization:
+  // "Phần xem hồ sơ tiếp nhận chỉ hiện cho Nhân sự được phân công là tuyển sinh, giáo vụ hoặc admin"
+  const isAuthorizedStaff = [
+    'super_admin',
+    'admissions',
+    'academic_admissions'
+  ].includes(currentRole);
+
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'contacted' | 'enrolled' | 'canceled'>('all');
@@ -69,21 +66,90 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 4000);
+    setTimeout(() => setToastMessage(null), 3500);
   };
+
+  const handleCopyShareLink = () => {
+    try {
+      const origin = window.location.origin || '';
+      const pathname = window.location.pathname || '/';
+      const shareUrl = `${origin}${pathname}?portal=parent`;
+      navigator.clipboard.writeText(shareUrl);
+      showToast(`Đã sao chép link Cổng Phụ Huynh: ${shareUrl}`);
+    } catch {
+      showToast('Đã sao chép link Cổng Phụ Huynh!');
+    }
+  };
+
+  // If role is NOT authorized (e.g. teacher or purely non-admissions)
+  if (!isAuthorizedStaff) {
+    return (
+      <div className="py-12 px-4 max-w-2xl mx-auto text-center space-y-6 animate-fadeIn">
+        <div className="p-8 sm:p-10 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-2xl backdrop-blur-md space-y-5">
+          <div className="w-16 h-16 rounded-3xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
+            <ShieldAlert className="w-9 h-9" />
+          </div>
+
+          <div className="space-y-2">
+            <span className="px-3 py-1 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 text-xs font-bold uppercase tracking-wider">
+              Phân Quyền Giới Hạn
+            </span>
+            <h3 className="text-xl font-black text-white">
+              QUYỀN TRUY CẬP HỒ SƠ TIẾP NHẬN TUYỂN SINH
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
+              Phần xem và xử lý danh sách hồ sơ phụ huynh nộp trực tuyến chỉ dành riêng cho Nhân sự được phân công là <strong>Tuyển sinh</strong>, <strong>Giáo vụ</strong> hoặc <strong>Quản trị viên (Admin)</strong>.
+            </p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 text-xs text-slate-400 max-w-md mx-auto space-y-1">
+            <div>Vai trò hiện tại của bạn: <strong className="text-amber-400">{currentRole}</strong></div>
+            <p className="text-[11px] text-slate-500">
+              Để xem hồ sơ tuyển sinh, vui lòng chuyển vai trò sang <strong>Tuyển sinh</strong> hoặc <strong>Giáo vụ & Tuyển sinh</strong> trên thanh menu phía trên.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            {onOpenParentPortal && (
+              <button
+                onClick={onOpenParentPortal}
+                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/20"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Mở Cổng Phụ Huynh Trực Tuyến</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleCopyShareLink}
+              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold text-xs flex items-center gap-2"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Sao Chép Link Gửi Phụ Huynh</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // KPIs
   const totalLeads = store.parentRegistrations.length;
   const pendingLeads = store.parentRegistrations.filter(r => r.status === 'pending').length;
   const contactedLeads = store.parentRegistrations.filter(r => r.status === 'contacted').length;
   const enrolledLeads = store.parentRegistrations.filter(r => r.status === 'enrolled').length;
-  const conversionRate = totalLeads > 0 ? Math.round((enrolledLeads / totalLeads) * 100) : 0;
 
   // Filtered Leads
   const filteredLeads = store.parentRegistrations.filter(lead => {
     if (statusFilter !== 'all' && lead.status !== statusFilter) return false;
     if (campusFilter !== 'all' && lead.desired_campus_id !== campusFilter) return false;
-    if (subjectFilter !== 'all' && lead.desired_subject_id !== subjectFilter) return false;
+    
+    // Check subject filter against both primary and multi-subject list
+    if (subjectFilter !== 'all') {
+      const matchPrimary = lead.desired_subject_id === subjectFilter;
+      const matchMulti = lead.registered_subjects?.some(s => s.subject_id === subjectFilter);
+      if (!matchPrimary && !matchMulti) return false;
+    }
 
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
@@ -93,7 +159,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       const studentMatch = lead.student_name.toLowerCase().includes(q);
       const subject = store.subjects.find(s => s.id === lead.desired_subject_id);
       const subjectMatch = subject?.name.toLowerCase().includes(q);
-      return codeMatch || parentMatch || phoneMatch || studentMatch || subjectMatch;
+      const multiSubMatch = lead.registered_subjects?.some(s => s.subject_name?.toLowerCase().includes(q));
+      return codeMatch || parentMatch || phoneMatch || studentMatch || subjectMatch || multiSubMatch;
     }
 
     return true;
@@ -140,8 +207,9 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       created_at: new Date().toISOString().split('T')[0],
     };
 
+    const newEnrollmentId = `enr_${Date.now()}`;
     const newEnrollment: Enrollment = {
-      id: `enr_${Date.now()}`,
+      id: newEnrollmentId,
       student_id: newStudentId,
       class_id: cls.id,
       registered_sessions: cls.total_sessions || 24,
@@ -149,54 +217,42 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       status: 'active',
     };
 
-    // Calculate fee
-    const baseFee = cls.full_course_fee || (cls.price_per_session * cls.total_sessions);
-    const discount = lead.is_royal_student ? Math.round(baseFee * 0.05) : 0;
-    const netAmount = Math.max(0, baseFee - discount);
+    const tuitionRate = getEffectivePrice(cls.term_id, cls.campus_id, cls.subject_id, store);
+    const grossAmount = cls.full_course_fee || tuitionRate.course_fee || 3600000;
+    const discountAmount = lead.is_royal_student ? Math.round(grossAmount * 0.05) : 0;
+    const netAmount = Math.max(0, grossAmount - discountAmount);
 
     const newInvoice: TuitionInvoice = {
       id: `inv_${Date.now()}`,
-      invoice_code: `INV-${new Date().getFullYear()}-${String(store.invoices.length + 1).padStart(4, '0')}`,
+      invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`,
       student_id: newStudentId,
       class_id: cls.id,
-      gross_amount: baseFee,
+      gross_amount: grossAmount,
       credit_deducted: 0,
       net_payable: netAmount,
       paid_amount: 0,
       outstanding_amount: netAmount,
       payment_status: 'unpaid',
-      due_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
       created_at: new Date().toISOString().split('T')[0],
+      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     };
 
     onUpdateStore(prev => ({
       ...prev,
       students: [newStudent, ...prev.students],
-      enrollments: [...prev.enrollments, newEnrollment],
-      invoices: [...prev.invoices, newInvoice],
+      enrollments: [newEnrollment, ...prev.enrollments],
+      invoices: [newInvoice, ...prev.invoices],
       parentRegistrations: prev.parentRegistrations.map(r => 
         r.id === lead.id 
           ? { 
               ...r, 
-              status: 'enrolled' as const, 
+              status: 'enrolled',
               assigned_class_id: cls.id,
               assigned_student_code: studentCode,
-              contact_notes: enrollNote 
+              contact_notes: `Đã phân lớp: ${cls.name} (${studentCode}). ${enrollNote}`
             } 
           : r
       ),
-      notifications: [
-        {
-          id: `notif_enrolled_${Date.now()}`,
-          type: 'enrollment_over_quota',
-          title: 'Học viên mới đã ghi danh',
-          message: `Học viên ${lead.student_name} (${studentCode}) đã được xếp vào lớp ${cls.name}.`,
-          date: new Date().toISOString().split('T')[0],
-          severity: 'low',
-          read: false,
-        },
-        ...prev.notifications,
-      ],
     }));
 
     showToast(`Đã tiếp nhận hồ sơ & cấp mã học viên ${studentCode} vào lớp ${cls.name}!`);
@@ -247,42 +303,63 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         <div>
           <div className="flex items-center gap-2.5">
             <h2 className="text-lg sm:text-xl font-black text-white tracking-wide">
-              QUẢN TRỊ ĐƠN ĐĂNG KÝ TUYỂN SINH (LEADS)
+              HỒ SƠ TIẾP NHẬN TUYỂN SINH (LEADS)
             </h2>
             <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold">
               Tuyển sinh ngoại khóa
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Phụ huynh chỉ đăng ký môn học và cơ sở. Học vụ & Tuyển sinh liên hệ tư vấn, sắp thời khóa biểu và 1-chạm xếp lớp cấp mã học viên.
+            Phụ huynh đăng ký môn học và khung giờ từ Cổng Phụ Huynh. Chuyên viên Tuyển sinh & Giáo vụ liên hệ xác nhận và 1-chạm xếp lớp.
           </p>
         </div>
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Nút Sao Chép Link Đăng Ký */}
+          <button
+            onClick={handleCopyShareLink}
+            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+            title="Sao chép đường link Cổng Phụ Huynh để gửi qua Zalo/Email cho phụ huynh"
+          >
+            <Share2 className="w-3.5 h-3.5 text-amber-400" />
+            <span>Sao Chép Link Gửi Phụ Huynh</span>
+          </button>
+
+          {/* Nút Mở Trang Riêng Trong Tab Mới */}
+          <a
+            href="?portal=parent"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+            title="Mở giao diện Cổng Đăng Ký Phụ Huynh toàn màn hình trong tab mới"
+          >
+            <ExternalLink className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Mở Trang Riêng (Tab mới)</span>
+          </a>
+
           {onOpenParentPortal && (
             <button
               onClick={onOpenParentPortal}
               className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/20 transition-all transform active:scale-95"
-              title="Mở Cổng Phụ Huynh để phụ huynh đăng ký môn học hoặc trải nghiệm"
+              title="Mở Cổng Phụ Huynh dạng popup để kiểm tra hoặc đăng ký hộ"
             >
               <Send className="w-3.5 h-3.5 text-slate-950" />
-              <span>Mở Cổng Đăng Ký Môn Học (Phụ Huynh)</span>
-              <ExternalLink className="w-3 h-3 text-slate-950" />
+              <span>Cổng Phụ Huynh (Popup)</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* KPI METRICS OVERVIEW CARDS (Apple UI style) */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+      {/* KPI METRICS OVERVIEW CARDS */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
         <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-lg">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Tổng Đơn Nhận</span>
             <Users className="w-4 h-4 text-slate-400" />
           </div>
           <div className="text-2xl font-black text-white mt-1.5">{totalLeads}</div>
-          <p className="text-[10px] text-slate-500 mt-0.5">Tất cả nguồn hồ sơ</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">Tất cả hồ sơ tiếp nhận</p>
         </div>
 
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 shadow-lg">
@@ -300,7 +377,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             <PhoneCall className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="text-2xl font-black text-cyan-400 mt-1.5">{contactedLeads}</div>
-          <p className="text-[10px] text-cyan-300/80 mt-0.5">Đang chờ xác nhận lịch</p>
+          <p className="text-[10px] text-cyan-300/80 mt-0.5">Đang chờ xác nhận lớp</p>
         </div>
 
         <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 shadow-lg">
@@ -309,54 +386,44 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-2xl font-black text-emerald-400 mt-1.5">{enrolledLeads}</div>
-          <p className="text-[10px] text-emerald-300/80 mt-0.5">Thành học viên chính thức</p>
-        </div>
-
-        <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-lg">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Tỷ Lệ Chốt</span>
-            <Sparkles className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="text-2xl font-black text-amber-400 mt-1.5">{conversionRate}%</div>
-          <p className="text-[10px] text-slate-500 mt-0.5">Hiệu quả tuyển sinh</p>
+          <p className="text-[10px] text-emerald-300/80 mt-0.5">Đã thành học viên chính thức</p>
         </div>
       </div>
 
-      {/* FILTER & SEARCH CONTROLS */}
-      <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+      {/* FILTER & SEARCH BAR */}
+      <div className="p-3 sm:p-4 rounded-2xl bg-slate-900/60 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
         
-        {/* Left: Search box */}
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder="Tìm theo Mã REG-, tên học sinh, PH hoặc SĐT..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
-          />
-        </div>
+        <div className="flex flex-wrap items-center gap-2.5 flex-1">
+          {/* Search box */}
+          <div className="relative flex-1 min-w-[200px] max-w-md">
+            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Tìm theo mã REG, tên học sinh, phụ huynh, SĐT..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-8 pr-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 text-xs"
+            />
+          </div>
 
-        {/* Right: Dropdowns & View Toggle */}
-        <div className="flex flex-wrap items-center gap-2.5">
           {/* Status filter */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
+            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
           >
-            <option value="all">Tất cả trạng thái ({totalLeads})</option>
-            <option value="pending">Chờ xử lý ({pendingLeads})</option>
-            <option value="contacted">Đã liên hệ tư vấn ({contactedLeads})</option>
-            <option value="enrolled">Đã ghi danh & xếp lớp ({enrolledLeads})</option>
-            <option value="canceled">Đã hủy</option>
+            <option value="all">Tất cả trạng thái</option>
+            <option value="pending">Chờ xử lý (Pending)</option>
+            <option value="contacted">Đã tư vấn (Contacted)</option>
+            <option value="enrolled">Đã xếp lớp (Enrolled)</option>
+            <option value="canceled">Đã hủy (Canceled)</option>
           </select>
 
           {/* Campus filter */}
           <select
             value={campusFilter}
             onChange={(e) => setCampusFilter(e.target.value)}
-            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
+            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả cơ sở</option>
             {store.campuses.map(c => (
@@ -368,15 +435,16 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           <select
             value={subjectFilter}
             onChange={(e) => setSubjectFilter(e.target.value)}
-            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
+            className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả môn học</option>
             {store.subjects.map(s => (
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
+        </div>
 
-          {/* View toggle */}
+        <div className="flex items-center gap-2 shrink-0">
           <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
         </div>
 
@@ -405,7 +473,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             return (
               <div 
                 key={lead.id}
-                className="rounded-3xl p-5 bg-gradient-to-b from-[#111827] to-[#0D131F] border border-slate-800/80 hover:border-amber-500/40 transition-all flex flex-col justify-between shadow-xl shadow-black/30"
+                className="rounded-3xl p-5 bg-gradient-to-b from-[#111827] to-[#0D131F] border border-slate-800/80 hover:border-amber-500/40 transition-all flex flex-col justify-between shadow-xl shadow-black/30 space-y-4"
               >
                 <div>
                   {/* Card Header */}
@@ -415,7 +483,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         <h4 className="font-extrabold text-white text-base">{lead.student_name}</h4>
                         {lead.is_royal_student ? (
                           <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
-                            Royal
+                            Royal (Bánh sữa)
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px]">
@@ -426,7 +494,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5 font-mono">
                         <span className="text-amber-400 font-bold">{lead.registration_code || lead.id}</span>
                         <span>&bull;</span>
-                        <span>{lead.student_grade || 'Khối lớp chưa rõ'}</span>
+                        <span>{lead.student_grade || 'Sinh: ' + lead.student_dob}</span>
                       </div>
                     </div>
 
@@ -477,21 +545,51 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                   {/* Course Choice & Slot Preferences */}
                   <div className="text-xs space-y-2 mb-3">
                     <div className="flex items-center justify-between">
-                      <span className="text-slate-400">Môn đăng ký:</span>
-                      <span className="font-bold text-amber-300">{subject?.name}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
                       <span className="text-slate-400">Cơ sở mong muốn:</span>
-                      <span className="text-slate-200">{campus?.name}</span>
+                      <span className="text-slate-200 font-medium">{campus?.name}</span>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400">Khung giờ:</span>
-                      <span className="text-slate-300">
-                        {lead.desired_time_slot_type === 'after_school' ? 'Sau giờ học (16:45 - 18:15)' : 'Cuối tuần (Thứ 7 & CN)'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400">Suất bánh sữa:</span>
+
+                    {/* Multi-subject list */}
+                    {lead.registered_subjects && lead.registered_subjects.length > 0 ? (
+                      <div className="space-y-1.5 p-2.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                        <div className="text-[11px] font-bold text-amber-300 flex items-center justify-between">
+                          <span>Môn học đăng ký ({lead.registered_subjects.length} môn):</span>
+                          {lead.estimated_fee && (
+                            <span className="font-mono text-emerald-400 font-bold">{formatVND(lead.estimated_fee)}</span>
+                          )}
+                        </div>
+                        <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
+                          {lead.registered_subjects.map((subItem, idx) => (
+                            <div key={idx} className="p-1.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between text-[11px]">
+                              <div>
+                                <div className="font-bold text-white">{subItem.subject_name}</div>
+                                <div className="text-[10px] text-amber-400/90 flex items-center gap-1">
+                                  <Clock className="w-2.5 h-2.5" />
+                                  <span>{subItem.time_slot_label}</span>
+                                </div>
+                              </div>
+                              <span className="font-mono text-emerald-400 text-[10px] font-semibold">{formatVND(subItem.estimated_fee)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Môn đăng ký:</span>
+                          <span className="font-bold text-amber-300">{subject?.name || 'Môn ngoại khóa'}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Khung giờ:</span>
+                          <span className="text-slate-300">
+                            {lead.desired_time_slot_type === 'after_school' ? 'Sau giờ học (16:45 - 18:15)' : 'Cuối tuần'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between text-[11px] pt-1">
+                      <span className="text-slate-400">Suất bánh sữa 16:30:</span>
                       <span className={lead.is_royal_student ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
                         {lead.is_royal_student ? 'Được phục vụ (HS Royal)' : 'Không áp dụng'}
                       </span>
@@ -568,8 +666,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                   <th className="py-3 px-4">Mã Đơn / Ngày</th>
                   <th className="py-3 px-4">Phụ Huynh Liên Hệ</th>
                   <th className="py-3 px-4">Học Sinh & Khối Lớp</th>
-                  <th className="py-3 px-4">Môn Học & Cơ Sở</th>
-                  <th className="py-3 px-4">Khung Giờ</th>
+                  <th className="py-3 px-4">Môn Học & Khung Giờ</th>
+                  <th className="py-3 px-4">Cơ Sở</th>
                   <th className="py-3 px-4">Phân Loại / Bánh Sữa</th>
                   <th className="py-3 px-4">Lưu Ý Y Tế</th>
                   <th className="py-3 px-4 text-center">Trạng Thái</th>
@@ -604,18 +702,31 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="font-bold text-amber-300">{subject?.name}</div>
-                        <div className="text-[10px] text-slate-400">{campus?.name}</div>
+                        {lead.registered_subjects && lead.registered_subjects.length > 0 ? (
+                          <div className="space-y-1">
+                            <span className="font-bold text-amber-300">{lead.registered_subjects.length} môn:</span>
+                            <div className="text-[11px] text-slate-300">
+                              {lead.registered_subjects.map(s => s.subject_name).join(', ')}
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div className="font-bold text-amber-300">{subject?.name}</div>
+                            <div className="text-[10px] text-slate-400">
+                              {lead.desired_time_slot_type === 'after_school' ? 'Sau giờ học' : 'Cuối tuần'}
+                            </div>
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-4 text-slate-300">
-                        {lead.desired_time_slot_type === 'after_school' ? 'Sau giờ học (16:45)' : 'Cuối tuần'}
+                        {campus?.name}
                       </td>
 
                       <td className="py-3 px-4">
                         {lead.is_royal_student ? (
                           <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold whitespace-nowrap">
-                            Royal (Có bánh sữa)
+                            Royal (Bánh sữa)
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] whitespace-nowrap">
@@ -697,7 +808,6 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         );
         const allClasses = store.classes.filter(c => c.status === 'active');
         const availableClasses = matchingClasses.length > 0 ? matchingClasses : allClasses;
-        const chosenClass = store.classes.find(c => c.id === targetClassId) || availableClasses[0];
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
@@ -738,10 +848,21 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     {store.subjects.find(s => s.id === lead.desired_subject_id)?.name} &bull; {store.campuses.find(c => c.id === lead.desired_campus_id)?.name}
                   </span>
                 </div>
-                <div className="flex justify-between">
+                {lead.registered_subjects && lead.registered_subjects.length > 0 && (
+                  <div className="pt-1 border-t border-slate-800 space-y-1">
+                    <span className="text-slate-400 block font-semibold">Tất cả môn phụ huynh đã chọn ({lead.registered_subjects.length} môn):</span>
+                    {lead.registered_subjects.map((sub, i) => (
+                      <div key={i} className="flex justify-between text-[11px] text-slate-300">
+                        <span>&bull; {sub.subject_name}</span>
+                        <span className="text-amber-400 font-mono">{sub.time_slot_label}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex justify-between pt-1 border-t border-slate-800">
                   <span className="text-slate-400">Phân loại học sinh:</span>
                   <span className={lead.is_royal_student ? 'text-amber-400 font-bold' : 'text-slate-300'}>
-                    {lead.is_royal_student ? 'Học sinh chính khóa Royal (Có bánh sữa + Ưu đãi 5%)' : 'Học sinh ngoài trường'}
+                    {lead.is_royal_student ? 'Học sinh chính khóa Royal (Có suất bánh sữa)' : 'Học sinh ngoài trường'}
                   </span>
                 </div>
               </div>
@@ -774,7 +895,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               {/* Select Extracurricular Class */}
               <div className="text-xs space-y-1">
                 <label className="block text-slate-300 font-semibold">
-                  Chọn lớp học ngoại khóa chính thức:
+                  Chọn lớp học ngoại khóa phân bổ:
                 </label>
                 <select
                   value={targetClassId}
@@ -873,7 +994,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                 rows={3}
                 value={contactNoteInput}
                 onChange={(e) => setContactNoteInput(e.target.value)}
-                placeholder="Ví dụ: Đã gọi lúc 10h sáng. Phụ huynh hẹn Thứ 6 đến tham quan sân bóng rổ và đóng phí..."
+                placeholder="Ví dụ: Đã gọi lúc 10h sáng. Phụ huynh hẹn Thứ 6 đến tham quan và đóng học phí..."
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500"
               />
             </div>

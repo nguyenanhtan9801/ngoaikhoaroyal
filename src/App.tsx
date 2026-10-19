@@ -16,13 +16,64 @@ import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
 import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
+import { AdminLoginModal } from './components/AdminLoginModal';
+import { UsersManagementTab } from './components/tabs/UsersManagementTab';
 import { loadStore, saveStore, AppStore } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
-import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit } from './types';
+import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser } from './types';
 
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
-  const [currentRole, setCurrentRole] = useState<UserRole>('super_admin');
+
+  // User Authentication State (Persists across F5 via localStorage)
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    try {
+      const stored = localStorage.getItem('royal_current_user');
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch {
+      // noop
+    }
+    return null;
+  });
+
+  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState<boolean>(false);
+
+  // Set currentRole based on currentUser if logged in
+  const [currentRole, setCurrentRole] = useState<UserRole>(() => {
+    try {
+      const stored = localStorage.getItem('royal_current_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u && u.role) return u.role;
+      }
+    } catch {
+      // noop
+    }
+    return 'super_admin';
+  });
+
+  const handleLoginSuccess = (user: AppUser) => {
+    setCurrentUser(user);
+    setCurrentRole(user.role);
+    try {
+      localStorage.setItem('royal_current_user', JSON.stringify(user));
+    } catch {
+      // noop
+    }
+    setIsAdminLoginOpen(false);
+    setCurrentRoute('sub_kpi');
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    try {
+      localStorage.removeItem('royal_current_user');
+    } catch {
+      // noop
+    }
+  };
   
   // Current active navigation route (handled via top navbar dropdowns and direct links)
   const [currentRoute, setCurrentRoute] = useState<string>('sub_kpi');
@@ -43,6 +94,44 @@ export default function App() {
   const [currentParentStudent, setCurrentParentStudent] = useState<Student | null>(null);
   const [isNotificationOpen, setIsNotificationOpen] = useState<boolean>(false);
   const [printableDoc, setPrintableDoc] = useState<PrintDocumentType | null>(null);
+
+  // Standalone Parent Portal Page (?portal=parent, ?page=parent_portal or #parent_portal)
+  const checkIsStandalonePortal = (): boolean => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const portal = params.get('portal');
+      const page = params.get('page');
+      const mode = params.get('mode');
+      const hash = window.location.hash.toLowerCase();
+      return (
+        portal === 'parent' ||
+        portal === 'true' ||
+        portal === 'parent_portal' ||
+        page === 'parent_portal' ||
+        page === 'parent' ||
+        mode === 'parent' ||
+        hash === '#parent_portal' ||
+        hash === '#parent' ||
+        hash === '#portal'
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const [isStandalonePortal, setIsStandalonePortal] = useState<boolean>(() => checkIsStandalonePortal());
+
+  useEffect(() => {
+    const handleUrlChange = () => {
+      setIsStandalonePortal(checkIsStandalonePortal());
+    };
+    window.addEventListener('popstate', handleUrlChange);
+    window.addEventListener('hashchange', handleUrlChange);
+    return () => {
+      window.removeEventListener('popstate', handleUrlChange);
+      window.removeEventListener('hashchange', handleUrlChange);
+    };
+  }, []);
 
   // Synchronize localStorage with event listener
   useEffect(() => {
@@ -153,6 +242,89 @@ export default function App() {
     });
   };
 
+  // 1. PUBLIC ENTRYPOINT: If user is not logged in, show Public Parent Portal directly with "Đăng Nhập Quản Trị" button
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans tracking-[-0.011em] antialiased">
+        <ParentPortalModal
+          store={store}
+          isOpen={true}
+          isStandalonePage={true}
+          currentRole={currentRole}
+          currentUser={null}
+          onClose={() => {}}
+          onUpdateStore={updateStore}
+          onOpenAdminLogin={() => setIsAdminLoginOpen(true)}
+        />
+
+        <AdminLoginModal
+          isOpen={isAdminLoginOpen}
+          onClose={() => setIsAdminLoginOpen(false)}
+          users={store.users}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      </div>
+    );
+  }
+
+  // 2. STANDALONE PORTAL (if explicitly opened via ?portal=parent while logged in)
+  if (isStandalonePortal) {
+    return (
+      <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans tracking-[-0.011em] antialiased">
+        <ParentPortalModal
+          store={store}
+          isOpen={true}
+          isStandalonePage={true}
+          currentRole={currentRole}
+          currentUser={currentUser}
+          onClose={() => {
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('portal');
+              url.searchParams.delete('page');
+              url.searchParams.delete('mode');
+              if (url.hash.includes('parent') || url.hash.includes('portal')) {
+                window.history.pushState({}, '', url.pathname + (url.search ? url.search : ''));
+              } else {
+                window.history.pushState({}, '', url.pathname + (url.search ? url.search : '') + (url.hash ? url.hash : ''));
+              }
+            } catch {
+              // noop
+            }
+            setIsStandalonePortal(false);
+          }}
+          onLogout={handleLogout}
+          onUpdateStore={updateStore}
+          onNavigateToAdminLeads={() => {
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('portal');
+              url.searchParams.delete('page');
+              url.searchParams.delete('mode');
+              if (url.hash.includes('parent') || url.hash.includes('portal')) {
+                window.history.pushState({}, '', url.pathname + (url.search ? url.search : ''));
+              } else {
+                window.history.pushState({}, '', url.pathname + (url.search ? url.search : '') + (url.hash ? url.hash : ''));
+              }
+            } catch {
+              // noop
+            }
+            setIsStandalonePortal(false);
+            setCurrentRoute('sub_parents');
+          }}
+        />
+
+        <AdminLoginModal
+          isOpen={isAdminLoginOpen}
+          onClose={() => setIsAdminLoginOpen(false)}
+          users={store.users}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      </div>
+    );
+  }
+
+  // 3. ADMIN DASHBOARD: User is authenticated as staff
   return (
     <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans tracking-[-0.011em] antialiased">
       
@@ -168,6 +340,8 @@ export default function App() {
         currentParentStudent={currentParentStudent}
         notifications={store.notifications}
         onOpenNotifications={() => setIsNotificationOpen(true)}
+        currentUser={currentUser}
+        onLogout={handleLogout}
       />
 
       {/* Main Body with Optimized Viewport for 1366x768 and Standard Displays */}
@@ -333,6 +507,15 @@ export default function App() {
           )}
 
           {/* Nhóm 5: HỆ THỐNG & DANH MỤC */}
+          {currentRoute === 'sub_users' && (
+            <UsersManagementTab
+              store={store}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              onUpdateStore={updateStore}
+            />
+          )}
+
           {currentRoute === 'sub_settings' && (
             <SettingsDataTab
               store={store}
@@ -389,17 +572,29 @@ export default function App() {
         }}
       />
 
-      {/* Parent Course Registration Landing Page & Lookup Portal Modal */}
+      {/* Parent Course Registration Portal Modal */}
       <ParentPortalModal
         store={store}
         isOpen={isParentPortalOpen}
         onClose={() => setIsParentPortalOpen(false)}
         onUpdateStore={updateStore}
         initialStudent={currentParentStudent}
+        currentRole={currentRole}
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        onOpenAdminLogin={() => setIsAdminLoginOpen(true)}
         onNavigateToAdminLeads={() => {
           setIsParentPortalOpen(false);
           setCurrentRoute('sub_parents');
         }}
+      />
+
+      {/* Admin Login Modal */}
+      <AdminLoginModal
+        isOpen={isAdminLoginOpen}
+        onClose={() => setIsAdminLoginOpen(false)}
+        users={store.users}
+        onLoginSuccess={handleLoginSuccess}
       />
 
       {/* Multi-role Login Portal Modal */}

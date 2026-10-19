@@ -17,7 +17,8 @@ import {
   AttendanceRecord,
   MakeupCredit,
   ParentRegistration,
-  SystemNotification
+  SystemNotification,
+  AppUser
 } from '../types';
 
 export const initialCampuses: Campus[] = [
@@ -1143,3 +1144,73 @@ export const initialNotifications: SystemNotification[] = [
     read: true,
   },
 ];
+
+export const initialUsers: AppUser[] = [
+  {
+    id: 'user_admin',
+    username: 'admin',
+    password: '123456',
+    full_name: 'ThS. Nguyễn Hoàng Long',
+    phone: '0903 889 911',
+    email: 'admin@royalschool.edu.vn',
+    role: 'super_admin',
+    department: 'Ban Giám Hiệu & Quản Trị Hệ Thống',
+    campus_id: 'all',
+    status: 'active',
+    created_at: '2026-08-01',
+  },
+  {
+    id: 'user_ketoan',
+    username: 'ketoan',
+    password: 'ketoan@123',
+    full_name: 'Cô Lê Thị Mỹ Dung',
+    phone: '0908 112 233',
+    email: 'ketoan@royalschool.edu.vn',
+    role: 'academic_accountant',
+    department: 'Phòng Tài Chính & Kế Toán Học Vụ',
+    campus_id: 'camp_pmh',
+    status: 'active',
+    created_at: '2026-08-05',
+  },
+  {
+    id: 'user_tuyensinh',
+    username: 'tuyensinh',
+    password: 'tuyensinh@123',
+    full_name: 'Cô Phạm Thùy Linh',
+    phone: '0912 445 566',
+    email: 'tuyensinh@royalschool.edu.vn',
+    role: 'admissions',
+    department: 'Phòng Tuyển Sinh & Chăm Sóc Phụ Huynh',
+    campus_id: 'camp_pmh',
+    status: 'active',
+    created_at: '2026-08-10',
+  },
+  {
+    id: 'user_hocvu',
+    username: 'hocvu',
+    password: 'hocvu@123',
+    full_name: 'Thầy Trần Quốc Bảo',
+    phone: '0933 556 677',
+    email: 'hocvu@royalschool.edu.vn',
+    role: 'academic_admissions',
+    department: 'Phòng Đào Tạo & Quản Lý Học Vụ',
+    campus_id: 'camp_pl',
+    status: 'active',
+    created_at: '2026-08-12',
+  },
+  {
+    id: 'user_giaovien',
+    username: 'giaovien',
+    password: 'gv@123',
+    full_name: 'Thầy David Huỳnh (Bóng Rổ)',
+    phone: '0944 667 788',
+    email: 'david.huynh@royalschool.edu.vn',
+    role: 'teacher',
+    department: 'Tổ Bộ Môn Thể Chất & Thể Thao',
+    campus_id: 'camp_pmh',
+    teacher_id: 't_01',
+    status: 'active',
+    created_at: '2026-08-15',
+  },
+];
+

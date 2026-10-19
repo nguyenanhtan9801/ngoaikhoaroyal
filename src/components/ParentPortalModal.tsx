@@ -7,24 +7,28 @@ import {
   Phone, 
   Calendar, 
   Clock, 
-  Coffee, 
-  QrCode, 
   Award, 
   BookOpen, 
   Mail, 
   Check, 
-  School, 
   Activity, 
   Palette, 
   Code, 
   Sparkles, 
   Search, 
   Info,
-  ChevronRight
+  Copy,
+  Share2,
+  Trash2,
+  Users as UsersIcon,
+  ExternalLink,
+  ShieldAlert,
+  Lock,
+  LogIn,
+  LogOut
 } from 'lucide-react';
 import { AppStore, formatVND, getEffectivePrice } from '../lib/storage';
-import { generateVietQRUrl } from '../lib/vietqr';
-import { Student, ParentRegistration } from '../types';
+import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 
 interface ParentPortalModalProps {
@@ -34,7 +38,21 @@ interface ParentPortalModalProps {
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   initialStudent?: Student | null;
   onNavigateToAdminLeads?: () => void;
+  currentRole?: UserRole;
+  isStandalonePage?: boolean;
+  currentUser?: AppUser | null;
+  onOpenAdminLogin?: () => void;
+  onLogout?: () => void;
 }
+
+export const TIME_SLOT_OPTIONS = [
+  { value: 'after_school', label: 'Sau giờ chính khóa (16:45 - 18:15)' },
+  { value: 'sat_morning', label: 'Sáng Thứ Bảy (08:30 - 10:00)' },
+  { value: 'sat_afternoon', label: 'Chiều Thứ Bảy (15:00 - 16:30)' },
+  { value: 'sun_morning', label: 'Sáng Chủ Nhật (08:30 - 10:00)' },
+  { value: 'sun_afternoon', label: 'Chiều Chủ Nhật (15:00 - 16:30)' },
+  { value: 'evening', label: 'Ca tối ngày thường (18:15 - 19:45)' },
+];
 
 export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   store,
@@ -42,11 +60,27 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   onClose,
   onUpdateStore,
   onNavigateToAdminLeads,
+  currentRole,
+  isStandalonePage = false,
+  currentUser,
+  onOpenAdminLogin,
+  onLogout,
 }) => {
   if (!isOpen) return null;
 
+  // Check role authorization for "Xem hồ sơ tiếp nhận"
+  // CHỈ HIỆN CHO NHÂN SỰ ĐƯỢC PHÂN CÔNG LÀ TUYỂN SINH, GIÁO VỤ HOẶC ADMIN
+  const isAuthorizedStaff = Boolean(
+    currentRole && [
+      'super_admin',
+      'admissions',
+      'academic_admissions'
+    ].includes(currentRole)
+  );
+
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [subjectSearch, setSubjectSearch] = useState<string>('');
+  const [copyToast, setCopyToast] = useState<string | null>(null);
 
   // Phone number formatter
   const formatPhoneNumber = (val: string) => {
@@ -56,27 +90,36 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     return `${digits.slice(0, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`;
   };
 
-  // Default active term
   const activeTerm = store.terms.find(t => t.is_active || t.status === 'open_enrollment') || store.terms[0];
 
-  // Registration Form State - Phụ huynh CHỈ ĐĂNG KÝ MÔN HỌC
+  // 1. THÔNG TIN HỌC SINH VÀ PHỤ HUYNH
   const [regForm, setRegForm] = useState({
-    parent_name: '',
-    parent_phone: '',
-    parent_email: '',
     student_name: '',
     student_dob: '2016-05-15',
     student_grade: 'Lớp 3 - Tiểu học',
-    desired_campus_id: store.campuses[0]?.id || '',
-    desired_term_id: activeTerm?.id || '',
-    desired_subject_id: store.subjects[0]?.id || '',
-    desired_time_slot_type: 'after_school' as 'after_school' | 'weekend',
     is_royal_student: true,
     medical_notes: '',
+    parent_name: '',
+    parent_phone: '',
+    parent_email: '',
+    desired_campus_id: store.campuses[0]?.id || '',
+    desired_term_id: activeTerm?.id || '',
     notes: '',
   });
 
+  // 2. MÔN HỌC ĐĂNG KÝ: CÓ THỂ CHỌN NHIỀU MÔN, GIỜ HỌC CHO MỖI MÔN
+  const [selectedSubjectConfigs, setSelectedSubjectConfigs] = useState<
+    { subjectId: string; timeSlot: string; timeSlotLabel: string }[]
+  >(() => {
+    const firstSub = store.subjects[0];
+    return firstSub
+      ? [{ subjectId: firstSub.id, timeSlot: 'after_school', timeSlotLabel: 'Sau giờ chính khóa (16:45 - 18:15)' }]
+      : [];
+  });
+
   const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
+  
+  // Success receipt after submission (WITHOUT VietQR)
   const [regReceipt, setRegReceipt] = useState<{
     leadCode: string;
     parentName: string;
@@ -86,35 +129,25 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     studentGrade?: string;
     campusName: string;
     termName: string;
-    subjectName: string;
-    subjectCategory: string;
+    registeredSubjects: {
+      name: string;
+      category: string;
+      timeSlotLabel: string;
+      fee: number;
+    }[];
     isRoyal: boolean;
-    estimatedAmount: number;
-    baseAmount: number;
+    totalAmount: number;
+    discountAmount: number;
+    finalAmount: number;
     discountNote: string;
-    qrUrl: string;
-    bankName: string;
-    bankAccount: string;
-    bankOwner: string;
+    submittedAt: string;
   } | null>(null);
 
-  // Selected entities & pricing
+  // Selected campus & term entities
   const selectedCampus = store.campuses.find(c => c.id === regForm.desired_campus_id) || store.campuses[0];
-  const selectedSubject = store.subjects.find(s => s.id === regForm.desired_subject_id) || store.subjects[0];
   const selectedTerm = store.terms.find(t => t.id === regForm.desired_term_id) || activeTerm;
 
-  const effectivePricing = getEffectivePrice(
-    regForm.desired_term_id,
-    regForm.desired_campus_id,
-    regForm.desired_subject_id,
-    store
-  );
-
-  const baseCourseFee = effectivePricing.base_course_fee || 3600000;
-  const royalDiscount = regForm.is_royal_student ? Math.round(baseCourseFee * 0.05) : 0;
-  const estimatedPayable = Math.max(0, (effectivePricing.course_fee || baseCourseFee) - (regForm.is_royal_student ? royalDiscount : 0));
-
-  // Medical chips presets
+  // Handle Medical chip toggle
   const medicalChips = [
     'Dị ứng sữa bò tươi',
     'Dị ứng đậu phộng / hạt',
@@ -140,12 +173,92 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
   };
 
+  // Toggle Subject Selection (Multi-select)
+  const handleToggleSubject = (subjectId: string) => {
+    setSelectedSubjectConfigs(prev => {
+      const exists = prev.some(c => c.subjectId === subjectId);
+      if (exists) {
+        return prev.filter(c => c.subjectId !== subjectId);
+      } else {
+        return [
+          ...prev,
+          {
+            subjectId,
+            timeSlot: 'after_school',
+            timeSlotLabel: 'Sau giờ chính khóa (16:45 - 18:15)',
+          },
+        ];
+      }
+    });
+    if (formErrors.subjects) {
+      setFormErrors(prev => ({ ...prev, subjects: '' }));
+    }
+  };
+
+  // Change Time Slot for a specific Subject
+  const handleChangeSubjectTimeSlot = (subjectId: string, newSlotValue: string) => {
+    const slotObj = TIME_SLOT_OPTIONS.find(o => o.value === newSlotValue);
+    const label = slotObj ? slotObj.label : newSlotValue;
+
+    setSelectedSubjectConfigs(prev =>
+      prev.map(c =>
+        c.subjectId === subjectId
+          ? { ...c, timeSlot: newSlotValue, timeSlotLabel: label }
+          : c
+      )
+    );
+  };
+
+  // Remove Subject from selection
+  const handleRemoveSubject = (subjectId: string) => {
+    setSelectedSubjectConfigs(prev => prev.filter(c => c.subjectId !== subjectId));
+  };
+
+  // Calculate pricing for each selected subject
+  const detailedSelectedSubjects = selectedSubjectConfigs.map(c => {
+    const sub = store.subjects.find(s => s.id === c.subjectId);
+    const pricing = getEffectivePrice(
+      regForm.desired_term_id,
+      regForm.desired_campus_id,
+      c.subjectId,
+      store
+    );
+    const fee = pricing.course_fee || pricing.base_course_fee || 3600000;
+    return {
+      ...c,
+      subject: sub,
+      fee,
+    };
+  });
+
+  const totalBaseFee = detailedSelectedSubjects.reduce((sum, item) => sum + item.fee, 0);
+  const finalTotalAmount = totalBaseFee;
+
+  // Copy Direct Link to Clipboard for sending to parents
+  const handleCopyPortalLink = () => {
+    try {
+      const origin = window.location.origin || '';
+      const pathname = window.location.pathname || '/';
+      const shareUrl = `${origin}${pathname}?portal=parent`;
+      navigator.clipboard.writeText(shareUrl);
+      setCopyToast(`Đã sao chép link Cổng Phụ Huynh: ${shareUrl}`);
+      setTimeout(() => setCopyToast(null), 3500);
+    } catch {
+      setCopyToast('Đã sao chép link Cổng Phụ Huynh!');
+      setTimeout(() => setCopyToast(null), 3500);
+    }
+  };
+
   // Filtered Subject Catalog
   const filteredSubjects = store.subjects.filter(s => {
     if (selectedCategory !== 'all' && s.category !== selectedCategory) return false;
     if (subjectSearch.trim()) {
       const q = subjectSearch.toLowerCase();
-      return s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q) || (s.description && s.description.toLowerCase().includes(q));
+      return (
+        s.name.toLowerCase().includes(q) ||
+        s.category.toLowerCase().includes(q) ||
+        (s.description && s.description.toLowerCase().includes(q))
+      );
     }
     return true;
   });
@@ -168,11 +281,14 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
   };
 
-  // Handle Submit Registration
+  // Handle Form Submit
   const handleRegisterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const errors: { [key: string]: string } = {};
 
+    if (!regForm.student_name.trim()) {
+      errors.student_name = 'Vui lòng nhập họ tên học sinh';
+    }
     if (!regForm.parent_name.trim()) {
       errors.parent_name = 'Vui lòng nhập họ tên phụ huynh';
     }
@@ -180,11 +296,8 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     if (!cleanPhone || cleanPhone.length < 9) {
       errors.parent_phone = 'Vui lòng nhập số điện thoại hợp lệ (từ 10 chữ số)';
     }
-    if (!regForm.student_name.trim()) {
-      errors.student_name = 'Vui lòng nhập họ tên học sinh';
-    }
-    if (!regForm.desired_subject_id) {
-      errors.desired_subject_id = 'Vui lòng chọn môn học đăng ký';
+    if (selectedSubjectConfigs.length === 0) {
+      errors.subjects = 'Vui lòng chọn ít nhất 1 môn học ngoại khóa cho bé';
     }
 
     if (Object.keys(errors).length > 0) {
@@ -196,21 +309,21 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     const currentYear = new Date().getFullYear();
     const leadCode = `REG-${currentYear}-${Date.now().toString().slice(-6)}`;
     const campus = selectedCampus;
-    const subject = selectedSubject;
     const term = selectedTerm;
 
-    const discountPolicy = regForm.is_royal_student
-      ? 'Học sinh Royal School (Ưu đãi 5% học phí + Suất ăn nhẹ bánh sữa sau giờ)'
-      : 'Học sinh Ngoài trường / Vãng lai (Không áp dụng suất bánh sữa)';
+    const registeredSubjectItems: RegisteredSubjectItem[] = detailedSelectedSubjects.map(item => ({
+      subject_id: item.subjectId,
+      subject_name: item.subject?.name || 'Môn ngoại khóa',
+      time_slot: item.timeSlot,
+      time_slot_label: item.timeSlotLabel,
+      estimated_fee: item.fee,
+    }));
 
-    const qrUrl = generateVietQRUrl({
-      bankName: campus?.bank_name || 'Vietcombank',
-      bankAccount: campus?.bank_account || '0071001234567',
-      bankOwner: campus?.bank_owner || 'ROYAL INTERNATIONAL SCHOOL',
-      amount: estimatedPayable,
-      studentCode: leadCode,
-      className: subject?.name || 'Ngoại Khóa',
-    });
+    const subjectNamesList = registeredSubjectItems.map(s => s.subject_name).join(', ');
+
+    const discountPolicy = regForm.is_royal_student
+      ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
+      : `Học sinh Ngoài trường / Vãng lai (${detailedSelectedSubjects.length} môn - Không áp dụng suất bánh sữa)`;
 
     const newLead: ParentRegistration = {
       id: `preg_${Date.now()}`,
@@ -223,12 +336,13 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       student_grade: regForm.student_grade,
       desired_campus_id: regForm.desired_campus_id,
       desired_term_id: regForm.desired_term_id,
-      desired_subject_id: regForm.desired_subject_id,
-      desired_time_slot_type: regForm.desired_time_slot_type,
+      desired_subject_id: selectedSubjectConfigs[0]?.subjectId || '',
+      desired_time_slot_type: selectedSubjectConfigs[0]?.timeSlot === 'after_school' ? 'after_school' : 'weekend',
+      registered_subjects: registeredSubjectItems,
       is_royal_student: regForm.is_royal_student,
       medical_notes: regForm.medical_notes.trim() || undefined,
       notes: regForm.notes.trim() || undefined,
-      estimated_fee: estimatedPayable,
+      estimated_fee: finalTotalAmount,
       discount_policy: discountPolicy,
       status: 'pending',
       created_at: new Date().toISOString().split('T')[0],
@@ -242,8 +356,8 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
         {
           id: `notif_lead_${Date.now()}`,
           type: 'new_lead_registration',
-          title: 'Đăng ký môn học mới từ Cổng Phụ Huynh',
-          message: `Phụ huynh ${regForm.parent_name} vừa đăng ký môn ${subject?.name || 'Môn học'} cho bé ${regForm.student_name} tại cơ sở ${campus?.name || 'Royal School'}.`,
+          title: 'Đơn đăng ký mới từ Cổng Phụ Huynh',
+          message: `Phụ huynh ${regForm.parent_name} vừa đăng ký ${detailedSelectedSubjects.length} môn (${subjectNamesList}) cho bé ${regForm.student_name} tại cơ sở ${campus?.name || 'Royal School'}.`,
           date: new Date().toISOString().split('T')[0],
           severity: 'medium',
           read: false,
@@ -261,65 +375,130 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       studentGrade: regForm.student_grade,
       campusName: campus?.name || 'Royal School',
       termName: term?.name || 'Niên khóa hiện tại',
-      subjectName: subject?.name || 'Môn ngoại khóa',
-      subjectCategory: subject?.category || 'Ngoại khóa',
+      registeredSubjects: detailedSelectedSubjects.map(item => ({
+        name: item.subject?.name || 'Môn ngoại khóa',
+        category: item.subject?.category || 'Ngoại khóa',
+        timeSlotLabel: item.timeSlotLabel,
+        fee: item.fee,
+      })),
       isRoyal: regForm.is_royal_student,
-      estimatedAmount: estimatedPayable,
-      baseAmount: baseCourseFee,
+      totalAmount: totalBaseFee,
+      discountAmount: 0,
+      finalAmount: finalTotalAmount,
       discountNote: discountPolicy,
-      qrUrl,
-      bankName: campus?.bank_name || 'Vietcombank',
-      bankAccount: campus?.bank_account || '0071001234567',
-      bankOwner: campus?.bank_owner || 'ROYAL INTERNATIONAL SCHOOL',
+      submittedAt: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + new Date().toLocaleDateString('vi-VN'),
     });
 
-    // Reset Form
+    // Reset student info
     setRegForm(prev => ({
       ...prev,
-      parent_name: '',
-      parent_phone: '',
-      parent_email: '',
       student_name: '',
       student_dob: '2016-05-15',
-      student_grade: 'Lớp 3 - Tiểu học',
       medical_notes: '',
       notes: '',
     }));
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md overflow-hidden">
-      <div className="w-full max-w-5xl h-[94vh] max-h-[94vh] flex flex-col rounded-3xl bg-[#0B0F19] border border-amber-500/35 shadow-2xl overflow-hidden text-slate-100">
-        
-        {/* Top Header - Apple School Style */}
-        <div className="px-5 py-3.5 bg-gradient-to-r from-slate-900 via-[#0D1527] to-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <RoyalLogo size="md" />
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-extrabold text-sm sm:text-base tracking-wider text-white">ROYAL PARENT PORTAL</span>
-                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
-                  Cổng Đăng Ký Môn Học
+  const portalContent = (
+    <div className={`w-full ${isStandalonePage ? 'min-h-screen bg-[#07090E]' : 'max-w-5xl h-[94vh] max-h-[94vh] rounded-3xl bg-[#0B0F19] border border-amber-500/35 shadow-2xl'} flex flex-col overflow-hidden text-slate-100 font-sans`}>
+      
+      {/* Toast Alert for Copied Link */}
+      {copyToast && (
+        <div className="fixed top-6 right-6 z-50 p-4 rounded-2xl bg-amber-500 text-slate-950 font-bold text-xs shadow-2xl flex items-center gap-2 animate-bounce">
+          <CheckCircle2 className="w-5 h-5 text-slate-950 shrink-0" />
+          <span>{copyToast}</span>
+        </div>
+      )}
+
+      {/* Top Header - Apple School Style */}
+      <div className="px-5 py-3.5 bg-gradient-to-r from-slate-900 via-[#0D1527] to-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <RoyalLogo size="md" />
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-extrabold text-sm sm:text-base tracking-wider text-white">ROYAL PARENT PORTAL</span>
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
+                Cổng Đăng Ký Trực Tuyến
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-medium">
+              Trường Song Ngữ Quốc Tế Hoàng Gia &bull; Đăng Ký Môn Học Ngoại Khóa Cho Con
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Nút Sao Chép Link Đăng Ký Gửi Phụ Huynh */}
+          <button
+            onClick={handleCopyPortalLink}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-amber-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 transition-all shadow-sm"
+            title="Sao chép link này để gửi qua Zalo/Email cho phụ huynh đăng ký"
+          >
+            <Share2 className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Sao Chép Link Gửi Phụ Huynh</span>
+          </button>
+
+          {/* Phần xem hồ sơ tiếp nhận: CHỈ HIỆN CHO NHÂN SỰ ĐƯỢC PHÂN CÔNG (TUYỂN SINH, GIÁO VỤ, ADMIN) */}
+          {isAuthorizedStaff && onNavigateToAdminLeads && (
+            <button
+              onClick={onNavigateToAdminLeads}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-300 bg-slate-800/80 hover:bg-slate-700 hover:text-white border border-slate-700 transition-all"
+              title="Dành cho Tuyển sinh & Giáo vụ: Xem danh sách hồ sơ phụ huynh nộp"
+            >
+              <UsersIcon className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden md:inline">Hồ Sơ Tiếp Nhận</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono font-bold">
+                {store.parentRegistrations.length}
+              </span>
+            </button>
+          )}
+
+          {/* NÚT ĐĂNG NHẬP QUẢN TRỊ (Nếu chưa đăng nhập) */}
+          {!currentUser && onOpenAdminLogin && (
+            <button
+              onClick={onOpenAdminLogin}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-400 hover:from-amber-300 hover:to-amber-200 border border-amber-400 shadow-md shadow-amber-500/25 transition-all transform active:scale-95"
+              title="Dành cho Ban giám hiệu, nhân viên học vụ, kế toán, giáo viên đăng nhập"
+            >
+              <Lock className="w-3.5 h-3.5 text-slate-950" />
+              <span>Đăng Nhập Quản Trị</span>
+            </button>
+          )}
+
+          {/* THÔNG TIN NHÂN SỰ ĐÃ ĐĂNG NHẬP */}
+          {currentUser && (
+            <div className="flex items-center gap-2">
+              <div className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 text-xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="text-white font-semibold truncate max-w-[130px]">{currentUser.full_name}</span>
+                <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">
+                  {currentUser.role === 'super_admin' ? 'Super Admin' : currentUser.role}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 font-medium">
-                Phụ huynh đăng ký môn học cho con &bull; Ban Học vụ sắp xếp thời khóa biểu và xếp lớp phù hợp
-              </p>
+
+              {onClose && (
+                <button
+                  onClick={onClose}
+                  className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-all shadow-sm"
+                  title="Vào hệ thống quản trị nội bộ"
+                >
+                  Vào Quản Trị
+                </button>
+              )}
+
+              {onLogout && (
+                <button
+                  onClick={onLogout}
+                  className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-slate-700 transition-colors"
+                  title="Đăng xuất tài khoản quản trị"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              )}
             </div>
-          </div>
+          )}
 
-          <div className="flex items-center gap-2 sm:gap-3">
-            {onNavigateToAdminLeads && (
-              <button
-                onClick={onNavigateToAdminLeads}
-                className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-300 bg-slate-800/80 hover:bg-slate-700 hover:text-white border border-slate-700 transition-all"
-                title="Chuyển đến màn hình Quản trị Đơn Tuyển Sinh nội bộ"
-              >
-                <UsersIcon className="w-3.5 h-3.5 text-amber-400" />
-                <span>Xem Hồ Sơ Tiếp Nhận ({store.parentRegistrations.length})</span>
-              </button>
-            )}
-
+          {!isStandalonePage && (
             <button
               onClick={onClose}
               className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
@@ -327,589 +506,687 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
             >
               <X className="w-5 h-5" />
             </button>
-          </div>
+          )}
+        </div>
+      </div>
+
+      {/* Subheader Notice Banner */}
+      <div className="px-5 sm:px-8 py-2.5 bg-slate-900/80 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-2 shrink-0">
+        <div className="flex items-center gap-2 text-slate-300 font-medium">
+          <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span>Phụ huynh chọn môn học & khung giờ cho con. Ban Tuyển sinh & Học vụ sẽ liên hệ xác nhận trong vòng 24 giờ làm việc.</span>
         </div>
 
-        {/* Subheader info bar */}
-        <div className="px-5 sm:px-8 py-2.5 bg-slate-900/80 border-b border-slate-800 flex items-center justify-between text-xs shrink-0">
-          <div className="flex items-center gap-2 text-slate-300 font-semibold">
-            <Send className="w-3.5 h-3.5 text-amber-400" />
-            <span>Biểu mẫu trực tuyến &bull; Phụ huynh chọn môn học ngoại khóa mong muốn</span>
-          </div>
-
-          <div className="flex items-center gap-2 text-slate-400">
-            <Clock className="w-3.5 h-3.5 text-amber-400" />
-            <span>Hotline Tuyển sinh: <strong>(028) 7102 9999</strong></span>
-          </div>
+        <div className="flex items-center gap-2 text-slate-400 text-[11px] shrink-0">
+          <Clock className="w-3.5 h-3.5 text-amber-400" />
+          <span>Hotline Tuyển sinh: <strong>(028) 7102 9999</strong></span>
         </div>
+      </div>
 
-        {/* Scrollable Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7 space-y-6 bg-gradient-to-b from-[#0B0F19] to-[#070A11]">
-          <div className="space-y-6 max-w-4xl mx-auto">
-            
-            {/* PORTAL NOTICE BANNER */}
-            <div className="rounded-2xl p-4 bg-gradient-to-r from-amber-500/10 via-slate-900 to-amber-500/5 border border-amber-500/30 flex items-start gap-3">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
-                <Info className="w-5 h-5" />
-              </div>
-              <div className="text-xs text-slate-300 leading-relaxed">
-                <span className="font-bold text-amber-300 block text-sm mb-0.5">
-                  Cổng Đăng Ký Môn Học Ngoại Khóa Hoàng Gia
-                </span>
-                Quý Phụ huynh <strong>chỉ cần chọn Môn học và Cơ sở mong muốn</strong>. Sau khi tiếp nhận hồ sơ, Ban Học vụ & Tuyển sinh Royal School sẽ trực tiếp liên hệ tư vấn, sắp xếp thời khóa biểu và phân bổ lớp học phù hợp nhất với lứa tuổi của con.
-              </div>
-            </div>
-
-            {/* SUCCESS MODAL / RECEIPT BANNER IF JUST SUBMITTED */}
-            {regReceipt && (
-              <div className="rounded-3xl bg-gradient-to-br from-[#0D182A] via-slate-900 to-[#0A121E] border-2 border-emerald-500/40 p-6 sm:p-7 shadow-2xl space-y-5 animate-fadeIn">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0">
-                      <CheckCircle2 className="w-7 h-7" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                        Đã Tiếp Nhận Đăng Ký Môn Học Cho Bé!
-                      </div>
-                      <h3 className="text-lg font-extrabold text-white">
-                        Mã Hồ Sơ Tiếp Nhận: <span className="text-amber-400 font-mono">{regReceipt.leadCode}</span>
-                      </h3>
-                    </div>
+      {/* Scrollable Form Body */}
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7 space-y-6 bg-gradient-to-b from-[#0B0F19] to-[#070A11]">
+        <div className="space-y-6 max-w-4xl mx-auto">
+          
+          {/* SUCCESS BANNER WHEN APPLICATION IS SUBMITTED (WITHOUT VIETQR) */}
+          {regReceipt && (
+            <div className="rounded-3xl bg-gradient-to-br from-[#0D182A] via-slate-900 to-[#0A121E] border-2 border-emerald-500/40 p-6 sm:p-7 shadow-2xl space-y-5 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                    <CheckCircle2 className="w-7 h-7" />
                   </div>
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                      ĐÃ TIẾP NHẬN ĐƠN ĐĂNG KÝ NGOẠI KHÓA THÀNH CÔNG!
+                    </div>
+                    <h3 className="text-lg font-extrabold text-white">
+                      Mã Hồ Sơ Tiếp Nhận: <span className="text-amber-400 font-mono">{regReceipt.leadCode}</span>
+                    </h3>
+                  </div>
+                </div>
 
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(regReceipt.leadCode);
+                      setCopyToast(`Đã sao chép mã hồ sơ: ${regReceipt.leadCode}`);
+                      setTimeout(() => setCopyToast(null), 3000);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-amber-300 font-semibold transition-colors flex items-center gap-1.5"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Sao chép mã</span>
+                  </button>
                   <button
                     onClick={() => setRegReceipt(null)}
-                    className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-semibold transition-colors self-start sm:self-center"
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
                   >
-                    Đăng ký thêm môn học khác
+                    Đăng ký thêm cho bé khác
                   </button>
                 </div>
-
-                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200">
-                  Phòng Tuyển sinh sẽ liên hệ phụ huynh <strong>{regReceipt.parentName}</strong> qua SĐT <strong>{regReceipt.parentPhone}</strong> trong vòng <strong>24 giờ làm việc</strong> để xác nhận lịch học và xếp lớp chính thức cho bé.
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
-                  {/* Summary card */}
-                  <div className="space-y-3">
-                    <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2">
-                      <div className="text-[11px] font-bold text-amber-400 uppercase tracking-wider mb-1">
-                        Chi Tiết Môn Học Đã Đăng Ký
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Môn học đã chọn:</span>
-                        <span className="text-amber-300 font-extrabold text-sm">{regReceipt.subjectName}</span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Phân loại môn:</span>
-                        <span className="text-slate-300 font-medium">{regReceipt.subjectCategory}</span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Học sinh:</span>
-                        <span className="text-white font-bold">{regReceipt.studentName} ({regReceipt.studentGrade})</span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Cơ sở đăng ký:</span>
-                        <span className="text-slate-200">{regReceipt.campusName}</span>
-                      </div>
-                      <div className="flex justify-between py-1">
-                        <span className="text-slate-400">Chính sách ưu đãi:</span>
-                        <span className="text-emerald-400 font-semibold text-right">{regReceipt.discountNote}</span>
-                      </div>
-                    </div>
-
-                    <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-1">
-                      <span className="text-[11px] text-slate-400 block">Học phí tham khảo khóa học:</span>
-                      <div className="text-xl font-black text-emerald-400 font-mono">
-                        {formatVND(regReceipt.estimatedAmount)}
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-0.5">
-                        Phụ huynh có thể thanh toán trước giữ chỗ hoặc thanh toán sau khi nhà trường xác nhận xếp lớp.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* VietQR Box */}
-                  <div className="p-4 rounded-2xl bg-white text-slate-950 flex flex-col items-center justify-center text-center shadow-lg">
-                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-[10px] font-extrabold uppercase tracking-wider text-slate-700 mb-2">
-                      <QrCode className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Mã VietQR Chuyển Khoản Tạm Tính</span>
-                    </div>
-                    <img 
-                      src={regReceipt.qrUrl} 
-                      alt="VietQR Chuyển Khoản" 
-                      className="w-40 h-40 object-contain rounded-xl border border-slate-200 shadow-sm"
-                    />
-                    <div className="mt-2 text-[10px] text-slate-600 font-mono space-y-0.5">
-                      <p>Số TK: <strong>{regReceipt.bankAccount}</strong> ({regReceipt.bankName})</p>
-                      <p>Chủ TK: <strong>{regReceipt.bankOwner}</strong></p>
-                      <p className="font-bold text-amber-700">Cú pháp: {regReceipt.leadCode} {regReceipt.studentName}</p>
-                    </div>
-                  </div>
-                </div>
               </div>
-            )}
 
-            {/* REGISTRATION FORM CONTAINER */}
-            <div className="rounded-3xl bg-slate-900/90 border border-slate-800 p-5 sm:p-7 backdrop-blur-md shadow-2xl space-y-6">
-              
-              <form onSubmit={handleRegisterSubmit} className="space-y-6">
-                
-                {/* BƯỚC 1: CHỌN MÔN HỌC NGOẠI KHÓA (TRỌNG TÂM - PHỤ HUYNH CHỈ ĐĂNG KÝ MÔN) */}
-                <div className="space-y-3.5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2 border-b border-slate-800 gap-2">
-                    <div className="flex items-center gap-2 text-xs font-bold text-amber-300 uppercase tracking-wider">
-                      <Award className="w-4 h-4 text-amber-400" />
-                      <span>1. Chọn Môn Học Ngoại Khóa Đăng Ký Cho Bé</span>
-                      <span className="text-rose-400">*</span>
-                    </div>
+              {/* Notice Message */}
+              <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200 leading-relaxed">
+                Nhà trường đã tiếp nhận thông tin và phòng Tuyển sinh sẽ liên hệ phụ huynh <strong>{regReceipt.parentName}</strong> qua SĐT <strong>{regReceipt.parentPhone}</strong> trong vòng <strong>24 giờ làm việc</strong> để xác nhận thời khóa biểu và phân lớp cho bé <strong>{regReceipt.studentName}</strong>.
+              </div>
 
-                    {/* Quick Search Môn học */}
-                    <div className="relative">
-                      <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        placeholder="Tìm môn (Bơi, Bóng rổ, Piano...)"
-                        value={subjectSearch}
-                        onChange={(e) => setSubjectSearch(e.target.value)}
-                        className="pl-7 pr-3 py-1 rounded-xl bg-slate-950 border border-slate-800 text-white text-[11px] focus:outline-none focus:border-amber-500 w-48 sm:w-56"
-                      />
-                    </div>
+              {/* Registration Details Summary */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                {/* Subjects & Schedule */}
+                <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
+                  <div className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">
+                    Môn Học & Lịch Đăng Ký ({regReceipt.registeredSubjects.length} môn)
                   </div>
-
-                  {/* Category Filter Pills */}
-                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedCategory('all')}
-                      className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
-                        selectedCategory === 'all'
-                          ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
-                          : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
-                      }`}
-                    >
-                      Tất cả môn ({store.subjects.length})
-                    </button>
-                    {categoriesList.map(cat => (
-                      <button
-                        key={cat}
-                        type="button"
-                        onClick={() => setSelectedCategory(cat)}
-                        className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
-                          selectedCategory === cat
-                            ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
-                            : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
-                        }`}
-                      >
-                        {cat}
-                      </button>
+                  
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                    {regReceipt.registeredSubjects.map((sub, idx) => (
+                      <div key={idx} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-white text-xs">{sub.name}</span>
+                          <span className="font-mono text-emerald-400 font-bold">{formatVND(sub.fee)}</span>
+                        </div>
+                        <div className="text-[11px] text-amber-300/90 flex items-center gap-1.5">
+                          <Clock className="w-3 h-3 text-amber-400" />
+                          <span>{sub.timeSlotLabel}</span>
+                        </div>
+                      </div>
                     ))}
                   </div>
 
-                  {/* SUBJECT CARDS CATALOG (VISUAL SELECTION) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
-                    {filteredSubjects.map(sub => {
-                      const isSelected = regForm.desired_subject_id === sub.id;
-                      return (
-                        <div
-                          key={sub.id}
-                          onClick={() => {
-                            setRegForm({ ...regForm, desired_subject_id: sub.id });
-                            if (formErrors.desired_subject_id) setFormErrors({ ...formErrors, desired_subject_id: '' });
-                          }}
-                          className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex flex-col justify-between relative group ${
-                            isSelected
-                              ? 'bg-gradient-to-br from-amber-500/15 via-slate-900 to-amber-500/5 border-amber-400 shadow-md shadow-amber-500/15'
-                              : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/60'
-                          }`}
-                        >
-                          {isSelected && (
-                            <div className="absolute top-2.5 right-2.5 w-5 h-5 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center">
-                              <Check className="w-3.5 h-3.5 stroke-[3]" />
-                            </div>
-                          )}
-
-                          <div>
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                                isSelected ? 'bg-amber-500/25' : 'bg-slate-800/80'
-                              }`}>
-                                {getSubjectIcon(sub.category)}
-                              </div>
-                              <div className="pr-5">
-                                <h4 className="font-bold text-white text-xs sm:text-sm group-hover:text-amber-300 transition-colors">
-                                  {sub.name}
-                                </h4>
-                                <span className="text-[10px] text-amber-400/90 font-medium">
-                                  {sub.category}
-                                </span>
-                              </div>
-                            </div>
-
-                            <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
-                              {sub.description || `Chương trình phát triển năng khiếu toàn diện cho học sinh.`}
-                            </p>
-                          </div>
-
-                          <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-                            <span className="text-slate-500 font-mono">
-                              {sub.standard_duration || '24 buổi'}
-                            </span>
-                            <span className={`font-semibold ${isSelected ? 'text-amber-300' : 'text-slate-300'}`}>
-                              {isSelected ? 'Đã chọn môn này' : 'Nhấp để chọn'}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {formErrors.desired_subject_id && (
-                    <p className="text-xs text-rose-400">{formErrors.desired_subject_id}</p>
-                  )}
-
-                  {/* Campus Selection & Slot Preference */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-2 text-xs">
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Cơ sở (Campus) mong muốn học <span className="text-rose-400">*</span>
-                      </label>
-                      <select
-                        value={regForm.desired_campus_id}
-                        onChange={(e) => setRegForm({ ...regForm, desired_campus_id: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
-                      >
-                        {store.campuses.map(c => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </select>
+                  <div className="pt-2 border-t border-slate-800/80 space-y-1 text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Học sinh:</span>
+                      <span className="text-white font-bold">{regReceipt.studentName} ({regReceipt.studentGrade})</span>
                     </div>
-
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Kỳ học tuyển sinh
-                      </label>
-                      <select
-                        value={regForm.desired_term_id}
-                        onChange={(e) => setRegForm({ ...regForm, desired_term_id: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
-                      >
-                        {store.terms.map(t => (
-                          <option key={t.id} value={t.id}>
-                            {t.name} ({t.status === 'open_enrollment' ? 'Đang mở' : t.academic_year})
-                          </option>
-                        ))}
-                      </select>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Cơ sở:</span>
+                      <span className="text-slate-200">{regReceipt.campusName}</span>
                     </div>
-
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Khung giờ mong muốn
-                      </label>
-                      <select
-                        value={regForm.desired_time_slot_type}
-                        onChange={(e) => setRegForm({ ...regForm, desired_time_slot_type: e.target.value as any })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
-                      >
-                        <option value="after_school">Sau giờ chính khóa (16:45 - 18:15)</option>
-                        <option value="weekend">Cuối tuần (Sáng / Chiều Thứ 7 - CN)</option>
-                      </select>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Phân loại học sinh:</span>
+                      <span className={regReceipt.isRoyal ? "text-amber-400 font-semibold" : "text-slate-200"}>
+                        {regReceipt.isRoyal ? "HS chính khóa Royal (Có suất bánh sữa)" : "Học sinh ngoài trường"}
+                      </span>
                     </div>
                   </div>
                 </div>
 
-                {/* BƯỚC 2: THÔNG TIN PHỤ HUYNH & HỌC SINH */}
-                <div className="space-y-4 pt-3 border-t border-slate-800">
-                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300 uppercase tracking-wider">
-                    <User className="w-4 h-4 text-amber-400" />
-                    <span>2. Thông Tin Phụ Huynh & Học Sinh</span>
-                  </div>
-
-                  {/* Thông tin phụ huynh */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Họ và tên Phụ huynh <span className="text-rose-400">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="Ví dụ: Nguyễn Văn Hưng"
-                        value={regForm.parent_name}
-                        onChange={(e) => {
-                          setRegForm({ ...regForm, parent_name: e.target.value });
-                          if (formErrors.parent_name) setFormErrors({ ...formErrors, parent_name: '' });
-                        }}
-                        className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border ${
-                          formErrors.parent_name ? 'border-rose-500' : 'border-slate-800'
-                        } text-white focus:outline-none focus:border-amber-500`}
-                      />
-                      {formErrors.parent_name && (
-                        <p className="text-[11px] text-rose-400 mt-1">{formErrors.parent_name}</p>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Số điện thoại / Zalo liên hệ <span className="text-rose-400">*</span>
-                      </label>
-                      <input
-                        type="tel"
-                        required
-                        placeholder="Ví dụ: 0909 123 456"
-                        value={regForm.parent_phone}
-                        onChange={(e) => {
-                          const formatted = formatPhoneNumber(e.target.value);
-                          setRegForm({ ...regForm, parent_phone: formatted });
-                          if (formErrors.parent_phone) setFormErrors({ ...formErrors, parent_phone: '' });
-                        }}
-                        className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 font-mono border ${
-                          formErrors.parent_phone ? 'border-rose-500' : 'border-slate-800'
-                        } text-amber-300 font-bold focus:outline-none focus:border-amber-500`}
-                      />
-                      {formErrors.parent_phone && (
-                        <p className="text-[11px] text-rose-400 mt-1">{formErrors.parent_phone}</p>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Email nhận lịch học & học phí
-                      </label>
-                      <input
-                        type="email"
-                        placeholder="Ví dụ: phuhuynh@gmail.com"
-                        value={regForm.parent_email}
-                        onChange={(e) => setRegForm({ ...regForm, parent_email: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Thông tin học sinh */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Họ và tên Học sinh <span className="text-rose-400">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="Ví dụ: Nguyễn Hoàng Khang"
-                        value={regForm.student_name}
-                        onChange={(e) => {
-                          setRegForm({ ...regForm, student_name: e.target.value });
-                          if (formErrors.student_name) setFormErrors({ ...formErrors, student_name: '' });
-                        }}
-                        className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border ${
-                          formErrors.student_name ? 'border-rose-500' : 'border-slate-800'
-                        } text-white focus:outline-none focus:border-amber-500`}
-                      />
-                      {formErrors.student_name && (
-                        <p className="text-[11px] text-rose-400 mt-1">{formErrors.student_name}</p>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Ngày tháng năm sinh của bé
-                      </label>
-                      <input
-                        type="date"
-                        value={regForm.student_dob}
-                        onChange={(e) => setRegForm({ ...regForm, student_dob: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-300 font-semibold mb-1">
-                        Khối lớp hiện tại
-                      </label>
-                      <select
-                        value={regForm.student_grade}
-                        onChange={(e) => setRegForm({ ...regForm, student_grade: e.target.value })}
-                        className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
-                      >
-                        <option value="Khối Mầm Non">Khối Mầm Non (3 - 5 tuổi)</option>
-                        <option value="Lớp 1 - Tiểu học">Lớp 1 - Tiểu học</option>
-                        <option value="Lớp 2 - Tiểu học">Lớp 2 - Tiểu học</option>
-                        <option value="Lớp 3 - Tiểu học">Lớp 3 - Tiểu học</option>
-                        <option value="Lớp 4 - Tiểu học">Lớp 4 - Tiểu học</option>
-                        <option value="Lớp 5 - Tiểu học">Lớp 5 - Tiểu học</option>
-                        <option value="Khối THCS (Lớp 6 - 9)">Khối THCS (Lớp 6 - 9)</option>
-                        <option value="Khối THPT (Lớp 10 - 12)">Khối THPT (Lớp 10 - 12)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Phân loại học sinh - Royal vs Ngoài trường */}
-                  <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                    <span className="text-xs font-semibold text-slate-300 block">
-                      Phân loại học sinh & Chế độ ăn nhẹ bánh sữa:
+                {/* Financial Summary & Contact Info */}
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 via-slate-950 to-slate-950 border border-amber-500/30 space-y-2">
+                    <span className="text-[11px] text-slate-400 block font-semibold uppercase tracking-wider">
+                      Mức học phí tham khảo:
                     </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setRegForm({ ...regForm, is_royal_student: true })}
-                        className={`p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all ${
-                          regForm.is_royal_student
-                            ? 'bg-amber-500/15 border-amber-500 text-white shadow-sm shadow-amber-500/20'
-                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-                        }`}
-                      >
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
-                          regForm.is_royal_student ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-600'
-                        }`}>
-                          <Check className="w-3.5 h-3.5 stroke-[3]" />
-                        </div>
-                        <div>
-                          <div className="font-bold text-white flex items-center gap-1.5">
-                            <span>Học sinh chính khóa Royal School</span>
-                            <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-bold">Ưu đãi 5%</span>
-                          </div>
-                          <p className="text-[11px] text-slate-400 mt-0.5">
-                            Được phục vụ suất ăn nhẹ/bánh sữa tươi sau giờ học lúc 16:30 trước khi tập luyện.
-                          </p>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setRegForm({ ...regForm, is_royal_student: false })}
-                        className={`p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all ${
-                          !regForm.is_royal_student
-                            ? 'bg-cyan-500/15 border-cyan-500 text-white shadow-sm shadow-cyan-500/20'
-                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-                        }`}
-                      >
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
-                          !regForm.is_royal_student ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-600'
-                        }`}>
-                          <Check className="w-3.5 h-3.5 stroke-[3]" />
-                        </div>
-                        <div>
-                          <div className="font-bold text-white">Học sinh ngoài trường / Vãng lai</div>
-                          <p className="text-[11px] text-slate-400 mt-0.5">
-                            Không áp dụng chính sách suất ăn nhẹ bánh sữa của bếp ăn Royal School.
-                          </p>
-                        </div>
-                      </button>
+                    <div className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono">
+                      {formatVND(regReceipt.finalAmount)}
                     </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      {regReceipt.discountNote}
+                    </p>
+                    <p className="text-[10px] text-amber-300/80 pt-1 border-t border-slate-800">
+                      * Học phí chính thức và phương thức đóng phí sẽ được chuyên viên tuyển sinh tư vấn chi tiết khi liên hệ.
+                    </p>
                   </div>
 
-                  {/* Lưu ý y tế & Dị ứng thực phẩm */}
-                  <div className="space-y-1.5 text-xs">
-                    <label className="block text-slate-300 font-semibold">
-                      Lưu ý y tế, dị ứng thực phẩm hoặc vận động của con (nếu có):
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Ví dụ: Dị ứng sữa tươi, dị ứng đậu phộng, nhạy cảm nước lạnh..."
-                      value={regForm.medical_notes}
-                      onChange={(e) => setRegForm({ ...regForm, medical_notes: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-rose-300 focus:outline-none focus:border-rose-500"
-                    />
-                    {/* Quick Chips */}
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      <span className="text-[10px] text-slate-500 font-medium">Chọn nhanh:</span>
-                      {medicalChips.map(chip => (
-                        <button
-                          key={chip}
-                          type="button"
-                          onClick={() => handleToggleMedicalChip(chip)}
-                          className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] transition-colors"
-                        >
-                          + {chip}
-                        </button>
-                      ))}
+                  <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2 text-slate-300">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                      Thông Tin Liên Hệ Phụ Huynh
+                    </div>
+                    <div className="space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Phụ huynh:</span>
+                        <span className="text-white font-semibold">{regReceipt.parentName}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Số điện thoại:</span>
+                        <span className="font-mono text-amber-300 font-bold">{regReceipt.parentPhone}</span>
+                      </div>
+                      {regReceipt.parentEmail && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Email:</span>
+                          <span className="text-slate-300">{regReceipt.parentEmail}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-slate-400 text-[10px] pt-1 border-t border-slate-800">
+                        <span>Thời gian gửi đơn:</span>
+                        <span>{regReceipt.submittedAt}</span>
+                      </div>
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-                  {/* Ghi chú thêm */}
-                  <div className="text-xs">
+          {/* MAIN REGISTRATION FORM */}
+          <div className="rounded-3xl bg-slate-900/90 border border-slate-800 p-5 sm:p-7 backdrop-blur-md shadow-2xl space-y-7">
+            
+            <form onSubmit={handleRegisterSubmit} className="space-y-7">
+              
+              {/* ======================================================== */}
+              {/* 1. THÔNG TIN HỌC SINH VÀ PHỤ HUYNH (ĐƯỢC ĐẶT ĐẦU TIÊN)     */}
+              {/* ======================================================== */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 pb-2.5 border-b border-slate-800 text-xs font-bold text-amber-300 uppercase tracking-wider">
+                  <User className="w-4 h-4 text-amber-400" />
+                  <span>1. Thông Tin Học Sinh & Phụ Huynh</span>
+                  <span className="text-rose-400">*</span>
+                </div>
+
+                {/* Thông tin học sinh */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+                  <div>
                     <label className="block text-slate-300 font-semibold mb-1">
-                      Ghi chú nguyện vọng của phụ huynh (nếu có):
+                      Họ và tên Học sinh <span className="text-rose-400">*</span>
                     </label>
                     <input
                       type="text"
-                      placeholder="Ví dụ: Phụ huynh muốn học cùng ca với bạn Minh Khôi..."
-                      value={regForm.notes}
-                      onChange={(e) => setRegForm({ ...regForm, notes: e.target.value })}
+                      required
+                      placeholder="Ví dụ: Nguyễn Hoàng Khang"
+                      value={regForm.student_name}
+                      onChange={(e) => {
+                        setRegForm({ ...regForm, student_name: e.target.value });
+                        if (formErrors.student_name) setFormErrors({ ...formErrors, student_name: '' });
+                      }}
+                      className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border ${
+                        formErrors.student_name ? 'border-rose-500' : 'border-slate-800'
+                      } text-white focus:outline-none focus:border-amber-500`}
+                    />
+                    {formErrors.student_name && (
+                      <p className="text-[11px] text-rose-400 mt-1">{formErrors.student_name}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Ngày tháng năm sinh của bé
+                    </label>
+                    <input
+                      type="date"
+                      value={regForm.student_dob}
+                      onChange={(e) => setRegForm({ ...regForm, student_dob: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Khối lớp hiện tại của con
+                    </label>
+                    <select
+                      value={regForm.student_grade}
+                      onChange={(e) => setRegForm({ ...regForm, student_grade: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="Khối Mầm Non">Khối Mầm Non (3 - 5 tuổi)</option>
+                      <option value="Lớp 1 - Tiểu học">Lớp 1 - Tiểu học</option>
+                      <option value="Lớp 2 - Tiểu học">Lớp 2 - Tiểu học</option>
+                      <option value="Lớp 3 - Tiểu học">Lớp 3 - Tiểu học</option>
+                      <option value="Lớp 4 - Tiểu học">Lớp 4 - Tiểu học</option>
+                      <option value="Lớp 5 - Tiểu học">Lớp 5 - Tiểu học</option>
+                      <option value="Khối THCS (Lớp 6 - 9)">Khối THCS (Lớp 6 - 9)</option>
+                      <option value="Khối THPT (Lớp 10 - 12)">Khối THPT (Lớp 10 - 12)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Phân loại học sinh - Royal vs Ngoài trường */}
+                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+                  <span className="text-xs font-semibold text-slate-300 block">
+                    Phân loại học sinh & Chế độ ăn nhẹ bánh sữa:
+                  </span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setRegForm({ ...regForm, is_royal_student: true })}
+                      className={`p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all ${
+                        regForm.is_royal_student
+                          ? 'bg-amber-500/15 border-amber-500 text-white shadow-sm shadow-amber-500/20'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
+                        regForm.is_royal_student ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-600'
+                      }`}>
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                      <div>
+                        <div className="font-bold text-white flex items-center gap-1.5">
+                          <span>Học sinh chính khóa Royal School</span>
+                          <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-bold">Suất Bánh Sữa</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Được phục vụ suất ăn nhẹ/bánh sữa tươi sau giờ học lúc 16:30 trước khi vào lớp ngoại khóa.
+                        </p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setRegForm({ ...regForm, is_royal_student: false })}
+                      className={`p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all ${
+                        !regForm.is_royal_student
+                          ? 'bg-cyan-500/15 border-cyan-500 text-white shadow-sm shadow-cyan-500/20'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
+                        !regForm.is_royal_student ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-600'
+                      }`}>
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      </div>
+                      <div>
+                        <div className="font-bold text-white">Học sinh ngoài trường / Vãng lai</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Không áp dụng chính sách suất ăn nhẹ bánh sữa của bếp ăn Royal School.
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Lưu ý y tế & Dị ứng thực phẩm */}
+                <div className="space-y-1.5 text-xs">
+                  <label className="block text-slate-300 font-semibold">
+                    Lưu ý y tế, dị ứng thực phẩm hoặc vận động của con (nếu có):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ví dụ: Dị ứng sữa tươi, dị ứng đậu phộng, nhạy cảm nước lạnh..."
+                    value={regForm.medical_notes}
+                    onChange={(e) => setRegForm({ ...regForm, medical_notes: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-rose-300 focus:outline-none focus:border-rose-500"
+                  />
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[10px] text-slate-500 font-medium">Chọn nhanh:</span>
+                    {medicalChips.map(chip => (
+                      <button
+                        key={chip}
+                        type="button"
+                        onClick={() => handleToggleMedicalChip(chip)}
+                        className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] transition-colors"
+                      >
+                        + {chip}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Thông tin phụ huynh */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs pt-1">
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Họ và tên Phụ huynh <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ví dụ: Nguyễn Văn Hưng"
+                      value={regForm.parent_name}
+                      onChange={(e) => {
+                        setRegForm({ ...regForm, parent_name: e.target.value });
+                        if (formErrors.parent_name) setFormErrors({ ...formErrors, parent_name: '' });
+                      }}
+                      className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border ${
+                        formErrors.parent_name ? 'border-rose-500' : 'border-slate-800'
+                      } text-white focus:outline-none focus:border-amber-500`}
+                    />
+                    {formErrors.parent_name && (
+                      <p className="text-[11px] text-rose-400 mt-1">{formErrors.parent_name}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Số điện thoại / Zalo <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="Ví dụ: 0909 123 456"
+                      value={regForm.parent_phone}
+                      onChange={(e) => {
+                        const formatted = formatPhoneNumber(e.target.value);
+                        setRegForm({ ...regForm, parent_phone: formatted });
+                        if (formErrors.parent_phone) setFormErrors({ ...formErrors, parent_phone: '' });
+                      }}
+                      className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 font-mono border ${
+                        formErrors.parent_phone ? 'border-rose-500' : 'border-slate-800'
+                      } text-amber-300 font-bold focus:outline-none focus:border-amber-500`}
+                    />
+                    {formErrors.parent_phone && (
+                      <p className="text-[11px] text-rose-400 mt-1">{formErrors.parent_phone}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Email nhận lịch học & thông báo
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="Ví dụ: phuhuynh@gmail.com"
+                      value={regForm.parent_email}
+                      onChange={(e) => setRegForm({ ...regForm, parent_email: e.target.value })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
                     />
                   </div>
                 </div>
 
-                {/* BƯỚC 3: TÓM TẮT & GỬI ĐĂNG KÝ */}
-                <div className="space-y-3 pt-3 border-t border-slate-800">
-                  <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-white">Môn học đã chọn:</span>
-                        <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[11px] font-bold">
-                          {selectedSubject?.name} ({selectedSubject?.category})
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400">
-                        Cơ sở: <strong className="text-slate-200">{selectedCampus?.name}</strong> &bull; Học phí chuẩn: {formatVND(baseCourseFee)}
-                        {regForm.is_royal_student && (
-                          <span className="text-emerald-400 ml-1 font-semibold">
-                            (Ưu đãi 5% HS Royal: -{formatVND(royalDiscount)})
-                          </span>
-                        )}
-                      </p>
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      <div className="text-[10px] text-slate-400 uppercase font-semibold">Học phí tham khảo:</div>
-                      <div className="text-xl sm:text-2xl font-black text-emerald-400 font-mono">
-                        {formatVND(estimatedPayable)}
-                      </div>
-                    </div>
+                {/* Cơ sở & Niên khóa */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Cơ sở (Campus) theo học <span className="text-rose-400">*</span>
+                    </label>
+                    <select
+                      value={regForm.desired_campus_id}
+                      onChange={(e) => setRegForm({ ...regForm, desired_campus_id: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
+                    >
+                      {store.campuses.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
                   </div>
 
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Niên khóa / Kỳ học tuyển sinh
+                    </label>
+                    <select
+                      value={regForm.desired_term_id}
+                      onChange={(e) => setRegForm({ ...regForm, desired_term_id: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
+                    >
+                      {store.terms.map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.status === 'open_enrollment' ? 'Đang mở tuyển sinh' : t.academic_year})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* ======================================================== */}
+              {/* 2. MÔN HỌC ĐĂNG KÝ: CÓ THỂ CHỌN NHIỀU MÔN, GIỜ HỌC CHO MỖI MÔN */}
+              {/* ======================================================== */}
+              <div className="space-y-4 pt-4 border-t border-slate-800">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2.5 border-b border-slate-800 gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300 uppercase tracking-wider">
+                    <Award className="w-4 h-4 text-amber-400" />
+                    <span>2. Môn Học Đăng Ký (Có Thể Chọn Nhiều Môn & Giờ Học Cho Mỗi Môn)</span>
+                    <span className="text-rose-400">*</span>
+                  </div>
+
+                  {/* Search box */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Tìm môn học..."
+                      value={subjectSearch}
+                      onChange={(e) => setSubjectSearch(e.target.value)}
+                      className="pl-7 pr-3 py-1 rounded-xl bg-slate-950 border border-slate-800 text-white text-[11px] focus:outline-none focus:border-amber-500 w-44 sm:w-52"
+                    />
+                  </div>
+                </div>
+
+                {/* Category filter pills */}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategory('all')}
+                    className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
+                      selectedCategory === 'all'
+                        ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    Tất cả ({store.subjects.length})
+                  </button>
+                  {categoriesList.map(cat => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setSelectedCategory(cat)}
+                      className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
+                        selectedCategory === cat
+                          ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
+                          : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+
+                {/* SUBJECT SELECTION GRID (Multi-select) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {filteredSubjects.map(sub => {
+                    const isSelected = selectedSubjectConfigs.some(c => c.subjectId === sub.id);
+                    return (
+                      <div
+                        key={sub.id}
+                        onClick={() => handleToggleSubject(sub.id)}
+                        className={`p-3.5 rounded-2xl border text-left cursor-pointer transition-all flex flex-col justify-between relative group ${
+                          isSelected
+                            ? 'bg-gradient-to-br from-amber-500/15 via-slate-900 to-amber-500/5 border-amber-400 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/40'
+                            : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/60'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                              isSelected ? 'bg-amber-500/25' : 'bg-slate-800/80'
+                            }`}>
+                              {getSubjectIcon(sub.category)}
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-white text-xs sm:text-sm group-hover:text-amber-300 transition-colors">
+                                {sub.name}
+                              </h4>
+                              <span className="text-[10px] text-amber-400/90 font-medium">
+                                {sub.category}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${
+                            isSelected ? 'bg-amber-400 border-amber-400 text-slate-950' : 'border-slate-700 bg-slate-900'
+                          }`}>
+                            {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                          </div>
+                        </div>
+
+                        <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed mt-1">
+                          {sub.description || `Chương trình rèn luyện năng khiếu toàn diện cho học sinh.`}
+                        </p>
+
+                        <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-500 font-mono">
+                            {sub.standard_duration || '24 buổi'}
+                          </span>
+                          <span className={`font-semibold text-[11px] ${isSelected ? 'text-amber-300' : 'text-slate-400'}`}>
+                            {isSelected ? '✓ Đã chọn môn' : '+ Chọn môn này'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {formErrors.subjects && (
+                  <p className="text-xs text-rose-400">{formErrors.subjects}</p>
+                )}
+
+                {/* ======================================================== */}
+                {/* GIỜ HỌC CHO TỪNG MÔN ĐÃ CHỌN (TIME SLOTS PER SUBJECT)     */}
+                {/* ======================================================== */}
+                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-bold text-white flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-amber-400" />
+                      <span>Cấu hình khung giờ học cho từng môn đã chọn ({selectedSubjectConfigs.length} môn)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      Mỗi môn có thể học ca sau giờ học hoặc cuối tuần
+                    </span>
+                  </div>
+
+                  {selectedSubjectConfigs.length === 0 ? (
+                    <div className="py-4 text-center text-xs text-slate-500">
+                      Chưa chọn môn học nào. Vui lòng bấm vào danh sách môn ở trên để chọn môn cho bé.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {detailedSelectedSubjects.map(item => (
+                        <div
+                          key={item.subjectId}
+                          className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                        >
+                          <div className="flex items-center gap-2.5 flex-1 min-w-[200px]">
+                            <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                              {getSubjectIcon(item.subject?.category || '')}
+                            </div>
+                            <div>
+                              <div className="font-bold text-white text-xs">{item.subject?.name}</div>
+                              <div className="text-[10px] text-slate-400">
+                                {item.subject?.category} &bull; Học phí: <span className="font-mono text-emerald-400 font-bold">{formatVND(item.fee)}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Chọn giờ học cho môn này */}
+                          <div className="flex items-center gap-2 sm:w-80">
+                            <label className="text-[11px] text-slate-400 shrink-0">Giờ học:</label>
+                            <select
+                              value={item.timeSlot}
+                              onChange={(e) => handleChangeSubjectTimeSlot(item.subjectId, e.target.value)}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500 font-medium"
+                            >
+                              {TIME_SLOT_OPTIONS.map(opt => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSubject(item.subjectId)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors self-end sm:self-center"
+                            title="Bỏ môn này"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Ghi chú thêm nếu có */}
+                <div className="text-xs">
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    Ghi chú nguyện vọng của phụ huynh về bạn học cùng lớp hoặc lưu ý riêng (nếu có):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ví dụ: Mong muốn bé học cùng ca với bạn Minh Khôi lớp 3A1..."
+                    value={regForm.notes}
+                    onChange={(e) => setRegForm({ ...regForm, notes: e.target.value })}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                {/* BẢNG TỔNG HỢP HỌC PHÍ TẤT CẢ CÁC MÔN */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white">Tổng hợp đăng ký:</span>
+                      <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[11px] font-bold">
+                        {selectedSubjectConfigs.length} môn học đã chọn
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Tổng học phí dự kiến: <span className="font-mono text-slate-200 font-bold">{formatVND(totalBaseFee)}</span>
+                    </p>
+                  </div>
+
+                  <div className="text-right shrink-0">
+                    <div className="text-[10px] text-slate-400 uppercase font-semibold">Học phí tham khảo:</div>
+                    <div className="text-xl sm:text-2xl font-black text-emerald-400 font-mono">
+                      {formatVND(finalTotalAmount)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* NÚT GỬI ĐĂNG KÝ */}
+                <div className="pt-2">
                   <button
                     type="submit"
-                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-sm tracking-wide shadow-xl shadow-amber-500/25 flex items-center justify-center gap-2 transition-all transform active:scale-[0.99]"
+                    disabled={selectedSubjectConfigs.length === 0}
+                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 disabled:opacity-50 text-slate-950 font-black text-sm tracking-wide shadow-xl shadow-amber-500/25 flex items-center justify-center gap-2 transition-all transform active:scale-[0.99]"
                   >
                     <Send className="w-4 h-4 text-slate-950" />
-                    <span>GỬI ĐĂNG KÝ MÔN HỌC CHO BÉ NGAY</span>
+                    <span>
+                      GỬI ĐƠN ĐĂNG KÝ {selectedSubjectConfigs.length > 0 ? `${selectedSubjectConfigs.length} MÔN HỌC` : 'MÔN HỌC'} CHO BÉ NGAY
+                    </span>
                   </button>
-                  <p className="text-center text-[11px] text-slate-500">
-                    Sau khi phụ huynh gửi đơn đăng ký môn học, Ban Học vụ & Tuyển sinh sẽ liên hệ xác nhận thời khóa biểu và xếp lớp cho bé.
+                  <p className="text-center text-[11px] text-slate-500 mt-2">
+                    Sau khi phụ huynh gửi đơn đăng ký, Ban Học vụ & Tuyển sinh Royal School sẽ liên hệ xác nhận thời khóa biểu và xếp lớp cho bé.
                   </p>
                 </div>
 
-              </form>
+              </div>
 
-            </div>
+            </form>
 
           </div>
-        </div>
 
-        {/* Footer */}
-        <div className="px-6 py-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs shrink-0">
-          <div className="text-slate-500 text-[11px] hidden sm:block">
-            Royal Bilingual International School &bull; Hotline Tuyển sinh: (028) 7102 9999
-          </div>
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition-colors ml-auto"
-          >
-            Đóng Cổng Phụ Huynh
-          </button>
         </div>
-
       </div>
+
+      {/* Footer */}
+      <div className="px-6 py-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs shrink-0">
+        <div className="text-slate-500 text-[11px] hidden sm:block">
+          Royal Bilingual International School &bull; Hotline Tuyển sinh: (028) 7102 9999
+        </div>
+
+        <div className="flex items-center gap-3 ml-auto">
+          <button
+            onClick={handleCopyPortalLink}
+            className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20 transition-all"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>Sao chép link đăng ký gửi phụ huynh</span>
+          </button>
+
+          {!isStandalonePage && (
+            <button
+              onClick={onClose}
+              className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition-colors"
+            >
+              Đóng Cổng Phụ Huynh
+            </button>
+          )}
+        </div>
+      </div>
+
+    </div>
+  );
+
+  if (isStandalonePage) {
+    return portalContent;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/85 backdrop-blur-md overflow-hidden animate-fadeIn">
+      {portalContent}
     </div>
   );
 };
-
-function UsersIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}>
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-    </svg>
-  );
-}

@@ -22,7 +22,8 @@ import {
   ClassTransfer,
   TeacherPayrollSettlement,
   ParentRegistration,
-  SystemNotification
+  SystemNotification,
+  AppUser
 } from '../types';
 
 import {
@@ -45,9 +46,11 @@ import {
   initialMakeupCredits,
   initialParentRegistrations,
   initialNotifications,
+  initialUsers,
 } from '../data/seedData';
 
 export interface AppStore {
+  users: AppUser[];
   campuses: Campus[];
   terms: AcademicTerm[];
   subjectCategories: SubjectCategory[];
@@ -86,6 +89,7 @@ const STORAGE_KEY = 'royal_extracurricular_store_v1';
 
 export function getInitialStore(): AppStore {
   return {
+    users: initialUsers,
     campuses: initialCampuses,
     terms: initialTerms,
     subjectCategories: initialSubjectCategories,
@@ -153,9 +157,19 @@ export function loadStore(): AppStore {
         ? parsed.campusPricings
         : initial.campusPricings;
 
+    // Ensure users array exists and admin user is populated with requested password '123456'
+    let users = parsed.users && parsed.users.length > 0 ? parsed.users : initialUsers;
+    const adminUser = users.find((u: any) => u.username === 'admin');
+    if (!adminUser) {
+      users = [initialUsers[0], ...users];
+    } else if (adminUser.password !== '123456') {
+      users = users.map((u: any) => u.username === 'admin' ? { ...u, password: '123456', role: 'super_admin', status: 'active' } : u);
+    }
+
     return {
       ...initial,
       ...parsed,
+      users,
       terms,
       subjectCategories,
       termSubjects,

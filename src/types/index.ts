@@ -5,6 +5,21 @@ export type UserRole =
   | 'admissions' 
   | 'teacher';
 
+export interface AppUser {
+  id: string;
+  username: string;              // Tên đăng nhập duy nhất
+  password: string;              // Mật khẩu
+  full_name: string;             // Họ và tên nhân sự
+  phone: string;
+  email: string;
+  role: UserRole;
+  department: string;            // Phòng ban: Ban Giám Hiệu, Kế Toán, Tuyển Sinh, Tổ Bộ Môn...
+  campus_id?: string;            // Thuộc cơ sở nào (hoặc 'all' cho Super Admin)
+  teacher_id?: string;           // Nếu là giáo viên: liên kết với mã giáo viên trong danh sách GV
+  status: 'active' | 'locked';   // Trạng thái tài khoản
+  created_at: string;
+}
+
 export interface Campus {
   id: string;
   code: string;
@@ -283,6 +298,14 @@ export interface TeacherPayrollSettlement {
   is_settled: boolean;
 }
 
+export interface RegisteredSubjectItem {
+  subject_id: string;
+  subject_name?: string;
+  time_slot: string; // e.g. 'after_school' | 'sat_morning' | 'sat_afternoon' | 'sun_morning' | 'sun_afternoon'
+  time_slot_label: string;
+  estimated_fee: number;
+}
+
 export interface ParentRegistration {
   id: string;
   registration_code?: string;
@@ -294,8 +317,9 @@ export interface ParentRegistration {
   student_grade?: string;
   desired_campus_id: string;
   desired_term_id?: string;
-  desired_subject_id: string;
+  desired_subject_id: string; // Primary subject for backward compat
   desired_time_slot_type: 'after_school' | 'weekend';
+  registered_subjects?: RegisteredSubjectItem[]; // Multi-subject registrations with separate time slots
   is_royal_student: boolean;
   medical_notes?: string;
   notes?: string;
