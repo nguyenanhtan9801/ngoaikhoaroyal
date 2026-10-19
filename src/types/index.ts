@@ -285,23 +285,32 @@ export interface TeacherPayrollSettlement {
 
 export interface ParentRegistration {
   id: string;
+  registration_code?: string;
   parent_name: string;
   parent_phone: string;
+  parent_email?: string;
   student_name: string;
   student_dob: string;
+  student_grade?: string;
   desired_campus_id: string;
+  desired_term_id?: string;
   desired_subject_id: string;
   desired_time_slot_type: 'after_school' | 'weekend';
   is_royal_student: boolean;
   medical_notes?: string;
   notes?: string;
+  estimated_fee?: number;
+  discount_policy?: string;
   status: 'pending' | 'contacted' | 'enrolled' | 'canceled';
+  contact_notes?: string;
+  assigned_class_id?: string;
+  assigned_student_code?: string;
   created_at: string;
 }
 
 export interface SystemNotification {
   id: string;
-  type: 'debt_warning' | 'credit_expiring' | 'consecutive_absence' | 'enrollment_over_quota';
+  type: 'debt_warning' | 'credit_expiring' | 'consecutive_absence' | 'enrollment_over_quota' | 'new_lead_registration';
   title: string;
   message: string;
   date: string;

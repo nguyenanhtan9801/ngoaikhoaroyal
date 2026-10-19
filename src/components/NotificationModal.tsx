@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Bell, AlertTriangle, ShieldAlert, CheckCircle2, DollarSign, BookmarkCheck } from 'lucide-react';
+import { X, Bell, AlertTriangle, ShieldAlert, CheckCircle2, DollarSign, BookmarkCheck, UserPlus } from 'lucide-react';
 import { SystemNotification } from '../types';
 
 interface NotificationModalProps {
@@ -31,7 +31,7 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-white">Trung Tâm Thông Báo & Cảnh Báo</h3>
-              <p className="text-[11px] text-slate-400">Theo dõi công nợ, bảo lưu & chuyên cần bất thường</p>
+              <p className="text-[11px] text-slate-400">Theo dõi tuyển sinh, công nợ, bảo lưu & chuyên cần</p>
             </div>
           </div>
 
@@ -59,9 +59,6 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
             </div>
           ) : (
             notifications.map(n => {
-              const isHigh = n.severity === 'high';
-              const isMedium = n.severity === 'medium';
-
               return (
                 <div
                   key={n.id}
@@ -77,6 +74,8 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
                         <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
                       ) : n.type === 'debt_warning' ? (
                         <DollarSign className="w-4 h-4 text-amber-400 shrink-0" />
+                      ) : n.type === 'new_lead_registration' ? (
+                        <UserPlus className="w-4 h-4 text-emerald-400 shrink-0" />
                       ) : (
                         <BookmarkCheck className="w-4 h-4 text-cyan-400 shrink-0" />
                       )}
@@ -99,7 +98,7 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
                         }}
                         className="text-[11px] font-bold text-amber-400 hover:text-amber-300"
                       >
-                        Xử lý ngay &rarr;
+                        {n.type === 'new_lead_registration' ? 'Xem hồ sơ & Tiếp nhận →' : 'Xử lý ngay →'}
                       </button>
                     </div>
                   )}

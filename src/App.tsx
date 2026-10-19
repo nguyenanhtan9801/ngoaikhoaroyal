@@ -282,6 +282,7 @@ export default function App() {
               store={store}
               currentRole={currentRole}
               onUpdateStore={updateStore}
+              onOpenParentPortal={() => setIsParentPortalOpen(true)}
             />
           )}
 
@@ -382,16 +383,23 @@ export default function App() {
             setCurrentRoute('sub_credits');
           } else if (notif.type === 'debt_warning') {
             setCurrentRoute('sub_finance');
+          } else if (notif.type === 'new_lead_registration' || notif.type === 'enrollment_over_quota') {
+            setCurrentRoute('sub_parents');
           }
         }}
       />
 
-      {/* Parent Course Registration & Lookup Portal Modal */}
+      {/* Parent Course Registration Landing Page & Lookup Portal Modal */}
       <ParentPortalModal
         store={store}
         isOpen={isParentPortalOpen}
         onClose={() => setIsParentPortalOpen(false)}
         onUpdateStore={updateStore}
+        initialStudent={currentParentStudent}
+        onNavigateToAdminLeads={() => {
+          setIsParentPortalOpen(false);
+          setCurrentRoute('sub_parents');
+        }}
       />
 
       {/* Multi-role Login Portal Modal */}

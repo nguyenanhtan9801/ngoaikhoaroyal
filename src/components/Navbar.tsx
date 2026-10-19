@@ -250,7 +250,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 onClick={onOpenParentPortal}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold text-cyan-300 bg-cyan-500/10 border border-cyan-500/40 hover:bg-cyan-500/20 transition-all shadow-sm shadow-cyan-500/10"
-                title="Mở Cổng Phụ Huynh: Đăng ký khóa học mới & Tra cứu tiến độ học"
+                title="Mở Cổng Phụ Huynh: Đăng ký môn học ngoại khóa cho con"
               >
                 <HeartHandshake className="w-3.5 h-3.5 text-cyan-400" />
                 <span className="hidden sm:inline">Cổng Phụ Huynh</span>
