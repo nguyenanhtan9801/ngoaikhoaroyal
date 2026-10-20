@@ -17,7 +17,7 @@ import {
   Lock,
   Sparkles
 } from 'lucide-react';
-import { AppStore, formatVND } from '../../lib/storage';
+import { AppStore, formatVND, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -294,6 +294,28 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         });
       }
 
+      const attendanceLog = createAuditRecord(
+        'ATTENDANCE_SAVE',
+        'ACADEMIC',
+        'Sổ Điểm danh Buổi học',
+        `Lưu điểm danh Buổi ${newSession.session_number} lớp ${currentClass.name} ngày ${selectedDate} (${newRecords.filter(r => r.status === 'present').length} có mặt, ${newRecords.filter(r => r.status !== 'present').length} vắng)`,
+        null,
+        {
+          target_id: newSession.id,
+          details: {
+            status: 'success',
+            after: {
+              class_id: currentClass.id,
+              class_name: currentClass.name,
+              session_date: selectedDate,
+              present_count: newRecords.filter(r => r.status === 'present').length,
+              absent_count: newRecords.filter(r => r.status !== 'present').length,
+              snacks_consumed: liveConsumed,
+            }
+          }
+        }
+      );
+
       return {
         ...prev,
         sessions: updatedSessions,
@@ -301,6 +323,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         enrollments: updatedEnrollments,
         invoices: updatedInvoices,
         notifications: newNotifications,
+        auditLogs: [attendanceLog, ...(prev.auditLogs || [])],
       };
     });
 

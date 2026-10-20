@@ -331,9 +331,10 @@ export interface ParentRegistration {
   notes?: string;
   estimated_fee?: number;
   discount_policy?: string;
-  status: 'pending' | 'contacted' | 'enrolled' | 'canceled';
+  status: 'pending' | 'contacted' | 'enrolled' | 'partially_enrolled' | 'canceled';
   contact_notes?: string;
   assigned_class_id?: string;
+  assigned_class_ids?: string[];
   assigned_student_code?: string;
   created_at: string;
 }
@@ -347,4 +348,42 @@ export interface SystemNotification {
   severity: 'low' | 'medium' | 'high';
   read: boolean;
   metadata?: Record<string, any>;
+}
+
+export type LogActionType = 
+  | 'AUTH_LOGIN_SUCCESS'      // Đăng nhập thành công
+  | 'AUTH_LOGIN_FAILED'       // Đăng nhập thất bại (sai pass/bị khóa)
+  | 'AUTH_LOGOUT'             // Đăng xuất
+  | 'STUDENT_CREATE'          // Tạo hồ sơ học sinh
+  | 'STUDENT_UPDATE'          // Cập nhật thông tin học sinh
+  | 'STUDENT_DELETE'          // Xóa học sinh
+  | 'CLASS_ASSIGN'            // Xếp lớp / ghi danh
+  | 'CLASS_CREATE'            // Tạo lớp mới
+  | 'ATTENDANCE_SAVE'         // Lưu điểm danh buổi
+  | 'INVOICE_PAYMENT_COLLECT' // Gạch nợ / Thu học phí
+  | 'CREDIT_ISSUE'            // Lập phiếu bảo lưu
+  | 'CLASS_TRANSFER'          // Biến động chuyển lớp
+  | 'DATABASE_RESET'          // Dọn sạch / Reset database
+  | 'EXCEL_IMPORT'            // Import Master Excel
+  | 'USER_CREATE'             // Tạo tài khoản nhân sự
+  | 'USER_PASSWORD_CHANGE';   // Đổi mật khẩu
+
+export interface AuditLogRecord {
+  id: string;
+  timestamp: string;          // Thời gian chính xác (ISO String & Giờ VN)
+  user_id: string;            // ID người thực hiện
+  username: string;           // Tên đăng nhập (VD: 'admin', 'ketoan_pl')
+  user_role: string;          // Vai trò (Super Admin, Kế toán, Giáo viên...)
+  full_name: string;          // Tên đầy đủ nhân sự
+  action: LogActionType;      // Mã hành động
+  category: 'AUTH' | 'ACADEMIC' | 'FINANCE' | 'SYSTEM'; // Phân nhóm nghiệp vụ
+  target_entity: string;      // Thực thể bị tác động (Học sinh, Lớp học, Hóa đơn...)
+  target_id?: string;         // ID của đối tượng bị tác động (Mã HV, Mã Lớp, Số Hóa đơn...)
+  description: string;        // Mô tả chi tiết hành động đọc được bằng tiếng Việt
+  details?: {
+    before?: any;             // Dữ liệu trước khi sửa (nếu là hành động Update/Delete)
+    after?: any;              // Dữ liệu sau khi sửa
+    ip_address?: string;      // Địa chỉ IP hoặc User-Agent thiết bị
+    status?: 'success' | 'failed';
+  };
 }

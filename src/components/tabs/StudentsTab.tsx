@@ -17,7 +17,7 @@ import {
   Sparkles,
   XCircle
 } from 'lucide-react';
-import { AppStore, generateStudentCode, formatVND, deduplicateEnrollments } from '../../lib/storage';
+import { AppStore, generateStudentCode, formatVND, deduplicateEnrollments, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { RoyalLogo } from '../RoyalLogo';
@@ -153,11 +153,38 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     if (editingStudent) {
       // Edit
+      const updateLog = createAuditRecord(
+        'STUDENT_UPDATE',
+        'ACADEMIC',
+        'Hồ sơ Học sinh',
+        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code})`,
+        null,
+        {
+          target_id: editingStudent.code,
+          details: {
+            status: 'success',
+            before: {
+              name: editingStudent.name,
+              parent_phone: editingStudent.parent_phone,
+              regular_class: editingStudent.regular_class,
+              medical_notes: editingStudent.medical_notes,
+            },
+            after: {
+              name: formData.name,
+              parent_phone: formData.parent_phone,
+              regular_class: formData.regular_class,
+              medical_notes: formData.medical_notes,
+            }
+          }
+        }
+      );
+
       onUpdateStore(prev => ({
         ...prev,
         students: prev.students.map(s => 
           s.id === editingStudent.id ? { ...s, ...formData } : s
         ),
+        auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
     } else {
       // Add
@@ -178,9 +205,30 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         created_at: new Date().toISOString().split('T')[0],
       };
 
+      const createLog = createAuditRecord(
+        'STUDENT_CREATE',
+        'ACADEMIC',
+        'Hồ sơ Học sinh',
+        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code})`,
+        null,
+        {
+          target_id: newStudent.code,
+          details: {
+            status: 'success',
+            after: {
+              code: newStudent.code,
+              name: newStudent.name,
+              parent_phone: newStudent.parent_phone,
+              is_royal: newStudent.is_royal_student,
+            }
+          }
+        }
+      );
+
       onUpdateStore(prev => ({
         ...prev,
         students: [newStudent, ...prev.students],
+        auditLogs: [createLog, ...(prev.auditLogs || [])],
       }));
     }
 

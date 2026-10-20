@@ -23,7 +23,9 @@ import {
   TeacherPayrollSettlement,
   ParentRegistration,
   SystemNotification,
-  AppUser
+  AppUser,
+  AuditLogRecord,
+  LogActionType
 } from '../types';
 
 import {
@@ -47,6 +49,7 @@ import {
   initialParentRegistrations,
   initialNotifications,
   initialUsers,
+  initialAuditLogs,
 } from '../data/seedData';
 
 export interface AppStore {
@@ -72,6 +75,7 @@ export interface AppStore {
   payrollSettlements: TeacherPayrollSettlement[];
   parentRegistrations: ParentRegistration[];
   notifications: SystemNotification[];
+  auditLogs: AuditLogRecord[];
   telecomConfig: {
     zaloZnsEnabled: boolean;
     smsBrandnameEnabled: boolean;
@@ -111,6 +115,7 @@ export function getInitialStore(): AppStore {
     payrollSettlements: [],
     parentRegistrations: initialParentRegistrations,
     notifications: initialNotifications,
+    auditLogs: initialAuditLogs,
     telecomConfig: {
       zaloZnsEnabled: true,
       smsBrandnameEnabled: true,
@@ -193,6 +198,11 @@ export function loadStore(): AppStore {
     const rawEnrollments: Enrollment[] = parsed.enrollments || initial.enrollments;
     const enrollments = deduplicateEnrollments(rawEnrollments);
 
+    const auditLogs: AuditLogRecord[] = 
+      parsed.auditLogs && parsed.auditLogs.length > 0
+        ? parsed.auditLogs
+        : initialAuditLogs;
+
     return {
       ...initial,
       ...parsed,
@@ -202,6 +212,7 @@ export function loadStore(): AppStore {
       termSubjects,
       campusPricings,
       enrollments,
+      auditLogs,
     };
   } catch (err) {
     console.error('Failed to load store from localStorage', err);
@@ -454,4 +465,60 @@ export function generateStudentCode(isRoyal: boolean, existingStudents: Student[
 
 export function formatVND(amount: number): string {
   return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
+}
+
+// Audit Trail & Activity Logging Helper Functions
+export function createAuditRecord(
+  action: LogActionType,
+  category: 'AUTH' | 'ACADEMIC' | 'FINANCE' | 'SYSTEM',
+  target_entity: string,
+  description: string,
+  user?: Partial<AppUser> | null,
+  options?: {
+    target_id?: string;
+    details?: {
+      before?: any;
+      after?: any;
+      ip_address?: string;
+      status?: 'success' | 'failed';
+    };
+    timestamp?: string;
+  }
+): AuditLogRecord {
+  const ts = options?.timestamp || new Date().toISOString();
+
+  const roleLabels: Record<string, string> = {
+    super_admin: 'Super Admin',
+    academic_accountant: 'Học vụ kiêm Kế toán',
+    academic_admissions: 'Học vụ kiêm Tuyển sinh',
+    admissions: 'Tuyển sinh',
+    teacher: 'Giáo viên bộ môn',
+  };
+
+  const roleName = user?.role ? (roleLabels[user.role] || user.role) : 'Hệ thống';
+
+  return {
+    id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+    timestamp: ts,
+    user_id: user?.id || 'system',
+    username: user?.username || 'system',
+    user_role: roleName,
+    full_name: user?.full_name || 'Hệ thống Royal School',
+    action,
+    category,
+    target_entity,
+    target_id: options?.target_id,
+    description,
+    details: options?.details || { status: 'success' },
+  };
+}
+
+export function appendAuditLog(store: AppStore, log: AuditLogRecord): AppStore {
+  const currentLogs = store.auditLogs || [];
+  // Keep latest first, cap at 1000 records to prevent memory overflow
+  const updatedLogs = [log, ...currentLogs].slice(0, 1000);
+  return {
+    ...store,
+    auditLogs: updatedLogs,
+  };
 }

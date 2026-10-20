@@ -17,9 +17,13 @@ import {
   ShieldAlert, 
   Lock,
   Calendar,
-  Sparkles
+  Sparkles,
+  AlertTriangle,
+  Layers,
+  DollarSign,
+  BookOpen
 } from 'lucide-react';
-import { AppStore, generateStudentCode, formatVND, calculateCeilSessionRate, getEffectivePrice } from '../../lib/storage';
+import { AppStore, generateStudentCode, formatVND, calculateCeilSessionRate, getEffectivePrice, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -46,20 +50,20 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'contacted' | 'enrolled' | 'canceled'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'contacted' | 'enrolled' | 'partially_enrolled' | 'canceled'>('all');
   const [campusFilter, setCampusFilter] = useState<string>('all');
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
 
-  // Modal Xếp lớp & Ghi danh chính thức
+  // Modal Xếp lớp & Ghi danh chính thức (Đa môn)
   const [selectedLeadForEnroll, setSelectedLeadForEnroll] = useState<ParentRegistration | null>(null);
-  const [targetClassId, setTargetClassId] = useState<string>('');
+  const [assignedClassesBySubject, setAssignedClassesBySubject] = useState<Record<string, string>>({});
   const [customStudentCode, setCustomStudentCode] = useState<string>('');
   const [enrollNote, setEnrollNote] = useState<string>('');
 
   // Modal Cập nhật ghi chú tư vấn
   const [editingLeadContact, setEditingLeadContact] = useState<ParentRegistration | null>(null);
   const [contactNoteInput, setContactNoteInput] = useState<string>('');
-  const [contactStatusInput, setContactStatusInput] = useState<'pending' | 'contacted' | 'canceled'>('contacted');
+  const [contactStatusInput, setContactStatusInput] = useState<'pending' | 'contacted' | 'partially_enrolled' | 'canceled'>('contacted');
 
   // Success alert toast banner
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -137,7 +141,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const totalLeads = store.parentRegistrations.length;
   const pendingLeads = store.parentRegistrations.filter(r => r.status === 'pending').length;
   const contactedLeads = store.parentRegistrations.filter(r => r.status === 'contacted').length;
-  const enrolledLeads = store.parentRegistrations.filter(r => r.status === 'enrolled').length;
+  const enrolledLeads = store.parentRegistrations.filter(r => r.status === 'enrolled' || r.status === 'partially_enrolled').length;
 
   // Filtered Leads
   const filteredLeads = store.parentRegistrations.filter(lead => {
@@ -166,96 +170,212 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     return true;
   });
 
-  // Open enroll modal
+  // Helper to extract registered subjects for any lead
+  const getSubjectsForLead = (lead: ParentRegistration) => {
+    if (lead.registered_subjects && lead.registered_subjects.length > 0) {
+      return lead.registered_subjects;
+    }
+    const subject = store.subjects.find(s => s.id === lead.desired_subject_id);
+    return [
+      {
+        subject_id: lead.desired_subject_id,
+        subject_name: subject?.name || 'Môn ngoại khóa',
+        time_slot: lead.desired_time_slot_type,
+        time_slot_label: lead.desired_time_slot_type === 'after_school' ? 'Sau giờ chính khóa (16:45 - 18:15)' : 'Cuối tuần (Thứ 7 - CN)',
+        estimated_fee: lead.estimated_fee || 3600000,
+      }
+    ];
+  };
+
+  // Open multi-subject enroll modal
   const handleOpenEnrollModal = (lead: ParentRegistration) => {
     setSelectedLeadForEnroll(lead);
-    const suggestedCode = generateStudentCode(lead.is_royal_student, store.students);
+    const existingCode = lead.assigned_student_code;
+    const suggestedCode = existingCode || generateStudentCode(lead.is_royal_student, store.students);
     setCustomStudentCode(suggestedCode);
 
-    // Auto find best matching class
-    const matchingClass = store.classes.find(
-      c => c.campus_id === lead.desired_campus_id && c.subject_id === lead.desired_subject_id && c.status === 'active'
-    ) || store.classes.find(c => c.subject_id === lead.desired_subject_id && c.status === 'active') || store.classes[0];
+    const subjects = getSubjectsForLead(lead);
+    const initialMap: Record<string, string> = {};
 
-    setTargetClassId(matchingClass?.id || '');
+    subjects.forEach(sub => {
+      // If already assigned in lead, preserve it
+      if (lead.assigned_class_ids && lead.assigned_class_ids.length > 0) {
+        const alreadyClass = store.classes.find(c => c.subject_id === sub.subject_id && lead.assigned_class_ids?.includes(c.id));
+        if (alreadyClass) {
+          initialMap[sub.subject_id] = alreadyClass.id;
+          return;
+        }
+      }
+
+      // Auto-match class: Prioritize active class in desired campus with available seats
+      const campusClasses = store.classes.filter(
+        c => c.campus_id === lead.desired_campus_id && c.subject_id === sub.subject_id && c.status === 'active'
+      );
+      const nonFullClass = campusClasses.find(c => {
+        const enrolled = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
+        return enrolled < c.max_students;
+      });
+
+      const fallbackClass = campusClasses[0] || store.classes.find(c => c.subject_id === sub.subject_id && c.status === 'active');
+      initialMap[sub.subject_id] = (nonFullClass || fallbackClass)?.id || '';
+    });
+
+    setAssignedClassesBySubject(initialMap);
     setEnrollNote(`Tiếp nhận từ hồ sơ tuyển sinh trực tuyến ${lead.registration_code || ''}`);
   };
 
-  // Execute Enrollment
+  // Execute Multi-Class Enrollment
   const handleConfirmEnrollment = () => {
-    if (!selectedLeadForEnroll || !targetClassId) return;
-
+    if (!selectedLeadForEnroll) return;
     const lead = selectedLeadForEnroll;
+    const subjects = getSubjectsForLead(lead);
+
+    // Get selected class IDs (excluding empty selections)
+    const selectedClassEntries = Object.entries(assignedClassesBySubject).filter(([_, classId]) => Boolean(classId));
+    if (selectedClassEntries.length === 0) {
+      alert('Vui lòng chọn phân bổ ít nhất 1 lớp học ngoại khóa cho học sinh!');
+      return;
+    }
+
+    const selectedClassIds = selectedClassEntries.map(([_, classId]) => classId);
+    const selectedClassObjects = selectedClassIds
+      .map(id => store.classes.find(c => c.id === id))
+      .filter((c): c is ExtracurricularClass => Boolean(c));
+
     const studentCode = customStudentCode.trim() || generateStudentCode(lead.is_royal_student, store.students);
-    const cls = store.classes.find(c => c.id === targetClassId);
-    if (!cls) return;
+    
+    // Check if student already exists in store
+    const existingStudent = store.students.find(s => s.code === studentCode || (lead.assigned_student_code && s.code === lead.assigned_student_code));
+    const studentId = existingStudent ? existingStudent.id : `std_${Date.now()}`;
 
-    const newStudentId = `std_${Date.now()}`;
-    const newStudent: Student = {
-      id: newStudentId,
-      code: studentCode,
-      name: lead.student_name,
-      dob: lead.student_dob,
-      gender: 'Nam',
-      parent_name: lead.parent_name,
-      parent_phone: lead.parent_phone,
-      school_name: lead.is_royal_student ? 'Royal School' : 'Trường ngoài',
-      regular_class: lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường'),
-      is_royal_student: lead.is_royal_student,
-      medical_notes: lead.medical_notes,
-      status: 'active',
-      created_at: new Date().toISOString().split('T')[0],
-    };
+    let newStudent: Student | null = null;
+    if (!existingStudent) {
+      newStudent = {
+        id: studentId,
+        code: studentCode,
+        name: lead.student_name,
+        dob: lead.student_dob,
+        gender: 'Nam',
+        parent_name: lead.parent_name,
+        parent_phone: lead.parent_phone,
+        school_name: lead.is_royal_student ? 'Royal School' : 'Trường ngoài',
+        regular_class: lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường'),
+        is_royal_student: lead.is_royal_student,
+        medical_notes: lead.medical_notes,
+        status: 'active',
+        created_at: new Date().toISOString().split('T')[0],
+      };
+    }
 
-    const newEnrollmentId = `enr_${Date.now()}`;
-    const newEnrollment: Enrollment = {
-      id: newEnrollmentId,
-      student_id: newStudentId,
-      class_id: cls.id,
-      registered_sessions: cls.total_sessions || 24,
-      joined_date: new Date().toISOString().split('T')[0],
-      status: 'active',
-    };
+    // 2. Tạo nhiều bản ghi ghi danh (enrollments)
+    // Avoid duplicate enrollments if student was already enrolled in this class
+    const existingEnrollmentsForStudent = store.enrollments.filter(e => e.student_id === studentId);
+    const newEnrollments: Enrollment[] = [];
 
-    const tuitionRate = getEffectivePrice(cls.term_id, cls.campus_id, cls.subject_id, store);
-    const grossAmount = cls.full_course_fee || tuitionRate.course_fee || 3600000;
-    const discountAmount = lead.is_royal_student ? Math.round(grossAmount * 0.05) : 0;
-    const netAmount = Math.max(0, grossAmount - discountAmount);
+    selectedClassObjects.forEach((cls, idx) => {
+      const alreadyInClass = existingEnrollmentsForStudent.some(e => e.class_id === cls.id);
+      if (!alreadyInClass) {
+        newEnrollments.push({
+          id: `enr_${Date.now()}_${idx}`,
+          student_id: studentId,
+          class_id: cls.id,
+          registered_sessions: cls.total_sessions || 24,
+          joined_date: new Date().toISOString().split('T')[0],
+          status: 'active',
+        });
+      }
+    });
 
-    const newInvoice: TuitionInvoice = {
-      id: `inv_${Date.now()}`,
-      invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`,
-      student_id: newStudentId,
-      class_id: cls.id,
-      gross_amount: grossAmount,
-      credit_deducted: 0,
-      net_payable: netAmount,
-      paid_amount: 0,
-      outstanding_amount: netAmount,
-      payment_status: 'unpaid',
-      created_at: new Date().toISOString().split('T')[0],
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    };
+    // 3. Tạo hóa đơn học phí tương ứng (invoices)
+    const newInvoices: TuitionInvoice[] = [];
+    selectedClassObjects.forEach((cls, idx) => {
+      // Check if invoice for this class and student already exists
+      const alreadyInvoiced = store.invoices.some(inv => inv.student_id === studentId && inv.class_id === cls.id);
+      if (!alreadyInvoiced) {
+        const tuitionRate = getEffectivePrice(cls.term_id, cls.campus_id, cls.subject_id, store);
+        const grossAmount = cls.full_course_fee || tuitionRate.course_fee || 3600000;
+        const discountAmount = lead.is_royal_student ? Math.round(grossAmount * 0.05) : 0;
+        const netAmount = Math.max(0, grossAmount - discountAmount);
+
+        newInvoices.push({
+          id: `inv_${Date.now()}_${idx}`,
+          invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`,
+          student_id: studentId,
+          class_id: cls.id,
+          gross_amount: grossAmount,
+          credit_deducted: 0,
+          net_payable: netAmount,
+          paid_amount: 0,
+          outstanding_amount: netAmount,
+          payment_status: 'unpaid',
+          created_at: new Date().toISOString().split('T')[0],
+          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        });
+      }
+    });
+
+    // 4. Cập nhật trạng thái đơn đăng ký (parentRegistrations)
+    const totalSubjects = subjects.length;
+    const isFullEnrollment = selectedClassObjects.length === totalSubjects;
+    const newStatus: 'enrolled' | 'partially_enrolled' = isFullEnrollment ? 'enrolled' : 'partially_enrolled';
+
+    const assignedNames = selectedClassObjects.map(c => c.name).join(', ');
+    const unassignedSubjects = subjects
+      .filter(s => !assignedClassesBySubject[s.subject_id])
+      .map(s => s.subject_name)
+      .join(', ');
+
+    const updatedNote = isFullEnrollment
+      ? `Đã phân bổ đủ ${selectedClassObjects.length}/${totalSubjects} môn: ${assignedNames} (Mã HV: ${studentCode}). ${enrollNote}`
+      : `Đã phân bổ ${selectedClassObjects.length}/${totalSubjects} môn: ${assignedNames}. Chờ mở lớp cho: ${unassignedSubjects} (Mã HV: ${studentCode}). ${enrollNote}`;
+
+    const assignLog = createAuditRecord(
+      'CLASS_ASSIGN',
+      'ACADEMIC',
+      'Xếp lớp Đa môn Tuyển sinh',
+      `Tiếp nhận đơn ${lead.registration_code || lead.id}: Xếp ${selectedClassObjects.length}/${totalSubjects} môn cho học sinh ${lead.student_name} (Mã HV: ${studentCode})`,
+      null,
+      {
+        target_id: lead.registration_code || lead.id,
+        details: {
+          status: 'success',
+          after: {
+            registration_code: lead.registration_code || lead.id,
+            student_code: studentCode,
+            assigned_classes: selectedClassIds,
+            status: newStatus,
+            enrollments_count: newEnrollments.length,
+            invoices_count: newInvoices.length,
+          }
+        }
+      }
+    );
 
     onUpdateStore(prev => ({
       ...prev,
-      students: [newStudent, ...prev.students],
-      enrollments: [newEnrollment, ...prev.enrollments],
-      invoices: [newInvoice, ...prev.invoices],
+      students: newStudent ? [newStudent, ...prev.students] : prev.students,
+      enrollments: [...newEnrollments, ...prev.enrollments],
+      invoices: [...newInvoices, ...prev.invoices],
       parentRegistrations: prev.parentRegistrations.map(r => 
         r.id === lead.id 
           ? { 
               ...r, 
-              status: 'enrolled',
-              assigned_class_id: cls.id,
+              status: newStatus,
+              assigned_class_id: selectedClassObjects[0]?.id,
+              assigned_class_ids: selectedClassIds,
               assigned_student_code: studentCode,
-              contact_notes: `Đã phân lớp: ${cls.name} (${studentCode}). ${enrollNote}`
+              contact_notes: updatedNote,
             } 
           : r
       ),
+      auditLogs: [assignLog, ...(prev.auditLogs || [])],
     }));
 
-    showToast(`Đã tiếp nhận hồ sơ & cấp mã học viên ${studentCode} vào lớp ${cls.name}!`);
+    showToast(
+      isFullEnrollment
+        ? `Đã phân bổ đủ ${selectedClassObjects.length}/${totalSubjects} môn & cấp mã học viên ${studentCode}!`
+        : `Đã phân bổ ${selectedClassObjects.length}/${totalSubjects} môn (Trạng thái: Đã xếp một phần). Cấp mã học viên ${studentCode}!`
+    );
     setSelectedLeadForEnroll(null);
   };
 
@@ -415,7 +535,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             <option value="all">Tất cả trạng thái</option>
             <option value="pending">Chờ xử lý</option>
             <option value="contacted">Đã tư vấn</option>
-            <option value="enrolled">Đã xếp lớp</option>
+            <option value="enrolled">Đã xếp đủ lớp</option>
+            <option value="partially_enrolled">Đã xếp một phần</option>
             <option value="canceled">Đã hủy</option>
           </select>
 
@@ -502,7 +623,12 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     {lead.status === 'enrolled' ? (
                       <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-extrabold shrink-0 flex items-center gap-1">
                         <Check className="w-3 h-3 stroke-[3]" />
-                        <span>Đã Xếp Lớp</span>
+                        <span>Đã Xếp Đủ</span>
+                      </span>
+                    ) : lead.status === 'partially_enrolled' ? (
+                      <span className="px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-extrabold shrink-0 flex items-center gap-1">
+                        <Layers className="w-3 h-3" />
+                        <span>Xếp Một Phần</span>
                       </span>
                     ) : lead.status === 'contacted' ? (
                       <span className="px-2.5 py-1 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-extrabold shrink-0 flex items-center gap-1">
@@ -616,11 +742,37 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       </div>
                     )}
 
-                    {/* Enrolled details if already enrolled */}
-                    {lead.status === 'enrolled' && (
-                      <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-300 space-y-1">
-                        <div>Mã học viên: <strong className="font-mono text-amber-300">{lead.assigned_student_code}</strong></div>
-                        {assignedClass && <div>Lớp: <strong>{assignedClass.name}</strong></div>}
+                    {/* Enrolled details if already enrolled or partially enrolled */}
+                    {(lead.status === 'enrolled' || lead.status === 'partially_enrolled') && (
+                      <div className={`p-2.5 rounded-xl border text-[11px] space-y-1.5 ${
+                        lead.status === 'enrolled'
+                          ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'
+                          : 'bg-indigo-500/10 border-indigo-500/25 text-indigo-300'
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Mã học viên:</span>
+                          <strong className="font-mono text-amber-300 font-bold">{lead.assigned_student_code}</strong>
+                        </div>
+                        {lead.assigned_class_ids && lead.assigned_class_ids.length > 0 ? (
+                          <div className="pt-1 border-t border-slate-800/80">
+                            <span className="text-slate-400 block text-[10px] font-semibold uppercase">
+                              Lớp đã xếp ({lead.assigned_class_ids.length} môn):
+                            </span>
+                            <div className="space-y-0.5 mt-0.5">
+                              {lead.assigned_class_ids.map(id => {
+                                const c = store.classes.find(cls => cls.id === id);
+                                return c ? (
+                                  <div key={id} className="text-white font-medium text-[11px] flex items-center gap-1">
+                                    <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+                                    <span>{c.name}</span>
+                                  </div>
+                                ) : null;
+                              })}
+                            </div>
+                          </div>
+                        ) : assignedClass ? (
+                          <div>Lớp: <strong>{assignedClass.name}</strong></div>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -643,7 +795,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md shadow-amber-500/20"
                     >
                       <UserCheck className="w-3.5 h-3.5" />
-                      <span>Tiếp Nhận & Xếp Lớp</span>
+                      <span>{lead.status === 'partially_enrolled' ? 'Xếp Thêm Môn' : 'Tiếp Nhận & Xếp Lớp'}</span>
                     </button>
                   ) : (
                     <span className="text-emerald-400 text-xs font-bold flex items-center gap-1">
@@ -760,19 +912,23 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       {/* 8. Trạng Thái */}
                       <td className="py-3 px-4 text-center">
                         {lead.status === 'enrolled' ? (
-                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-extrabold">
-                            Đã xếp lớp
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-extrabold whitespace-nowrap">
+                            Đã xếp đủ
+                          </span>
+                        ) : lead.status === 'partially_enrolled' ? (
+                          <span className="px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-extrabold whitespace-nowrap">
+                            Xếp một phần
                           </span>
                         ) : lead.status === 'contacted' ? (
-                          <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold">
+                          <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold whitespace-nowrap">
                             Đã tư vấn
                           </span>
                         ) : lead.status === 'canceled' ? (
-                          <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px]">
+                          <span className="px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] whitespace-nowrap">
                             Đã hủy
                           </span>
                         ) : (
-                          <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold whitespace-nowrap">
                             Chờ liên hệ
                           </span>
                         )}
@@ -794,7 +950,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                               onClick={() => handleOpenEnrollModal(lead)}
                               className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] transition-colors whitespace-nowrap"
                             >
-                              Tiếp Nhận
+                              {lead.status === 'partially_enrolled' ? 'Xếp thêm' : 'Tiếp Nhận'}
                             </button>
                           ) : (
                             <span className="text-emerald-400 text-[11px] font-bold font-mono">
@@ -817,145 +973,431 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       {/* ======================================================== */}
       {selectedLeadForEnroll && (() => {
         const lead = selectedLeadForEnroll;
-        const matchingClasses = store.classes.filter(
-          c => c.campus_id === lead.desired_campus_id && c.subject_id === lead.desired_subject_id && c.status === 'active'
-        );
-        const allClasses = store.classes.filter(c => c.status === 'active');
-        const availableClasses = matchingClasses.length > 0 ? matchingClasses : allClasses;
+        const subjects = getSubjectsForLead(lead);
+
+        // Calculate selected classes
+        const selectedClassEntries = Object.entries(assignedClassesBySubject).filter(([_, classId]) => Boolean(classId));
+        const selectedClassIds = selectedClassEntries.map(([_, classId]) => classId);
+        const selectedClassObjects = selectedClassIds
+          .map(id => store.classes.find(c => c.id === id))
+          .filter((c): c is ExtracurricularClass => Boolean(c));
+
+        // Live Conflict Detection: Check if any 2 chosen classes have overlapping days & time
+        interface ConflictWarning {
+          classA: ExtracurricularClass;
+          classB: ExtracurricularClass;
+          commonDays: string[];
+          timeSlotDesc: string;
+        }
+
+        const conflictList: ConflictWarning[] = [];
+        for (let i = 0; i < selectedClassObjects.length; i++) {
+          for (let j = i + 1; j < selectedClassObjects.length; j++) {
+            const clsA = selectedClassObjects[i];
+            const clsB = selectedClassObjects[j];
+
+            const daysA = clsA.days_of_week && clsA.days_of_week.length > 0
+              ? clsA.days_of_week
+              : (store.timeSlots.find(ts => ts.id === clsA.time_slot_id)?.days_of_week || []);
+            const daysB = clsB.days_of_week && clsB.days_of_week.length > 0
+              ? clsB.days_of_week
+              : (store.timeSlots.find(ts => ts.id === clsB.time_slot_id)?.days_of_week || []);
+
+            const commonDays = daysA.filter(d => daysB.includes(d));
+            if (commonDays.length > 0) {
+              const slotA = store.timeSlots.find(ts => ts.id === clsA.time_slot_id);
+              const slotB = store.timeSlots.find(ts => ts.id === clsB.time_slot_id);
+              const isSameSlot = clsA.time_slot_id === clsB.time_slot_id;
+              const isOverlap = slotA && slotB && (
+                (slotA.start_time < slotB.end_time && slotA.end_time > slotB.start_time)
+              );
+
+              if (isSameSlot || isOverlap) {
+                const timeDesc = slotA ? `${slotA.start_time} - ${slotA.end_time}` : 'Ca sau giờ học';
+                conflictList.push({
+                  classA: clsA,
+                  classB: clsB,
+                  commonDays,
+                  timeSlotDesc: timeDesc,
+                });
+              }
+            }
+          }
+        }
+
+        // Real-time Tuition Calculation
+        const totalGross = selectedClassObjects.reduce((acc, c) => acc + (c.full_course_fee || 3600000), 0);
+        const discountAmount = lead.is_royal_student ? Math.round(totalGross * 0.05) : 0;
+        const totalNet = Math.max(0, totalGross - discountAmount);
+
+        const totalRequested = subjects.length;
+        const assignedCount = selectedClassObjects.length;
+        const isFull = assignedCount === totalRequested && assignedCount > 0;
+        const isPartial = assignedCount > 0 && assignedCount < totalRequested;
 
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-            <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-5 animate-fadeIn">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md overflow-y-auto">
+            <div className="w-full max-w-3xl rounded-3xl bg-[#0D131F] border border-amber-500/40 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden animate-fadeIn my-auto">
               
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+              {/* Modal Header */}
+              <div className="px-6 py-4 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0">
                     <UserCheck className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-base font-extrabold text-white">Tiếp Nhận & Xếp Lớp Ghi Danh</h3>
-                    <p className="text-[11px] text-slate-400">Chuyển hồ sơ tuyển sinh thành học viên chính thức</p>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base sm:text-lg font-black text-white">
+                        Tiếp Nhận & Xếp Lớp Ghi Danh (Đa Môn)
+                      </h3>
+                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold border border-amber-500/30">
+                        {lead.registration_code || lead.id}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Phân bổ lớp học ngoại khóa tương ứng theo từng môn phụ huynh đã đăng ký
+                    </p>
                   </div>
                 </div>
 
                 <button
                   onClick={() => setSelectedLeadForEnroll(null)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white"
+                  className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                  title="Đóng modal"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* Lead Summary Info */}
-              <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 text-xs space-y-1.5">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Học sinh:</span>
-                  <span className="text-white font-bold">{lead.student_name} ({lead.student_grade || lead.student_dob})</span>
+              {/* Scrollable Modal Content */}
+              <div className="p-5 sm:p-6 space-y-5 overflow-y-auto flex-1">
+                
+                {/* 1. Lead Summary Info Card */}
+                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 text-xs space-y-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <span className="text-slate-400">Học sinh:</span>{' '}
+                      <strong className="text-white text-sm">{lead.student_name}</strong>
+                      <span className="text-slate-400 font-medium"> ({lead.student_grade || ('Sinh: ' + lead.student_dob)})</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Phụ huynh:</span>{' '}
+                      <strong className="text-slate-200">{lead.parent_name}</strong> &bull;{' '}
+                      <span className="text-amber-400 font-mono font-bold">{lead.parent_phone}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-900">
+                    <div>
+                      <span className="text-slate-400">Cơ sở đăng ký:</span>{' '}
+                      <strong className="text-cyan-300 font-medium">
+                        {store.campuses.find(c => c.id === lead.desired_campus_id)?.name || 'Royal School'}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-400">Phân loại học sinh:</span>{' '}
+                      <span className={lead.is_royal_student ? 'text-amber-400 font-bold' : 'text-slate-300 font-medium'}>
+                        {lead.is_royal_student ? 'HS chính khóa Royal (Có suất bánh sữa)' : 'Học sinh ngoài trường'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {lead.medical_notes && (
+                    <div className="pt-2 border-t border-slate-900 text-[11px] text-rose-300 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span><strong>Lưu ý y tế:</strong> {lead.medical_notes}</span>
+                    </div>
+                  )}
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Phụ huynh:</span>
-                  <span className="text-slate-200">{lead.parent_name} - {lead.parent_phone}</span>
+
+                {/* 2. Official Student Code Configuration */}
+                <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-slate-300 font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Mã học viên chính thức (Chuẩn hóa hệ thống Royal):</span>
+                    </label>
+                    <span className="text-[10px] text-slate-500">
+                      {lead.is_royal_student ? 'Tiền tố RY- (Học sinh Royal)' : 'Tiền tố EXT- (Ngoài trường)'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={customStudentCode}
+                      onChange={(e) => setCustomStudentCode(e.target.value)}
+                      placeholder="RY-2026-xxxxx"
+                      className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 font-mono text-amber-400 font-bold text-sm border border-slate-800 focus:outline-none focus:border-amber-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setCustomStudentCode(generateStudentCode(lead.is_royal_student, store.students))}
+                      className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                      title="Tạo lại mã học viên ngẫu nhiên mới"
+                    >
+                      Tạo lại
+                    </button>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Môn & Cơ sở nguyện vọng:</span>
-                  <span className="text-amber-300 font-bold">
-                    {store.subjects.find(s => s.id === lead.desired_subject_id)?.name} &bull; {store.campuses.find(c => c.id === lead.desired_campus_id)?.name}
-                  </span>
-                </div>
-                {lead.registered_subjects && lead.registered_subjects.length > 0 && (
-                  <div className="pt-1 border-t border-slate-800 space-y-1">
-                    <span className="text-slate-400 block font-semibold">Tất cả môn phụ huynh đã chọn ({lead.registered_subjects.length} môn):</span>
-                    {lead.registered_subjects.map((sub, i) => (
-                      <div key={i} className="flex justify-between text-[11px] text-slate-300">
-                        <span>&bull; {sub.subject_name}</span>
-                        <span className="text-amber-400 font-mono">{sub.time_slot_label}</span>
-                      </div>
-                    ))}
+
+                {/* 3. Live Conflict Alert Banner (Cảnh Báo Trùng Lịch Tức Thì) */}
+                {conflictList.length > 0 && (
+                  <div className="p-4 rounded-2xl bg-rose-500/10 border-2 border-rose-500/40 text-rose-200 text-xs space-y-2 animate-fadeIn shadow-lg shadow-rose-950/40">
+                    <div className="flex items-center gap-2 font-black text-rose-300 uppercase tracking-wide">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 stroke-[2.5]" />
+                      <span>CẢNH BÁO TRÙNG LỊCH HỌC TỨC THÌ!</span>
+                    </div>
+                    <div className="space-y-1.5 pl-6">
+                      {conflictList.map((c, idx) => (
+                        <div key={idx} className="leading-relaxed">
+                          &bull; Trùng lịch học giữa lớp <strong className="text-white underline">{c.classA.name}</strong> và <strong className="text-white underline">{c.classB.name}</strong> vào <span className="px-1.5 py-0.5 rounded bg-rose-500/25 text-rose-200 font-bold font-mono">{c.commonDays.join(', ')}</span> ({c.timeSlotDesc})!
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-amber-300/90 pl-6 pt-1 border-t border-rose-500/20">
+                      Gợi ý: Vui lòng chuyển ca học cho 1 trong 2 lớp trên hoặc chọn <em>&ldquo;[ Tạm thời chưa xếp lớp môn này ]&rdquo;</em> để tránh trùng giờ của bé.
+                    </p>
                   </div>
                 )}
-                <div className="flex justify-between pt-1 border-t border-slate-800">
-                  <span className="text-slate-400">Phân loại học sinh:</span>
-                  <span className={lead.is_royal_student ? 'text-amber-400 font-bold' : 'text-slate-300'}>
-                    {lead.is_royal_student ? 'Học sinh chính khóa Royal (Có suất bánh sữa)' : 'Học sinh ngoài trường'}
-                  </span>
-                </div>
-              </div>
 
-              {/* Auto Generated Student Code */}
-              <div className="text-xs space-y-1">
-                <label className="block text-slate-300 font-semibold">
-                  Mã học viên chính thức (Đề xuất theo chuẩn Royal):
-                </label>
-                <div className="flex items-center gap-2">
+                {/* 4. Dynamic Multi-Class Assignment List (Danh sách phân bổ lớp tương ứng theo từng môn) */}
+                <div className="space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Danh Sách Phân Bổ Lớp Cho Từng Môn ({subjects.length} môn đăng ký)</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400">
+                      Đã chọn: <strong className="text-white">{assignedCount}</strong>/{totalRequested} môn
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {subjects.map((sub, idx) => {
+                      const subjectObj = store.subjects.find(s => s.id === sub.subject_id);
+                      const currentSelectedClassId = assignedClassesBySubject[sub.subject_id] || '';
+                      const selectedClassObj = store.classes.find(c => c.id === currentSelectedClassId);
+
+                      // Available classes matching this subject
+                      const subjectClasses = store.classes.filter(c => c.subject_id === sub.subject_id && c.status === 'active');
+                      // Sort so classes at desired campus appear first
+                      const sortedClasses = [...subjectClasses].sort((a, b) => {
+                        if (a.campus_id === lead.desired_campus_id && b.campus_id !== lead.desired_campus_id) return -1;
+                        if (b.campus_id === lead.desired_campus_id && a.campus_id !== lead.desired_campus_id) return 1;
+                        return 0;
+                      });
+
+                      return (
+                        <div 
+                          key={sub.subject_id || idx} 
+                          className={`p-4 rounded-2xl border transition-all ${
+                            currentSelectedClassId 
+                              ? 'bg-slate-900/90 border-slate-700 shadow-md' 
+                              : 'bg-slate-950/60 border-slate-800/80 border-dashed'
+                          }`}
+                        >
+                          {/* Subject Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2.5 border-b border-slate-800/80 gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-[11px]">
+                                {idx + 1}
+                              </span>
+                              <span className="font-bold text-sm text-white">
+                                {sub.subject_name || subjectObj?.name || 'Môn ngoại khóa'}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2.5">
+                              {sub.time_slot_label && (
+                                <span className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 text-[11px] flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-amber-400" />
+                                  <span>{sub.time_slot_label}</span>
+                                </span>
+                              )}
+                              <span className="text-emerald-400 font-mono font-bold text-xs">
+                                {formatVND(sub.estimated_fee || 3600000)}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Class Select Dropdown */}
+                          <div className="pt-3 space-y-1.5 text-xs">
+                            <label className="block text-slate-400 font-medium">
+                              Chọn lớp học ngoại khóa phân bổ cho môn này:
+                            </label>
+                            
+                            <select
+                              value={currentSelectedClassId}
+                              onChange={(e) => {
+                                const newClassId = e.target.value;
+                                setAssignedClassesBySubject(prev => ({
+                                  ...prev,
+                                  [sub.subject_id]: newClassId,
+                                }));
+                              }}
+                              className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border font-medium focus:outline-none transition-colors ${
+                                currentSelectedClassId 
+                                  ? 'border-amber-500/60 text-white' 
+                                  : 'border-slate-800 text-slate-400 focus:border-amber-500'
+                              }`}
+                            >
+                              <option value="">
+                                [ Tạm thời chưa xếp lớp môn này ] &mdash; Chờ mở thêm lớp
+                              </option>
+                              {sortedClasses.map(c => {
+                                const enrolledCount = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
+                                const isFull = enrolledCount >= c.max_students;
+                                const days = c.days_of_week?.join(', ') || 'Lịch mở';
+                                const campusName = store.campuses.find(cp => cp.id === c.campus_id)?.name || 'Cơ sở';
+                                const isDesiredCampus = c.campus_id === lead.desired_campus_id;
+
+                                return (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name} &bull; Sĩ số: {enrolledCount}/{c.max_students} &bull; {days} &bull; {formatVND(c.full_course_fee)} {isDesiredCampus ? '' : `(${campusName})`} {isFull ? '[HẾT CHỖ]' : ''}
+                                  </option>
+                                );
+                              })}
+                            </select>
+
+                            {/* Class Details Pill if chosen */}
+                            {selectedClassObj ? (
+                              <div className="mt-2 p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-3">
+                                  <span>
+                                    Cơ sở: <strong className="text-white">{store.campuses.find(cp => cp.id === selectedClassObj.campus_id)?.name}</strong>
+                                  </span>
+                                  <span>
+                                    Phòng: <strong className="text-slate-200">{store.facilities.find(f => f.id === selectedClassObj.facility_id)?.name || 'Phòng học vụ'}</strong>
+                                  </span>
+                                  <span>
+                                    GV: <strong className="text-amber-300">{store.teachers.find(t => t.id === selectedClassObj.primary_teacher_id)?.name || 'Chuyên gia Royal'}</strong>
+                                  </span>
+                                </div>
+                                <div className="text-emerald-400 font-mono font-bold">
+                                  Học phí: {formatVND(selectedClassObj.full_course_fee)}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-[11px] text-slate-500 italic pt-0.5">
+                                Môn này sẽ được giữ lại ở trạng thái &ldquo;Đã xếp một phần&rdquo; để học vụ mở thêm lớp sau.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 5. Real-time Tuition & Assignment Summary (Tóm Tắt Tài Chính Tự Động) */}
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 border border-emerald-500/30 space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
+                    <span className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <DollarSign className="w-4 h-4 text-emerald-400" />
+                      <span>Tóm Tắt Học Phí & Tiến Độ Phân Bổ</span>
+                    </span>
+
+                    {/* Dynamic Status Badge */}
+                    {isFull ? (
+                      <span className="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Đã phân bổ: {assignedCount}/{totalRequested} môn (Đủ 100%)</span>
+                      </span>
+                    ) : isPartial ? (
+                      <span className="px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Đã phân bổ: {assignedCount}/{totalRequested} môn &bull; Còn {totalRequested - assignedCount} môn chờ xếp</span>
+                      </span>
+                    ) : (
+                      <span className="px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                        <X className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Chưa chọn lớp nào (0/{totalRequested} môn)</span>
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                      <span className="text-slate-400 text-[11px] block">Tổng học phí gốc ({assignedCount} lớp):</span>
+                      <span className="text-white font-bold font-mono text-base">{formatVND(totalGross)}</span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
+                      <span className="text-slate-400 text-[11px] block">
+                        {lead.is_royal_student ? 'Ưu đãi HS Royal (5%):' : 'Ưu đãi chính sách:'}
+                      </span>
+                      <span className={discountAmount > 0 ? 'text-amber-400 font-bold font-mono text-base' : 'text-slate-400 text-sm'}>
+                        {discountAmount > 0 ? `-${formatVND(discountAmount)}` : '0 đ'}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                      <span className="text-emerald-300 font-bold text-[11px] block uppercase tracking-wider">
+                        Tổng học phí thực nộp:
+                      </span>
+                      <span className="text-emerald-400 font-black font-mono text-xl sm:text-2xl tracking-tight">
+                        {formatVND(totalNet)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {lead.is_royal_student && (
+                    <div className="text-[11px] text-amber-300/90 flex items-center gap-1.5 pt-1">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Bé là học sinh chính khóa Royal School: Được hưởng trọn suất bánh sữa dinh dưỡng sau giờ học cho tất cả các môn đã xếp lớp.</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* 6. Ghi chú lưu học vụ */}
+                <div className="text-xs space-y-1">
+                  <label className="block text-slate-400 font-semibold">Ghi chú lưu học vụ & tuyển sinh:</label>
                   <input
                     type="text"
-                    value={customStudentCode}
-                    onChange={(e) => setCustomStudentCode(e.target.value)}
-                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 font-mono text-amber-400 font-bold text-sm border border-slate-800 focus:outline-none focus:border-amber-500"
+                    value={enrollNote}
+                    onChange={(e) => setEnrollNote(e.target.value)}
+                    placeholder="Ghi chú tiếp nhận, thời khóa biểu hoặc thỏa thuận phụ huynh..."
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
                   />
+                </div>
+
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-6 py-4 bg-slate-900/90 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+                <div className="text-slate-400 text-[11px]">
+                  {assignedCount === 0 ? (
+                    <span className="text-rose-400 font-medium">* Cần phân bổ ít nhất 1 lớp để xác nhận ghi danh.</span>
+                  ) : isFull ? (
+                    <span className="text-emerald-400 font-medium">&bull; Đơn sẽ chuyển sang trạng thái &ldquo;Đã xếp đủ&rdquo;.</span>
+                  ) : (
+                    <span className="text-amber-400 font-medium">&bull; Đơn sẽ chuyển sang trạng thái &ldquo;Xếp một phần&rdquo; ({assignedCount}/{totalRequested} môn).</span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end gap-3">
                   <button
                     type="button"
-                    onClick={() => setCustomStudentCode(generateStudentCode(lead.is_royal_student, store.students))}
-                    className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                    onClick={() => setSelectedLeadForEnroll(null)}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
                   >
-                    Tạo lại
+                    Hủy Bỏ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmEnrollment}
+                    disabled={assignedCount === 0}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 shadow-lg transition-all ${
+                      assignedCount === 0 
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' 
+                        : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95'
+                    }`}
+                  >
+                    <Check className="w-4 h-4 stroke-[3]" />
+                    <span>Xác Nhận Xếp Lớp & Cấp Mã Học Viên ({assignedCount} lớp)</span>
                   </button>
                 </div>
-                <p className="text-[10px] text-slate-500">
-                  {lead.is_royal_student ? 'Học sinh Royal bắt đầu bằng tiền tố RY-' : 'Học sinh ngoài bắt đầu bằng tiền tố EXT-'}
-                </p>
-              </div>
-
-              {/* Select Extracurricular Class */}
-              <div className="text-xs space-y-1">
-                <label className="block text-slate-300 font-semibold">
-                  Chọn lớp học ngoại khóa phân bổ:
-                </label>
-                <select
-                  value={targetClassId}
-                  onChange={(e) => setTargetClassId(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
-                >
-                  {availableClasses.map(c => {
-                    const enrolledCount = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
-                    return (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({enrolledCount}/{c.max_students} học viên) - {formatVND(c.full_course_fee)}
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
-
-              {/* Action Note */}
-              <div className="text-xs space-y-1">
-                <label className="block text-slate-300 font-semibold">Ghi chú lưu học vụ:</label>
-                <input
-                  type="text"
-                  value={enrollNote}
-                  onChange={(e) => setEnrollNote(e.target.value)}
-                  placeholder="Ghi chú tiếp nhận..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              {/* Submit Buttons */}
-              <div className="flex items-center justify-end gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedLeadForEnroll(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
-                >
-                  Hủy Bỏ
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmEnrollment}
-                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/25"
-                >
-                  <Check className="w-4 h-4 stroke-[3]" />
-                  <span>Xác Nhận Xếp Lớp & Cấp Mã Học Viên</span>
-                </button>
               </div>
 
             </div>
@@ -998,6 +1440,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               >
                 <option value="pending">Chờ liên hệ</option>
                 <option value="contacted">Đã liên hệ tư vấn</option>
+                <option value="partially_enrolled">Đã xếp một phần (Chờ mở thêm lớp)</option>
                 <option value="canceled">Đã hủy / Phụ huynh không đăng ký</option>
               </select>
             </div>

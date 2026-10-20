@@ -15,7 +15,7 @@ import {
   ExternalLink,
   Sparkles
 } from 'lucide-react';
-import { AppStore, formatVND } from '../../lib/storage';
+import { AppStore, formatVND, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { generateVietQRUrl } from '../../lib/vietqr';
 import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -81,6 +81,30 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const handleConfirmPayment = () => {
     if (!verifyingInvoice) return;
 
+    const paymentLog = createAuditRecord(
+      'INVOICE_PAYMENT_COLLECT',
+      'FINANCE',
+      'Hóa đơn Học phí',
+      `Gạch nợ thu học phí thành công cho hóa đơn ${verifyingInvoice.invoice_code || verifyingInvoice.id} (Số tiền: ${formatVND(verifyingInvoice.net_payable)})`,
+      null,
+      {
+        target_id: verifyingInvoice.invoice_code || verifyingInvoice.id,
+        details: {
+          status: 'success',
+          before: {
+            payment_status: verifyingInvoice.payment_status,
+            paid_amount: verifyingInvoice.paid_amount,
+            outstanding_amount: verifyingInvoice.outstanding_amount
+          },
+          after: {
+            payment_status: 'paid',
+            paid_amount: verifyingInvoice.net_payable,
+            payment_reference: paymentRefInput || `VCB-${Date.now().toString().slice(-8)}`
+          }
+        }
+      }
+    );
+
     onUpdateStore(prev => ({
       ...prev,
       invoices: prev.invoices.map(inv => {
@@ -97,6 +121,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         }
         return inv;
       }),
+      auditLogs: [paymentLog, ...(prev.auditLogs || [])],
     }));
 
     setVerifyingInvoice(null);
@@ -194,10 +219,32 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         });
       }
 
+      const transferLog = createAuditRecord(
+        'CLASS_TRANSFER',
+        'ACADEMIC',
+        'Biến động Chuyển lớp',
+        `Thực hiện chuyển lớp cho học sinh ${student.name} từ ${fromClass.name} sang ${toClass.name} (Phụ thu: ${formatVND(surcharge)})`,
+        null,
+        {
+          target_id: student.code || student.id,
+          details: {
+            status: 'success',
+            before: { class_id: fromClass.id, class_name: fromClass.name },
+            after: {
+              class_id: toClass.id,
+              class_name: toClass.name,
+              remaining_sessions: transferState.remaining_sessions,
+              surcharge
+            }
+          }
+        }
+      );
+
       return {
         ...prev,
         enrollments: updatedEnrollments,
         invoices: updatedInvoices,
+        auditLogs: [transferLog, ...(prev.auditLogs || [])],
       };
     });
 

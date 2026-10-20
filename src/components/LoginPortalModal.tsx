@@ -15,8 +15,8 @@ import {
   School,
   HeartHandshake
 } from 'lucide-react';
-import { UserRole, Student } from '../types';
-import { AppStore } from '../lib/storage';
+import { UserRole, Student, AppUser } from '../types';
+import { AppStore, createAuditRecord, appendAuditLog } from '../lib/storage';
 import { RoyalLogo } from './RoyalLogo';
 
 interface LoginPortalModalProps {
@@ -25,6 +25,9 @@ interface LoginPortalModalProps {
   currentRole: UserRole;
   onChangeRole: (role: UserRole) => void;
   store: AppStore;
+  currentUser?: AppUser | null;
+  onUpdateStore?: (updater: (prev: AppStore) => AppStore) => void;
+  onLoginSuccess?: (user: AppUser) => void;
   onOpenParentPortalWithStudent?: (student: Student) => void;
   currentParentStudent?: Student | null;
   onSetParentStudent?: (student: Student | null) => void;
@@ -36,6 +39,9 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   currentRole,
   onChangeRole,
   store,
+  currentUser,
+  onUpdateStore,
+  onLoginSuccess,
   onOpenParentPortalWithStudent,
   currentParentStudent,
   onSetParentStudent,
@@ -45,8 +51,9 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   const [activeTab, setActiveTab] = useState<'staff' | 'parent'>('staff');
   
   // Staff Form
-  const [staffEmail, setStaffEmail] = useState('admin@royalschool.edu.vn');
-  const [staffPassword, setStaffPassword] = useState('••••••••••••');
+  const [staffEmail, setStaffEmail] = useState('admin');
+  const [staffPassword, setStaffPassword] = useState('123456');
+  const [staffError, setStaffError] = useState<string | null>(null);
   const [loginSuccess, setLoginSuccess] = useState<string | null>(null);
 
   // Parent Form
@@ -63,7 +70,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
     },
     {
       role: 'academic_accountant',
-      name: 'Cô Lê Thị Mỹ Dung',
+      name: 'Cô Lê Thị Kim Cúc',
       title: 'Học vụ kiêm Kế toán',
       email: 'ketoan@royalschool.edu.vn',
       avatarBg: 'from-emerald-500 to-teal-700',
@@ -92,13 +99,147 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   ];
 
   const handleSelectStaffRole = (role: UserRole, accountName: string) => {
-    onChangeRole(role);
+    // Find matching user from store
+    let user = store.users.find(u => u.role === role);
+    if (!user) {
+      user = {
+        id: `usr_${role}`,
+        username: role === 'super_admin' ? 'admin' : role,
+        password: '123',
+        full_name: accountName,
+        phone: '0908 112 233',
+        email: `${role}@royalschool.edu.vn`,
+        role,
+        department: 'Ban Giám Hiệu & Quản Trị Hệ Thống',
+        status: 'active',
+        created_at: '2026-08-01',
+      };
+    }
+
+    // Record Audit Log: AUTH_LOGIN_SUCCESS
+    if (onUpdateStore) {
+      const log = createAuditRecord(
+        'AUTH_LOGIN_SUCCESS',
+        'AUTH',
+        'Hệ thống Xác thực',
+        `Cán bộ ${user.full_name} (@${user.username}) đã đăng nhập thành công với vai trò ${role}`,
+        user,
+        {
+          target_id: user.username,
+          details: {
+            ip_address: '192.168.1.45',
+            status: 'success',
+            after: { role, full_name: user.full_name, login_mode: '1-click quick login' }
+          }
+        }
+      );
+      onUpdateStore(prev => appendAuditLog(prev, log));
+    }
+
+    if (onLoginSuccess) {
+      onLoginSuccess(user);
+    } else {
+      onChangeRole(role);
+    }
+
     if (onSetParentStudent) onSetParentStudent(null);
     setLoginSuccess(`Đã đăng nhập thành công với vai trò: ${accountName}`);
     setTimeout(() => {
       setLoginSuccess(null);
       onClose();
-    }, 800);
+    }, 600);
+  };
+
+  const handleStandardStaffLogin = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanUname = staffEmail.trim().toLowerCase();
+    const cleanPass = staffPassword.trim();
+
+    const matchedUser = store.users.find(
+      u => u.username.toLowerCase() === cleanUname || u.email.toLowerCase() === cleanUname
+    );
+
+    if (!matchedUser) {
+      // Record Audit Log: AUTH_LOGIN_FAILED
+      if (onUpdateStore) {
+        const failLog = createAuditRecord(
+          'AUTH_LOGIN_FAILED',
+          'AUTH',
+          'Hệ thống Xác thực',
+          `Đăng nhập thất bại: Tài khoản "${cleanUname}" không tồn tại trên hệ thống`,
+          null,
+          {
+            target_id: cleanUname,
+            details: {
+              ip_address: '192.168.1.45',
+              status: 'failed',
+              after: { reason: 'Tài khoản không tồn tại', attempted_username: cleanUname }
+            }
+          }
+        );
+        onUpdateStore(prev => appendAuditLog(prev, failLog));
+      }
+      setStaffError('Tài khoản không tồn tại trong hệ thống. Vui lòng kiểm tra lại.');
+      return;
+    }
+
+    if (matchedUser.password && matchedUser.password !== cleanPass) {
+      // Record Audit Log: AUTH_LOGIN_FAILED
+      if (onUpdateStore) {
+        const failLog = createAuditRecord(
+          'AUTH_LOGIN_FAILED',
+          'AUTH',
+          'Hệ thống Xác thực',
+          `Đăng nhập thất bại: Sai mật khẩu truy cập cho tài khoản "${matchedUser.username}"`,
+          matchedUser,
+          {
+            target_id: matchedUser.username,
+            details: {
+              ip_address: '192.168.1.45',
+              status: 'failed',
+              after: { reason: 'Mật khẩu không chính xác', username: matchedUser.username }
+            }
+          }
+        );
+        onUpdateStore(prev => appendAuditLog(prev, failLog));
+      }
+      setStaffError('Mật khẩu không chính xác. Mật khẩu mẫu mặc định là: 123456');
+      return;
+    }
+
+    // Success
+    setStaffError(null);
+    if (onUpdateStore) {
+      const log = createAuditRecord(
+        'AUTH_LOGIN_SUCCESS',
+        'AUTH',
+        'Hệ thống Xác thực',
+        `Nhân sự ${matchedUser.full_name} (@${matchedUser.username}) đăng nhập thành công`,
+        matchedUser,
+        {
+          target_id: matchedUser.username,
+          details: {
+            ip_address: '192.168.1.45',
+            status: 'success',
+            after: { role: matchedUser.role, full_name: matchedUser.full_name, login_mode: 'form_credentials' }
+          }
+        }
+      );
+      onUpdateStore(prev => appendAuditLog(prev, log));
+    }
+
+    if (onLoginSuccess) {
+      onLoginSuccess(matchedUser);
+    } else {
+      onChangeRole(matchedUser.role);
+    }
+
+    if (onSetParentStudent) onSetParentStudent(null);
+    setLoginSuccess(`Đã đăng nhập thành công: ${matchedUser.full_name}`);
+    setTimeout(() => {
+      setLoginSuccess(null);
+      onClose();
+    }, 600);
   };
 
   const handleParentPhoneLogin = (e?: React.FormEvent) => {
@@ -247,15 +388,23 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
               </div>
 
               {/* Standard Credentials Form Simulation */}
-              <div className="pt-3 border-t border-slate-800/80 space-y-3">
+              <form onSubmit={handleStandardStaffLogin} className="pt-3 border-t border-slate-800/80 space-y-3">
                 <div className="text-xs font-semibold text-slate-400">Hoặc đăng nhập bằng tài khoản nội bộ:</div>
+                
+                {staffError && (
+                  <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold">
+                    {staffError}
+                  </div>
+                )}
+
                 <div className="space-y-2 text-xs">
                   <div>
-                    <label className="block text-slate-400 mb-1">Email / Tài khoản</label>
+                    <label className="block text-slate-400 mb-1">Tên đăng nhập hoặc Email</label>
                     <input
-                      type="email"
+                      type="text"
                       value={staffEmail}
-                      onChange={e => setStaffEmail(e.target.value)}
+                      onChange={e => { setStaffEmail(e.target.value); setStaffError(null); }}
+                      placeholder="VD: admin, ketoan, tuyensinh..."
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500 font-mono text-xs"
                     />
                   </div>
@@ -264,20 +413,20 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                     <input
                       type="password"
                       value={staffPassword}
-                      onChange={e => setStaffPassword(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500 text-xs"
+                      onChange={e => { setStaffPassword(e.target.value); setStaffError(null); }}
+                      placeholder="Mặc định: 123456"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500 text-xs font-mono"
                     />
                   </div>
                 </div>
 
                 <button
-                  type="button"
-                  onClick={() => handleSelectStaffRole('super_admin', 'Quản trị viên Super Admin')}
+                  type="submit"
                   className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-colors shadow-md shadow-amber-500/20"
                 >
-                  Đăng Nhập Cán Bộ
+                  Xác Thực & Đăng Nhập Hệ Thống
                 </button>
-              </div>
+              </form>
             </div>
           )}
 

@@ -18,7 +18,7 @@ import {
   Sparkles,
   Info
 } from 'lucide-react';
-import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed } from '../../lib/storage';
+import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { ExtracurricularClass, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -303,9 +303,31 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         allow_over_quota: formData.allow_over_quota,
       };
 
+      const createClassLog = createAuditRecord(
+        'CLASS_CREATE',
+        'ACADEMIC',
+        'Lớp Ngoại Khóa',
+        `Tạo mới lớp học: ${newClass.name} (Sĩ số tối đa: ${newClass.max_students}, Học phí: ${formatVND(newClass.full_course_fee)})`,
+        null,
+        {
+          target_id: newClass.id,
+          details: {
+            status: 'success',
+            after: {
+              class_id: newClass.id,
+              name: newClass.name,
+              max_students: newClass.max_students,
+              full_course_fee: newClass.full_course_fee,
+              days: newClass.days_of_week
+            }
+          }
+        }
+      );
+
       onUpdateStore(prev => ({
         ...prev,
         classes: [newClass, ...prev.classes],
+        auditLogs: [createClassLog, ...(prev.auditLogs || [])],
       }));
     }
 

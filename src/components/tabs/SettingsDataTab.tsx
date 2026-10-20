@@ -51,8 +51,11 @@ import {
   getInitialStore, 
   getEffectivePrice, 
   cloneTermConfiguration,
-  isTermClosed 
+  isTermClosed,
+  createAuditRecord,
+  appendAuditLog
 } from '../../lib/storage';
+import { AuditLogsTab } from './AuditLogsTab';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
 import { 
   UserRole, 
@@ -72,7 +75,7 @@ interface SettingsDataTabProps {
   store: AppStore;
   currentRole: UserRole;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
-  initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase';
+  initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs';
   initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
@@ -83,7 +86,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   initialSection = 'pricing',
   initialSubTab = 'terms',
 }) => {
-  const [activeSection, setActiveSection] = useState<'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase'>(initialSection);
+  const [activeSection, setActiveSection] = useState<'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs'>(initialSection);
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
@@ -786,6 +789,25 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         updated.classes = [];
       }
 
+      // Record Audit Log: DATABASE_RESET
+      const resetLog = createAuditRecord(
+        'DATABASE_RESET',
+        'SYSTEM',
+        'Cơ sở dữ liệu hệ thống',
+        `Super Admin thực hiện dọn sạch dữ liệu theo cấp độ: ${selectedResetOption.toUpperCase()}`,
+        null,
+        {
+          details: {
+            status: 'success',
+            after: {
+              option: selectedResetOption,
+              timestamp: new Date().toISOString()
+            }
+          }
+        }
+      );
+      updated.auditLogs = [resetLog, ...(updated.auditLogs || [])];
+
       return updated;
     });
 
@@ -810,10 +832,32 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const result = await parseMasterExcelFile(file);
 
     if (result.success && result.data) {
-      onUpdateStore(prev => ({
-        ...prev,
-        students: result.data?.students ? [...result.data.students, ...prev.students] : prev.students,
-      }));
+      onUpdateStore(prev => {
+        const importLog = createAuditRecord(
+          'EXCEL_IMPORT',
+          'SYSTEM',
+          'Bảng Tính Master Excel',
+          `Import đồng bộ tệp Excel "${file.name}" thành công`,
+          null,
+          {
+            target_id: file.name,
+            details: {
+              status: 'success',
+              after: {
+                fileName: file.name,
+                fileSize: file.size,
+                message: result.message
+              }
+            }
+          }
+        );
+
+        return {
+          ...prev,
+          students: result.data?.students ? [...result.data.students, ...prev.students] : prev.students,
+          auditLogs: [importLog, ...(prev.auditLogs || [])],
+        };
+      });
       setImportStatus({ loading: false, message: result.message, isError: false });
     } else {
       setImportStatus({ loading: false, message: result.message, isError: true });
@@ -901,6 +945,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           }`}
         >
           Supabase PostgreSQL
+        </button>
+        <button
+          onClick={() => setActiveSection('audit_logs')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+            activeSection === 'audit_logs'
+              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+          }`}
+        >
+          <ShieldAlert className="w-3.5 h-3.5" />
+          <span>Nhật Ký Kiểm Toán (Audit Logs)</span>
         </button>
       </div>
 
@@ -4059,6 +4114,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {/* SECTION 7: NHẬT KÝ KIỂM TOÁN & LỊCH SỬ THAO TÁC */}
+      {activeSection === 'audit_logs' && (
+        <AuditLogsTab
+          store={store}
+          currentRole={currentRole}
+          onUpdateStore={onUpdateStore}
+        />
       )}
 
     </div>

@@ -206,6 +206,14 @@ export const Navbar: React.FC<NavbarProps> = ({
           icon: Settings, 
           desc: 'Dọn sạch cơ sở dữ liệu 4 cấp độ an toàn, Nhập và Xuất 10 bảng dữ liệu' 
         },
+        { 
+          id: 'sub_audit_logs', 
+          label: 'Nhật Ký Hoạt Động & Kiểm Toán', 
+          icon: ShieldCheck, 
+          desc: 'Audit Trail: Lịch sử đăng nhập, can thiệp học vụ, gạch nợ học phí và thay đổi cấu hình',
+          badge: 'Admin',
+          badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+        },
       ],
     },
   ];

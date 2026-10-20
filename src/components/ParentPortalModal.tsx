@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   X, 
   Send, 
@@ -53,6 +53,31 @@ export const TIME_SLOT_OPTIONS = [
   { value: 'sun_afternoon', label: 'Chiều Chủ Nhật (15:00 - 16:30)' },
   { value: 'evening', label: 'Ca tối ngày thường (18:15 - 19:45)' },
 ];
+
+export type PortalStep = 'form' | 'success';
+
+export interface ParentRegistrationSummary {
+  leadCode: string;
+  parentName: string;
+  parentPhone: string;
+  parentEmail?: string;
+  studentName: string;
+  studentGrade?: string;
+  campusName: string;
+  termName: string;
+  registeredSubjects: {
+    name: string;
+    category: string;
+    timeSlotLabel: string;
+    fee: number;
+  }[];
+  isRoyal: boolean;
+  totalAmount: number;
+  discountAmount: number;
+  finalAmount: number;
+  discountNote: string;
+  submittedAt: string;
+}
 
 export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   store,
@@ -119,29 +144,20 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
   const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
   
-  // Success receipt after submission (WITHOUT VietQR)
-  const [regReceipt, setRegReceipt] = useState<{
-    leadCode: string;
-    parentName: string;
-    parentPhone: string;
-    parentEmail?: string;
-    studentName: string;
-    studentGrade?: string;
-    campusName: string;
-    termName: string;
-    registeredSubjects: {
-      name: string;
-      category: string;
-      timeSlotLabel: string;
-      fee: number;
-    }[];
-    isRoyal: boolean;
-    totalAmount: number;
-    discountAmount: number;
-    finalAmount: number;
-    discountNote: string;
-    submittedAt: string;
-  } | null>(null);
+  // Step Management: 'form' | 'success'
+  const [currentStep, setCurrentStep] = useState<PortalStep>('form');
+  const [submittedRegistration, setSubmittedRegistration] = useState<ParentRegistrationSummary | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to top when step transitions to 'success' or 'form'
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    if (isStandalonePage && typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [currentStep, isStandalonePage]);
 
   // Selected campus & term entities
   const selectedCampus = store.campuses.find(c => c.id === regForm.desired_campus_id) || store.campuses[0];
@@ -366,12 +382,12 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       ],
     }));
 
-    setRegReceipt({
+    const summary: ParentRegistrationSummary = {
       leadCode,
-      parentName: regForm.parent_name,
-      parentPhone: regForm.parent_phone,
-      parentEmail: regForm.parent_email,
-      studentName: regForm.student_name,
+      parentName: regForm.parent_name.trim(),
+      parentPhone: regForm.parent_phone.trim(),
+      parentEmail: regForm.parent_email.trim() || undefined,
+      studentName: regForm.student_name.trim(),
       studentGrade: regForm.student_grade,
       campusName: campus?.name || 'Royal School',
       termName: term?.name || 'Niên khóa hiện tại',
@@ -387,16 +403,43 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       finalAmount: finalTotalAmount,
       discountNote: discountPolicy,
       submittedAt: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + new Date().toLocaleDateString('vi-VN'),
-    });
+    };
 
-    // Reset student info
+    setSubmittedRegistration(summary);
+    setCurrentStep('success');
+
+    // Auto-scroll to top smoothly upon submission
+    setTimeout(() => {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      if (isStandalonePage && typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }, 50);
+  };
+
+  // Reset form and transition back to 'form' step for registering another child
+  const handleRegisterAnotherChild = () => {
     setRegForm(prev => ({
       ...prev,
       student_name: '',
       student_dob: '2016-05-15',
+      student_grade: 'Lớp 3 - Tiểu học',
+      is_royal_student: true,
       medical_notes: '',
       notes: '',
     }));
+    setFormErrors({});
+    setCurrentStep('form');
+    setTimeout(() => {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+      if (isStandalonePage && typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }, 50);
   };
 
   const portalContent = (
@@ -417,8 +460,12 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <span className="font-extrabold text-sm sm:text-base tracking-wider text-white">ROYAL PARENT PORTAL</span>
-              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
-                Cổng Đăng Ký Trực Tuyến
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors ${
+                currentStep === 'success' 
+                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' 
+                  : 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+              }`}>
+                {currentStep === 'success' ? 'Đã Tiếp Nhận Hồ Sơ' : 'Cổng Đăng Ký Trực Tuyến'}
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-medium">
@@ -513,8 +560,17 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       {/* Subheader Notice Banner */}
       <div className="px-5 sm:px-8 py-2.5 bg-slate-900/80 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-2 shrink-0">
         <div className="flex items-center gap-2 text-slate-300 font-medium">
-          <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>Phụ huynh chọn môn học & khung giờ cho con. Ban Tuyển sinh & Học vụ sẽ liên hệ xác nhận trong vòng 24 giờ làm việc.</span>
+          {currentStep === 'success' ? (
+            <>
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>Đã tiếp nhận hồ sơ đăng ký thành công. Phòng Tuyển sinh sẽ liên hệ phụ huynh trong vòng 24 giờ làm việc.</span>
+            </>
+          ) : (
+            <>
+              <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Phụ huynh chọn môn học & khung giờ cho con. Ban Tuyển sinh & Học vụ sẽ liên hệ xác nhận trong vòng 24 giờ làm việc.</span>
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-2 text-slate-400 text-[11px] shrink-0">
@@ -524,143 +580,207 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       </div>
 
       {/* Scrollable Form Body */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7 space-y-6 bg-gradient-to-b from-[#0B0F19] to-[#070A11]">
+      <div 
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-7 space-y-6 bg-gradient-to-b from-[#0B0F19] to-[#070A11] scroll-smooth"
+      >
         <div className="space-y-6 max-w-4xl mx-auto">
           
-          {/* SUCCESS BANNER WHEN APPLICATION IS SUBMITTED (WITHOUT VIETQR) */}
-          {regReceipt && (
-            <div className="rounded-3xl bg-gradient-to-br from-[#0D182A] via-slate-900 to-[#0A121E] border-2 border-emerald-500/40 p-6 sm:p-7 shadow-2xl space-y-5 animate-fadeIn">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0">
-                    <CheckCircle2 className="w-7 h-7" />
+          {/* STEP 2: MÀN HÌNH THÔNG BÁO XÁC NHẬN TIẾP NHẬN HỒ SƠ THÀNH CÔNG */}
+          {currentStep === 'success' && submittedRegistration ? (
+            <div className="rounded-3xl bg-gradient-to-br from-[#0D182A] via-slate-900 to-[#0A121E] border-2 border-emerald-500/30 p-6 sm:p-8 shadow-2xl space-y-6 animate-fadeIn transition-all">
+              
+              {/* 1. Header xác nhận (Top Alert Bar) */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-5 border-b border-slate-800/90 gap-4">
+                {/* Bên trái */}
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/10">
+                    <CheckCircle2 className="w-7 h-7 text-emerald-400" />
                   </div>
                   <div>
-                    <div className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                    <div className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-emerald-400">
                       ĐÃ TIẾP NHẬN ĐƠN ĐĂNG KÝ NGOẠI KHÓA THÀNH CÔNG!
                     </div>
-                    <h3 className="text-lg font-extrabold text-white">
-                      Mã Hồ Sơ Tiếp Nhận: <span className="text-amber-400 font-mono">{regReceipt.leadCode}</span>
+                    <h3 className="text-base sm:text-xl font-black text-white flex flex-wrap items-center gap-2 mt-0.5">
+                      <span>Mã Hồ Sơ Tiếp Nhận:</span>
+                      <span className="font-mono text-amber-400 font-bold tracking-wider">{submittedRegistration.leadCode}</span>
                     </h3>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                {/* Bên phải */}
+                <div className="flex items-center gap-2.5 shrink-0">
                   <button
                     onClick={() => {
-                      navigator.clipboard.writeText(regReceipt.leadCode);
-                      setCopyToast(`Đã sao chép mã hồ sơ: ${regReceipt.leadCode}`);
+                      navigator.clipboard.writeText(submittedRegistration.leadCode);
+                      setCopyToast(`Đã sao chép mã hồ sơ: ${submittedRegistration.leadCode}`);
                       setTimeout(() => setCopyToast(null), 3000);
                     }}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-amber-300 font-semibold transition-colors flex items-center gap-1.5"
+                    className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-xs text-amber-300 font-bold border border-slate-700 hover:border-amber-500/40 transition-all flex items-center gap-2 shadow-sm"
+                    title="Sao chép mã tiếp nhận vào bộ nhớ tạm"
                   >
-                    <Copy className="w-3.5 h-3.5" />
+                    <Copy className="w-4 h-4 text-amber-400" />
                     <span>Sao chép mã</span>
                   </button>
                   <button
-                    onClick={() => setRegReceipt(null)}
-                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold transition-colors"
+                    onClick={handleRegisterAnotherChild}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-95 text-slate-950 text-xs font-black transition-all flex items-center gap-1.5 shadow-md shadow-amber-500/20"
+                    title="Tiếp tục đăng ký môn học cho bé khác"
                   >
-                    Đăng ký thêm cho bé khác
+                    <Sparkles className="w-4 h-4 text-slate-950" />
+                    <span>Đăng ký thêm cho bé khác</span>
                   </button>
                 </div>
               </div>
 
-              {/* Notice Message */}
-              <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200 leading-relaxed">
-                Nhà trường đã tiếp nhận thông tin và phòng Tuyển sinh sẽ liên hệ phụ huynh <strong>{regReceipt.parentName}</strong> qua SĐT <strong>{regReceipt.parentPhone}</strong> trong vòng <strong>24 giờ làm việc</strong> để xác nhận thời khóa biểu và phân lớp cho bé <strong>{regReceipt.studentName}</strong>.
+              {/* 2. Khối thông điệp hỗ trợ (Message Banner) */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs sm:text-sm text-emerald-200 leading-relaxed shadow-inner">
+                Nhà trường đã tiếp nhận thông tin và phòng Tuyển sinh sẽ liên hệ phụ huynh{' '}
+                <strong className="text-white font-bold">{submittedRegistration.parentName}</strong>{' '}
+                qua SĐT{' '}
+                <strong className="font-mono text-amber-300 font-bold">{submittedRegistration.parentPhone}</strong>{' '}
+                trong vòng{' '}
+                <strong className="text-emerald-300 font-bold">24 giờ làm việc</strong>{' '}
+                để xác nhận thời khóa biểu và phân lớp cho bé{' '}
+                <strong className="text-white font-bold">{submittedRegistration.studentName}</strong>.
               </div>
 
-              {/* Registration Details Summary */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                {/* Subjects & Schedule */}
-                <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
-                  <div className="text-[11px] font-bold text-amber-400 uppercase tracking-wider">
-                    Môn Học & Lịch Đăng Ký ({regReceipt.registeredSubjects.length} môn)
-                  </div>
-                  
-                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                    {regReceipt.registeredSubjects.map((sub, idx) => (
-                      <div key={idx} className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                        <div className="flex justify-between items-center">
-                          <span className="font-bold text-white text-xs">{sub.name}</span>
-                          <span className="font-mono text-emerald-400 font-bold">{formatVND(sub.fee)}</span>
+              {/* 3. Khu vực tóm tắt chi tiết đơn đăng ký (2 Cột Grid) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 text-xs">
+                
+                {/* Cột trái - Môn học & Lịch đăng ký */}
+                <div className="p-5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-4 flex flex-col justify-between">
+                  <div className="space-y-3">
+                    <div className="text-[11px] font-black text-amber-400 uppercase tracking-wider flex items-center justify-between">
+                      <span>MÔN HỌC & LỊCH ĐĂNG KÝ ({submittedRegistration.registeredSubjects.length} MÔN)</span>
+                      <span className="text-[10px] text-slate-500 font-normal font-sans">Chi tiết môn học</span>
+                    </div>
+                    
+                    <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                      {submittedRegistration.registeredSubjects.map((sub, idx) => (
+                        <div key={idx} className="p-3 rounded-xl bg-slate-900 border border-slate-800/90 space-y-1.5 hover:border-slate-700 transition-colors">
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="font-bold text-white text-xs">{sub.name}</span>
+                            <span className="font-mono text-emerald-400 font-bold shrink-0">{formatVND(sub.fee)}</span>
+                          </div>
+                          <div className="text-[11px] text-amber-300/90 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <span>{sub.timeSlotLabel}</span>
+                          </div>
                         </div>
-                        <div className="text-[11px] text-amber-300/90 flex items-center gap-1.5">
-                          <Clock className="w-3 h-3 text-amber-400" />
-                          <span>{sub.timeSlotLabel}</span>
-                        </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-800/80 space-y-1 text-slate-300">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Học sinh:</span>
-                      <span className="text-white font-bold">{regReceipt.studentName} ({regReceipt.studentGrade})</span>
+                  {/* Thông tin học viên bên dưới */}
+                  <div className="pt-3 border-t border-slate-800/90 space-y-2 text-slate-300 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400 font-medium">Học sinh:</span>
+                      <span className="text-white font-bold">{submittedRegistration.studentName} {submittedRegistration.studentGrade ? `(${submittedRegistration.studentGrade})` : ''}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Cơ sở:</span>
-                      <span className="text-slate-200">{regReceipt.campusName}</span>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400 font-medium">Cơ sở:</span>
+                      <span className="text-slate-200 font-semibold">{submittedRegistration.campusName}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Phân loại học sinh:</span>
-                      <span className={regReceipt.isRoyal ? "text-amber-400 font-semibold" : "text-slate-200"}>
-                        {regReceipt.isRoyal ? "HS chính khóa Royal (Có suất bánh sữa)" : "Học sinh ngoài trường"}
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400 font-medium">Phân loại học sinh:</span>
+                      <span className={submittedRegistration.isRoyal ? "text-amber-400 font-bold" : "text-slate-200 font-medium"}>
+                        {submittedRegistration.isRoyal ? "HS chính khóa Royal (Có suất bánh sữa)" : "Học sinh ngoài trường"}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                {/* Financial Summary & Contact Info */}
-                <div className="space-y-4">
-                  <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-500/10 via-slate-950 to-slate-950 border border-amber-500/30 space-y-2">
-                    <span className="text-[11px] text-slate-400 block font-semibold uppercase tracking-wider">
-                      Mức học phí tham khảo:
-                    </span>
-                    <div className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono">
-                      {formatVND(regReceipt.finalAmount)}
+                {/* Cột phải - Tài chính & Liên hệ phụ huynh */}
+                <div className="space-y-4 flex flex-col justify-between">
+                  
+                  {/* Khối 1: Mức học phí tham khảo */}
+                  <div className="p-5 rounded-2xl bg-gradient-to-br from-amber-500/10 via-slate-950 to-slate-950 border border-amber-500/30 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-slate-400 block font-bold uppercase tracking-wider">
+                        MỨC HỌC PHÍ THAM KHẢO:
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-[10px] font-bold border border-emerald-500/25">
+                        Dự kiến
+                      </span>
                     </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      {regReceipt.discountNote}
+
+                    <div className="text-2xl sm:text-3xl font-black text-emerald-400 font-mono tracking-tight">
+                      {formatVND(submittedRegistration.finalAmount)}
+                    </div>
+                    
+                    <p className="text-[11px] text-slate-300 leading-relaxed font-medium">
+                      {submittedRegistration.discountNote}
                     </p>
-                    <p className="text-[10px] text-amber-300/80 pt-1 border-t border-slate-800">
+
+                    <p className="text-[10px] text-amber-300/80 pt-2 border-t border-slate-800/80 leading-normal">
                       * Học phí chính thức và phương thức đóng phí sẽ được chuyên viên tuyển sinh tư vấn chi tiết khi liên hệ.
                     </p>
                   </div>
 
-                  <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2 text-slate-300">
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                      Thông Tin Liên Hệ Phụ Huynh
+                  {/* Khối 2: Thông tin liên hệ phụ huynh */}
+                  <div className="p-5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3 text-slate-300">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-800/80 flex items-center justify-between">
+                      <span>THÔNG TIN LIÊN HỆ PHỤ HUYNH</span>
+                      <Phone className="w-3.5 h-3.5 text-amber-400" />
                     </div>
-                    <div className="space-y-1 text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Phụ huynh:</span>
-                        <span className="text-white font-semibold">{regReceipt.parentName}</span>
+
+                    <div className="space-y-2 text-xs">
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 font-medium">Phụ huynh:</span>
+                        <span className="text-white font-bold uppercase tracking-wide">{submittedRegistration.parentName}</span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Số điện thoại:</span>
-                        <span className="font-mono text-amber-300 font-bold">{regReceipt.parentPhone}</span>
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-400 font-medium">Số điện thoại:</span>
+                        <span className="font-mono text-amber-300 font-bold text-sm">{submittedRegistration.parentPhone}</span>
                       </div>
-                      {regReceipt.parentEmail && (
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Email:</span>
-                          <span className="text-slate-300">{regReceipt.parentEmail}</span>
+                      {submittedRegistration.parentEmail && (
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 font-medium">Email:</span>
+                          <span className="text-slate-300 font-medium">{submittedRegistration.parentEmail}</span>
                         </div>
                       )}
-                      <div className="flex justify-between text-slate-400 text-[10px] pt-1 border-t border-slate-800">
+                      <div className="flex justify-between items-center text-slate-400 text-[11px] pt-2 border-t border-slate-800/80">
                         <span>Thời gian gửi đơn:</span>
-                        <span>{regReceipt.submittedAt}</span>
+                        <span className="font-mono text-slate-300">{submittedRegistration.submittedAt}</span>
                       </div>
                     </div>
                   </div>
+
+                </div>
+
+              </div>
+
+              {/* Bottom Quick Actions */}
+              <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs border-t border-slate-800/80">
+                <div className="text-slate-400 text-[11px] flex items-center gap-1.5">
+                  <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>Bộ phận tuyển sinh sẽ liên hệ theo số điện thoại trên để hoàn tất thủ tục.</span>
+                </div>
+
+                <div className="flex items-center gap-2.5 w-full sm:w-auto">
+                  <button
+                    onClick={handleRegisterAnotherChild}
+                    className="flex-1 sm:flex-initial px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold transition-all text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Đăng Ký Thêm Cho Bé Khác</span>
+                  </button>
+                  {!isStandalonePage && (
+                    <button
+                      onClick={onClose}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition-colors text-xs"
+                    >
+                      Đóng
+                    </button>
+                  )}
                 </div>
               </div>
-            </div>
-          )}
 
-          {/* MAIN REGISTRATION FORM */}
-          <div className="rounded-3xl bg-slate-900/90 border border-slate-800 p-5 sm:p-7 backdrop-blur-md shadow-2xl space-y-7">
+            </div>
+          ) : (
+            /* STEP 1: FORM ĐĂNG KÝ */
+            <div className="rounded-3xl bg-slate-900/90 border border-slate-800 p-5 sm:p-7 backdrop-blur-md shadow-2xl space-y-7 animate-fadeIn">
             
             <form onSubmit={handleRegisterSubmit} className="space-y-7">
               
@@ -1147,6 +1267,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
             </form>
 
           </div>
+          )}
 
         </div>
       </div>

@@ -18,7 +18,8 @@ import {
   MakeupCredit,
   ParentRegistration,
   SystemNotification,
-  AppUser
+  AppUser,
+  AuditLogRecord
 } from '../types';
 
 export const initialCampuses: Campus[] = [
@@ -652,6 +653,54 @@ export const initialClasses: ExtracurricularClass[] = [
     price_per_session: 160000,
     status: 'active',
   },
+  {
+    id: 'cls_bask_02',
+    name: 'Bóng rổ Nâng Cao U13 - Ca T3 & T5',
+    term_id: 'term_fall_2026',
+    campus_id: 'camp_pmh',
+    subject_id: 'sub_bask',
+    facility_id: 'fac_bask_gym',
+    time_slot_id: 'slot_tue_thu',
+    days_of_week: ['T3', 'T5'],
+    primary_teacher_id: 'tch_tuan',
+    max_students: 15,
+    total_sessions: 24,
+    full_course_fee: 3240000,
+    price_per_session: 135000,
+    status: 'active',
+  },
+  {
+    id: 'cls_stem_02',
+    name: 'Robotics VEX IQ Khám Phá - Ca T2 & T4',
+    term_id: 'term_fall_2026',
+    campus_id: 'camp_pmh',
+    subject_id: 'sub_stem',
+    facility_id: 'fac_stem_lab',
+    time_slot_id: 'slot_mon_wed',
+    days_of_week: ['T2', 'T4'],
+    primary_teacher_id: 'tch_david',
+    max_students: 12,
+    total_sessions: 20,
+    full_course_fee: 4500000,
+    price_per_session: 225000,
+    status: 'active',
+  },
+  {
+    id: 'cls_art_02',
+    name: 'Hội họa Sáng tạo Đa chất liệu - Sáng Thứ 7',
+    term_id: 'term_fall_2026',
+    campus_id: 'camp_pmh',
+    subject_id: 'sub_art',
+    facility_id: 'fac_art_room',
+    time_slot_id: 'slot_sat_morning',
+    days_of_week: ['T7'],
+    primary_teacher_id: 'tch_quynh',
+    max_students: 12,
+    total_sessions: 16,
+    full_course_fee: 3200000,
+    price_per_session: 200000,
+    status: 'active',
+  },
 ];
 
 export const initialStudents: Student[] = [
@@ -1132,6 +1181,50 @@ export const initialParentRegistrations: ParentRegistration[] = [
     assigned_class_id: 'cls_piano_01',
     created_at: '2026-10-10',
   },
+  {
+    id: 'preg_tan2',
+    registration_code: 'REG-2026-413628',
+    parent_name: 'Nguyễn Văn Tân',
+    parent_phone: '0903 456 789',
+    parent_email: 'tan.nguyen@royalparents.vn',
+    student_name: 'Nguyễn Đức Tân (Tân 2)',
+    student_dob: '2016-09-18',
+    student_grade: 'Lớp 4 - Royal Primary',
+    desired_campus_id: 'camp_pmh',
+    desired_term_id: 'term_fall_2026',
+    desired_subject_id: 'sub_bask',
+    desired_time_slot_type: 'after_school',
+    is_royal_student: true,
+    medical_notes: 'Sức khỏe tốt, không dị ứng, mang theo bình nước riêng',
+    notes: 'Phụ huynh đăng ký gói 3 môn: Bóng rổ Hoàng Gia, Robotics VEX IQ và Hội họa',
+    estimated_fee: 10393000,
+    discount_policy: 'Ưu đãi 5% Học sinh Royal School + Suất bánh sữa sau giờ',
+    status: 'pending',
+    registered_subjects: [
+      {
+        subject_id: 'sub_bask',
+        subject_name: 'Bóng rổ Hoàng Gia',
+        time_slot: 'after_school',
+        time_slot_label: 'Sau giờ chính khóa: Thứ 2 & Thứ 4 (16:45 - 18:15)',
+        estimated_fee: 3240000,
+      },
+      {
+        subject_id: 'sub_stem',
+        subject_name: 'Lập trình & Robotics VEX IQ',
+        time_slot: 'sat_morning',
+        time_slot_label: 'Cuối tuần: Sáng Thứ 7 (08:30 - 10:00)',
+        estimated_fee: 4500000,
+      },
+      {
+        subject_id: 'sub_art',
+        subject_name: 'Hội họa Sáng tạo Đa chất liệu',
+        time_slot: 'after_school',
+        time_slot_label: 'Sau giờ chính khóa: Thứ 4 & Thứ 6 (16:30 - 18:30)',
+        estimated_fee: 3200000,
+      },
+    ],
+    created_at: '2026-10-18',
+  },
 ];
 
 export const initialNotifications: SystemNotification[] = [
@@ -1233,5 +1326,306 @@ export const initialUsers: AppUser[] = [
     status: 'active',
     created_at: '2026-08-15',
   },
+];
+
+export const initialAuditLogs: AuditLogRecord[] = [
+  {
+    id: 'log_001',
+    timestamp: '2026-10-20T10:15:20+07:00',
+    user_id: 'usr_admin',
+    username: 'admin',
+    user_role: 'Super Admin',
+    full_name: 'ThS. Nguyễn Hoàng Long',
+    action: 'AUTH_LOGIN_SUCCESS',
+    category: 'AUTH',
+    target_entity: 'Hệ thống Xác thực',
+    target_id: 'usr_admin',
+    description: 'Đăng nhập hệ thống quản trị thành công từ trình duyệt Chrome / macOS',
+    details: {
+      ip_address: '192.168.1.45',
+      status: 'success',
+      after: { device: 'MacBook Pro', browser: 'Chrome 129.0', campus: 'Toàn hệ thống' }
+    }
+  },
+  {
+    id: 'log_002',
+    timestamp: '2026-10-20T09:45:10+07:00',
+    user_id: 'user_tuyensinh',
+    username: 'tuyensinh',
+    user_role: 'Tuyển sinh',
+    full_name: 'Cô Phạm Thùy Linh',
+    action: 'STUDENT_CREATE',
+    category: 'ACADEMIC',
+    target_entity: 'Hồ sơ Học sinh',
+    target_id: 'RY-2026-00101',
+    description: 'Thêm mới hồ sơ học sinh Royal: Nguyễn Gia Huy (Mã: RY-2026-00101, Lớp 3A1)',
+    details: {
+      status: 'success',
+      after: {
+        code: 'RY-2026-00101',
+        full_name: 'Nguyễn Gia Huy',
+        campus: 'Phú Mỹ Hưng',
+        is_royal: true,
+        parent_phone: '0903 123 456'
+      }
+    }
+  },
+  {
+    id: 'log_003',
+    timestamp: '2026-10-20T09:30:00+07:00',
+    user_id: 'user_hocvu',
+    username: 'hocvu',
+    user_role: 'Học vụ kiêm Tuyển sinh',
+    full_name: 'Thầy Trần Quốc Bảo',
+    action: 'CLASS_ASSIGN',
+    category: 'ACADEMIC',
+    target_entity: 'Xếp lớp Đa môn',
+    target_id: 'REG-2026-413628',
+    description: 'Tiếp nhận hồ sơ tuyển sinh & xếp 2 lớp thành công cho học sinh Hoàng Bảo Ngọc (Bóng rổ PMH-01 & Robotics PMH-01)',
+    details: {
+      status: 'success',
+      after: {
+        registration_code: 'REG-2026-413628',
+        student_code: 'RY-2026-00104',
+        assigned_classes: ['cls_bask_pmh_01', 'cls_stem_pmh_01'],
+        total_tuition: 6840000
+      }
+    }
+  },
+  {
+    id: 'log_004',
+    timestamp: '2026-10-20T09:12:45+07:00',
+    user_id: 'usr_ketoan',
+    username: 'ketoan',
+    user_role: 'Học vụ kiêm Kế toán',
+    full_name: 'Cô Lê Thị Kim Cúc',
+    action: 'INVOICE_PAYMENT_COLLECT',
+    category: 'FINANCE',
+    target_entity: 'Hóa đơn Học phí',
+    target_id: 'INV-2026-001',
+    description: 'Gạch nợ sao kê thu học phí thành công cho học sinh Lê Bảo Trâm (Số tiền: 3.240.000 đ qua Vietcombank)',
+    details: {
+      status: 'success',
+      before: { invoice_id: 'INV-2026-001', status: 'unpaid', paid_amount: 0 },
+      after: { invoice_id: 'INV-2026-001', status: 'paid', paid_amount: 3240000, bank: 'Vietcombank - PMH' }
+    }
+  },
+  {
+    id: 'log_005',
+    timestamp: '2026-10-20T08:50:30+07:00',
+    user_id: 'user_giaovien',
+    username: 'giaovien',
+    user_role: 'Giáo viên bộ môn',
+    full_name: 'Thầy David Huỳnh (Bóng Rổ)',
+    action: 'ATTENDANCE_SAVE',
+    category: 'ACADEMIC',
+    target_entity: 'Sổ Điểm danh Buổi học',
+    target_id: 'cls_bask_pmh_01_sess_03',
+    description: 'Lưu điểm danh Buổi 3 Lớp Bóng rổ Hoàng Gia U9 PMH-01 (15 có mặt, 1 vắng có phép)',
+    details: {
+      status: 'success',
+      after: {
+        class_id: 'cls_bask_pmh_01',
+        session_num: 3,
+        present: 15,
+        absent: 1,
+        snack_consumed: 15
+      }
+    }
+  },
+  {
+    id: 'log_006',
+    timestamp: '2026-10-19T16:20:15+07:00',
+    user_id: 'usr_ketoan',
+    username: 'ketoan',
+    user_role: 'Học vụ kiêm Kế toán',
+    full_name: 'Cô Lê Thị Kim Cúc',
+    action: 'CREDIT_ISSUE',
+    category: 'FINANCE',
+    target_entity: 'Phiếu Bảo Lưu Học Phí',
+    target_id: 'CR-2026-004',
+    description: 'Lập phiếu bảo lưu học phí cho bé Trần Minh Khôi (Nghỉ 4 buổi có phép, Giá trị: 600.000 đ, Hạn: 365 ngày)',
+    details: {
+      status: 'success',
+      after: {
+        credit_code: 'CR-2026-004',
+        student_name: 'Trần Minh Khôi',
+        sessions_missed: 4,
+        amount: 600000,
+        expiry: '2027-10-19'
+      }
+    }
+  },
+  {
+    id: 'log_007',
+    timestamp: '2026-10-19T15:10:00+07:00',
+    user_id: 'user_hocvu',
+    username: 'hocvu',
+    user_role: 'Học vụ kiêm Tuyển sinh',
+    full_name: 'Thầy Trần Quốc Bảo',
+    action: 'CLASS_TRANSFER',
+    category: 'ACADEMIC',
+    target_entity: 'Biến động Chuyển lớp',
+    target_id: 'TRF-2026-008',
+    description: 'Thực hiện chuyển lớp cho học sinh Phạm Đức Anh từ Bơi lội Thứ 2/Thứ 4 sang Thứ 3/Thứ 5 (Chênh lệch: 0 đ)',
+    details: {
+      status: 'success',
+      before: { class_id: 'cls_swim_pmh_01', class_name: 'Bơi lội Thủy Tinh K1 - T2/T4' },
+      after: { class_id: 'cls_swim_pmh_02', class_name: 'Bơi lội Thủy Tinh K2 - T3/T5', price_diff: 0 }
+    }
+  },
+  {
+    id: 'log_008',
+    timestamp: '2026-10-19T14:05:40+07:00',
+    user_id: 'user_tuyensinh',
+    username: 'tuyensinh',
+    user_role: 'Tuyển sinh',
+    full_name: 'Cô Phạm Thùy Linh',
+    action: 'STUDENT_UPDATE',
+    category: 'ACADEMIC',
+    target_entity: 'Hồ sơ Học sinh',
+    target_id: 'RY-2026-00102',
+    description: 'Cập nhật ghi chú y tế & dị ứng cho học sinh Vũ Thảo My',
+    details: {
+      status: 'success',
+      before: { medical_notes: 'Bình thường, không có tiền sử dị ứng' },
+      after: { medical_notes: 'Dị ứng phấn hoa và đậu phộng nhẹ, phụ huynh mang thuốc riêng' }
+    }
+  },
+  {
+    id: 'log_009',
+    timestamp: '2026-10-19T11:30:00+07:00',
+    user_id: 'usr_admin',
+    username: 'admin',
+    user_role: 'Super Admin',
+    full_name: 'ThS. Nguyễn Hoàng Long',
+    action: 'CLASS_CREATE',
+    category: 'ACADEMIC',
+    target_entity: 'Lớp Ngoại Khóa',
+    target_id: 'cls_stem_pl_02',
+    description: 'Tạo mới lớp học: Robotics & Lập trình Sáng tạo VEX IQ (Cơ sở Phú Lâm, Ca Thứ 7 08:30-10:00)',
+    details: {
+      status: 'success',
+      after: {
+        code: 'ROB-PL-02',
+        name: 'Robotics & Lập trình VEX IQ Khóa 2',
+        campus: 'Phú Lâm',
+        max_capacity: 16,
+        fee: 3800000
+      }
+    }
+  },
+  {
+    id: 'log_010',
+    timestamp: '2026-10-19T10:02:15+07:00',
+    user_id: 'unknown',
+    username: 'tuyensinh',
+    user_role: 'Tuyển sinh',
+    full_name: 'Cô Phạm Thùy Linh',
+    action: 'AUTH_LOGIN_FAILED',
+    category: 'AUTH',
+    target_entity: 'Hệ thống Xác thực',
+    target_id: 'tuyensinh',
+    description: 'Đăng nhập thất bại do nhập sai mật khẩu 2 lần liên tiếp',
+    details: {
+      ip_address: '192.168.1.88',
+      status: 'failed',
+      after: { reason: 'Mật khẩu không chính xác', attempt: 2 }
+    }
+  },
+  {
+    id: 'log_011',
+    timestamp: '2026-10-19T10:03:00+07:00',
+    user_id: 'user_tuyensinh',
+    username: 'tuyensinh',
+    user_role: 'Tuyển sinh',
+    full_name: 'Cô Phạm Thùy Linh',
+    action: 'AUTH_LOGIN_SUCCESS',
+    category: 'AUTH',
+    target_entity: 'Hệ thống Xác thực',
+    target_id: 'user_tuyensinh',
+    description: 'Đăng nhập thành công sau khi nhập lại đúng mật khẩu',
+    details: {
+      ip_address: '192.168.1.88',
+      status: 'success'
+    }
+  },
+  {
+    id: 'log_012',
+    timestamp: '2026-10-18T17:00:00+07:00',
+    user_id: 'usr_admin',
+    username: 'admin',
+    user_role: 'Super Admin',
+    full_name: 'ThS. Nguyễn Hoàng Long',
+    action: 'EXCEL_IMPORT',
+    category: 'SYSTEM',
+    target_entity: 'Bảng Tính Master Excel',
+    target_id: 'Master_Royal_Q3.xlsx',
+    description: 'Import đồng bộ danh mục 10 bảng tính Master Excel (Cập nhật 48 học viên, 12 lớp học và biểu phí)',
+    details: {
+      status: 'success',
+      after: {
+        file_name: 'Master_Royal_Extracurricular_2026.xlsx',
+        sheets_processed: 10,
+        records_updated: 60
+      }
+    }
+  },
+  {
+    id: 'log_013',
+    timestamp: '2026-10-18T15:20:10+07:00',
+    user_id: 'usr_admin',
+    username: 'admin',
+    user_role: 'Super Admin',
+    full_name: 'ThS. Nguyễn Hoàng Long',
+    action: 'USER_CREATE',
+    category: 'SYSTEM',
+    target_entity: 'Tài Khoản Nhân Sự',
+    target_id: 'usr_ketoan_pl',
+    description: 'Tạo tài khoản kế toán mới cho cơ sở Phú Lâm: ketoan_pl (Cô Nguyễn Mai Phương)',
+    details: {
+      status: 'success',
+      after: {
+        username: 'ketoan_pl',
+        role: 'academic_accountant',
+        campus: 'Phú Lâm',
+        status: 'active'
+      }
+    }
+  },
+  {
+    id: 'log_014',
+    timestamp: '2026-10-18T14:45:00+07:00',
+    user_id: 'usr_ketoan',
+    username: 'ketoan',
+    user_role: 'Học vụ kiêm Kế toán',
+    full_name: 'Cô Lê Thị Kim Cúc',
+    action: 'AUTH_LOGOUT',
+    category: 'AUTH',
+    target_entity: 'Phiên Làm Việc',
+    target_id: 'usr_ketoan',
+    description: 'Đăng xuất an toàn khỏi hệ thống quản lý học vụ & kế toán',
+    details: {
+      ip_address: '192.168.1.52',
+      status: 'success'
+    }
+  },
+  {
+    id: 'log_015',
+    timestamp: '2026-10-17T09:10:00+07:00',
+    user_id: 'usr_admin',
+    username: 'admin',
+    user_role: 'Super Admin',
+    full_name: 'ThS. Nguyễn Hoàng Long',
+    action: 'USER_PASSWORD_CHANGE',
+    category: 'SYSTEM',
+    target_entity: 'Bảo Mật Tài Khoản',
+    target_id: 'usr_ketoan',
+    description: 'Đặt lại mật khẩu truy cập theo yêu cầu cho tài khoản: ketoan',
+    details: {
+      status: 'success',
+      after: { reset_by_admin: true, temporary_password_issued: true }
+    }
+  }
 ];
 

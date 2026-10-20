@@ -13,7 +13,7 @@ import {
   User,
   ShieldCheck
 } from 'lucide-react';
-import { AppStore, formatVND } from '../../lib/storage';
+import { AppStore, formatVND, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { MakeupCredit, Student, ExtracurricularClass, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -75,9 +75,32 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
       status: 'issued',
     };
 
+    const creditLog = createAuditRecord(
+      'CREDIT_ISSUE',
+      'FINANCE',
+      'Phiếu Bảo Lưu Học Phí',
+      `Lập phiếu bảo lưu ${newCredit.credit_code} cho học sinh ${selectedStudent.name} (Vắng ${newCredit.consecutive_absent_count} buổi, Giá trị: ${formatVND(newCredit.total_credit_amount)})`,
+      null,
+      {
+        target_id: newCredit.credit_code,
+        details: {
+          status: 'success',
+          after: {
+            credit_code: newCredit.credit_code,
+            student_name: selectedStudent.name,
+            class_name: selectedClass.name,
+            amount: newCredit.total_credit_amount,
+            absent_count: newCredit.consecutive_absent_count,
+            expiry_date: newCredit.expiry_date
+          }
+        }
+      }
+    );
+
     onUpdateStore(prev => ({
       ...prev,
       makeupCredits: [newCredit, ...prev.makeupCredits],
+      auditLogs: [creditLog, ...(prev.auditLogs || [])],
     }));
 
     setShowIssueModal(false);

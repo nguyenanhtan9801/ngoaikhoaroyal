@@ -294,6 +294,7 @@ export function downloadSampleTemplate() {
       payrollSettlements: [],
       parentRegistrations: [],
       notifications: [],
+      auditLogs: [],
       telecomConfig: { zaloZnsEnabled: true, smsBrandnameEnabled: true, emailEnabled: true, brandName: 'ROYAL SCHOOL' },
       supabaseConfig: { url: '', anonKey: '', isConnected: false }
     },

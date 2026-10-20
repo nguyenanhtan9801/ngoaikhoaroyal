@@ -10,12 +10,13 @@ import { MakeupCreditsTab } from './components/tabs/MakeupCreditsTab';
 import { FinancePayrollTab } from './components/tabs/FinancePayrollTab';
 import { ParentPortalTab } from './components/tabs/ParentPortalTab';
 import { SettingsDataTab } from './components/tabs/SettingsDataTab';
+import { AuditLogsTab } from './components/tabs/AuditLogsTab';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
 import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
-import { loadStore, saveStore, AppStore } from './lib/storage';
+import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser } from './types';
 
@@ -75,6 +76,17 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    if (currentUser) {
+      const logoutRecord = createAuditRecord(
+        'AUTH_LOGOUT',
+        'AUTH',
+        'Phiên Làm Việc',
+        `Nhân sự ${currentUser.full_name} (@${currentUser.username}) đã đăng xuất an toàn khỏi hệ thống`,
+        currentUser,
+        { details: { status: 'success', ip_address: '192.168.1.45' } }
+      );
+      updateStore(prev => appendAuditLog(prev, logoutRecord));
+    }
     setCurrentUser(null);
     try {
       localStorage.removeItem('royal_current_user');
@@ -579,6 +591,16 @@ export default function App() {
               initialSection="clean_reset"
             />
           )}
+
+          {currentRoute === 'sub_audit_logs' && (
+            <AuditLogsTab
+              store={store}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              onUpdateStore={updateStore}
+              onOpenLoginModal={() => setIsLoginModalOpen(true)}
+            />
+          )}
         </div>
 
       </main>
@@ -651,6 +673,9 @@ export default function App() {
         currentRole={currentRole}
         onChangeRole={setCurrentRole}
         store={store}
+        currentUser={currentUser}
+        onUpdateStore={updateStore}
+        onLoginSuccess={handleLoginSuccess}
         currentParentStudent={currentParentStudent}
         onSetParentStudent={setCurrentParentStudent}
         onOpenParentPortalWithStudent={(st) => {
