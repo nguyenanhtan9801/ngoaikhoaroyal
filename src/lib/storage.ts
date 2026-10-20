@@ -467,16 +467,15 @@ export function formatVND(amount: number): string {
   return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
 }
 
+import { formatCapitalizedName } from './formatters';
+
 /**
  * Capitalize the first letter of each word in a string (e.g., "nguyễn văn a" -> "Nguyễn Văn A")
  */
 export function formatCapitalizeWords(input: string): string {
-  if (!input) return '';
-  return input
-    .split(' ')
-    .map(word => (word.length > 0 ? word.charAt(0).toUpperCase() + word.slice(1) : ''))
-    .join(' ');
+  return formatCapitalizedName(input);
 }
+export { formatCapitalizedName };
 
 // Audit Trail & Activity Logging Helper Functions
 export function createAuditRecord(

@@ -28,6 +28,7 @@ import {
   LogOut
 } from 'lucide-react';
 import { AppStore, formatVND, getEffectivePrice } from '../lib/storage';
+import { formatCapitalizedName } from '../lib/formatters';
 import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 
@@ -806,12 +807,13 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                       placeholder="Ví dụ: Nguyễn Hoàng Khang"
                       value={regForm.student_name}
                       onChange={(e) => {
-                        setRegForm({ ...regForm, student_name: e.target.value });
+                        const capitalized = formatCapitalizedName(e.target.value);
+                        setRegForm({ ...regForm, student_name: capitalized });
                         if (formErrors.student_name) setFormErrors({ ...formErrors, student_name: '' });
                       }}
                       className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border ${
                         formErrors.student_name ? 'border-rose-500' : 'border-slate-800'
-                      } text-white focus:outline-none focus:border-amber-500`}
+                      } text-white focus:outline-none focus:border-amber-500 capitalize`}
                     />
                     {formErrors.student_name && (
                       <p className="text-[11px] text-rose-400 mt-1">{formErrors.student_name}</p>
@@ -945,12 +947,13 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                       placeholder="Ví dụ: Nguyễn Văn Hưng"
                       value={regForm.parent_name}
                       onChange={(e) => {
-                        setRegForm({ ...regForm, parent_name: e.target.value });
+                        const capitalized = formatCapitalizedName(e.target.value);
+                        setRegForm({ ...regForm, parent_name: capitalized });
                         if (formErrors.parent_name) setFormErrors({ ...formErrors, parent_name: '' });
                       }}
                       className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border ${
                         formErrors.parent_name ? 'border-rose-500' : 'border-slate-800'
-                      } text-white focus:outline-none focus:border-amber-500`}
+                      } text-white focus:outline-none focus:border-amber-500 capitalize`}
                     />
                     {formErrors.parent_name && (
                       <p className="text-[11px] text-rose-400 mt-1">{formErrors.parent_name}</p>

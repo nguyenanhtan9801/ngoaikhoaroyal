@@ -854,6 +854,17 @@ export const initialInvoices: TuitionInvoice[] = [
     verified_by: 'Kế toán Lê Minh Thư',
     verified_at: '2026-09-05 14:20:00',
     created_at: '2026-09-01',
+    payment_history: [
+      {
+        id: 'pay_hist_01_1',
+        payment_date: '2026-09-05',
+        amount: 3240000,
+        payment_method: 'bank_transfer',
+        payment_reference: 'VCB-FT262458921',
+        verified_by: 'Kế toán Lê Minh Thư',
+        notes: 'Đóng toàn bộ 100% học phí khóa',
+      },
+    ],
   },
   {
     id: 'inv_02',
@@ -871,6 +882,17 @@ export const initialInvoices: TuitionInvoice[] = [
     verified_by: 'Kế toán Lê Minh Thư',
     verified_at: '2026-09-06 09:15:00',
     created_at: '2026-09-01',
+    payment_history: [
+      {
+        id: 'pay_hist_02_1',
+        payment_date: '2026-09-06',
+        amount: 2835000,
+        payment_method: 'bank_transfer',
+        payment_reference: 'VCB-FT262459902',
+        verified_by: 'Kế toán Lê Minh Thư',
+        notes: 'Đóng đủ phần còn lại sau khi trừ bảo lưu',
+      },
+    ],
   },
   {
     id: 'inv_03',
@@ -885,6 +907,7 @@ export const initialInvoices: TuitionInvoice[] = [
     payment_status: 'unpaid', // Cảnh báo nợ phí
     due_date: '2026-09-08',
     created_at: '2026-09-01',
+    payment_history: [],
   },
   {
     id: 'inv_04',
@@ -902,6 +925,17 @@ export const initialInvoices: TuitionInvoice[] = [
     verified_by: 'Kế toán Lê Minh Thư',
     verified_at: '2026-09-07 11:30:00',
     created_at: '2026-09-01',
+    payment_history: [
+      {
+        id: 'pay_hist_04_1',
+        payment_date: '2026-09-07',
+        amount: 1500000,
+        payment_method: 'bank_transfer',
+        payment_reference: 'VCB-PARTIAL-881',
+        verified_by: 'Kế toán Lê Minh Thư',
+        notes: 'Đóng đợt 1 (1.500.000 đ) - Phụ huynh hẹn đóng nốt trước 30/10',
+      },
+    ],
   },
   {
     id: 'inv_05',

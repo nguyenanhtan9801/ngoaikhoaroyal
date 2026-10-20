@@ -18,6 +18,7 @@ import {
   XCircle
 } from 'lucide-react';
 import { AppStore, generateStudentCode, formatVND, deduplicateEnrollments, createAuditRecord, appendAuditLog } from '../../lib/storage';
+import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { RoyalLogo } from '../RoyalLogo';
@@ -28,6 +29,7 @@ interface StudentsTabProps {
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onPrintStudentCard: (student: Student) => void;
   focusHealth?: boolean;
+  initialSearch?: string;
 }
 
 export const StudentsTab: React.FC<StudentsTabProps> = ({
@@ -36,15 +38,22 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   onUpdateStore,
   onPrintStudentCard,
   focusHealth = false,
+  initialSearch,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('table');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch || '');
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
   const [onlyHealth, setOnlyHealth] = useState(focusHealth);
 
   React.useEffect(() => {
     setOnlyHealth(focusHealth);
   }, [focusHealth]);
+
+  React.useEffect(() => {
+    if (initialSearch !== undefined) {
+      setSearch(initialSearch);
+    }
+  }, [initialSearch]);
 
   // Business Rule 3: Auto-cleanup deduplication to strictly enforce Unique Constraint: (student_id, class_id)
   React.useEffect(() => {
@@ -885,8 +894,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     type="text"
                     required
                     value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                    onChange={(e) => setFormData({ ...formData, name: formatCapitalizedName(e.target.value) })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 capitalize"
                     placeholder="Nguyễn Văn A"
                   />
                 </div>
@@ -932,8 +941,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   <input
                     type="text"
                     value={formData.parent_name}
-                    onChange={(e) => setFormData({ ...formData, parent_name: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                    onChange={(e) => setFormData({ ...formData, parent_name: formatCapitalizedName(e.target.value) })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 capitalize"
                     placeholder="Nguyễn Văn B"
                   />
                 </div>

@@ -21,7 +21,8 @@ import {
   AlertTriangle,
   Layers,
   DollarSign,
-  BookOpen
+  BookOpen,
+  Info
 } from 'lucide-react';
 import { AppStore, generateStudentCode, formatVND, calculateCeilSessionRate, getEffectivePrice, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
@@ -32,6 +33,7 @@ interface ParentPortalTabProps {
   currentRole: UserRole;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onOpenParentPortal?: () => void;
+  onNavigateToStudents?: (studentCode?: string) => void;
 }
 
 export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
@@ -39,6 +41,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   currentRole,
   onUpdateStore,
   onOpenParentPortal,
+  onNavigateToStudents,
 }) => {
   // Check authorization:
   // "Phần xem hồ sơ tiếp nhận chỉ hiện cho Nhân sự được phân công là tuyển sinh, giáo vụ hoặc admin"
@@ -57,6 +60,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   // Modal Xếp lớp & Ghi danh chính thức (Đa môn)
   const [selectedLeadForEnroll, setSelectedLeadForEnroll] = useState<ParentRegistration | null>(null);
   const [assignedClassesBySubject, setAssignedClassesBySubject] = useState<Record<string, string>>({});
+  const [subjectAssignModes, setSubjectAssignModes] = useState<Record<string, 'assign_now' | 'unassigned'>>({});
+  const [unassignedReasons, setUnassignedReasons] = useState<Record<string, string>>({});
   const [customStudentCode, setCustomStudentCode] = useState<string>('');
   const [enrollNote, setEnrollNote] = useState<string>('');
 
@@ -196,6 +201,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
     const subjects = getSubjectsForLead(lead);
     const initialMap: Record<string, string> = {};
+    const initialModes: Record<string, 'assign_now' | 'unassigned'> = {};
+    const initialReasons: Record<string, string> = {};
 
     subjects.forEach(sub => {
       // If already assigned in lead, preserve it
@@ -203,6 +210,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         const alreadyClass = store.classes.find(c => c.subject_id === sub.subject_id && lead.assigned_class_ids?.includes(c.id));
         if (alreadyClass) {
           initialMap[sub.subject_id] = alreadyClass.id;
+          initialModes[sub.subject_id] = 'assign_now';
           return;
         }
       }
@@ -217,10 +225,21 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       });
 
       const fallbackClass = campusClasses[0] || store.classes.find(c => c.subject_id === sub.subject_id && c.status === 'active');
-      initialMap[sub.subject_id] = (nonFullClass || fallbackClass)?.id || '';
+      const matchedClass = nonFullClass || fallbackClass;
+
+      if (matchedClass) {
+        initialMap[sub.subject_id] = matchedClass.id;
+        initialModes[sub.subject_id] = 'assign_now';
+      } else {
+        initialMap[sub.subject_id] = '';
+        initialModes[sub.subject_id] = 'unassigned';
+        initialReasons[sub.subject_id] = 'Lớp hiện tại đã kín chỗ / Chờ mở thêm ca';
+      }
     });
 
     setAssignedClassesBySubject(initialMap);
+    setSubjectAssignModes(initialModes);
+    setUnassignedReasons(initialReasons);
     setEnrollNote(`Tiếp nhận từ hồ sơ tuyển sinh trực tuyến ${lead.registration_code || ''}`);
   };
 
@@ -230,17 +249,19 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     const lead = selectedLeadForEnroll;
     const subjects = getSubjectsForLead(lead);
 
-    // Get selected class IDs (excluding empty selections)
-    const selectedClassEntries = Object.entries(assignedClassesBySubject).filter(([_, classId]) => Boolean(classId));
-    if (selectedClassEntries.length === 0) {
-      alert('Vui lòng chọn phân bổ ít nhất 1 lớp học ngoại khóa cho học sinh!');
-      return;
-    }
+    // Get selected class IDs ONLY for subjects whose mode is 'assign_now'
+    const activeAssignedEntries = Object.entries(assignedClassesBySubject).filter(([subId, classId]) => {
+      const mode = subjectAssignModes[subId] ?? 'assign_now';
+      return mode === 'assign_now' && Boolean(classId);
+    });
 
-    const selectedClassIds = selectedClassEntries.map(([_, classId]) => classId);
+    const selectedClassIds = activeAssignedEntries.map(([_, classId]) => classId);
     const selectedClassObjects = selectedClassIds
       .map(id => store.classes.find(c => c.id === id))
       .filter((c): c is ExtracurricularClass => Boolean(c));
+
+    const totalRequested = subjects.length;
+    const assignedCount = selectedClassObjects.length;
 
     const studentCode = customStudentCode.trim() || generateStudentCode(lead.is_royal_student, store.students);
     
@@ -267,8 +288,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       };
     }
 
-    // 2. Tạo nhiều bản ghi ghi danh (enrollments)
-    // Avoid duplicate enrollments if student was already enrolled in this class
+    // 2. Tạo bản ghi ghi danh (enrollments) CHỈ cho các lớp được xếp ngay
     const existingEnrollmentsForStudent = store.enrollments.filter(e => e.student_id === studentId);
     const newEnrollments: Enrollment[] = [];
 
@@ -286,7 +306,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       }
     });
 
-    // 3. Tạo hóa đơn học phí tương ứng (invoices)
+    // 3. Tạo hóa đơn học phí tương ứng (invoices) CHỈ cho các lớp được xếp ngay
     const newInvoices: TuitionInvoice[] = [];
     selectedClassObjects.forEach((cls, idx) => {
       // Check if invoice for this class and student already exists
@@ -315,25 +335,40 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     });
 
     // 4. Cập nhật trạng thái đơn đăng ký (parentRegistrations)
-    const totalSubjects = subjects.length;
-    const isFullEnrollment = selectedClassObjects.length === totalSubjects;
-    const newStatus: 'enrolled' | 'partially_enrolled' = isFullEnrollment ? 'enrolled' : 'partially_enrolled';
+    // - Đủ 100% môn: 'enrolled'
+    // - Xếp 1 phần: 'partially_enrolled'
+    // - 0 môn xếp (Lưu chờ xếp lớp): 'contacted'
+    const isFullEnrollment = assignedCount === totalRequested && totalRequested > 0;
+    const isPartialEnrollment = assignedCount > 0 && assignedCount < totalRequested;
+    const newStatus: 'enrolled' | 'partially_enrolled' | 'contacted' = isFullEnrollment
+      ? 'enrolled'
+      : isPartialEnrollment
+      ? 'partially_enrolled'
+      : 'contacted';
 
     const assignedNames = selectedClassObjects.map(c => c.name).join(', ');
-    const unassignedSubjects = subjects
-      .filter(s => !assignedClassesBySubject[s.subject_id])
-      .map(s => s.subject_name)
-      .join(', ');
+    const unassignedSubjectsList = subjects
+      .filter(s => (subjectAssignModes[s.subject_id] === 'unassigned') || !assignedClassesBySubject[s.subject_id])
+      .map(s => {
+        const reason = unassignedReasons[s.subject_id] ? ` [Lý do: ${unassignedReasons[s.subject_id]}]` : '';
+        return `${s.subject_name}${reason}`;
+      })
+      .join('; ');
 
-    const updatedNote = isFullEnrollment
-      ? `Đã phân bổ đủ ${selectedClassObjects.length}/${totalSubjects} môn: ${assignedNames} (Mã HV: ${studentCode}). ${enrollNote}`
-      : `Đã phân bổ ${selectedClassObjects.length}/${totalSubjects} môn: ${assignedNames}. Chờ mở lớp cho: ${unassignedSubjects} (Mã HV: ${studentCode}). ${enrollNote}`;
+    let updatedNote = '';
+    if (newStatus === 'enrolled') {
+      updatedNote = `Đã phân bổ đủ ${assignedCount}/${totalRequested} môn: ${assignedNames} (Mã HV: ${studentCode}). ${enrollNote}`;
+    } else if (newStatus === 'partially_enrolled') {
+      updatedNote = `Đã phân bổ ${assignedCount}/${totalRequested} môn: ${assignedNames}. Chờ mở lớp: ${unassignedSubjectsList} (Mã HV: ${studentCode}). ${enrollNote}`;
+    } else {
+      updatedNote = `Đã tiếp nhận hồ sơ & cấp Mã HV: ${studentCode}. Toàn bộ ${totalRequested} môn chuyển danh sách Chờ xếp lớp: ${unassignedSubjectsList}. ${enrollNote}`;
+    }
 
     const assignLog = createAuditRecord(
       'CLASS_ASSIGN',
       'ACADEMIC',
       'Xếp lớp Đa môn Tuyển sinh',
-      `Tiếp nhận đơn ${lead.registration_code || lead.id}: Xếp ${selectedClassObjects.length}/${totalSubjects} môn cho học sinh ${lead.student_name} (Mã HV: ${studentCode})`,
+      `Tiếp nhận đơn ${lead.registration_code || lead.id}: Xếp ${assignedCount}/${totalRequested} môn cho học sinh ${lead.student_name} (Mã HV: ${studentCode})`,
       null,
       {
         target_id: lead.registration_code || lead.id,
@@ -351,9 +386,22 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       }
     );
 
+    // Merge newly assigned class IDs with previously assigned ones
+    const mergedClassIds = Array.from(new Set([...(lead.assigned_class_ids || []), ...selectedClassIds]));
+
     onUpdateStore(prev => ({
       ...prev,
-      students: newStudent ? [newStudent, ...prev.students] : prev.students,
+      students: newStudent 
+        ? [newStudent, ...prev.students] 
+        : prev.students.map(s => 
+            s.id === studentId 
+              ? {
+                  ...s,
+                  medical_notes: s.medical_notes || lead.medical_notes,
+                  regular_class: s.regular_class || lead.student_grade,
+                }
+              : s
+          ),
       enrollments: [...newEnrollments, ...prev.enrollments],
       invoices: [...newInvoices, ...prev.invoices],
       parentRegistrations: prev.parentRegistrations.map(r => 
@@ -361,8 +409,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           ? { 
               ...r, 
               status: newStatus,
-              assigned_class_id: selectedClassObjects[0]?.id,
-              assigned_class_ids: selectedClassIds,
+              student_id: studentId,
+              assigned_student_id: studentId,
+              assigned_class_id: selectedClassObjects[0]?.id || r.assigned_class_id,
+              assigned_class_ids: mergedClassIds,
               assigned_student_code: studentCode,
               contact_notes: updatedNote,
             } 
@@ -371,11 +421,13 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       auditLogs: [assignLog, ...(prev.auditLogs || [])],
     }));
 
-    showToast(
-      isFullEnrollment
-        ? `Đã phân bổ đủ ${selectedClassObjects.length}/${totalSubjects} môn & cấp mã học viên ${studentCode}!`
-        : `Đã phân bổ ${selectedClassObjects.length}/${totalSubjects} môn (Trạng thái: Đã xếp một phần). Cấp mã học viên ${studentCode}!`
-    );
+    if (newStatus === 'enrolled') {
+      showToast(`Đã phân bổ đủ ${assignedCount}/${totalRequested} môn & cấp mã học viên ${studentCode}!`);
+    } else if (newStatus === 'partially_enrolled') {
+      showToast(`Đã phân bổ ${assignedCount}/${totalRequested} môn (Trạng thái: Đã xếp một phần). Cấp mã học viên ${studentCode}!`);
+    } else {
+      showToast(`Đã tiếp nhận hồ sơ & cấp mã học viên ${studentCode}. Toàn bộ môn chuyển sang danh sách Chờ xếp lớp!`);
+    }
     setSelectedLeadForEnroll(null);
   };
 
@@ -684,19 +736,40 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                             <span className="font-mono text-emerald-400 font-bold">{formatVND(lead.estimated_fee)}</span>
                           )}
                         </div>
-                        <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
-                          {lead.registered_subjects.map((subItem, idx) => (
-                            <div key={idx} className="p-1.5 rounded-xl bg-slate-900 border border-slate-800/80 flex items-center justify-between text-[11px]">
-                              <div>
-                                <div className="font-bold text-white">{subItem.subject_name}</div>
-                                <div className="text-[10px] text-amber-400/90 flex items-center gap-1">
-                                  <Clock className="w-2.5 h-2.5" />
-                                  <span>{subItem.time_slot_label}</span>
+                        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+                          {lead.registered_subjects.map((subItem, idx) => {
+                            const assignedClassForSub = store.classes.find(
+                              c => c.subject_id === subItem.subject_id && lead.assigned_class_ids?.includes(c.id)
+                            );
+
+                            return (
+                              <div key={idx} className="p-2 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1 text-[11px]">
+                                <div className="flex items-center justify-between">
+                                  <div className="font-bold text-white">{subItem.subject_name}</div>
+                                  <span className="font-mono text-emerald-400 text-[10px] font-semibold">
+                                    {formatVND(subItem.estimated_fee)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between flex-wrap gap-1 text-[10px]">
+                                  <div className="text-slate-400 flex items-center gap-1">
+                                    <Clock className="w-2.5 h-2.5 text-amber-400" />
+                                    <span>{subItem.time_slot_label}</span>
+                                  </div>
+                                  {assignedClassForSub ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1">
+                                      <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                      <span>Đã xếp: {assignedClassForSub.name}</span>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold flex items-center gap-1">
+                                      <Clock className="w-2.5 h-2.5 text-amber-400" />
+                                      <span>Chờ xếp lớp</span>
+                                    </span>
+                                  )}
                                 </div>
                               </div>
-                              <span className="font-mono text-emerald-400 text-[10px] font-semibold">{formatVND(subItem.estimated_fee)}</span>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     ) : (
@@ -795,13 +868,25 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md shadow-amber-500/20"
                     >
                       <UserCheck className="w-3.5 h-3.5" />
-                      <span>{lead.status === 'partially_enrolled' ? 'Xếp Thêm Môn' : 'Tiếp Nhận & Xếp Lớp'}</span>
+                      <span>{lead.status === 'partially_enrolled' ? '+ Xếp Lớp Bổ Sung' : 'Tiếp Nhận & Xếp Lớp'}</span>
                     </button>
                   ) : (
-                    <span className="text-emerald-400 text-xs font-bold flex items-center gap-1">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Đã thành học viên</span>
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-emerald-400 text-xs font-bold flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Đã thành học viên</span>
+                      </span>
+                      {onNavigateToStudents && lead.assigned_student_code && (
+                        <button
+                          onClick={() => onNavigateToStudents(lead.assigned_student_code)}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors"
+                          title="Chuyển tới Hồ Sơ Học Viên & Y Tế"
+                        >
+                          <span>Hồ sơ</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -950,12 +1035,23 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                               onClick={() => handleOpenEnrollModal(lead)}
                               className="px-2.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] transition-colors whitespace-nowrap"
                             >
-                              {lead.status === 'partially_enrolled' ? 'Xếp thêm' : 'Tiếp Nhận'}
+                              {lead.status === 'partially_enrolled' ? '+ Xếp bổ sung' : 'Tiếp Nhận'}
                             </button>
                           ) : (
-                            <span className="text-emerald-400 text-[11px] font-bold font-mono">
-                              {lead.assigned_student_code}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-emerald-400 text-[11px] font-bold font-mono">
+                                {lead.assigned_student_code}
+                              </span>
+                              {onNavigateToStudents && lead.assigned_student_code && (
+                                <button
+                                  onClick={() => onNavigateToStudents(lead.assigned_student_code)}
+                                  className="p-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-semibold flex items-center gap-0.5 transition-colors"
+                                  title="Xem tại Hồ Sơ Học Viên & Y Tế"
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </td>
@@ -975,9 +1071,12 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         const lead = selectedLeadForEnroll;
         const subjects = getSubjectsForLead(lead);
 
-        // Calculate selected classes
-        const selectedClassEntries = Object.entries(assignedClassesBySubject).filter(([_, classId]) => Boolean(classId));
-        const selectedClassIds = selectedClassEntries.map(([_, classId]) => classId);
+        // Calculate selected classes ONLY for subjects whose mode is 'assign_now'
+        const activeAssignedEntries = Object.entries(assignedClassesBySubject).filter(([subId, classId]) => {
+          const mode = subjectAssignModes[subId] ?? 'assign_now';
+          return mode === 'assign_now' && Boolean(classId);
+        });
+        const selectedClassIds = activeAssignedEntries.map(([_, classId]) => classId);
         const selectedClassObjects = selectedClassIds
           .map(id => store.classes.find(c => c.id === id))
           .filter((c): c is ExtracurricularClass => Boolean(c));
@@ -1032,8 +1131,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
         const totalRequested = subjects.length;
         const assignedCount = selectedClassObjects.length;
+        const unassignedCount = totalRequested - assignedCount;
         const isFull = assignedCount === totalRequested && assignedCount > 0;
         const isPartial = assignedCount > 0 && assignedCount < totalRequested;
+        const isAllUnassigned = assignedCount === 0;
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md overflow-y-auto">
@@ -1163,21 +1264,25 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
                 {/* 4. Dynamic Multi-Class Assignment List (Danh sách phân bổ lớp tương ứng theo từng môn) */}
                 <div className="space-y-3.5">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
                     <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
                       <Layers className="w-3.5 h-3.5 text-amber-400" />
                       <span>Danh Sách Phân Bổ Lớp Cho Từng Môn ({subjects.length} môn đăng ký)</span>
                     </h4>
                     <span className="text-[11px] text-slate-400">
-                      Đã chọn: <strong className="text-white">{assignedCount}</strong>/{totalRequested} môn
+                      Đã chọn xếp: <strong className="text-emerald-400 font-bold">{assignedCount}</strong>/{totalRequested} môn{' '}
+                      <span className="text-amber-400 font-medium">({unassignedCount} môn chờ xếp)</span>
                     </span>
                   </div>
 
                   <div className="space-y-3">
                     {subjects.map((sub, idx) => {
                       const subjectObj = store.subjects.find(s => s.id === sub.subject_id);
+                      const mode = subjectAssignModes[sub.subject_id] ?? 'assign_now';
+                      const isAssignNow = mode === 'assign_now';
                       const currentSelectedClassId = assignedClassesBySubject[sub.subject_id] || '';
-                      const selectedClassObj = store.classes.find(c => c.id === currentSelectedClassId);
+                      const selectedClassObj = isAssignNow ? store.classes.find(c => c.id === currentSelectedClassId) : null;
+                      const reasonText = unassignedReasons[sub.subject_id] || '';
 
                       // Available classes matching this subject
                       const subjectClasses = store.classes.filter(c => c.subject_id === sub.subject_id && c.status === 'active');
@@ -1192,98 +1297,204 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         <div 
                           key={sub.subject_id || idx} 
                           className={`p-4 rounded-2xl border transition-all ${
-                            currentSelectedClassId 
-                              ? 'bg-slate-900/90 border-slate-700 shadow-md' 
+                            isAssignNow && selectedClassObj
+                              ? 'bg-slate-900/90 border-emerald-500/40 shadow-md ring-1 ring-emerald-500/10'
+                              : !isAssignNow
+                              ? 'bg-slate-950/80 border-amber-500/30 shadow-sm'
                               : 'bg-slate-950/60 border-slate-800/80 border-dashed'
                           }`}
                         >
                           {/* Subject Header */}
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-2.5 border-b border-slate-800/80 gap-2">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-800/80 gap-2">
                             <div className="flex items-center gap-2">
-                              <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-[11px]">
+                              <span className="w-6 h-6 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-xs shrink-0">
                                 {idx + 1}
                               </span>
-                              <span className="font-bold text-sm text-white">
-                                {sub.subject_name || subjectObj?.name || 'Môn ngoại khóa'}
-                              </span>
+                              <div>
+                                <div className="font-bold text-sm text-white">
+                                  {sub.subject_name || subjectObj?.name || 'Môn ngoại khóa'}
+                                </div>
+                                {sub.time_slot_label && (
+                                  <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
+                                    <Clock className="w-2.5 h-2.5 text-amber-400" />
+                                    <span>Nguyện vọng ca: {sub.time_slot_label}</span>
+                                  </div>
+                                )}
+                              </div>
                             </div>
 
-                            <div className="flex items-center gap-2.5">
-                              {sub.time_slot_label && (
-                                <span className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 text-[11px] flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-amber-400" />
-                                  <span>{sub.time_slot_label}</span>
+                            <div className="flex items-center gap-2">
+                              {isAssignNow && selectedClassObj ? (
+                                <span className="text-emerald-400 font-mono font-bold text-xs bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                                  {formatVND(selectedClassObj.full_course_fee)}
+                                </span>
+                              ) : !isAssignNow ? (
+                                <span className="text-amber-400 font-bold text-[11px] bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20 flex items-center gap-1">
+                                  <Clock className="w-3 h-3" />
+                                  <span>Chưa tính học phí</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 font-mono text-xs">
+                                  {formatVND(sub.estimated_fee || 3600000)} (dự kiến)
                                 </span>
                               )}
-                              <span className="text-emerald-400 font-mono font-bold text-xs">
-                                {formatVND(sub.estimated_fee || 3600000)}
-                              </span>
                             </div>
                           </div>
 
-                          {/* Class Select Dropdown */}
-                          <div className="pt-3 space-y-1.5 text-xs">
-                            <label className="block text-slate-400 font-medium">
-                              Chọn lớp học ngoại khóa phân bổ cho môn này:
-                            </label>
-                            
-                            <select
-                              value={currentSelectedClassId}
-                              onChange={(e) => {
-                                const newClassId = e.target.value;
-                                setAssignedClassesBySubject(prev => ({
-                                  ...prev,
-                                  [sub.subject_id]: newClassId,
-                                }));
-                              }}
-                              className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border font-medium focus:outline-none transition-colors ${
-                                currentSelectedClassId 
-                                  ? 'border-amber-500/60 text-white' 
-                                  : 'border-slate-800 text-slate-400 focus:border-amber-500'
-                              }`}
-                            >
-                              <option value="">
-                                [ Tạm thời chưa xếp lớp môn này ] &mdash; Chờ mở thêm lớp
-                              </option>
-                              {sortedClasses.map(c => {
-                                const enrolledCount = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
-                                const isFull = enrolledCount >= c.max_students;
-                                const days = c.days_of_week?.join(', ') || 'Lịch mở';
-                                const campusName = store.campuses.find(cp => cp.id === c.campus_id)?.name || 'Cơ sở';
-                                const isDesiredCampus = c.campus_id === lead.desired_campus_id;
+                          {/* 1. Bộ chuyển đổi trạng thái (Segmented Toggle / Radio Pills) */}
+                          <div className="pt-3">
+                            <div className="text-[11px] font-semibold text-slate-400 mb-1.5 flex items-center justify-between">
+                              <span>Quyết định phân bổ cho môn này:</span>
+                              <span className="text-[10px] text-slate-500">
+                                {isAssignNow ? 'Đang kích hoạt chọn lớp' : 'Tạm hoãn ghi danh môn này'}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSubjectAssignModes(prev => ({ ...prev, [sub.subject_id]: 'assign_now' }));
+                                  if (!assignedClassesBySubject[sub.subject_id] && sortedClasses.length > 0) {
+                                    setAssignedClassesBySubject(prev => ({ ...prev, [sub.subject_id]: sortedClasses[0].id }));
+                                  }
+                                }}
+                                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                                  isAssignNow
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/60 shadow-sm shadow-emerald-950 ring-1 ring-emerald-500/20'
+                                    : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-slate-800'
+                                }`}
+                              >
+                                <CheckCircle2 className={`w-3.5 h-3.5 ${isAssignNow ? 'text-emerald-400' : 'text-slate-500'}`} />
+                                <span>✓ Xếp Lớp Ngay</span>
+                              </button>
 
-                                return (
-                                  <option key={c.id} value={c.id}>
-                                    {c.name} &bull; Sĩ số: {enrolledCount}/{c.max_students} &bull; {days} &bull; {formatVND(c.full_course_fee)} {isDesiredCampus ? '' : `(${campusName})`} {isFull ? '[HẾT CHỖ]' : ''}
-                                  </option>
-                                );
-                              })}
-                            </select>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSubjectAssignModes(prev => ({ ...prev, [sub.subject_id]: 'unassigned' }));
+                                  if (!unassignedReasons[sub.subject_id]) {
+                                    setUnassignedReasons(prev => ({ ...prev, [sub.subject_id]: 'Lớp hiện tại đã kín chỗ / Chờ mở thêm ca' }));
+                                  }
+                                }}
+                                className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                                  !isAssignNow
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/60 shadow-sm shadow-amber-950 ring-1 ring-amber-500/20'
+                                    : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-slate-800'
+                                }`}
+                              >
+                                <Clock className={`w-3.5 h-3.5 ${!isAssignNow ? 'text-amber-400' : 'text-slate-500'}`} />
+                                <span>⏱ Chưa Xếp Lớp (Chờ mở lớp / Xếp sau)</span>
+                              </button>
+                            </div>
+                          </div>
 
-                            {/* Class Details Pill if chosen */}
-                            {selectedClassObj ? (
-                              <div className="mt-2 p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex items-center gap-3">
-                                  <span>
-                                    Cơ sở: <strong className="text-white">{store.campuses.find(cp => cp.id === selectedClassObj.campus_id)?.name}</strong>
-                                  </span>
-                                  <span>
-                                    Phòng: <strong className="text-slate-200">{store.facilities.find(f => f.id === selectedClassObj.facility_id)?.name || 'Phòng học vụ'}</strong>
-                                  </span>
-                                  <span>
-                                    GV: <strong className="text-amber-300">{store.teachers.find(t => t.id === selectedClassObj.primary_teacher_id)?.name || 'Chuyên gia Royal'}</strong>
-                                  </span>
+                          {/* 2. Xử lý hiển thị theo trạng thái chọn */}
+                          {isAssignNow ? (
+                            /* KHI CHỌN XẾP LỚP NGAY */
+                            <div className="pt-3 space-y-2 text-xs animate-fadeIn">
+                              <label className="block text-slate-300 font-medium">
+                                Chọn lớp học ngoại khóa phân bổ cho môn này:
+                              </label>
+                              
+                              <select
+                                value={currentSelectedClassId}
+                                onChange={(e) => {
+                                  const newClassId = e.target.value;
+                                  setAssignedClassesBySubject(prev => ({
+                                    ...prev,
+                                    [sub.subject_id]: newClassId,
+                                  }));
+                                }}
+                                className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border font-medium focus:outline-none transition-colors ${
+                                  currentSelectedClassId 
+                                    ? 'border-emerald-500/60 text-white' 
+                                    : 'border-slate-800 text-slate-400 focus:border-amber-500'
+                                }`}
+                              >
+                                <option value="">-- Vui lòng chọn lớp học ngoại khóa --</option>
+                                {sortedClasses.map(c => {
+                                  const enrolledCount = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
+                                  const isFullClass = enrolledCount >= c.max_students;
+                                  const days = c.days_of_week?.join(', ') || 'Lịch mở';
+                                  const campusName = store.campuses.find(cp => cp.id === c.campus_id)?.name || 'Cơ sở';
+                                  const isDesiredCampus = c.campus_id === lead.desired_campus_id;
+
+                                  return (
+                                    <option key={c.id} value={c.id}>
+                                      {c.name} &bull; Sĩ số: {enrolledCount}/{c.max_students} &bull; {days} &bull; {formatVND(c.full_course_fee)} {isDesiredCampus ? '' : `(${campusName})`} {isFullClass ? '[HẾT CHỖ]' : ''}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+
+                              {/* Class Details Pill if chosen */}
+                              {selectedClassObj ? (
+                                <div className="mt-2 p-2.5 rounded-xl bg-slate-950/90 border border-emerald-500/30 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2 shadow-sm">
+                                  <div className="flex items-center gap-3">
+                                    <span>
+                                      Cơ sở: <strong className="text-white">{store.campuses.find(cp => cp.id === selectedClassObj.campus_id)?.name}</strong>
+                                    </span>
+                                    <span>
+                                      Phòng: <strong className="text-slate-200">{store.facilities.find(f => f.id === selectedClassObj.facility_id)?.name || 'Phòng học vụ'}</strong>
+                                    </span>
+                                    <span>
+                                      GV: <strong className="text-amber-300">{store.teachers.find(t => t.id === selectedClassObj.primary_teacher_id)?.name || 'Chuyên gia Royal'}</strong>
+                                    </span>
+                                  </div>
+                                  <div className="text-emerald-400 font-mono font-bold">
+                                    Học phí thực tế: {formatVND(selectedClassObj.full_course_fee)}
+                                  </div>
                                 </div>
-                                <div className="text-emerald-400 font-mono font-bold">
-                                  Học phí: {formatVND(selectedClassObj.full_course_fee)}
+                              ) : (
+                                <p className="text-[11px] text-rose-400 italic pt-0.5">
+                                  * Vui lòng chọn 1 lớp học cụ thể ở trên, hoặc chuyển nút sang &ldquo;Chưa xếp lớp&rdquo;.
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            /* KHI CHỌN CHƯA XẾP LỚP */
+                            <div className="pt-3 space-y-2.5 animate-fadeIn">
+                              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-200/90 flex items-start gap-2">
+                                <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                                <div className="leading-relaxed">
+                                  Môn học này sẽ được lưu ở trạng thái <strong>Chờ xếp lớp</strong>. Chưa phát sinh ghi danh (tránh tăng sĩ số ảo của lớp) và chưa tính học phí môn này vào hóa đơn công nợ.
                                 </div>
                               </div>
-                            ) : (
-                              <p className="text-[11px] text-slate-500 italic pt-0.5">
-                                Môn này sẽ được giữ lại ở trạng thái &ldquo;Đã xếp một phần&rdquo; để học vụ mở thêm lớp sau.
-                              </p>
-                            )}
-                          </div>
+
+                              <div className="space-y-1.5">
+                                <label className="block text-[11px] font-semibold text-slate-300">
+                                  Lý do chưa xếp lớp (Tùy chọn):
+                                </label>
+                                <input
+                                  type="text"
+                                  value={reasonText}
+                                  onChange={(e) => setUnassignedReasons(prev => ({ ...prev, [sub.subject_id]: e.target.value }))}
+                                  placeholder="VD: Lớp hiện tại đã kín chỗ / Chờ mở thêm ca cuối tuần / Phụ huynh hẹn tuần sau..."
+                                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs focus:outline-none focus:border-amber-500"
+                                />
+
+                                {/* Quick Reason Chips */}
+                                <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                                  <span className="text-slate-500">Gợi ý nhanh:</span>
+                                  {[
+                                    'Lớp hiện tại đã kín chỗ',
+                                    'Chờ mở thêm ca cuối tuần',
+                                    'Phụ huynh hẹn tuần sau xác nhận',
+                                    'Chờ khảo sát thêm nguyện vọng'
+                                  ].map((chip, chipIdx) => (
+                                    <button
+                                      key={chipIdx}
+                                      type="button"
+                                      onClick={() => setUnassignedReasons(prev => ({ ...prev, [sub.subject_id]: chip }))}
+                                      className="px-2 py-0.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 transition-colors cursor-pointer"
+                                    >
+                                      {chip}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -1307,12 +1518,12 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     ) : isPartial ? (
                       <span className="px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold flex items-center gap-1.5">
                         <Clock className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Đã phân bổ: {assignedCount}/{totalRequested} môn &bull; Còn {totalRequested - assignedCount} môn chờ xếp</span>
+                        <span>Đã xếp: {assignedCount}/{totalRequested} môn &bull; {unassignedCount} môn chờ xếp sau</span>
                       </span>
                     ) : (
-                      <span className="px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-bold flex items-center gap-1.5">
-                        <X className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Chưa chọn lớp nào (0/{totalRequested} môn)</span>
+                      <span className="px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[11px] font-bold flex items-center gap-1.5">
+                        <Info className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Tất cả {totalRequested} môn chờ xếp lớp (Chưa ghi danh)</span>
                       </span>
                     )}
                   </div>
@@ -1367,12 +1578,21 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               {/* Modal Footer */}
               <div className="px-6 py-4 bg-slate-900/90 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
                 <div className="text-slate-400 text-[11px]">
-                  {assignedCount === 0 ? (
-                    <span className="text-rose-400 font-medium">* Cần phân bổ ít nhất 1 lớp để xác nhận ghi danh.</span>
-                  ) : isFull ? (
-                    <span className="text-emerald-400 font-medium">&bull; Đơn sẽ chuyển sang trạng thái &ldquo;Đã xếp đủ&rdquo;.</span>
+                  {isFull ? (
+                    <span className="text-emerald-400 font-medium flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>&bull; Đơn sẽ chuyển sang trạng thái &ldquo;Đã xếp đủ (Enrolled)&rdquo;.</span>
+                    </span>
+                  ) : isPartial ? (
+                    <span className="text-amber-400 font-medium flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>&bull; Đơn sẽ chuyển sang trạng thái &ldquo;Đã xếp một phần (Partially Enrolled)&rdquo; &mdash; {unassignedCount} môn còn lại tiếp tục theo dõi xếp sau.</span>
+                    </span>
                   ) : (
-                    <span className="text-amber-400 font-medium">&bull; Đơn sẽ chuyển sang trạng thái &ldquo;Xếp một phần&rdquo; ({assignedCount}/{totalRequested} môn).</span>
+                    <span className="text-cyan-400 font-medium flex items-center gap-1.5">
+                      <Info className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <span>&bull; Tiếp nhận hồ sơ & cấp mã học viên, toàn bộ {totalRequested} môn chuyển sang danh sách Chờ xếp lớp.</span>
+                    </span>
                   )}
                 </div>
 
@@ -1387,15 +1607,18 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                   <button
                     type="button"
                     onClick={handleConfirmEnrollment}
-                    disabled={assignedCount === 0}
-                    className={`px-5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 shadow-lg transition-all ${
-                      assignedCount === 0 
-                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' 
-                        : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95'
+                    className={`px-5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 shadow-lg transition-all cursor-pointer ${
+                      assignedCount > 0 
+                        ? 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95'
+                        : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 shadow-sm active:scale-95'
                     }`}
                   >
                     <Check className="w-4 h-4 stroke-[3]" />
-                    <span>Xác Nhận Xếp Lớp & Cấp Mã Học Viên ({assignedCount} lớp)</span>
+                    <span>
+                      {assignedCount > 0 
+                        ? `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (${assignedCount} lớp)`
+                        : `Tiếp Nhận & Cấp Mã Học Viên (Lưu Chờ Xếp Lớp)`}
+                    </span>
                   </button>
                 </div>
               </div>

@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { AppStore } from './storage';
+import { formatCapitalizedName } from './formatters';
 
 export function exportMasterWorkbook(store: AppStore, filename = 'RoyalSchool_Master_Export.xlsx') {
   const wb = XLSX.utils.book_new();
@@ -323,10 +324,10 @@ export async function parseMasterExcelFile(file: File): Promise<{ success: boole
             id: `std_imp_${Date.now()}_${idx}`,
             code: String(r['Mã Học Viên'] || `RY-2026-${String(900 + idx).padStart(5, '0')}`).trim(),
             previous_student_code: r['Mã Cũ (Nếu chuyển từ Ngoài vào)'] ? String(r['Mã Cũ (Nếu chuyển từ Ngoài vào)']).trim() : undefined,
-            name: String(r['Họ Và Tên'] || r['name'] || 'Học viên mới').trim(),
+            name: formatCapitalizedName(String(r['Họ Và Tên'] || r['name'] || 'Học viên mới').trim()),
             dob: String(r['Ngày Sinh'] || '2016-01-01').trim(),
             gender: String(r['Giới Tính'] || 'Nam').includes('Nữ') ? 'Nữ' : 'Nam',
-            parent_name: String(r['Phụ Huynh'] || 'Phụ huynh').trim(),
+            parent_name: formatCapitalizedName(String(r['Phụ Huynh'] || 'Phụ huynh').trim()),
             parent_phone: String(r['SĐT Phụ Huynh'] || '0900000000').trim(),
             school_name: String(r['Trường Đang Học'] || 'Royal School').trim(),
             regular_class: String(r['Lớp Chính Khóa'] || '').trim(),

@@ -130,14 +130,69 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                     </tr>
                   )}
 
+                  <tr className="bg-slate-50 font-bold border-b border-slate-200">
+                    <td colSpan={3} className="p-3 text-right text-slate-800">SỐ TIỀN PHẢI NỘP BAN ĐẦU:</td>
+                    <td className="p-3 text-right font-mono text-sm text-slate-950 font-black">
+                      {formatVND(document.invoice.net_payable)}
+                    </td>
+                  </tr>
+
+                  <tr className="bg-emerald-50 font-bold border-b border-slate-200">
+                    <td colSpan={3} className="p-3 text-right text-emerald-800">TỔNG LŨY KẾ ĐÃ THU:</td>
+                    <td className="p-3 text-right font-mono text-base text-emerald-700 font-black">
+                      {formatVND(document.invoice.paid_amount || 0)}
+                    </td>
+                  </tr>
+
                   <tr className="bg-slate-50 font-bold">
-                    <td colSpan={3} className="p-3 text-right text-slate-800">TỔNG TIỀN ĐÃ THU (VND):</td>
-                    <td className="p-3 text-right font-mono text-base text-slate-950 font-black">
-                      {formatVND(document.invoice.paid_amount || document.invoice.net_payable)}
+                    <td colSpan={3} className="p-3 text-right text-slate-800">CÔNG NỢ CÒN LẠI:</td>
+                    <td className={`p-3 text-right font-mono text-base font-black ${document.invoice.outstanding_amount > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {formatVND(document.invoice.outstanding_amount)}
                     </td>
                   </tr>
                 </tbody>
               </table>
+
+              {/* Chi tiết các đợt đã đóng nếu có */}
+              {document.invoice.payment_history && document.invoice.payment_history.length > 0 && (
+                <div className="space-y-2 pt-2">
+                  <div className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                    Chi Tiết Lịch Sử Các Đợt Đã Nộp Tiền ({document.invoice.payment_history.length} đợt)
+                  </div>
+                  <table className="w-full text-[11px] border-collapse border border-slate-300">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-700 font-bold">
+                        <th className="p-2 border border-slate-300 text-center">Đợt</th>
+                        <th className="p-2 border border-slate-300">Ngày nộp</th>
+                        <th className="p-2 border border-slate-300 text-right">Số tiền nộp</th>
+                        <th className="p-2 border border-slate-300">Hình thức</th>
+                        <th className="p-2 border border-slate-300">Mã GD / Sao kê</th>
+                        <th className="p-2 border border-slate-300">Kế toán xác nhận</th>
+                        <th className="p-2 border border-slate-300">Ghi chú</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {document.invoice.payment_history.map((record, idx) => (
+                        <tr key={record.id || idx} className="border-b border-slate-200">
+                          <td className="p-2 border border-slate-300 text-center font-bold">Đợt {idx + 1}</td>
+                          <td className="p-2 border border-slate-300 font-mono">{record.payment_date}</td>
+                          <td className="p-2 border border-slate-300 text-right font-mono font-bold text-emerald-700">
+                            {formatVND(record.amount)}
+                          </td>
+                          <td className="p-2 border border-slate-300">
+                            {record.payment_method === 'cash' ? 'Tiền mặt' : 'Chuyển khoản (VietQR)'}
+                          </td>
+                          <td className="p-2 border border-slate-300 font-mono text-slate-700">
+                            {record.payment_reference}
+                          </td>
+                          <td className="p-2 border border-slate-300 font-medium">{record.verified_by}</td>
+                          <td className="p-2 border border-slate-300 text-slate-600 italic">{record.notes || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               {/* Sign-off Boxes */}
               <div className="grid grid-cols-3 gap-6 pt-8 text-center text-xs">

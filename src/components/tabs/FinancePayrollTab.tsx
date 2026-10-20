@@ -13,16 +13,23 @@ import {
   Calendar,
   Building2,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  Coins,
+  History,
+  X,
+  CreditCard,
+  Check,
+  AlertCircle
 } from 'lucide-react';
-import { AppStore, formatVND, createAuditRecord, appendAuditLog } from '../../lib/storage';
+import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords } from '../../lib/storage';
 import { generateVietQRUrl } from '../../lib/vietqr';
-import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole } from '../../types';
+import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
 interface FinancePayrollTabProps {
   store: AppStore;
   currentRole: UserRole;
+  currentUser?: AppUser | null;
   selectedCampusId: string;
   selectedTermId: string;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
@@ -33,6 +40,7 @@ interface FinancePayrollTabProps {
 export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   store,
   currentRole,
+  currentUser,
   selectedCampusId,
   selectedTermId,
   onUpdateStore,
@@ -43,16 +51,26 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const [invoiceViewMode, setInvoiceViewMode] = useState<ViewMode>('table');
   const [payrollViewMode, setPayrollViewMode] = useState<ViewMode>('table');
   const [transferViewMode, setTransferViewMode] = useState<ViewMode>('table');
-  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'all' | 'paid' | 'unpaid' | 'trial_pending' | 'cancelled'>('all');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid' | 'trial_pending' | 'cancelled'>('all');
 
   React.useEffect(() => {
     if (initialSection) {
       setActiveSection(initialSection);
     }
   }, [initialSection]);
+
   const [viewingQrInvoice, setViewingQrInvoice] = useState<TuitionInvoice | null>(null);
   const [verifyingInvoice, setVerifyingInvoice] = useState<TuitionInvoice | null>(null);
+
+  // Partial payment form states
+  const [paymentMode, setPaymentMode] = useState<'full' | 'partial'>('full');
+  const [paymentAmountInput, setPaymentAmountInput] = useState<string>('');
+  const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'cash'>('bank_transfer');
   const [paymentRefInput, setPaymentRefInput] = useState('');
+  const [paymentDate, setPaymentDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [paymentNotesInput, setPaymentNotesInput] = useState('');
+  const [verifiedByInput, setVerifiedByInput] = useState('');
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   // Class Transfer Calculator State
   const [transferState, setTransferState] = useState({
@@ -61,6 +79,94 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     to_class_id: store.classes[1]?.id || '',
     remaining_sessions: 10,
   });
+
+  // Open Verify Modal & Initialize with invoice data
+  const openVerifyModal = (invoice: TuitionInvoice) => {
+    setVerifyingInvoice(invoice);
+    const outstanding = invoice.outstanding_amount > 0 ? invoice.outstanding_amount : invoice.net_payable;
+    setPaymentMode('full');
+    setPaymentAmountInput(outstanding.toString());
+    setPaymentMethod('bank_transfer');
+    setPaymentRefInput(`VCB-FT${Date.now().toString().slice(-8)}`);
+    setPaymentDate(new Date().toISOString().split('T')[0]);
+    const histCount = invoice.payment_history?.length || 0;
+    setPaymentNotesInput(histCount > 0 ? `Đóng đợt ${histCount + 1}` : 'Đóng đợt 1');
+    setVerifiedByInput(currentUser?.full_name ? formatCapitalizeWords(currentUser.full_name) : 'Kế toán Lê Minh Thư');
+    setValidationError(null);
+  };
+
+  const handleAmountChange = (valStr: string) => {
+    const cleanDigits = valStr.replace(/\D/g, '');
+    setPaymentAmountInput(cleanDigits);
+
+    if (!cleanDigits) {
+      setValidationError('Vui lòng nhập số tiền thanh toán đợt này (> 0 đ)');
+      return;
+    }
+
+    const num = parseInt(cleanDigits, 10);
+    if (num <= 0) {
+      setValidationError('Số tiền thu phải lớn hơn 0 đ');
+    } else if (verifyingInvoice && num > verifyingInvoice.outstanding_amount) {
+      setValidationError(`Số tiền thu (${formatVND(num)}) không được vượt quá số tiền còn nợ (${formatVND(verifyingInvoice.outstanding_amount)})!`);
+    } else {
+      setValidationError(null);
+    }
+  };
+
+  const handleSelectFullPayment = () => {
+    if (!verifyingInvoice) return;
+    setPaymentMode('full');
+    setPaymentAmountInput(verifyingInvoice.outstanding_amount.toString());
+    const histCount = verifyingInvoice.payment_history?.length || 0;
+    setPaymentNotesInput(histCount > 0 ? `Đóng đợt ${histCount + 1} - Tất toán 100% công nợ` : 'Đóng 100% học phí toàn khóa');
+    setValidationError(null);
+  };
+
+  const handleSelectPartialPayment = () => {
+    if (!verifyingInvoice) return;
+    setPaymentMode('partial');
+    const suggested = Math.min(1000000, verifyingInvoice.outstanding_amount);
+    setPaymentAmountInput(suggested.toString());
+    const histCount = verifyingInvoice.payment_history?.length || 0;
+    setPaymentNotesInput(histCount > 0 ? `Đóng đợt ${histCount + 1}` : 'Đóng đợt 1 (Một phần)');
+    setValidationError(null);
+  };
+
+  const handleSetQuickAmount = (amount: number) => {
+    if (!verifyingInvoice) return;
+    setPaymentMode(amount >= verifyingInvoice.outstanding_amount ? 'full' : 'partial');
+    const safeAmount = Math.max(0, Math.min(amount, verifyingInvoice.outstanding_amount));
+    setPaymentAmountInput(safeAmount.toString());
+    if (safeAmount <= 0) {
+      setValidationError('Số tiền thu phải lớn hơn 0 đ');
+    } else if (safeAmount > verifyingInvoice.outstanding_amount) {
+      setValidationError(`Số tiền thu vượt quá số tiền còn nợ!`);
+    } else {
+      setValidationError(null);
+    }
+  };
+
+  const handleSelectPaymentMethod = (method: 'bank_transfer' | 'cash') => {
+    setPaymentMethod(method);
+    if (method === 'cash') {
+      if (!paymentRefInput || paymentRefInput.startsWith('VCB-')) {
+        setPaymentRefInput(`TM-${Date.now().toString().slice(-6)}`);
+      }
+    } else {
+      if (!paymentRefInput || paymentRefInput.startsWith('TM-')) {
+        setPaymentRefInput(`VCB-FT${Date.now().toString().slice(-8)}`);
+      }
+    }
+  };
+
+  const handleRegenerateRef = () => {
+    if (paymentMethod === 'cash') {
+      setPaymentRefInput(`TM-${Date.now().toString().slice(-6)}`);
+    } else {
+      setPaymentRefInput(`VCB-FT${Date.now().toString().slice(-8)}`);
+    }
+  };
 
   // Filter invoices
   const filteredInvoices = store.invoices.filter(i => {
@@ -71,22 +177,56 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     if (!matchCampus || !matchTerm) return false;
 
     if (invoiceStatusFilter === 'paid') return i.payment_status === 'paid';
+    if (invoiceStatusFilter === 'partial') return i.payment_status === 'partial';
     if (invoiceStatusFilter === 'unpaid') return i.payment_status === 'unpaid' && !i.is_trial_pending;
     if (invoiceStatusFilter === 'trial_pending') return !!i.is_trial_pending;
     if (invoiceStatusFilter === 'cancelled') return i.payment_status === 'cancelled';
     return true;
   });
 
-  // Manual Verification of Payment
+  // Manual Verification of Payment (Whole or Partial)
   const handleConfirmPayment = () => {
     if (!verifyingInvoice) return;
+    const numAmount = parseInt(paymentAmountInput.replace(/\D/g, '') || '0', 10);
+
+    if (numAmount <= 0) {
+      setValidationError('Số tiền thu phải lớn hơn 0 đ');
+      return;
+    }
+
+    if (numAmount > verifyingInvoice.outstanding_amount) {
+      setValidationError('Số tiền thu không được vượt quá số tiền còn nợ!');
+      return;
+    }
+
+    const effectiveRef = paymentRefInput.trim() || (paymentMethod === 'cash' ? `TM-${Date.now().toString().slice(-6)}` : `VCB-FT${Date.now().toString().slice(-8)}`);
+    const effectiveStaff = formatCapitalizeWords(verifiedByInput.trim() || currentUser?.full_name || 'Kế toán Lê Minh Thư');
+
+    const currentPaid = verifyingInvoice.paid_amount || 0;
+    const newPaid = currentPaid + numAmount;
+    const newOutstanding = Math.max(0, verifyingInvoice.net_payable - newPaid);
+    const newStatus: 'paid' | 'partial' = newOutstanding === 0 ? 'paid' : 'partial';
+
+    const newPaymentRecord: InvoicePaymentRecord = {
+      id: `pay_rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      payment_date: paymentDate || new Date().toISOString().split('T')[0],
+      amount: numAmount,
+      payment_method: paymentMethod,
+      payment_reference: effectiveRef,
+      verified_by: effectiveStaff,
+      notes: paymentNotesInput.trim() || (newOutstanding === 0 ? 'Hoàn tất thanh toán 100%' : `Nộp đợt ${(verifyingInvoice.payment_history?.length || 0) + 1}`),
+    };
+
+    const updatedHistory = [...(verifyingInvoice.payment_history || []), newPaymentRecord];
+
+    const auditDescription = `Kế toán ${effectiveStaff} đã gạch nợ đợt ${updatedHistory.length} số tiền ${formatVND(numAmount)} cho hóa đơn ${verifyingInvoice.invoice_code || verifyingInvoice.id}, còn nợ ${formatVND(newOutstanding)}`;
 
     const paymentLog = createAuditRecord(
       'INVOICE_PAYMENT_COLLECT',
       'FINANCE',
       'Hóa đơn Học phí',
-      `Gạch nợ thu học phí thành công cho hóa đơn ${verifyingInvoice.invoice_code || verifyingInvoice.id} (Số tiền: ${formatVND(verifyingInvoice.net_payable)})`,
-      null,
+      auditDescription,
+      currentUser,
       {
         target_id: verifyingInvoice.invoice_code || verifyingInvoice.id,
         details: {
@@ -97,9 +237,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             outstanding_amount: verifyingInvoice.outstanding_amount
           },
           after: {
-            payment_status: 'paid',
-            paid_amount: verifyingInvoice.net_payable,
-            payment_reference: paymentRefInput || `VCB-${Date.now().toString().slice(-8)}`
+            payment_status: newStatus,
+            paid_amount: newPaid,
+            outstanding_amount: newOutstanding,
+            installment_amount: numAmount,
+            installment_count: updatedHistory.length,
+            payment_reference: effectiveRef,
+            verified_by: effectiveStaff
           }
         }
       }
@@ -111,12 +255,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         if (inv.id === verifyingInvoice.id) {
           return {
             ...inv,
-            paid_amount: inv.net_payable,
-            outstanding_amount: 0,
-            payment_status: 'paid',
-            payment_reference: paymentRefInput || `VCB-${Date.now().toString().slice(-8)}`,
-            verified_by: 'Kế toán viên (Manual Check)',
+            paid_amount: newPaid,
+            outstanding_amount: newOutstanding,
+            payment_status: newStatus,
+            payment_reference: effectiveRef,
+            verified_by: effectiveStaff,
             verified_at: new Date().toISOString(),
+            payment_history: updatedHistory,
           };
         }
         return inv;
@@ -125,7 +270,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     }));
 
     setVerifyingInvoice(null);
+    setPaymentAmountInput('');
     setPaymentRefInput('');
+    setPaymentNotesInput('');
+    setValidationError(null);
   };
 
   // Settle Payroll for a Teacher & Class
@@ -307,6 +455,37 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             </div>
           </div>
 
+          {/* Quick Invoice Financial Metrics Row */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4 border-b border-slate-800 bg-slate-950/40">
+            <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
+              <span className="text-[10px] uppercase font-bold text-slate-400">Tổng Phải Thu (Gross/Net)</span>
+              <div className="text-sm font-extrabold font-mono text-white mt-1">
+                {formatVND(filteredInvoices.reduce((sum, i) => sum + i.net_payable, 0))}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-emerald-950/30 border border-emerald-500/30">
+              <span className="text-[10px] uppercase font-bold text-emerald-400">Đã Thu Lũy Kế</span>
+              <div className="text-sm font-extrabold font-mono text-emerald-400 mt-1">
+                {formatVND(filteredInvoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0))}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-rose-950/30 border border-rose-500/30">
+              <span className="text-[10px] uppercase font-bold text-rose-400">Công Nợ Cần Thu</span>
+              <div className="text-sm font-extrabold font-mono text-rose-400 mt-1">
+                {formatVND(filteredInvoices.reduce((sum, i) => sum + (i.outstanding_amount || 0), 0))}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30">
+              <span className="text-[10px] uppercase font-bold text-amber-400">Đang Nợ Một Phần</span>
+              <div className="text-sm font-extrabold font-mono text-amber-300 mt-1">
+                {filteredInvoices.filter(i => i.payment_status === 'partial').length} Hóa Đơn
+              </div>
+            </div>
+          </div>
+
           {/* Invoice Filter Bar & Trial Policy Note */}
           <div className="px-4 py-3 bg-slate-900/50 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -340,6 +519,17 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 }`}
               >
                 Đã thanh toán ({store.invoices.filter(i => i.payment_status === 'paid').length})
+              </button>
+              <button
+                onClick={() => setInvoiceStatusFilter('partial')}
+                className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 ${
+                  invoiceStatusFilter === 'partial'
+                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                    : 'bg-slate-800 text-amber-300 hover:text-white border border-amber-500/30'
+                }`}
+              >
+                <Coins className="w-3 h-3 text-amber-400" />
+                <span>Nợ một phần ({store.invoices.filter(i => i.payment_status === 'partial').length})</span>
               </button>
               <button
                 onClick={() => setInvoiceStatusFilter('unpaid')}
@@ -407,7 +597,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           </span>
                         ) : invoice.payment_status === 'partial' ? (
                           <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
-                            Nộp một phần
+                            Nợ một phần
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold">
@@ -438,12 +628,26 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <span>Phải nộp:</span>
                           <span className="font-mono">{formatVND(invoice.net_payable)}</span>
                         </div>
-                        <div className="flex justify-between text-xs pt-1">
+                        <div className="flex justify-between text-xs pt-1 text-emerald-400">
+                          <span>Đã nộp lũy kế:</span>
+                          <span className="font-mono font-bold">{formatVND(invoice.paid_amount || 0)}</span>
+                        </div>
+                        <div className="flex justify-between text-xs pt-1 border-t border-slate-800/60">
                           <span className="text-slate-400">Còn nợ:</span>
                           <span className={`font-mono font-bold ${invoice.outstanding_amount > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                             {formatVND(invoice.outstanding_amount)}
                           </span>
                         </div>
+
+                        {invoice.payment_history && invoice.payment_history.length > 0 && (
+                          <div className="pt-1.5 flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-800/50">
+                            <span className="flex items-center gap-1 text-cyan-400">
+                              <History className="w-3 h-3" />
+                              <span>{invoice.payment_history.length} đợt đã nộp</span>
+                            </span>
+                            <span className="font-mono text-slate-500">Gần nhất: {invoice.payment_history[invoice.payment_history.length - 1].payment_date}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -468,9 +672,9 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         </button>
                       </div>
 
-                      {invoice.payment_status !== 'paid' && (
+                      {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
                         <button
-                          onClick={() => setVerifyingInvoice(invoice)}
+                          onClick={() => openVerifyModal(invoice)}
                           className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow-sm shadow-emerald-600/20"
                         >
                           Gạch nợ
@@ -495,6 +699,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     <th className="py-3 px-4">Học Phí Gốc</th>
                     <th className="py-3 px-4">Trừ Bảo Lưu</th>
                     <th className="py-3 px-4">Phải Đóng</th>
+                    <th className="py-3 px-4">Đã Nộp</th>
                     <th className="py-3 px-4">Còn Nợ</th>
                     <th className="py-3 px-4">Hạn Nộp</th>
                     <th className="py-3 px-4 text-center">Trạng Thái</th>
@@ -531,6 +736,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
                         <td className="py-3 px-4 font-mono font-bold text-white">
                           {formatVND(invoice.net_payable)}
+                        </td>
+
+                        <td className="py-3 px-4 font-mono text-emerald-400 font-bold">
+                          <div>{formatVND(invoice.paid_amount || 0)}</div>
+                          {invoice.payment_history && invoice.payment_history.length > 0 && (
+                            <div className="text-[9px] text-slate-500 font-sans">({invoice.payment_history.length} đợt)</div>
+                          )}
                         </td>
 
                         <td className="py-3 px-4 font-mono font-bold">
@@ -588,9 +800,9 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                               <Printer className="w-3.5 h-3.5" />
                             </button>
 
-                            {invoice.payment_status !== 'paid' && (
+                            {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
                               <button
-                                onClick={() => setVerifyingInvoice(invoice)}
+                                onClick={() => openVerifyModal(invoice)}
                                 className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition-colors"
                               >
                                 Gạch nợ
@@ -953,24 +1165,36 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         const student = store.students.find(s => s.id === viewingQrInvoice.student_id);
         const cls = store.classes.find(c => c.id === viewingQrInvoice.class_id);
         const campus = store.campuses.find(c => c.id === cls?.campus_id) || store.campuses[0];
+        const outstanding = viewingQrInvoice.outstanding_amount;
+        const netPayable = viewingQrInvoice.net_payable;
+        const paidAmount = viewingQrInvoice.paid_amount || 0;
 
         const qrUrl = generateVietQRUrl({
           bankName: campus.bank_name,
           bankAccount: campus.bank_account,
           bankOwner: campus.bank_owner,
-          amount: viewingQrInvoice.outstanding_amount || viewingQrInvoice.net_payable,
+          amount: outstanding > 0 ? outstanding : netPayable,
           studentCode: student?.code || 'STUDENT',
           className: cls?.name || 'CLASS',
           invoiceCode: viewingQrInvoice.invoice_code,
         });
 
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-            <div className="w-full max-w-sm rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl text-center space-y-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl text-center space-y-4">
               <div className="flex items-center justify-between text-xs text-amber-400 font-bold uppercase tracking-wider">
-                <span>VietQR Napas247 Hoàng Gia</span>
-                <button onClick={() => setViewingQrInvoice(null)} className="text-slate-400 hover:text-white">✕</button>
+                <span className="flex items-center gap-1.5">
+                  <QrCode className="w-4 h-4" />
+                  <span>VietQR Napas247 Hoàng Gia</span>
+                </span>
+                <button onClick={() => setViewingQrInvoice(null)} className="text-slate-400 hover:text-white p-1 rounded-lg">✕</button>
               </div>
+
+              {paidAmount > 0 && outstanding > 0 && (
+                <div className="bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs py-1.5 px-3 rounded-xl text-left">
+                  <span className="font-bold">Mã QR Thu Công Nợ Đợt Tiếp Theo:</span> Đã thu lũy kế <strong>{formatVND(paidAmount)}</strong>. Mã QR tự động sinh đúng theo số tiền còn nợ <strong>{formatVND(outstanding)}</strong>.
+                </div>
+              )}
 
               <div className="bg-white p-3 rounded-2xl inline-block shadow-md">
                 <img
@@ -980,68 +1204,523 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 />
               </div>
 
-              <div className="text-left bg-slate-900 p-3 rounded-2xl text-xs space-y-1">
-                <div className="text-slate-400">Ngân hàng: <strong className="text-white">{campus.bank_name}</strong></div>
-                <div className="text-slate-400">Số tài khoản: <strong className="text-amber-400 font-mono">{campus.bank_account}</strong></div>
-                <div className="text-slate-400">Chủ tài khoản: <strong className="text-white">{campus.bank_owner}</strong></div>
-                <div className="text-slate-400">Số tiền: <strong className="text-emerald-400 font-mono">{formatVND(viewingQrInvoice.outstanding_amount || viewingQrInvoice.net_payable)}</strong></div>
-                <div className="text-slate-400">Nội dung CK: <strong className="text-cyan-300 font-mono">HP {student?.code} {cls?.name.split('-')[0].trim()}</strong></div>
+              <div className="text-left bg-slate-900 p-3.5 rounded-2xl text-xs space-y-1.5 border border-slate-800">
+                <div className="text-slate-400 flex justify-between">
+                  <span>Ngân hàng:</span>
+                  <strong className="text-white">{campus.bank_name}</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between">
+                  <span>Số tài khoản:</span>
+                  <strong className="text-amber-400 font-mono text-sm">{campus.bank_account}</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between">
+                  <span>Chủ tài khoản:</span>
+                  <strong className="text-white">{campus.bank_owner}</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between pt-1 border-t border-slate-800">
+                  <span>Số tiền quét mã QR:</span>
+                  <strong className="text-emerald-400 font-mono text-sm font-extrabold">{formatVND(outstanding > 0 ? outstanding : netPayable)}</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between">
+                  <span>Nội dung CK:</span>
+                  <strong className="text-cyan-300 font-mono">HP {student?.code} {cls?.name.split('-')[0].trim()}</strong>
+                </div>
               </div>
 
-              <button
-                onClick={() => setViewingQrInvoice(null)}
-                className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs"
-              >
-                Đóng Mã QR
-              </button>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setViewingQrInvoice(null)}
+                  className="w-1/2 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-colors"
+                >
+                  Đóng Mã QR
+                </button>
+                {viewingQrInvoice.payment_status !== 'paid' && viewingQrInvoice.outstanding_amount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const inv = viewingQrInvoice;
+                      setViewingQrInvoice(null);
+                      openVerifyModal(inv);
+                    }}
+                    className="w-1/2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Gạch nợ ngay</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         );
       })()}
 
-      {/* Manual Verification Modal */}
-      {verifyingInvoice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-emerald-500/40 p-6 shadow-2xl space-y-4">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-              <span>Đối Soát Gạch Nợ Thủ Công</span>
-            </h3>
+      {/* VerifyPaymentModal - Partial Payment & Debt Reconciliation */}
+      {verifyingInvoice && (() => {
+        const student = store.students.find(s => s.id === verifyingInvoice.student_id);
+        const cls = store.classes.find(c => c.id === verifyingInvoice.class_id);
+        const currentPaid = verifyingInvoice.paid_amount || 0;
+        const netPayable = verifyingInvoice.net_payable;
+        const outstanding = verifyingInvoice.outstanding_amount;
+        const rawDigits = paymentAmountInput.replace(/\D/g, '');
+        const numAmount = parseInt(rawDigits || '0', 10);
+        const projectedPaid = currentPaid + numAmount;
+        const projectedOutstanding = Math.max(0, netPayable - projectedPaid);
+        const isProjectedComplete = projectedOutstanding === 0 && numAmount > 0;
+        const isInvalid = numAmount <= 0 || numAmount > outstanding || !!validationError;
 
-            <p className="text-xs text-slate-300">
-              Xác nhận phụ huynh đã thanh toán số tiền <strong className="text-emerald-400 font-mono">{formatVND(verifyingInvoice.outstanding_amount)}</strong> cho hóa đơn <span className="font-mono text-amber-400">{verifyingInvoice.invoice_code}</span>.
-            </p>
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
+            <div className="w-full max-w-3xl rounded-3xl bg-[#0F172A] border border-emerald-500/30 p-5 sm:p-7 shadow-2xl space-y-5 my-6 text-slate-100 max-h-[92vh] overflow-y-auto custom-scrollbar">
+              
+              {/* Modal Top Bar */}
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 shadow-lg shadow-emerald-500/10">
+                    <CheckCircle2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2 flex-wrap">
+                      <span>Xác Nhận Thu Học Phí & Gạch Nợ</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        {verifyingInvoice.invoice_code}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Hỗ trợ thanh toán từng phần (Partial Payment) & tự động điều chỉnh công nợ VietQR
+                    </p>
+                  </div>
+                </div>
 
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Mã tham chiếu ngân hàng / Số GD sao kê *</label>
-                <input
-                  type="text"
-                  placeholder="Ví dụ: VCB-FT262458921"
-                  value={paymentRefInput}
-                  onChange={(e) => setPaymentRefInput(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-emerald-500 font-mono"
-                />
+                <button
+                  onClick={() => setVerifyingInvoice(null)}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-            </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                onClick={() => setVerifyingInvoice(null)}
-                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
-              >
-                Hủy
-              </button>
-              <button
-                onClick={handleConfirmPayment}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold"
-              >
-                Xác Nhận Đã Thu Tiền
-              </button>
+              {/* KHỐI 1: TÓM TẮT THÔNG TIN HÓA ĐƠN (INVOICE OVERVIEW) */}
+              <div className="rounded-2xl bg-slate-900/90 border border-slate-800 p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
+                  <div className="space-y-0.5">
+                    <div className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
+                      <span>Học viên:</span>
+                      <strong className="text-white text-sm">{student?.name}</strong>
+                      <span className="font-mono text-amber-400 text-xs">({student?.code})</span>
+                      {student?.regular_class && (
+                        <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded-md">
+                          Lớp {student.regular_class}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-300">
+                      Lớp ngoại khóa: <strong className="text-cyan-300">{cls?.name}</strong>
+                    </div>
+                  </div>
+
+                  <div className="text-right text-[11px] text-slate-400 font-mono">
+                    Hạn nộp: <span className="text-amber-300">{verifyingInvoice.due_date}</span>
+                  </div>
+                </div>
+
+                {/* 3 Metric Pillars */}
+                <div className="grid grid-cols-3 gap-2.5 text-center">
+                  <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800/80">
+                    <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Phải đóng ban đầu</div>
+                    <div className="text-sm font-bold font-mono text-slate-200 mt-0.5">{formatVND(netPayable)}</div>
+                    {verifyingInvoice.credit_deducted > 0 && (
+                      <div className="text-[10px] text-cyan-400 font-mono mt-0.5">Đã trừ bảo lưu {formatVND(verifyingInvoice.credit_deducted)}</div>
+                    )}
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
+                    <div className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Đã đóng lũy kế</div>
+                    <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">{formatVND(currentPaid)}</div>
+                    <div className="text-[10px] text-emerald-300/80 font-mono mt-0.5">
+                      {verifyingInvoice.payment_history?.length || 0} đợt đã nộp
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/40">
+                    <div className="text-[10px] font-semibold text-rose-400 uppercase tracking-wide">Công nợ hiện tại</div>
+                    <div className="text-base font-extrabold font-mono text-rose-400 mt-0.5">{formatVND(outstanding)}</div>
+                    <div className="text-[10px] text-rose-300/80 font-mono mt-0.5">Cần thu hồi</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* KHỐI 2: KHU VỰC NHẬP LIỆU ĐỢT THU MỚI (PAYMENT INPUT) */}
+              <div className="rounded-2xl bg-slate-900/90 border border-slate-800 p-4 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                    <Coins className="w-4 h-4 text-amber-400" />
+                    <span>Thiết Lập Đợt Thu Tiền Này</span>
+                  </span>
+
+                  {/* Mode selector: Full vs Partial */}
+                  <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+                    <button
+                      type="button"
+                      onClick={handleSelectFullPayment}
+                      className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                        paymentMode === 'full'
+                          ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Đóng toàn bộ ({formatVND(outstanding)})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSelectPartialPayment}
+                      className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                        paymentMode === 'partial'
+                          ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Đóng một phần
+                    </button>
+                  </div>
+                </div>
+
+                {/* Amount input & quick amount chips */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <label className="text-slate-300 font-semibold flex items-center gap-1">
+                      <span>Số tiền thu đợt này (VND)</span>
+                      <span className="text-rose-400">*</span>
+                    </label>
+                    {rawDigits && (
+                      <span className="font-mono text-xs font-bold text-emerald-400">
+                        = {formatVND(numAmount)}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 font-bold font-mono text-base">
+                      ₫
+                    </div>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={paymentAmountInput ? parseInt(paymentAmountInput, 10).toLocaleString('vi-VN') : ''}
+                      onChange={(e) => handleAmountChange(e.target.value)}
+                      placeholder="Nhập số tiền nộp (VD: 1,500,000)"
+                      className={`w-full pl-9 pr-4 py-2.5 rounded-xl bg-slate-950 border font-mono text-lg font-bold text-white focus:outline-none transition-all ${
+                        validationError
+                          ? 'border-rose-500 focus:border-rose-400 bg-rose-950/20'
+                          : 'border-slate-700 focus:border-emerald-500'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Validation Error Message */}
+                  {validationError && (
+                    <div className="flex items-center gap-1.5 text-xs text-rose-400 font-semibold bg-rose-950/40 p-2.5 rounded-xl border border-rose-500/30">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{validationError}</span>
+                    </div>
+                  )}
+
+                  {/* Quick suggestion chips */}
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1 text-[11px]">
+                    <span className="text-slate-400 font-medium">Gợi ý nhanh:</span>
+                    <button
+                      type="button"
+                      onClick={() => handleSetQuickAmount(500000)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono transition-colors border border-slate-700"
+                    >
+                      500.000 đ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetQuickAmount(1000000)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono transition-colors border border-slate-700"
+                    >
+                      1.000.000 đ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetQuickAmount(2000000)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono transition-colors border border-slate-700"
+                    >
+                      2.000.000 đ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetQuickAmount(Math.round(outstanding / 2))}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 font-mono transition-colors border border-slate-700"
+                    >
+                      50% nợ ({formatVND(Math.round(outstanding / 2))})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSelectFullPayment}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-900/50 hover:bg-emerald-800/60 text-emerald-300 font-mono font-bold transition-colors border border-emerald-500/30"
+                    >
+                      Tất toán ({formatVND(outstanding)})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Payment Method Tabs & Reference input */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                      Hình thức thanh toán *
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectPaymentMethod('bank_transfer')}
+                        className={`py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 transition-all ${
+                          paymentMethod === 'bank_transfer'
+                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-md shadow-cyan-500/10'
+                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        <QrCode className="w-3.5 h-3.5" />
+                        <span>Chuyển khoản (VietQR)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSelectPaymentMethod('cash')}
+                        className={`py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 transition-all ${
+                          paymentMethod === 'cash'
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-md shadow-amber-500/10'
+                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                        }`}
+                      >
+                        <DollarSign className="w-3.5 h-3.5" />
+                        <span>Tiền mặt (Phiếu thu)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs font-semibold text-slate-300">
+                        {paymentMethod === 'bank_transfer' ? 'Mã GD ngân hàng / Sao kê *' : 'Mã phiếu thu tiền mặt *'}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleRegenerateRef}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 font-mono"
+                        title="Tạo mã giao dịch ngẫu nhiên mới"
+                      >
+                        Tạo mã mới
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={paymentRefInput}
+                        onChange={(e) => setPaymentRefInput(e.target.value)}
+                        placeholder={paymentMethod === 'bank_transfer' ? 'VD: VCB-FT262458921' : 'VD: TM-123456'}
+                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Date & Cashier input */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Ngày nộp tiền *
+                    </label>
+                    <input
+                      type="date"
+                      value={paymentDate}
+                      onChange={(e) => setPaymentDate(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Kế toán / Nhân sự thu tiền *
+                    </label>
+                    <input
+                      type="text"
+                      value={verifiedByInput}
+                      onChange={(e) => setVerifiedByInput(formatCapitalizeWords(e.target.value))}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-emerald-500 capitalize"
+                    />
+                  </div>
+                </div>
+
+                {/* Notes input & Quick suggestions */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    Ghi chú đợt đóng tiền
+                  </label>
+                  <input
+                    type="text"
+                    value={paymentNotesInput}
+                    onChange={(e) => setPaymentNotesInput(e.target.value)}
+                    placeholder="VD: Đóng đợt 1 - 1.500.000 đ, hẹn tuần sau đóng nốt"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-emerald-500"
+                  />
+                  <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-400">
+                    <span>Mẫu ghi chú:</span>
+                    {['Đóng đợt 1', 'Đóng đợt 2', 'Nộp tiền cọc giữ chỗ', 'Tất toán hoàn tất học phí', 'Nộp theo thỏa thuận phụ huynh'].map((chip, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setPaymentNotesInput(chip)}
+                        className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                      >
+                        {chip}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* KHỐI 3: XEM TRƯỚC KẾT QUẢ SAU KHI GẠCH NỢ (REAL-TIME PREVIEW CALCULATION) */}
+              <div className="rounded-2xl p-4 bg-gradient-to-r from-slate-900 to-slate-950 border border-slate-800 space-y-2">
+                <div className="text-xs font-bold text-white flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-cyan-400">
+                    <Sparkles className="w-4 h-4" />
+                    <span>Xem Trước Kết Quả Sau Đợt Thu Này</span>
+                  </span>
+                  <div>
+                    {isProjectedComplete ? (
+                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Trạng thái mới: Đã hoàn tất 100% (Paid)</span>
+                      </span>
+                    ) : numAmount > 0 && !validationError ? (
+                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                        <Coins className="w-3.5 h-3.5" />
+                        <span>Trạng thái mới: Nợ một phần (Partial)</span>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500 italic">Chưa nhập số tiền</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2 text-xs">
+                  <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] text-slate-400">Lũy kế đã nộp sau đợt:</div>
+                    <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">
+                      {formatVND(projectedPaid)}
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] text-slate-400">Công nợ còn lại sau đợt:</div>
+                    <div className={`text-sm font-bold font-mono mt-0.5 ${projectedOutstanding > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {formatVND(projectedOutstanding)}
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 col-span-2 sm:col-span-1">
+                    <div className="text-[10px] text-slate-400">VietQR đợt tiếp theo:</div>
+                    <div className="text-xs font-mono text-cyan-300 font-semibold mt-0.5">
+                      {projectedOutstanding > 0 ? `Tự động tạo QR ${formatVND(projectedOutstanding)}` : 'Hết nợ (Không cần sinh QR)'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* KHỐI 4: LỊCH SỬ CÁC ĐỢT ĐÓNG TIỀN TRƯỚC ĐÓ (PAYMENT HISTORY TABLE) */}
+              <div className="rounded-2xl bg-slate-900/70 border border-slate-800 p-4 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <History className="w-4 h-4 text-cyan-400" />
+                    <span>Lịch Sử Các Đợt Đã Đóng Tiền ({verifyingInvoice.payment_history?.length || 0} đợt)</span>
+                  </h4>
+                </div>
+
+                {!verifyingInvoice.payment_history || verifyingInvoice.payment_history.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-slate-500 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                    Chưa có giao dịch thanh toán nào trước đó (Hóa đơn mới, chưa thu lần nào).
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-800">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] font-bold border-b border-slate-800">
+                        <tr>
+                          <th className="py-2 px-3 text-center">Đợt</th>
+                          <th className="py-2 px-3">Ngày Nộp</th>
+                          <th className="py-2 px-3 text-right">Số Tiền Nộp</th>
+                          <th className="py-2 px-3">Hình Thức & Mã GD</th>
+                          <th className="py-2 px-3">Kế Toán Xác Nhận</th>
+                          <th className="py-2 px-3">Ghi Chú</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {verifyingInvoice.payment_history.map((record, idx) => (
+                          <tr key={record.id || idx} className="hover:bg-slate-800/30">
+                            <td className="py-2 px-3 text-center font-bold font-mono text-amber-400">
+                              Đợt {idx + 1}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-slate-300">
+                              {record.payment_date}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-bold text-emerald-400">
+                              {formatVND(record.amount)}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] text-slate-300">
+                              <span className="font-semibold text-white">
+                                {record.payment_method === 'cash' ? 'Tiền mặt' : 'Chuyển khoản'}
+                              </span>
+                              <div className="text-[10px] text-slate-400">{record.payment_reference}</div>
+                            </td>
+                            <td className="py-2 px-3 text-slate-300 font-medium">
+                              {record.verified_by}
+                            </td>
+                            <td className="py-2 px-3 text-slate-400 italic text-[11px]">
+                              {record.notes || '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* KHỐI 5: NÚT BẤM HÀNH ĐỘNG (MODAL FOOTER ACTIONS) */}
+              <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setVerifyingInvoice(null)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                >
+                  Đóng / Hủy bỏ
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConfirmPayment}
+                    disabled={isInvalid}
+                    className={`px-6 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-lg ${
+                      isInvalid
+                        ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30 active:scale-95'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>
+                      {numAmount > 0 ? `Xác Nhận Gạch Nợ ${formatVND(numAmount)}` : 'Xác Nhận Gạch Nợ'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
     </div>
   );

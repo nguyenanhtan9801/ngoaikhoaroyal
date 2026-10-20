@@ -101,8 +101,8 @@ export default function App() {
   // Filter states
   const [selectedCampusId, setSelectedCampusId] = useState<string>('all');
   const [selectedTermId, setSelectedTermId] = useState<string>(store.terms[0]?.id || 'term_fall_2026');
-  const [timeRange, setTimeRange] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [studentSearchFilter, setStudentSearchFilter] = useState<string>('');
 
   // Selected class for attendance focus
   const [focusedClass, setFocusedClass] = useState<ExtracurricularClass | null>(store.classes[0] || null);
@@ -445,6 +445,7 @@ export default function App() {
               onUpdateStore={updateStore}
               onPrintStudentCard={handlePrintStudentCard}
               focusHealth={currentRoute === 'sub_students_health'}
+              initialSearch={studentSearchFilter}
             />
           )}
 
@@ -454,6 +455,10 @@ export default function App() {
               currentRole={currentRole}
               onUpdateStore={updateStore}
               onOpenParentPortal={() => setIsParentPortalOpen(true)}
+              onNavigateToStudents={(studentCode) => {
+                setStudentSearchFilter(studentCode || '');
+                setCurrentRoute('sub_students');
+              }}
             />
           )}
 

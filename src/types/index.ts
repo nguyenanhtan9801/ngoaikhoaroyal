@@ -2,8 +2,29 @@ export type UserRole =
   | 'super_admin' 
   | 'academic_accountant' 
   | 'academic_admissions' 
+  | 'academic_staff'
+  | 'admissions_staff'
   | 'admissions' 
   | 'teacher';
+
+export type AttendanceStatus = 'present' | 'absent_excused' | 'absent_unexcused';
+export type ClassItem = ExtracurricularClass;
+export type Attendance = AttendanceRecord;
+export type NotificationItem = SystemNotification;
+
+export interface PricingRule {
+  id: string;
+  campus_id: string;
+  term_id: string;
+  subject_id: string;
+  base_price?: number;
+  discount_type?: 'percentage' | 'fixed_amount';
+  discount_value?: number;
+  custom_session_rate?: number;
+  final_price: number;
+  total_sessions: number;
+  session_rate: number;
+}
 
 export interface AppUser {
   id: string;
@@ -140,7 +161,7 @@ export interface Facility {
   name: string;
   campus_id: string;
   capacity: number;
-  type: 'classroom' | 'field' | 'pool' | 'studio' | 'hall';
+  type: 'classroom' | 'field' | 'pool' | 'studio' | 'hall' | 'music_hall' | 'art_studio';
   is_active: boolean;
 }
 
@@ -163,6 +184,7 @@ export interface Teacher {
   fixed_rate_per_session: number; // for permanent
   percentage_rate: number; // for visiting (e.g. 60%)
   status: 'active' | 'inactive';
+  subjects?: string[];
 }
 
 export interface ExtracurricularClass {
@@ -286,6 +308,7 @@ export interface MakeupCredit {
   status: 'issued' | 'applied' | 'expired';
   applied_class_id?: string;
   applied_at?: string;
+  note?: string;
 }
 
 export interface ClassTransfer {
@@ -326,24 +349,34 @@ export interface RegisteredSubjectItem {
 export interface ParentRegistration {
   id: string;
   registration_code?: string;
+  code?: string; // alias for registration_code
   parent_name: string;
   parent_phone: string;
   parent_email?: string;
   student_name: string;
   student_dob: string;
+  dob?: string; // alias for student_dob
   student_grade?: string;
+  current_school?: string; // current school of student
+  current_class?: string; // alias for regular class
   desired_campus_id: string;
+  campus_id?: string; // alias for desired_campus_id
   desired_term_id?: string;
   desired_subject_id: string; // Primary subject for backward compat
+  preferred_subject_id?: string; // alias for desired_subject_id
   desired_time_slot_type: 'after_school' | 'weekend';
+  preferred_time_slot_id?: string; // alias
   registered_subjects?: RegisteredSubjectItem[]; // Multi-subject registrations with separate time slots
   is_royal_student: boolean;
+  is_royal?: boolean; // alias for is_royal_student
   medical_notes?: string;
   notes?: string;
   estimated_fee?: number;
   discount_policy?: string;
   status: 'pending' | 'contacted' | 'enrolled' | 'partially_enrolled' | 'canceled';
   contact_notes?: string;
+  student_id?: string;
+  assigned_student_id?: string;
   assigned_class_id?: string;
   assigned_class_ids?: string[];
   assigned_student_code?: string;
@@ -352,11 +385,11 @@ export interface ParentRegistration {
 
 export interface SystemNotification {
   id: string;
-  type: 'debt_warning' | 'credit_expiring' | 'consecutive_absence' | 'enrollment_over_quota' | 'new_lead_registration' | 'drop_alert';
+  type: 'debt_warning' | 'credit_expiring' | 'consecutive_absence' | 'enrollment_over_quota' | 'new_lead_registration' | 'drop_alert' | 'absence_alert' | 'new_registration';
   title: string;
   message: string;
   date: string;
-  severity: 'low' | 'medium' | 'high';
+  severity?: 'low' | 'medium' | 'high';
   read: boolean;
   metadata?: Record<string, any>;
 }
