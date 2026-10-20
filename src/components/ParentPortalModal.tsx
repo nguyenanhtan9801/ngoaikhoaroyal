@@ -878,7 +878,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
                   <div>
                     <label className="block text-slate-300 font-semibold mb-1">
-                      Cơ sở (Campus) theo học <span className="text-rose-400">*</span>
+                      Cơ sở theo học <span className="text-rose-400">*</span>
                     </label>
                     <select
                       value={regForm.desired_campus_id}

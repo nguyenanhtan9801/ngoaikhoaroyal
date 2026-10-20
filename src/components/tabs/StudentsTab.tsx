@@ -1146,7 +1146,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         : 'bg-slate-900/90 border border-amber-500/30'
                     }`}>
                       <div className="flex justify-between text-slate-400">
-                        <span>Đơn giá buổi (Ceil):</span>
+                        <span>Đơn giá buổi:</span>
                         <span className="font-mono text-white">{formatVND(c.price_per_session)}</span>
                       </div>
                       <div className="flex justify-between text-slate-400">
@@ -1170,7 +1170,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             <span className="font-mono">{formatVND(total)}</span>
                           </div>
                           <div className="text-[10px] text-slate-500 italic mt-1">
-                            Hệ thống tự động phát hành Hóa đơn độc lập kèm mã VietQR Napas247 riêng biệt.
+                            Hệ thống tự động phát hành hóa đơn học phí kèm mã VietQR riêng biệt.
                           </div>
                         </>
                       )}
@@ -1242,7 +1242,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   Quy trình kích hoạt chính thức:
                 </div>
                 <ul className="list-disc pl-5 space-y-1 text-slate-400 text-[11px]">
-                  <li>Chuyển trạng thái ghi danh sang <strong>Chính thức (Active)</strong>.</li>
+                  <li>Chuyển trạng thái ghi danh sang <strong>Chính thức</strong>.</li>
                   <li>Kích hoạt hóa đơn học phí toàn khóa & mở khóa thanh toán mã VietQR.</li>
                   <li>Duy trì quyền lợi bữa phụ bánh sữa (nếu là học sinh Royal) cho toàn bộ khóa học.</li>
                 </ul>

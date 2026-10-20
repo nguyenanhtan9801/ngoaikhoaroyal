@@ -228,7 +228,7 @@ export function isTermClosed(termId: string, store: AppStore): boolean {
   return term ? term.status === 'closed' : false;
 }
 
-// Helper tính toán ưu đãi và học phí sau giảm (Net Fee)
+// Helper tính toán ưu đãi và học phí sau giảm
 export function computeDiscountedFee(
   baseFee: number,
   discountType: DiscountType = 'none',

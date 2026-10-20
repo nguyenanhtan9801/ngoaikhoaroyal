@@ -64,7 +64,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                 TRƯỜNG SONG NGỮ QUỐC TẾ HOÀNG GIA
               </h1>
               <p className="text-xs text-slate-600 mt-0.5">
-                Trung tâm Ngoại khóa & Phát triển Tài năng Hoàng Gia (Royal Extracurricular Hub)
+                Trung tâm Ngoại khóa & Phát triển Tài năng Hoàng Gia
               </p>
             </div>
 
@@ -309,7 +309,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
 
               <div className="grid grid-cols-3 gap-4 text-center text-xs">
                 <div className="p-4 border rounded-2xl bg-slate-50">
-                  <div className="text-slate-500">Tổng Suất Cấp (Royal):</div>
+                  <div className="text-slate-500">Tổng Suất Cấp (Học Sinh Royal):</div>
                   <div className="text-2xl font-black font-mono mt-1">{document.totalAllocated}</div>
                 </div>
                 <div className="p-4 border rounded-2xl bg-emerald-50">

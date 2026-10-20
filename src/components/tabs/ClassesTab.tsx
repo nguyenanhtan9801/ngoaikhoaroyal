@@ -214,7 +214,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
   const handleOpenAddModal = () => {
     if (isSelectedTermClosed) {
-      alert('Khóa học này đã Đóng (Closed). Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.');
+      alert('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.');
       return;
     }
 
@@ -265,7 +265,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
     // Check if target term is closed
     if (isTermClosed(formData.term_id, store)) {
-      alert('Không thể lưu lớp học vào Khóa học đã ĐÓNG (Closed).');
+      alert('Không thể lưu lớp học vào Khóa học đã ĐÓNG.');
       return;
     }
 
@@ -385,7 +385,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   <th className="py-3 px-4">Sân / Phòng</th>
                   <th className="py-3 px-4">Giáo Viên Đứng Lớp</th>
                   <th className="py-3 px-4 text-center">Sĩ Số</th>
-                  <th className="py-3 px-4 font-mono">Đơn Giá Buổi (Ceil)</th>
+                  <th className="py-3 px-4 font-mono">Đơn Giá Buổi</th>
                   <th className="py-3 px-4 font-mono">Trọn Khóa</th>
                   <th className="py-3 px-4 text-right">Thao Tác</th>
                 </tr>
@@ -452,7 +452,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                           <button
                             onClick={() => {
                               if (isTermClosed(cls.term_id, store)) {
-                                alert('Khóa học này đã Đóng (Closed). Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.');
+                                alert('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.');
                                 return;
                               }
                               const editDays = getClassDays(cls, store).slice(0, 2);
@@ -582,7 +582,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
                   <div className="mt-3 p-2.5 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between text-xs">
                     <div>
-                      <span className="text-slate-400 text-[10px] block">Đơn giá 1 buổi (Ceil):</span>
+                      <span className="text-slate-400 text-[10px] block">Đơn giá 1 buổi:</span>
                       <span className="text-amber-400 font-bold font-mono">{formatVND(cls.price_per_session)}</span>
                     </div>
                     <div className="text-right">
@@ -596,7 +596,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   <button
                     onClick={() => {
                       if (isTermClosed(cls.term_id, store)) {
-                        alert('Khóa học này đã Đóng (Closed). Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.');
+                        alert('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.');
                         return;
                       }
                       const editDays = getClassDays(cls, store).slice(0, 2);
@@ -705,7 +705,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                           const statusLabel = 
                             t.status === 'open_enrollment' ? 'Đang tuyển sinh' :
                             t.status === 'in_progress' ? 'Đang diễn ra' :
-                            t.status === 'closed' ? 'Đã đóng' : 'Dự thảo (Draft)';
+                            t.status === 'closed' ? 'Đã đóng' : 'Dự thảo';
                           return (
                             <option key={t.id} value={t.id} disabled={t.status === 'closed'}>
                               {t.name} ({statusLabel})
@@ -794,7 +794,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                           <span className="font-bold text-amber-400 font-mono text-xs">{formatVND(effectivePricing.course_fee)}</span>
                         </div>
                         <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800">
-                          <span className="text-[10px] text-slate-400 block">Đơn giá buổi (Ceil)</span>
+                          <span className="text-[10px] text-slate-400 block">Đơn giá buổi</span>
                           <span className="font-bold text-emerald-400 font-mono text-xs">{formatVND(effectivePricing.session_rate)}/b</span>
                         </div>
                       </div>
@@ -1008,13 +1008,13 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   {/* Ceil Rate Preview */}
                   <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
                     <div>
-                      <span className="text-slate-400 text-xs block">Đơn giá 1 buổi làm tròn lên (Ceil):</span>
+                      <span className="text-slate-400 text-xs block">Đơn giá 1 buổi làm tròn lên:</span>
                       <span className="text-amber-400 font-bold font-mono text-sm">
                         {formatVND(computedSessionRate)} / buổi
                       </span>
                     </div>
                     <div className="text-[10px] text-slate-500 max-w-xs text-right">
-                      Công thức chuẩn: Ceil(Học phí / Số buổi đến hàng nghìn đồng)
+                      Công thức chuẩn: Làm tròn lên (Học phí / Số buổi đến hàng nghìn đồng)
                     </div>
                   </div>
 

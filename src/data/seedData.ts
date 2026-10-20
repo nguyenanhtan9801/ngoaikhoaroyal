@@ -334,14 +334,14 @@ export const initialSubjects: Subject[] = [
   {
     id: 'sub_bask',
     code: 'BASK',
-    name: 'Bóng rổ Hoàng Gia (Royal Basketball)',
+    name: 'Bóng rổ Hoàng Gia',
     category: 'Thể thao',
     standard_duration: '90 phút',
   },
   {
     id: 'sub_swim',
     code: 'SWIM',
-    name: 'Bơi lội Thủy Tinh (Dolphin Swimming)',
+    name: 'Bơi lội Thủy Tinh',
     category: 'Thể thao',
     standard_duration: '75 phút',
   },

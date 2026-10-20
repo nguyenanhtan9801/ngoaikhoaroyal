@@ -98,7 +98,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               QUYỀN TRUY CẬP HỒ SƠ TIẾP NHẬN TUYỂN SINH
             </h3>
             <p className="text-xs sm:text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
-              Phần xem và xử lý danh sách hồ sơ phụ huynh nộp trực tuyến chỉ dành riêng cho Nhân sự được phân công là <strong>Tuyển sinh</strong>, <strong>Giáo vụ</strong> hoặc <strong>Quản trị viên (Admin)</strong>.
+              Phần xem và xử lý danh sách hồ sơ phụ huynh nộp trực tuyến chỉ dành riêng cho Nhân sự được phân công là <strong>Tuyển sinh</strong>, <strong>Giáo vụ</strong> hoặc <strong>Quản trị viên</strong>.
             </p>
           </div>
 
@@ -413,10 +413,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả trạng thái</option>
-            <option value="pending">Chờ xử lý (Pending)</option>
-            <option value="contacted">Đã tư vấn (Contacted)</option>
-            <option value="enrolled">Đã xếp lớp (Enrolled)</option>
-            <option value="canceled">Đã hủy (Canceled)</option>
+            <option value="pending">Chờ xử lý</option>
+            <option value="contacted">Đã tư vấn</option>
+            <option value="enrolled">Đã xếp lớp</option>
+            <option value="canceled">Đã hủy</option>
           </select>
 
           {/* Campus filter */}
@@ -591,7 +591,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     <div className="flex items-center justify-between text-[11px] pt-1">
                       <span className="text-slate-400">Suất bánh sữa 16:30:</span>
                       <span className={lead.is_royal_student ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
-                        {lead.is_royal_student ? 'Được phục vụ (HS Royal)' : 'Không áp dụng'}
+                        {lead.is_royal_student ? 'Được phục vụ (Học sinh Royal)' : 'Không áp dụng'}
                       </span>
                     </div>
 
@@ -664,12 +664,12 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               <thead className="bg-slate-950/80 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                 <tr>
                   <th className="py-3 px-4">Mã Đơn / Ngày</th>
-                  <th className="py-3 px-4">Phụ Huynh Liên Hệ</th>
-                  <th className="py-3 px-4">Học Sinh & Khối Lớp</th>
-                  <th className="py-3 px-4">Môn Học & Khung Giờ</th>
+                  <th className="py-3 px-4">Học Sinh</th>
+                  <th className="py-3 px-4">Môn Học</th>
                   <th className="py-3 px-4">Cơ Sở</th>
                   <th className="py-3 px-4">Phân Loại / Bánh Sữa</th>
-                  <th className="py-3 px-4">Lưu Ý Y Tế</th>
+                  <th className="py-3 px-4">Lưu Ý</th>
+                  <th className="py-3 px-4">Phụ Huynh</th>
                   <th className="py-3 px-4 text-center">Trạng Thái</th>
                   <th className="py-3 px-4 text-right">Thao Tác</th>
                 </tr>
@@ -681,26 +681,19 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
                   return (
                     <tr key={lead.id} className="hover:bg-slate-800/30 transition-colors">
+                      {/* 1. Mã Đơn / Ngày */}
                       <td className="py-3 px-4">
                         <div className="font-mono text-amber-400 font-bold">{lead.registration_code || lead.id}</div>
                         <div className="text-[10px] text-slate-500">{lead.created_at}</div>
                       </td>
 
-                      <td className="py-3 px-4">
-                        <div className="font-bold text-white">{lead.parent_name}</div>
-                        <a href={`tel:${lead.parent_phone}`} className="text-[11px] text-amber-400 font-mono font-bold hover:underline">
-                          {lead.parent_phone}
-                        </a>
-                        {lead.parent_email && (
-                          <div className="text-[10px] text-slate-400 truncate max-w-[140px]">{lead.parent_email}</div>
-                        )}
-                      </td>
-
+                      {/* 2. Học Sinh */}
                       <td className="py-3 px-4">
                         <div className="font-bold text-white">{lead.student_name}</div>
                         <div className="text-[10px] text-slate-400">{lead.student_grade || 'Sinh: ' + lead.student_dob}</div>
                       </td>
 
+                      {/* 3. Môn Học */}
                       <td className="py-3 px-4">
                         {lead.registered_subjects && lead.registered_subjects.length > 0 ? (
                           <div className="space-y-1">
@@ -719,10 +712,12 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         )}
                       </td>
 
+                      {/* 4. Cơ Sở */}
                       <td className="py-3 px-4 text-slate-300">
                         {campus?.name}
                       </td>
 
+                      {/* 5. Phân Loại / Bánh Sữa */}
                       <td className="py-3 px-4">
                         {lead.is_royal_student ? (
                           <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold whitespace-nowrap">
@@ -735,16 +730,34 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         )}
                       </td>
 
-                      <td className="py-3 px-4 text-rose-300 text-[11px] max-w-xs">
+                      {/* 6. Lưu Ý */}
+                      <td className="py-3 px-4 text-[11px] max-w-xs">
                         {lead.medical_notes ? (
-                          <span className="p-1 rounded bg-rose-500/10 border border-rose-500/20 block truncate">
+                          <span className="p-1 rounded bg-rose-500/10 border border-rose-500/20 text-rose-300 block truncate" title={lead.medical_notes}>
                             {lead.medical_notes}
                           </span>
                         ) : (
                           <span className="text-slate-500">Bình thường</span>
                         )}
+                        {lead.notes && (
+                          <div className="text-[10px] text-slate-400 italic truncate mt-0.5" title={lead.notes}>
+                            &ldquo;{lead.notes}&rdquo;
+                          </div>
+                        )}
                       </td>
 
+                      {/* 7. Phụ Huynh */}
+                      <td className="py-3 px-4">
+                        <div className="font-bold text-white">{lead.parent_name}</div>
+                        <a href={`tel:${lead.parent_phone}`} className="text-[11px] text-amber-400 font-mono font-bold hover:underline">
+                          {lead.parent_phone}
+                        </a>
+                        {lead.parent_email && (
+                          <div className="text-[10px] text-slate-400 truncate max-w-[140px]">{lead.parent_email}</div>
+                        )}
+                      </td>
+
+                      {/* 8. Trạng Thái */}
                       <td className="py-3 px-4 text-center">
                         {lead.status === 'enrolled' ? (
                           <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-extrabold">
@@ -765,6 +778,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         )}
                       </td>
 
+                      {/* 9. Thao Tác */}
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
                           <button
@@ -982,9 +996,9 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                 onChange={(e) => setContactStatusInput(e.target.value as any)}
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500"
               >
-                <option value="pending">Chờ liên hệ (Pending)</option>
-                <option value="contacted">Đã liên hệ tư vấn (Contacted)</option>
-                <option value="canceled">Đã hủy / Phụ huynh không đăng ký (Canceled)</option>
+                <option value="pending">Chờ liên hệ</option>
+                <option value="contacted">Đã liên hệ tư vấn</option>
+                <option value="canceled">Đã hủy / Phụ huynh không đăng ký</option>
               </select>
             </div>
 

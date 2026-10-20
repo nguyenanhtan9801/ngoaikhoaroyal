@@ -806,7 +806,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setImportStatus({ loading: true, message: 'Đang đọc và phân tích tệp Master Excel...' });
+    setImportStatus({ loading: true, message: 'Đang đọc và phân tích tệp bảng tính...' });
     const result = await parseMasterExcelFile(file);
 
     if (result.success && result.data) {
@@ -880,7 +880,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           }`}
         >
           <FileSpreadsheet className="w-3.5 h-3.5" />
-          <span>Excel Master (10 Sheets)</span>
+          <span>Bảng Tính Tổng Thể (10 Bảng)</span>
         </button>
         <button
           onClick={() => setActiveSection('telecom')}
@@ -1590,10 +1590,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <div>
                   <h4 className="text-sm font-bold text-white flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-amber-400" />
-                    <span>Danh Sách Khóa Học (Academic Terms) & Vòng Đời Nghiệp Vụ</span>
+                    <span>Danh Sách Khóa Học & Vòng Đời Nghiệp Vụ</span>
                   </h4>
                   <p className="text-[11px] text-slate-400">
-                    Vòng đời khóa: Dự thảo (Draft) &rarr; Mở Tuyển Sinh (Open Enrollment) &rarr; Đang Học (In Progress) &rarr; Đã Đóng (Closed - Khóa chỉnh sửa toàn bộ dữ liệu)
+                    Vòng đời khóa: Dự thảo &rarr; Mở Tuyển Sinh &rarr; Đang Học &rarr; Đã Đóng (Khóa chỉnh sửa toàn bộ dữ liệu)
                   </p>
                 </div>
 
@@ -1616,7 +1616,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     title="Nhân bản cấu hình môn và biểu phí từ khóa cũ sang khóa mới mà không sửa dữ liệu lịch sử"
                   >
                     <Copy className="w-3.5 h-3.5" />
-                    <span>Nhân Bản (Clone) Khóa</span>
+                    <span>Nhân Bản Khóa Học</span>
                   </button>
 
                   <button
@@ -1650,22 +1650,22 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
                   const statusConfig = {
                     draft: {
-                      label: 'Dự Thảo (Draft)',
+                      label: 'Dự Thảo',
                       color: 'bg-slate-700/50 text-slate-300 border-slate-600',
                       desc: 'Đang thiết lập môn học và biểu phí, chưa mở cho phụ huynh.',
                     },
                     open_enrollment: {
-                      label: 'Đang Tuyển Sinh (Open)',
+                      label: 'Đang Tuyển Sinh',
                       color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40',
                       desc: 'Các cơ sở được phép mở lớp và phụ huynh có thể đăng ký.',
                     },
                     in_progress: {
-                      label: 'Đang Giảng Dạy (In Progress)',
+                      label: 'Đang Giảng Dạy',
                       color: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40',
                       desc: 'Khóa học đang diễn ra, giáo viên tiến hành điểm danh thực tế.',
                     },
                     closed: {
-                      label: 'Đã Đóng (Closed - Read Only)',
+                      label: 'Đã Đóng',
                       color: 'bg-rose-500/20 text-rose-400 border-rose-500/40',
                       desc: 'Đã hoàn tất khóa học. Toàn bộ lớp, học viên, hóa đơn bị khóa sửa đổi.',
                     },
@@ -1722,7 +1722,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             onChange={(e) => {
                               const newStatus = e.target.value as TermStatus;
                               if (newStatus === 'closed') {
-                                const ok = window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn ĐÓNG (Closed) khóa học "${term.name}"? Toàn bộ lớp học, điểm danh và ghi danh của khóa sẽ bị khóa chỉnh sửa (Read-only).`);
+                                const ok = window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn ĐÓNG khóa học "${term.name}"? Toàn bộ lớp học, điểm danh và ghi danh của khóa sẽ bị khóa chỉnh sửa.`);
                                 if (!ok) return;
                               }
                               onUpdateStore(prev => ({
@@ -1740,10 +1740,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             }}
                             className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-amber-500"
                           >
-                            <option value="draft">Dự thảo (Draft)</option>
-                            <option value="open_enrollment">Mở tuyển sinh (Open Enrollment)</option>
-                            <option value="in_progress">Đang giảng dạy (In Progress)</option>
-                            <option value="closed">Đã đóng (Closed - Khóa sửa)</option>
+                            <option value="draft">Dự thảo</option>
+                            <option value="open_enrollment">Mở tuyển sinh</option>
+                            <option value="in_progress">Đang giảng dạy</option>
+                            <option value="closed">Đã đóng (Khóa sửa)</option>
                           </select>
                         </div>
                       </div>
@@ -1821,7 +1821,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <div>
                     <h4 className="text-sm font-bold text-white">Cấu Hình Danh Mục Môn Học Của Từng Khóa</h4>
                     <p className="text-[11px] text-slate-400">
-                      Chọn môn nào được Kích Hoạt (Active) trong khóa, định nghĩa Số buổi chuẩn và Học phí chuẩn trọn khóa.
+                      Chọn môn nào được Kích hoạt trong khóa, định nghĩa Số buổi chuẩn và Học phí chuẩn trọn khóa.
                     </p>
                   </div>
                 </div>
@@ -1847,7 +1847,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               {isTermClosed(selectedConfigTermId, store) && (
                 <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
                   <Lock className="w-4 h-4 text-rose-400 shrink-0" />
-                  <span>Khóa học này đã ĐÓNG (Closed). Cấu hình môn học đang ở chế độ Chỉ Xem (Read-only).</span>
+                  <span>Khóa học này đã Đóng. Cấu hình môn học đang ở chế độ chỉ xem.</span>
                 </div>
               )}
 
@@ -1858,11 +1858,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                       <tr>
                         <th className="py-3 px-4">Kích Hoạt</th>
-                        <th className="py-3 px-4">Môn Học (Catalog)</th>
+                        <th className="py-3 px-4">Tên Môn Học</th>
                         <th className="py-3 px-4">Danh Mục</th>
                         <th className="py-3 px-4 text-center">Số Buổi Chuẩn</th>
                         <th className="py-3 px-4 font-mono">Học Phí Chuẩn Khóa</th>
-                        <th className="py-3 px-4 font-mono">Đơn Giá Buổi (Ceil)</th>
+                        <th className="py-3 px-4 font-mono">Đơn Giá Buổi</th>
                         <th className="py-3 px-4">Ghi Chú Khóa</th>
                         <th className="py-3 px-4 text-right">Thao Tác</th>
                       </tr>
@@ -2265,7 +2265,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <span className="font-mono font-bold text-slate-200">{effectivePricing.total_sessions} buổi</span>
                           </div>
                           <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800">
-                            <span>Đơn giá buổi (Ceil):</span>
+                            <span>Đơn giá buổi:</span>
                             <span className="font-mono font-bold text-emerald-400">{formatVND(effectivePricing.session_rate)}/b</span>
                           </div>
                         </div>
@@ -2672,7 +2672,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               </div>
 
                               <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800 text-[11px]">
-                                <span>Đơn giá buổi (Ceil):</span>
+                                <span>Đơn giá buổi:</span>
                                 <span className="font-mono font-bold text-emerald-400 text-xs">
                                   {formatVND(eff.session_rate)}/buổi
                                 </span>
@@ -2714,7 +2714,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <th className="py-3 px-3.5 font-mono text-right">Học Phí Gốc</th>
                             <th className="py-3 px-3.5 font-mono text-right">Ưu Đãi / Giảm Giá</th>
                             <th className="py-3 px-3.5 font-mono text-right">Học Phí Áp Dụng</th>
-                            <th className="py-3 px-3.5 font-mono text-right">Đơn Giá Buổi (Ceil)</th>
+                            <th className="py-3 px-3.5 font-mono text-right">Đơn Giá Buổi</th>
                             <th className="py-3 px-3.5 text-center">Tình Trạng Tuyển Sinh</th>
                           </tr>
                         </thead>
@@ -2910,8 +2910,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   onChange={(e) => setCloneFormData({ ...cloneFormData, status: e.target.value as TermStatus })}
                   className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500 font-semibold"
                 >
-                  <option value="draft">Dự thảo (Draft) - Tiếp tục chỉnh sửa trước khi công bố</option>
-                  <option value="open_enrollment">Mở tuyển sinh (Open Enrollment) - Cho phép tuyển sinh ngay</option>
+                  <option value="draft">Dự thảo - Tiếp tục chỉnh sửa trước khi công bố</option>
+                  <option value="open_enrollment">Mở tuyển sinh - Cho phép tuyển sinh ngay</option>
                 </select>
               </div>
 
@@ -3068,10 +3068,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   onChange={(e) => setTermFormData({ ...termFormData, status: e.target.value as TermStatus })}
                   className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
                 >
-                  <option value="draft">Dự thảo (Draft)</option>
-                  <option value="open_enrollment">Mở tuyển sinh (Open Enrollment)</option>
-                  <option value="in_progress">Đang giảng dạy (In Progress)</option>
-                  <option value="closed">Đã đóng (Closed - Khóa sửa)</option>
+                  <option value="draft">Dự thảo</option>
+                  <option value="open_enrollment">Mở tuyển sinh</option>
+                  <option value="in_progress">Đang giảng dạy</option>
+                  <option value="closed">Đã đóng (Khóa sửa)</option>
                 </select>
               </div>
 
@@ -3146,8 +3146,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     onChange={(e) => setCampusFormData({ ...campusFormData, status: e.target.value as 'active' | 'inactive' })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="active">Hoạt động (Active)</option>
-                    <option value="inactive">Tạm dừng (Inactive)</option>
+                    <option value="active">Đang hoạt động</option>
+                    <option value="inactive">Tạm dừng</option>
                   </select>
                 </div>
               </div>
@@ -3309,7 +3309,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   required
                   value={subjectFormData.name}
                   onChange={(e) => setSubjectFormData({ ...subjectFormData, name: e.target.value })}
-                  placeholder="VD: Bóng rổ Hoàng Gia (Royal Basketball)"
+                  placeholder="VD: Bóng rổ Hoàng Gia"
                   className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
                 />
               </div>
@@ -3498,7 +3498,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       onChange={() => setCategoryFormData({ ...categoryFormData, status: 'active' })}
                       className="text-amber-500 focus:ring-0"
                     />
-                    <span className="text-emerald-400 font-bold text-xs">Đang mở tuyển sinh (Active)</span>
+                    <span className="text-emerald-400 font-bold text-xs">Đang mở tuyển sinh</span>
                   </label>
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
@@ -3508,7 +3508,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       onChange={() => setCategoryFormData({ ...categoryFormData, status: 'inactive' })}
                       className="text-amber-500 focus:ring-0"
                     />
-                    <span className="text-slate-400 text-xs">Tạm dừng (Inactive)</span>
+                    <span className="text-slate-400 text-xs">Tạm dừng</span>
                   </label>
                 </div>
               </div>
@@ -3862,7 +3862,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                   <FileSpreadsheet className="w-5 h-5" />
                 </div>
-                <h3 className="text-base font-bold text-white">Module Nhập & Xuất Master Excel Đồng Bộ 10 Sheets</h3>
+                <h3 className="text-base font-bold text-white">Module Nhập & Xuất Bảng Tính Đồng Bộ 10 Bảng Dữ Liệu</h3>
               </div>
               <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
                 Đọc và nạp dữ liệu hàng loạt từ tệp Excel đa bảng tính. Tự động kiểm tra khóa ngoại, bỏ dòng trống, trim khoảng trắng, chuẩn hóa định dạng ngày tháng YYYY-MM-DD và cơ chế Upsert thông minh.

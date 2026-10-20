@@ -80,7 +80,7 @@ export function exportMasterWorkbook(store: AppStore, filename = 'RoyalSchool_Ma
       'Sĩ Số Tối Đa': cl.max_students,
       'Tổng Số Buổi': cl.total_sessions,
       'Học Phí Trọn Khóa': cl.full_course_fee,
-      'Đơn Giá 1 Buổi (Ceil)': cl.price_per_session,
+      'Đơn Giá 1 Buổi': cl.price_per_session,
       'Trạng Thái': cl.status,
     };
   });
@@ -98,7 +98,7 @@ export function exportMasterWorkbook(store: AppStore, filename = 'RoyalSchool_Ma
     'SĐT Phụ Huynh': st.parent_phone,
     'Trường Đang Học': st.school_name || '',
     'Lớp Chính Khóa': st.regular_class || '',
-    'Học Sinh Royal (Cấp Bánh Sữa)': st.is_royal_student ? 'CÓ (Royal)' : 'KHÔNG (Ngoài)',
+    'Học Sinh Royal (Cấp Bánh Sữa)': st.is_royal_student ? 'CÓ' : 'KHÔNG',
     'Lưu Ý Y Tế & Thực Phẩm': st.medical_notes || '',
     'Trạng Thái': st.status,
   }));

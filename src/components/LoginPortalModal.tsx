@@ -151,7 +151,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                   Royal Auth
                 </span>
               </div>
-              <p className="text-xs text-slate-400">Trường Song Ngữ Quốc Tế Hoàng Gia (Royal School)</p>
+              <p className="text-xs text-slate-400">Trường Song Ngữ Quốc Tế Hoàng Gia</p>
             </div>
           </div>
 

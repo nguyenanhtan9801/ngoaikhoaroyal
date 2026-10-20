@@ -9,7 +9,6 @@ import {
   Users,
   School,
   Calendar,
-  CalendarDays,
   DollarSign,
   Coffee,
   BookmarkCheck,
@@ -35,32 +34,31 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
   // Breadcrumb mapping for the 5 Modular Groups & 12 Deduplicated Routes
   const routeMeta: Record<string, { parent: string; title: string; icon: any; badge?: string }> = {
     // Nhóm 1: Tổng Quan & Báo Cáo
-    sub_kpi: { parent: 'Tổng Quan & Báo Cáo', title: 'Tổng Quan KPI & Hiệu Suất', icon: Layers, badge: 'Chỉ Số Hiệu Suất' },
+    sub_kpi: { parent: 'Tổng Quan & Báo Cáo', title: 'Tổng Quan Hiệu Suất & Thống Kê', icon: Layers, badge: 'Chỉ Số Hiệu Suất' },
     
-    // Nhóm 2: Đào Tạo & Vận Hành
-    sub_term_subjects: { parent: 'Đào Tạo & Vận Hành', title: 'Môn Học & Khóa Học (Trung Tâm)', icon: School, badge: 'Môn & Khóa Học' },
-    sub_pricing: { parent: 'Đào Tạo & Vận Hành', title: 'Biểu Phí Cơ Sở', icon: DollarSign, badge: 'Cơ Sở × Khóa × Môn' },
-    sub_schedule: { parent: 'Đào Tạo & Vận Hành', title: 'Lịch Học Ngoại Khóa', icon: CalendarDays, badge: 'Lịch Tháng & Bánh Sữa' },
-    sub_classes: { parent: 'Đào Tạo & Vận Hành', title: 'Lớp Học Ngoại Khóa (Cơ Sở)', icon: Calendar, badge: 'Phòng Sân & GV' },
-    sub_attendance: { parent: 'Đào Tạo & Vận Hành', title: 'Sổ Điểm Danh & Dạy Thay', icon: CheckCircle2, badge: 'Chuyên Cần & Bù Trừ' },
-    sub_snacks: { parent: 'Đào Tạo & Vận Hành', title: 'Báo Cáo Đối Soát Bánh Sữa', icon: Coffee, badge: 'Độc Quyền Royal' },
-    
-    // Nhóm 3: Học Viên & Tuyển Sinh
-    sub_students: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên & Y Tế', icon: HeartPulse, badge: 'Royal & Y Tế' },
+    // Nhóm 2: Học Viên & Tuyển Sinh
+    sub_students: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên & Y Tế', icon: HeartPulse, badge: 'Học Viên & Y Tế' },
     sub_parents: { parent: 'Học Viên & Tuyển Sinh', title: 'Đơn Đăng Ký Tuyển Sinh', icon: Users, badge: 'Cổng Phụ Huynh' },
     sub_credits: { parent: 'Học Viên & Tuyển Sinh', title: 'Sổ Bảo Lưu & Cấn Trừ Học Phí', icon: BookmarkCheck, badge: 'Hạn 365 Ngày' },
+
+    // Nhóm 3: Đào Tạo & Vận Hành
+    sub_term_subjects: { parent: 'Đào Tạo & Vận Hành', title: 'Cấu Hình Khóa Học & Môn Học', icon: School, badge: 'Môn & Khóa Học' },
+    sub_pricing: { parent: 'Đào Tạo & Vận Hành', title: 'Biểu Phí Theo Cơ Sở', icon: DollarSign, badge: 'Theo Cơ Sở & Môn' },
+    sub_classes: { parent: 'Đào Tạo & Vận Hành', title: 'Lớp Học Ngoại Khóa', icon: Calendar, badge: 'Phòng Học & Giáo Viên' },
+    sub_attendance: { parent: 'Đào Tạo & Vận Hành', title: 'Sổ Điểm Danh & Dạy Thay', icon: CheckCircle2, badge: 'Chuyên Cần & Bù Trừ' },
+    sub_snacks: { parent: 'Đào Tạo & Vận Hành', title: 'Báo Cáo Đối Soát Bánh Sữa', icon: Coffee, badge: 'Học Sinh Hoàng Gia' },
     
     // Nhóm 4: Tài Chính & Kế Toán
-    sub_finance_invoices: { parent: 'Tài Chính & Kế Toán', title: 'Thu Học Phí & Mã VietQR', icon: Receipt, badge: 'Napas247' },
-    sub_finance_payroll: { parent: 'Tài Chính & Kế Toán', title: 'Quyết Toán Thù Lao Giáo Viên', icon: UserCheck, badge: 'Cơ Hữu & Thỉnh Giảng' },
+    sub_finance_invoices: { parent: 'Tài Chính & Kế Toán', title: 'Thu Học Phí & Mã Chuyển Khoản', icon: Receipt, badge: 'Chuyển Khoản' },
+    sub_finance_payroll: { parent: 'Tài Chính & Kế Toán', title: 'Quyết Toán Thù Lao Giáo Viên', icon: UserCheck, badge: 'Quyết Toán Giáo Viên' },
     sub_finance_transfer: { parent: 'Tài Chính & Kế Toán', title: 'Biến Động Chuyển Lớp & Phụ Thu', icon: ArrowRightLeft, badge: 'Bù Trừ Chênh Lệch' },
     
     // Nhóm 5: Hệ Thống & Danh Mục
-    sub_settings: { parent: 'Hệ Thống & Danh Mục', title: 'Quản Trị Dữ Liệu & Master Excel', icon: Settings, badge: 'Quản Trị Viên' },
+    sub_settings: { parent: 'Hệ Thống & Danh Mục', title: 'Quản Trị Dữ Liệu & Bảng Tính Tổng Thể', icon: Settings, badge: 'Quản Trị Viên' },
     
     // Fallback legacy routes
     sub_finance: { parent: 'Tài Chính & Kế Toán', title: 'Doanh Thu & Quyết Toán Thù Lao', icon: Receipt, badge: 'Kế Toán' },
-    sub_finance_clearance: { parent: 'Tài Chính & Kế Toán', title: 'Thu Học Phí & Mã VietQR', icon: Receipt },
+    sub_finance_clearance: { parent: 'Tài Chính & Kế Toán', title: 'Thu Học Phí & Mã Chuyển Khoản', icon: Receipt },
     sub_students_health: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên & Y Tế', icon: HeartPulse, badge: 'Y Tế' },
   };
 

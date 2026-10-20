@@ -76,7 +76,7 @@ export interface TermSubjectConfig {
   is_active: boolean; // Môn có được mở trong khóa học này không
   standard_sessions: number; // Số buổi chuẩn của khóa cho môn này
   standard_course_fee: number; // Học phí trọn khóa chuẩn (gốc)
-  standard_session_rate: number; // Đơn giá buổi chuẩn (Ceil)
+  standard_session_rate: number; // Đơn giá buổi chuẩn làm tròn lên
   discount_type?: DiscountType; // Chính sách ưu đãi khóa
   discount_value?: number; // % hoặc số tiền mặt
   discount_reason?: string; // Tên chương trình ưu đãi / lý do
@@ -92,7 +92,7 @@ export interface CampusTermPricing {
   override_pricing: boolean; // false: Kế thừa từ TermSubjectConfig; true: Ghi đè biểu phí riêng cơ sở
   custom_course_fee?: number; // Học phí riêng của cơ sở (gốc)
   custom_sessions?: number; // Số buổi riêng của cơ sở
-  custom_session_rate?: number; // Đơn giá buổi riêng (Ceil)
+  custom_session_rate?: number; // Đơn giá buổi riêng làm tròn lên
   is_offered_at_campus: boolean; // Cơ sở có tổ chức môn này không
   discount_type?: DiscountType; // Ưu đãi riêng cơ sở
   discount_value?: number; // % hoặc số tiền mặt
@@ -106,8 +106,8 @@ export interface EffectivePricingResult {
   is_offered: boolean;
   total_sessions: number;
   base_course_fee: number; // Học phí gốc trước ưu đãi
-  course_fee: number; // Học phí áp dụng thực tế sau ưu đãi (Net Fee)
-  session_rate: number; // Đơn giá buổi làm tròn trần Ceil trên Net Fee
+  course_fee: number; // Học phí áp dụng thực tế sau ưu đãi
+  session_rate: number; // Đơn giá buổi làm tròn lên trên học phí áp dụng
   override_pricing: boolean;
   discount_type: DiscountType;
   discount_value: number;

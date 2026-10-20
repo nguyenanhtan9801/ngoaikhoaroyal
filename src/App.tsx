@@ -4,7 +4,6 @@ import { CompactHeaderToolbar } from './components/CompactHeaderToolbar';
 import { OverviewKpiTab } from './components/tabs/OverviewKpiTab';
 import { StudentsTab } from './components/tabs/StudentsTab';
 import { ClassesTab } from './components/tabs/ClassesTab';
-import { ScheduleTab } from './components/tabs/ScheduleTab';
 import { AttendanceTab } from './components/tabs/AttendanceTab';
 import { SnacksTab } from './components/tabs/SnacksTab';
 import { MakeupCreditsTab } from './components/tabs/MakeupCreditsTab';
@@ -16,8 +15,6 @@ import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
 import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
-import { AdminLoginModal } from './components/AdminLoginModal';
-import { UsersManagementTab } from './components/tabs/UsersManagementTab';
 import { loadStore, saveStore, AppStore } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser } from './types';
@@ -35,10 +32,21 @@ export default function App() {
     } catch {
       // noop
     }
-    return null;
+    const initialStore = loadStore();
+    return initialStore.users[0] || {
+      id: 'usr_admin',
+      username: 'admin',
+      password: '123',
+      full_name: 'ThS. Nguyễn Hoàng Long',
+      department: 'Ban Giám Hiệu & Quản Trị Hệ Thống',
+      email: 'admin@royalschool.edu.vn',
+      phone: '0908 112 233',
+      role: 'super_admin',
+      campus_id: 'all',
+      status: 'active',
+      created_at: '2026-08-01',
+    };
   });
-
-  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState<boolean>(false);
 
   // Set currentRole based on currentUser if logged in
   const [currentRole, setCurrentRole] = useState<UserRole>(() => {
@@ -62,7 +70,7 @@ export default function App() {
     } catch {
       // noop
     }
-    setIsAdminLoginOpen(false);
+    setIsLoginModalOpen(false);
     setCurrentRoute('sub_kpi');
   };
 
@@ -254,14 +262,38 @@ export default function App() {
           currentUser={null}
           onClose={() => {}}
           onUpdateStore={updateStore}
-          onOpenAdminLogin={() => setIsAdminLoginOpen(true)}
+          onOpenAdminLogin={() => setIsLoginModalOpen(true)}
         />
 
-        <AdminLoginModal
-          isOpen={isAdminLoginOpen}
-          onClose={() => setIsAdminLoginOpen(false)}
-          users={store.users}
-          onLoginSuccess={handleLoginSuccess}
+        <LoginPortalModal
+          isOpen={isLoginModalOpen}
+          onClose={() => setIsLoginModalOpen(false)}
+          currentRole={currentRole}
+          onChangeRole={(role) => {
+            setCurrentRole(role);
+            const defaultUser: AppUser = {
+              id: `usr_${role}`,
+              username: `${role}_staff`,
+              password: '123',
+              full_name: 'Cán bộ Royal School',
+              department: 'Phòng Đào Tạo & Quản Trị',
+              email: `${role}@royalschool.edu.vn`,
+              phone: '0908 123 456',
+              role,
+              campus_id: 'all',
+              status: 'active',
+              created_at: '2026-08-01',
+            };
+            const user = store.users.find(u => u.role === role) || defaultUser;
+            handleLoginSuccess(user);
+          }}
+          store={store}
+          currentParentStudent={currentParentStudent}
+          onSetParentStudent={setCurrentParentStudent}
+          onOpenParentPortalWithStudent={(st) => {
+            setCurrentParentStudent(st);
+            setIsParentPortalOpen(true);
+          }}
         />
       </div>
     );
@@ -314,11 +346,35 @@ export default function App() {
           }}
         />
 
-        <AdminLoginModal
-          isOpen={isAdminLoginOpen}
-          onClose={() => setIsAdminLoginOpen(false)}
-          users={store.users}
-          onLoginSuccess={handleLoginSuccess}
+        <LoginPortalModal
+          isOpen={isLoginModalOpen}
+          onClose={() => setIsLoginModalOpen(false)}
+          currentRole={currentRole}
+          onChangeRole={(role) => {
+            setCurrentRole(role);
+            const defaultUser: AppUser = {
+              id: `usr_${role}`,
+              username: `${role}_staff`,
+              password: '123',
+              full_name: 'Cán bộ Royal School',
+              department: 'Phòng Đào Tạo & Quản Trị',
+              email: `${role}@royalschool.edu.vn`,
+              phone: '0908 123 456',
+              role,
+              campus_id: 'all',
+              status: 'active',
+              created_at: '2026-08-01',
+            };
+            const user = store.users.find(u => u.role === role) || defaultUser;
+            handleLoginSuccess(user);
+          }}
+          store={store}
+          currentParentStudent={currentParentStudent}
+          onSetParentStudent={setCurrentParentStudent}
+          onOpenParentPortalWithStudent={(st) => {
+            setCurrentParentStudent(st);
+            setIsParentPortalOpen(true);
+          }}
         />
       </div>
     );
@@ -369,7 +425,36 @@ export default function App() {
             />
           )}
 
-          {/* Nhóm 2: ĐÀO TẠO & VẬN HÀNH */}
+          {/* Nhóm 2: HỌC VIÊN & TUYỂN SINH */}
+          {(currentRoute === 'sub_students' || currentRoute === 'sub_students_health') && (
+            <StudentsTab
+              store={store}
+              currentRole={currentRole}
+              onUpdateStore={updateStore}
+              onPrintStudentCard={handlePrintStudentCard}
+              focusHealth={currentRoute === 'sub_students_health'}
+            />
+          )}
+
+          {currentRoute === 'sub_parents' && (
+            <ParentPortalTab
+              store={store}
+              currentRole={currentRole}
+              onUpdateStore={updateStore}
+              onOpenParentPortal={() => setIsParentPortalOpen(true)}
+            />
+          )}
+
+          {currentRoute === 'sub_credits' && (
+            <MakeupCreditsTab
+              store={store}
+              currentRole={currentRole}
+              onUpdateStore={updateStore}
+              onPrintCreditSlip={handlePrintCreditSlip}
+            />
+          )}
+
+          {/* Nhóm 3: ĐÀO TẠO & VẬN HÀNH */}
           {currentRoute === 'sub_term_subjects' && (
             <SettingsDataTab
               store={store}
@@ -391,13 +476,13 @@ export default function App() {
           )}
 
           {currentRoute === 'sub_schedule' && (
-            <ScheduleTab
+            <ClassesTab
               store={store}
               currentRole={currentRole}
               selectedCampusId={selectedCampusId}
-              onSelectCampus={setSelectedCampusId}
-              onNavigateTab={setCurrentRoute}
-              onSelectClassForAttendance={(cls) => {
+              selectedTermId={selectedTermId}
+              onUpdateStore={updateStore}
+              onSelectClassForAttendance={(cls: ExtracurricularClass) => {
                 setFocusedClass(cls);
                 setCurrentRoute('sub_attendance');
               }}
@@ -440,35 +525,6 @@ export default function App() {
             />
           )}
 
-          {/* Nhóm 3: HỌC VIÊN & TUYỂN SINH */}
-          {(currentRoute === 'sub_students' || currentRoute === 'sub_students_health') && (
-            <StudentsTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              onPrintStudentCard={handlePrintStudentCard}
-              focusHealth={currentRoute === 'sub_students_health'}
-            />
-          )}
-
-          {currentRoute === 'sub_parents' && (
-            <ParentPortalTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              onOpenParentPortal={() => setIsParentPortalOpen(true)}
-            />
-          )}
-
-          {currentRoute === 'sub_credits' && (
-            <MakeupCreditsTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              onPrintCreditSlip={handlePrintCreditSlip}
-            />
-          )}
-
           {/* Nhóm 4: TÀI CHÍNH & KẾ TOÁN */}
           {(currentRoute === 'sub_finance' || currentRoute === 'sub_finance_invoices' || currentRoute === 'sub_finance_clearance') && (
             <FinancePayrollTab
@@ -506,13 +562,12 @@ export default function App() {
             />
           )}
 
-          {/* Nhóm 5: HỆ THỐNG & DANH MỤC */}
           {currentRoute === 'sub_users' && (
-            <UsersManagementTab
+            <SettingsDataTab
               store={store}
               currentRole={currentRole}
-              currentUser={currentUser}
               onUpdateStore={updateStore}
+              initialSection="pricing"
             />
           )}
 
@@ -531,7 +586,7 @@ export default function App() {
       {/* Footer */}
       <footer className="mt-auto border-t border-slate-900 bg-[#07090E] py-3 text-center text-xs text-slate-500">
         <div className="max-w-[1780px] mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>&copy; 2026 Trường Song Ngữ Quốc Tế Hoàng Gia (Royal School). Bảo lưu mọi quyền.</span>
+          <span>&copy; 2026 Trường Song Ngữ Quốc Tế Hoàng Gia. Bảo lưu mọi quyền.</span>
           <span className="font-mono text-amber-500/80">Hệ Thống Quản Lý Ngoại Khóa v2.6</span>
         </div>
       </footer>
@@ -582,19 +637,11 @@ export default function App() {
         currentRole={currentRole}
         currentUser={currentUser}
         onLogout={handleLogout}
-        onOpenAdminLogin={() => setIsAdminLoginOpen(true)}
+        onOpenAdminLogin={() => setIsLoginModalOpen(true)}
         onNavigateToAdminLeads={() => {
           setIsParentPortalOpen(false);
           setCurrentRoute('sub_parents');
         }}
-      />
-
-      {/* Admin Login Modal */}
-      <AdminLoginModal
-        isOpen={isAdminLoginOpen}
-        onClose={() => setIsAdminLoginOpen(false)}
-        users={store.users}
-        onLoginSuccess={handleLoginSuccess}
       />
 
       {/* Multi-role Login Portal Modal */}

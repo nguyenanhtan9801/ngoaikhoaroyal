@@ -11,7 +11,6 @@ import {
   Settings,
   Users,
   Calendar,
-  CalendarDays,
   Layers,
   Award,
   DollarSign,
@@ -83,16 +82,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   const consecutiveAlertCount = notifications.filter(n => n.type === 'consecutive_absence' && !n.read).length;
 
   const rolesList: { id: UserRole; label: string; desc: string }[] = [
-    { id: 'super_admin', label: 'Quản trị viên Cấp cao', desc: 'Toàn quyền cấu hình, đặt lại dữ liệu & Master Excel' },
+    { id: 'super_admin', label: 'Quản trị viên Cấp cao', desc: 'Toàn quyền cấu hình, đặt lại dữ liệu & xuất bảng tính tổng thể' },
     { id: 'academic_accountant', label: 'Học vụ kiêm Kế toán', desc: 'Quản lý lớp, chuyên cần, bảo lưu & duyệt thu học phí' },
     { id: 'academic_admissions', label: 'Học vụ kiêm Tuyển sinh', desc: 'Xếp lớp, bánh sữa, chuyển lớp, ghi danh' },
-    { id: 'admissions', label: 'Nhân viên Tuyển sinh', desc: 'Tiếp nhận đơn cổng PH, phân loại học sinh Royal' },
-    { id: 'teacher', label: 'Giáo viên (Cơ hữu/Thỉnh giảng)', desc: 'Chỉ điểm danh & y tế, khóa hoàn toàn tài chính' },
+    { id: 'admissions', label: 'Nhân viên Tuyển sinh', desc: 'Tiếp nhận đơn cổng phụ huynh, phân loại học sinh Royal' },
+    { id: 'teacher', label: 'Giáo viên bộ môn', desc: 'Chỉ điểm danh & y tế, khóa hoàn toàn tài chính' },
   ];
 
   const currentRoleInfo = rolesList.find(r => r.id === currentRole) || rolesList[0];
 
-  // Comprehensive Modular Menu Groups for the Slide-Over Drawer (Single Source of Truth, Deduplicated)
+  // Danh mục phân hệ điều hướng hệ thống
   const menuGroups: MenuGroup[] = [
     {
       id: 'group_bi',
@@ -101,54 +100,11 @@ export const Navbar: React.FC<NavbarProps> = ({
       items: [
         { 
           id: 'sub_kpi', 
-          label: 'Tổng Quan KPI & Hiệu Suất', 
+          label: 'Tổng Quan Hiệu Suất & Thống Kê', 
           icon: Layers, 
-          desc: 'Tỷ lệ chuyên cần, cảnh báo vắng ≥ 3 buổi & doanh thu',
+          desc: 'Tỷ lệ chuyên cần, cảnh báo vắng từ 3 buổi trở lên và doanh thu',
           badge: consecutiveAlertCount > 0 ? `${consecutiveAlertCount} cảnh báo` : undefined,
           badgeColor: 'bg-rose-500/20 text-rose-400 border-rose-500/30'
-        },
-      ],
-    },
-    {
-      id: 'group_academics',
-      title: 'ĐÀO TẠO & VẬN HÀNH',
-      icon: Calendar,
-      items: [
-        { 
-          id: 'sub_term_subjects', 
-          label: 'Môn Học & Khóa Học (Trung Tâm)', 
-          icon: School, 
-          desc: 'Quản lý danh mục môn, kích hoạt môn cho từng khóa, đóng/mở niên khóa' 
-        },
-        { 
-          id: 'sub_pricing', 
-          label: 'Biểu Phí Cơ Sở', 
-          icon: DollarSign, 
-          desc: 'Cấu hình học phí theo Cơ sở × Khóa × Môn, công thức Ceil đơn giá buổi' 
-        },
-        { 
-          id: 'sub_schedule', 
-          label: 'Lịch Học Ngoại Khóa', 
-          icon: CalendarDays, 
-          desc: 'Lịch tháng: Số lớp học, số học sinh & suất bánh sữa cần cấp theo ngày' 
-        },
-        { 
-          id: 'sub_classes', 
-          label: 'Lớp Học Ngoại Khóa (Cơ Sở)', 
-          icon: Calendar, 
-          desc: 'Phòng/sân, khung giờ, giáo viên & phát hiện trùng lịch' 
-        },
-        { 
-          id: 'sub_attendance', 
-          label: 'Sổ Điểm Danh & Dạy Thay', 
-          icon: CheckCircle2, 
-          desc: 'Điểm danh 3 trạng thái, quản lý dạy thay và tính bù trừ bánh sữa theo buổi' 
-        },
-        { 
-          id: 'sub_snacks', 
-          label: 'Báo Cáo Đối Soát Bánh Sữa', 
-          icon: Coffee, 
-          desc: 'Tổng hợp suất ăn nhẹ Royal tiêu thụ & hoàn bếp theo khóa' 
         },
       ],
     },
@@ -161,19 +117,56 @@ export const Navbar: React.FC<NavbarProps> = ({
           id: 'sub_students', 
           label: 'Hồ Sơ Học Viên & Y Tế', 
           icon: HeartPulse, 
-          desc: 'Học sinh Royal / ngoài trường, cảnh báo dị ứng thực phẩm, in thẻ học viên' 
+          desc: 'Học sinh Royal, học sinh ngoài trường, cảnh báo dị ứng thực phẩm, in thẻ học viên' 
         },
         { 
           id: 'sub_parents', 
           label: 'Đơn Đăng Ký Tuyển Sinh', 
           icon: Users, 
-          desc: 'Hồ sơ tiếp nhận trực tuyến (Tuyển sinh, Giáo vụ & Admin)' 
+          desc: 'Hồ sơ tiếp nhận trực tuyến từ phụ huynh dành cho cán bộ tuyển sinh và học vụ' 
         },
         { 
           id: 'sub_credits', 
           label: 'Sổ Bảo Lưu & Cấn Trừ Học Phí', 
           icon: BookmarkCheck, 
-          desc: 'Cấp phiếu nghỉ ≥ 3 buổi, theo dõi hạn 365 ngày & cấn trừ khóa mới' 
+          desc: 'Cấp phiếu nghỉ từ 3 buổi trở lên, theo dõi hạn 365 ngày và cấn trừ khóa mới' 
+        },
+      ],
+    },
+    {
+      id: 'group_academics',
+      title: 'ĐÀO TẠO & VẬN HÀNH',
+      icon: Calendar,
+      items: [
+        { 
+          id: 'sub_term_subjects', 
+          label: 'Cấu Hình Khóa Học & Môn Học', 
+          icon: School, 
+          desc: 'Quản lý danh mục môn, kích hoạt môn cho từng khóa, đóng mở niên khóa' 
+        },
+        { 
+          id: 'sub_pricing', 
+          label: 'Biểu Phí Theo Cơ Sở', 
+          icon: DollarSign, 
+          desc: 'Cấu hình học phí theo Cơ sở, Khóa học và Môn học, làm tròn đơn giá buổi' 
+        },
+        { 
+          id: 'sub_classes', 
+          label: 'Lớp Học Ngoại Khóa', 
+          icon: Calendar, 
+          desc: 'Phòng học, sân bãi, khung giờ, giáo viên và kiểm tra trùng lịch' 
+        },
+        { 
+          id: 'sub_attendance', 
+          label: 'Sổ Điểm Danh & Dạy Thay', 
+          icon: CheckCircle2, 
+          desc: 'Điểm danh 3 trạng thái, quản lý dạy thay và tính bù trừ bánh sữa theo buổi' 
+        },
+        { 
+          id: 'sub_snacks', 
+          label: 'Báo Cáo Đối Soát Bánh Sữa', 
+          icon: Coffee, 
+          desc: 'Tổng hợp khẩu phần ăn nhẹ học sinh Royal tiêu thụ và hoàn bếp theo khóa' 
         },
       ],
     },
@@ -184,15 +177,15 @@ export const Navbar: React.FC<NavbarProps> = ({
       items: [
         { 
           id: 'sub_finance_invoices', 
-          label: 'Thu Học Phí & Mã VietQR', 
+          label: 'Thu Học Phí & Mã Chuyển Khoản', 
           icon: Receipt, 
-          desc: 'Hóa đơn học phí từng môn, mã QR Napas247, gạch nợ sao kê ngân hàng' 
+          desc: 'Hóa đơn học phí từng môn, mã VietQR tiêu chuẩn ngân hàng, gạch nợ sao kê' 
         },
         { 
           id: 'sub_finance_payroll', 
           label: 'Quyết Toán Thù Lao Giáo Viên', 
           icon: UserCheck, 
-          desc: 'Thù lao theo buổi cố định cơ hữu & % doanh thu thỉnh giảng' 
+          desc: 'Thù lao theo buổi cố định cơ hữu và tỷ lệ phần trăm thỉnh giảng' 
         },
         { 
           id: 'sub_finance_transfer', 
@@ -208,16 +201,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       icon: Settings,
       items: [
         { 
-          id: 'sub_users', 
-          label: 'Quản Lý Người Dùng & Phân Quyền', 
-          icon: ShieldCheck, 
-          desc: 'Hồ sơ nhân viên, giáo viên, tài khoản đăng nhập & phân quyền' 
-        },
-        { 
           id: 'sub_settings', 
-          label: 'Quản Trị Dữ Liệu & Master Excel', 
+          label: 'Quản Trị Dữ Liệu & Bảng Tính Tổng Thể', 
           icon: Settings, 
-          desc: 'Dọn sạch cơ sở dữ liệu 4 cấp độ an toàn, Nhập/Xuất 10 bảng dữ liệu' 
+          desc: 'Dọn sạch cơ sở dữ liệu 4 cấp độ an toàn, Nhập và Xuất 10 bảng dữ liệu' 
         },
       ],
     },
@@ -281,7 +268,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 title="Chuyển sang giao diện Giáo viên (Điểm danh & Y tế, không hiển thị tài chính)"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden sm:inline">App Giáo Viên</span>
+                <span className="hidden sm:inline">Ứng Dụng Giáo Viên</span>
                 <ExternalLink className="w-3 h-3 text-amber-400/70" />
               </button>
 
@@ -329,7 +316,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     </div>
                     {currentUser && (
                       <div className="text-[9px] text-amber-400/90 leading-none mt-0.5">
-                        {currentUser.role === 'super_admin' ? 'Super Admin' : currentUser.department}
+                        {currentUser.role === 'super_admin' ? 'Quản trị cấp cao' : currentUser.department}
                       </div>
                     )}
                   </div>
@@ -463,7 +450,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="flex-1 py-1.5 px-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>App Giáo Viên</span>
+                <span>Ứng Dụng Giáo Viên</span>
               </button>
             </div>
 

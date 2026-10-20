@@ -3,6 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          var fetchVal = originalFetch ? originalFetch.bind(window) : undefined;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return fetchVal;
+            },
+            set: function(val) {
+              fetchVal = val;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          // Ignore
+        }
+      })();
+    </script>
     <title>Royal School - Hệ Thống Quản Lý Ngoại Khóa Toàn Diện</title>
     <meta name="description" content="Hệ Thống Quản Lý Ngoại Khóa Toàn Diện Trường Song Ngữ Quốc Tế Hoàng Gia (Royal School) - Executive BI & Analytics Hub" />
     <link rel="icon" type="image/png" href="https://lh3.googleusercontent.com/d/11xC8O7NEeFVXgZY6p1_qdWAJ3D6iX_1E" />
