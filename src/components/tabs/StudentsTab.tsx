@@ -22,9 +22,19 @@ import {
   Cloud,
   User,
   X,
-  Save
+  Save,
+  ExternalLink
 } from 'lucide-react';
-import { AppStore, generateStudentCode, formatVND, deduplicateEnrollments, createAuditRecord, appendAuditLog } from '../../lib/storage';
+import { 
+  AppStore, 
+  generateStudentCode, 
+  formatVND, 
+  deduplicateEnrollments, 
+  createAuditRecord, 
+  appendAuditLog,
+  GOOGLE_DRIVE_FOLDER_ID,
+  GOOGLE_DRIVE_ROOT_URL
+} from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -84,12 +94,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const [photoUploadSuccess, setPhotoUploadSuccess] = useState<string | null>(null);
 
   // Cloud Storage destination folder config
-  const cloudFolder = store.cloudStorageConfig?.drive_folder_name || 'RoyalSchool_MinhChung_Extracurricular_2026';
-  const cloudProviderLabel = store.cloudStorageConfig?.provider === 'onedrive' 
-    ? 'OneDrive / SharePoint' 
-    : store.cloudStorageConfig?.provider === 'local' 
-      ? 'Bộ nhớ cục bộ' 
-      : 'Google Drive';
+  const cloudFolder = store.cloudStorageConfig?.drive_folder_id || GOOGLE_DRIVE_FOLDER_ID;
+  const cloudProviderLabel = 'Google Drive';
 
   // New Student Form State
   const [formData, setFormData] = useState({
@@ -118,7 +124,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       const dataUrl = (e.target?.result as string) || '';
       const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
       const targetCode = studentCode || 'STUDENT_CARD';
-      const storedPath = `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${targetCode}_${sanitizedName}`;
+      const storedPath = `Google Drive: ${cloudFolder}/01_HinhHocSinh/${targetCode}_${sanitizedName}`;
       callback(dataUrl, storedPath);
     };
     reader.readAsDataURL(file);
@@ -131,17 +137,18 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     const now = new Date().toISOString().split('T')[0];
 
     if (dataUrl) {
-      const storedPath = `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${student.code}.jpg`;
+      const storedPath = `Google Drive: ${cloudFolder}/01_HinhHocSinh/${student.code}.jpg`;
       const updateLog = createAuditRecord(
         'STUDENT_UPDATE',
         'ACADEMIC',
         `Hình thẻ Học viên ${student.name}`,
-        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu vào ${storedPath}`,
+        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu vào Google Drive: ${cloudFolder}/01_HinhHocSinh`,
         null,
         {
           target_id: student.code,
           details: {
             photo_stored_at: storedPath,
+            drive_url: GOOGLE_DRIVE_ROOT_URL,
             status: 'success',
           }
         }
@@ -156,7 +163,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ),
         auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
-      setPhotoUploadSuccess(`Đã lưu hình thẻ vào vị trí Cloud: ${cloudFolder}/TheHocVien`);
+      setPhotoUploadSuccess(`Đã lưu hình thẻ vào Google Drive: 01_HinhHocSinh/${student.code}.jpg`);
       setTimeout(() => {
         setPhotoUploadSuccess(null);
         setPhotoModalStudent(null);
@@ -632,6 +639,18 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               className="pl-9 pr-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 w-56"
             />
           </div>
+
+          <a
+            href={GOOGLE_DRIVE_ROOT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-semibold text-xs transition-colors shrink-0"
+            title="Mở thư mục Google Drive lưu trữ hình học sinh & đơn nghỉ phép"
+          >
+            <Cloud className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="hidden sm:inline">Drive Ảnh Học Sinh</span>
+            <ExternalLink className="w-3 h-3 text-cyan-400" />
+          </a>
 
           <button
             onClick={() => {
@@ -1143,12 +1162,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       Có thể tải lên sau
                     </span>
                   </div>
-                  <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                    Tệp ảnh được lưu trữ tự động vào vị trí Cloud đã cấu hình:
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 mt-0.5">
+                    <span>Tệp ảnh lưu trữ trên Google Drive:</span>
+                    <a
+                      href={GOOGLE_DRIVE_ROOT_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[10px] underline"
+                    >
+                      <span>Mở Drive</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
                   </div>
                   <div className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-300 font-mono bg-slate-950 px-2 py-1 rounded-lg border border-slate-800/80 truncate">
                     <Cloud className="w-3 h-3 text-amber-400 shrink-0" />
-                    <span className="truncate">{cloudProviderLabel}: {cloudFolder}/TheHocVien</span>
+                    <span className="truncate">Google Drive: {cloudFolder}/01_HinhHocSinh</span>
                   </div>
 
                   <div className="mt-2 flex items-center gap-2">
@@ -1697,16 +1725,27 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             </div>
 
             {/* Cloud Storage Destination Info Banner */}
-            <div className="p-3 rounded-2xl bg-gradient-to-r from-sky-950/40 to-indigo-950/40 border border-sky-500/30 space-y-1.5">
-              <div className="flex items-center gap-2 text-sky-400 font-bold text-xs">
-                <Cloud className="w-4 h-4 text-sky-400 shrink-0" />
-                <span>Vị Trí Lưu Trữ Đám Mây Đã Cấu Hình:</span>
+            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-950/40 to-indigo-950/40 border border-sky-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sky-400 font-bold text-xs">
+                  <Cloud className="w-4 h-4 text-sky-400 shrink-0" />
+                  <span>Vị Trí Lưu Trữ Google Drive:</span>
+                </div>
+                <a
+                  href={GOOGLE_DRIVE_ROOT_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 underline font-semibold"
+                >
+                  <span>Mở Google Drive</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
               </div>
               <div className="text-[11px] text-slate-300 font-mono bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-sky-500/20 break-all">
-                {cloudProviderLabel}: <span className="text-amber-300">{cloudFolder}/TheHocVien/{photoModalStudent.code}.jpg</span>
+                Google Drive: <span className="text-amber-300">{GOOGLE_DRIVE_FOLDER_ID}/01_HinhHocSinh/{photoModalStudent.code}.jpg</span>
               </div>
               <p className="text-[10px] text-slate-400">
-                * Hình thẻ học sinh có thể tải lên sau bất cứ lúc nào. Tệp sẽ được tự động đồng bộ vào vị trí lưu trữ đã cài đặt trong Cấu hình Hệ thống.
+                * Toàn bộ ảnh thẻ học sinh được lưu trữ tập trung tại Google Drive của trường (Folder: <strong className="text-slate-200">{GOOGLE_DRIVE_FOLDER_ID}</strong>).
               </p>
             </div>
 

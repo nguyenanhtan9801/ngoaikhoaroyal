@@ -23,7 +23,14 @@ import {
   FolderCheck,
   Check
 } from 'lucide-react';
-import { AppStore, formatVND, createAuditRecord, appendAuditLog } from '../../lib/storage';
+import { 
+  AppStore, 
+  formatVND, 
+  createAuditRecord, 
+  appendAuditLog,
+  GOOGLE_DRIVE_FOLDER_ID,
+  GOOGLE_DRIVE_ROOT_URL
+} from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole, AppUser } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -348,13 +355,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     setProofUploadActive(true);
     setProofError(null);
 
-    const folderName = store.cloudStorageConfig?.drive_folder_name || 'RoyalSchool_MinhChung_Extracurricular_2026';
+    const folderId = store.cloudStorageConfig?.drive_folder_id || GOOGLE_DRIVE_FOLDER_ID;
     const campusCode = store.campuses.find(c => c.id === currentClass.campus_id)?.code || 'PMH';
     const sanitizedFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
 
     // Simulate direct Google Drive file URL generated after upload into configured folder
     setTimeout(() => {
-      const generatedUrl = `https://drive.google.com/file/d/royalschool_${campusCode}_${Date.now()}_${sanitizedFileName}/view?usp=sharing`;
+      const generatedUrl = `https://drive.google.com/file/d/1KVk_${campusCode}_${Date.now()}_${sanitizedFileName}/view?usp=sharing`;
       setProofUrlInput(generatedUrl);
       setProofFileNameInput(file.name);
       setProofUploadActive(false);
@@ -815,7 +822,18 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <a
+              href={GOOGLE_DRIVE_ROOT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-semibold text-xs transition-colors shrink-0"
+              title="Mở thư mục Google Drive lưu trữ đơn nghỉ phép & minh chứng vắng phép"
+            >
+              <FolderCheck className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline">Drive Đơn Nghỉ Phép</span>
+              <ExternalLink className="w-3 h-3 text-cyan-400" />
+            </a>
             <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
           </div>
         </div>
@@ -1218,14 +1236,25 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             </div>
 
             {/* Cloud Storage Destination Alert */}
-            <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-300 flex items-center gap-2.5">
-              <FolderCheck className="w-4 h-4 text-cyan-400 shrink-0" />
-              <div className="text-[11px] leading-relaxed">
-                <span>Thư mục lưu trữ Cloud: </span>
-                <strong className="text-white font-mono">
-                  {store.cloudStorageConfig?.drive_folder_name || 'RoyalSchool_MinhChung_2026'}/{currentClass.term_id}/{currentClass.campus_id}/MinhChungVang
-                </strong>
+            <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-300 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <FolderCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+                <div className="text-[11px] leading-relaxed truncate">
+                  <span>Thư mục lưu trữ Google Drive: </span>
+                  <strong className="text-white font-mono block truncate">
+                    {GOOGLE_DRIVE_FOLDER_ID}/02_DonNghiPhep/{currentClass.campus_id}
+                  </strong>
+                </div>
               </div>
+              <a
+                href={GOOGLE_DRIVE_ROOT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold text-xs border border-cyan-500/30 transition-colors shrink-0"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Mở Google Drive</span>
+              </a>
             </div>
 
             {/* Error Message */}
@@ -1243,7 +1272,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 <span>Cách 1: Tải tệp lên (File Upload: Ảnh / PDF / Giấy Khám)</span>
               </label>
               <p className="text-[10px] text-slate-400">
-                Tệp được tự động tải lên và đồng bộ vào thư mục Google Drive/OneDrive đã cấu hình của trường.
+                Tệp được tự động tải lên và đồng bộ vào thư mục Google Drive dùng chung của trường.
               </p>
               
               <div className="mt-2">
@@ -1275,13 +1304,25 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
             {/* Method 2: Paste Direct Link */}
             <div className="space-y-1.5 p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
-              <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                <LinkIcon className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Cách 2: Dán đường dẫn liên kết trực tiếp (Drive URL / OneDrive)</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                  <LinkIcon className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Cách 2: Dán đường dẫn liên kết trực tiếp (Drive URL)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProofUrlInput(GOOGLE_DRIVE_ROOT_URL);
+                    setProofFileNameInput('Don_xin_nghi_phep_Drive.pdf');
+                  }}
+                  className="text-[10px] text-cyan-400 hover:text-cyan-300 underline font-semibold"
+                >
+                  Dán link Thư mục Google Drive trường
+                </button>
+              </div>
               <input
                 type="text"
-                placeholder="https://drive.google.com/file/d/... hoặc link OneDrive"
+                placeholder={GOOGLE_DRIVE_ROOT_URL}
                 value={proofUrlInput}
                 onChange={(e) => setProofUrlInput(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-mono placeholder-slate-600 focus:outline-none focus:border-cyan-500"

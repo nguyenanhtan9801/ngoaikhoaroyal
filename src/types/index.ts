@@ -219,7 +219,9 @@ export interface Student {
   is_royal_student: boolean; // true = eligible for snacks
   medical_notes?: string; // e.g. "Dị ứng đậu phộng, uống sữa không đường"
   avatar_url?: string; // Hình thẻ học sinh 3x4 (URL hoặc base64, có thể tải lên sau)
-  photo_stored_at?: string; // Vị trí/Thư mục Cloud lưu trữ tệp (VD: Google Drive: RoyalSchool_MinhChung_2026/TheHocVien)
+  photo_stored_at?: string; // Vị trí thư mục Google Drive (VD: Google Drive: RoyalSchool_Drive_Storage_2026/01_TheHocVien/RY-2026-00001.jpg)
+  drive_url?: string; // Link mở tệp trực tiếp trên Google Drive
+  drive_file_id?: string; // Mã file Google Drive
   photo_updated_at?: string; // Ngày cập nhật hình thẻ
   status: 'active' | 'graduated' | 'dropped';
   created_at: string;
@@ -243,6 +245,8 @@ export interface InvoicePaymentRecord {
   amount: number;                // Số tiền nộp trong đợt này
   payment_method: 'bank_transfer' | 'cash'; // Chuyển khoản / Tiền mặt
   payment_reference: string;     // Mã giao dịch ngân hàng / Mã sao kê
+  receipt_drive_url?: string;    // Link chứng từ/sao kê lưu trên Google Drive
+  receipt_stored_at?: string;    // Vị trí lưu trữ trên Google Drive: 04_HoaDonHocPhi
   verified_by: string;           // Kế toán xác nhận
   notes?: string;                // Ghi chú đợt đóng (VD: Đóng đợt 1 - 2.000.000đ)
 }
@@ -385,6 +389,9 @@ export interface ParentRegistration {
   assigned_class_id?: string;
   assigned_class_ids?: string[];
   assigned_student_code?: string;
+  attachment_file_name?: string;
+  attachment_url?: string;        // Link chứng từ đính kèm (giấy khai sinh, học bạ) trên Google Drive
+  attachment_stored_at?: string;  // Vị trí lưu trữ Google Drive: 03_DonTuyenSinh
   created_at: string;
 }
 
@@ -399,11 +406,28 @@ export interface SystemNotification {
   metadata?: Record<string, any>;
 }
 
+export interface GoogleDriveSubfolders {
+  student_photos: string;        // '01_TheHocVien' (Ảnh thẻ học viên 3x4)
+  attendance_proofs: string;     // '02_MinhChungDiemDanh' (Minh chứng phép & y tế)
+  admissions: string;            // '03_DonTuyenSinh' (Hồ sơ đăng ký từ phụ huynh)
+  tuition_invoices: string;      // '04_HoaDonHocPhi' (Hóa đơn & chứng từ chuyển khoản)
+  reports: string;               // '05_BaoCaoThongKe' (Báo cáo, thù lao & Excel xuất)
+  backups: string;               // '06_SaoLuuHeThong' (Snapshot sao lưu hệ thống)
+}
+
 export interface CloudStorageConfig {
-  provider: 'google_drive' | 'onedrive' | 'local';
-  drive_folder_id?: string;        // ID thư mục Google Drive (VD: 1A2B3C...xyz)
-  drive_folder_name?: string;      // Tên thư mục (VD: RoyalSchool_MinhChung_2026)
-  onedrive_folder_url?: string;    // Link thư mục OneDrive / SharePoint
+  provider: 'google_drive' | 'onedrive' | 'local';        // Toàn bộ hình ảnh & file lưu trên Cloud (Mặc định Google Drive)
+  drive_folder_id?: string;        // ID thư mục gốc Google Drive (VD: 1RoyalSchoolDriveStorage2026PMHPL)
+  drive_folder_name: string;       // Tên thư mục gốc (VD: RoyalSchool_Drive_Storage_2026)
+  drive_root_url?: string;         // Link xem thư mục gốc trên Google Drive
+  drive_storage_quota?: {
+    used_bytes: number;
+    total_bytes: number;
+    used_label: string;
+    total_label: string;
+  };
+  subfolders: GoogleDriveSubfolders;
+  onedrive_folder_url?: string;    // Tương thích ngược
   auto_create_subfolders: boolean; // Tự động tạo thư mục con theo Tháng/Khóa học
   updated_at?: string;
   updated_by?: string;

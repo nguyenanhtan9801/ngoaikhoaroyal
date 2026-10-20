@@ -93,6 +93,9 @@ export interface AppStore {
 
 const STORAGE_KEY = 'royal_extracurricular_store_v3';
 
+export const GOOGLE_DRIVE_FOLDER_ID = '1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k';
+export const GOOGLE_DRIVE_ROOT_URL = 'https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing';
+
 export function getInitialStore(): AppStore {
   return {
     users: initialUsers,
@@ -131,13 +134,58 @@ export function getInitialStore(): AppStore {
     },
     cloudStorageConfig: {
       provider: 'google_drive',
-      drive_folder_id: '1A9xK_RoyalSchool_Extracurricular_Proof_2026',
-      drive_folder_name: 'RoyalSchool_MinhChung_Extracurricular_2026',
-      onedrive_folder_url: 'https://royalschooledu-my.sharepoint.com/personal/admin_royalschool_edu_vn/Documents/MinhChung2026',
+      drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
+      drive_folder_name: 'RoyalSchool_Storage_Drive',
+      drive_root_url: GOOGLE_DRIVE_ROOT_URL,
+      drive_storage_quota: {
+        used_bytes: 5153960755,
+        total_bytes: 107374182400,
+        used_label: '4.8 GB',
+        total_label: '100 GB (Google Workspace for Education)',
+      },
+      subfolders: {
+        student_photos: '01_HinhHocSinh',
+        attendance_proofs: '02_DonNghiPhep',
+        admissions: '03_DonTuyenSinh',
+        tuition_invoices: '04_HoaDonHocPhi',
+        reports: '05_BaoCaoThongKe',
+        backups: '06_SaoLuuHeThong',
+      },
       auto_create_subfolders: true,
       updated_at: '2026-10-20',
-      updated_by: 'ThS. Nguyễn Hoàng Long',
+      updated_by: 'ThS. Nguyễn Hoàng Long (Phòng Quản Trị & Đào Tạo)',
     },
+  };
+}
+
+/**
+ * Helper to build standard Google Drive paths and URLs for any file/image in the school system
+ */
+export function buildGoogleDriveFileInfo(
+  category: 'student_photos' | 'attendance_proofs' | 'admissions' | 'tuition_invoices' | 'reports' | 'backups',
+  fileName: string,
+  rootFolderName = 'RoyalSchool_Storage_Drive'
+) {
+  const subfolderMap: Record<string, string> = {
+    student_photos: '01_HinhHocSinh',
+    attendance_proofs: '02_DonNghiPhep',
+    admissions: '03_DonTuyenSinh',
+    tuition_invoices: '04_HoaDonHocPhi',
+    reports: '05_BaoCaoThongKe',
+    backups: '06_SaoLuuHeThong',
+  };
+  const subfolder = subfolderMap[category] || '02_DonNghiPhep';
+  const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const fileId = `1KVk_${category.slice(0, 4)}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+  const storedAt = `Google Drive: ${GOOGLE_DRIVE_FOLDER_ID}/${subfolder}/${sanitized}`;
+  const driveUrl = GOOGLE_DRIVE_ROOT_URL;
+
+  return {
+    subfolder,
+    storedAt,
+    driveUrl,
+    fileId,
+    sanitizedName: sanitized,
   };
 }
 
@@ -228,8 +276,42 @@ export function loadStore(): AppStore {
         ? parsed.auditLogs
         : initialAuditLogs;
 
-    const cloudStorageConfig: CloudStorageConfig = 
-      parsed.cloudStorageConfig || initial.cloudStorageConfig;
+    const cloudStorageConfig: CloudStorageConfig = {
+      ...(initial.cloudStorageConfig || {
+        provider: 'google_drive',
+        drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
+        drive_folder_name: 'RoyalSchool_Storage_Drive',
+        drive_root_url: GOOGLE_DRIVE_ROOT_URL,
+        subfolders: {
+          student_photos: '01_HinhHocSinh',
+          attendance_proofs: '02_DonNghiPhep',
+          admissions: '03_DonTuyenSinh',
+          tuition_invoices: '04_HoaDonHocPhi',
+          reports: '05_BaoCaoThongKe',
+          backups: '06_SaoLuuHeThong',
+        },
+        auto_create_subfolders: true,
+      }),
+      ...(parsed.cloudStorageConfig || {}),
+      provider: 'google_drive',
+      drive_folder_id: (parsed.cloudStorageConfig?.drive_folder_id && parsed.cloudStorageConfig.drive_folder_id !== '1RoyalSchool_Drive_Storage_PMH_PL_2026' && parsed.cloudStorageConfig.drive_folder_id !== '1A9xK_RoyalSchool_Extracurricular_Proof_2026')
+        ? parsed.cloudStorageConfig.drive_folder_id
+        : GOOGLE_DRIVE_FOLDER_ID,
+      drive_root_url: (parsed.cloudStorageConfig?.drive_root_url && !parsed.cloudStorageConfig.drive_root_url.includes('1RoyalSchool_Drive_Storage_PMH_PL_2026'))
+        ? parsed.cloudStorageConfig.drive_root_url
+        : GOOGLE_DRIVE_ROOT_URL,
+      subfolders: {
+        ...(initial.cloudStorageConfig?.subfolders || {
+          student_photos: '01_HinhHocSinh',
+          attendance_proofs: '02_DonNghiPhep',
+          admissions: '03_DonTuyenSinh',
+          tuition_invoices: '04_HoaDonHocPhi',
+          reports: '05_BaoCaoThongKe',
+          backups: '06_SaoLuuHeThong',
+        }),
+        ...(parsed.cloudStorageConfig?.subfolders || {}),
+      },
+    };
 
     return {
       ...initial,

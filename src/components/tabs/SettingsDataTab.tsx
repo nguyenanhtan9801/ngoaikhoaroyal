@@ -745,8 +745,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // Cloud Storage Config State
   const initialCloudConfig = store.cloudStorageConfig || {
     provider: 'google_drive',
-    drive_folder_id: '1A9xK_RoyalSchool_Extracurricular_Proof_2026',
-    drive_folder_name: 'RoyalSchool_MinhChung_Extracurricular_2026',
+    drive_folder_id: '1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k',
+    drive_folder_name: 'RoyalSchool_Storage_Drive',
+    drive_root_url: 'https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing',
     onedrive_folder_url: 'https://royalschooledu-my.sharepoint.com/personal/admin_royalschool_edu_vn/Documents/MinhChung2026',
     auto_create_subfolders: true,
     updated_at: '2026-10-20',
@@ -917,8 +918,19 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       const updatedConfig: CloudStorageConfig = {
         provider: cloudProvider,
         drive_folder_id: driveFolderId.trim(),
-        drive_folder_name: driveFolderName.trim() || 'RoyalSchool_MinhChung_Extracurricular_2026',
+        drive_folder_name: driveFolderName.trim() || 'RoyalSchool_Storage_Drive',
+        drive_root_url: cloudProvider === 'google_drive' 
+          ? (driveFolderId.includes('http') ? driveFolderId.trim() : `https://drive.google.com/drive/folders/${driveFolderId.trim() || '1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k'}?usp=sharing`)
+          : undefined,
         onedrive_folder_url: oneDriveFolderUrl.trim(),
+        subfolders: prev.cloudStorageConfig?.subfolders || {
+          student_photos: '01_HinhHocSinh',
+          attendance_proofs: '02_DonNghiPhep',
+          admissions: '03_DonTuyenSinh',
+          tuition_invoices: '04_HoaDonHocPhi',
+          reports: '05_BaoCaoThongKe',
+          backups: '06_SaoLuuHeThong',
+        },
         auto_create_subfolders: autoCreateSubfolders,
         updated_at: new Date().toISOString().split('T')[0],
         updated_by: 'ThS. Nguyễn Hoàng Long',
@@ -4303,19 +4315,30 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
             {cloudProvider === 'google_drive' && (
               <>
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">
-                    Google Drive Folder ID hoặc Đường Dẫn (Folder URL / ID):
-                  </label>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-slate-300 font-semibold">
+                      Google Drive Folder ID hoặc Đường Dẫn (Folder URL / ID):
+                    </label>
+                    <a
+                      href="https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold border border-cyan-500/30 text-xs transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Mở Thư Mục Google Drive (1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k)</span>
+                    </a>
+                  </div>
                   <input
                     type="text"
                     value={driveFolderId}
                     onChange={(e) => setDriveFolderId(e.target.value)}
-                    placeholder="VD: 1A9xK_RoyalSchool_Extracurricular_Proof_2026 hoặc link https://drive.google.com/drive/folders/..."
+                    placeholder="VD: 1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k hoặc link https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-cyan-500"
                   />
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    * Sao chép mã ID thư mục Google Drive sau dấu "/folders/" hoặc dán toàn bộ đường link thư mục dùng chung của trường.
+                  <p className="text-[11px] text-slate-400">
+                    * Toàn bộ ảnh thẻ học sinh và đơn xin nghỉ phép kèm minh chứng y tế được đồng bộ tự động lên thư mục Google Drive dùng chung của trường.
                   </p>
                 </div>
 
@@ -4327,7 +4350,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     type="text"
                     value={driveFolderName}
                     onChange={(e) => setDriveFolderName(e.target.value)}
-                    placeholder="VD: RoyalSchool_MinhChung_Extracurricular_2026"
+                    placeholder="VD: RoyalSchool_Storage_Drive"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-cyan-500"
                   />
                 </div>
@@ -4375,10 +4398,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 />
                 <div>
                   <span className="text-slate-200 font-bold block">
-                    Tự động phân loại file upload vào thư mục con: [Mã Khóa Học] / [Mã Cơ Sở] / [Minh Chứng Vắng]
+                    Tự động phân loại file upload vào thư mục con: [01_HinhHocSinh] & [02_DonNghiPhep]
                   </span>
                   <span className="text-slate-500 text-[11px] block mt-0.5">
-                    Hệ thống tự động gom tệp theo từng cơ sở (PMH / Phú Lâm) và kỳ học để kế toán và học vụ dễ dàng tra cứu, kiểm toán hồ sơ.
+                    Hệ thống tự động gom tệp hình thẻ học viên và đơn xin nghỉ phép/minh chứng theo từng cơ sở (PMH / Phú Lâm) để ban giám hiệu và học vụ dễ dàng quản lý.
                   </span>
                 </div>
               </label>
@@ -4386,21 +4409,29 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
             {/* Cấu trúc cây thư mục mô phỏng */}
             <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-400 space-y-1">
-              <div className="text-amber-400 font-bold flex items-center gap-1.5">
-                <FolderCheck className="w-3.5 h-3.5 text-amber-400" />
-                <span>Cấu trúc đường dẫn thư mục lưu trữ tự động:</span>
+              <div className="text-amber-400 font-bold flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <FolderCheck className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Cấu trúc đường dẫn thư mục Google Drive:</span>
+                </div>
+                <a
+                  href="https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cyan-400 hover:underline flex items-center gap-1 text-[10px]"
+                >
+                  <span>Mở Google Drive</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
               </div>
-              <div className="pl-4 text-slate-200 font-semibold">
-                📁 {driveFolderName || 'RoyalSchool_MinhChung_Extracurricular_2026'} /
+              <div className="pl-4 text-cyan-300 font-semibold break-all">
+                📁 Google Drive: 1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k ({driveFolderName || 'RoyalSchool_Storage_Drive'}) /
               </div>
-              <div className="pl-8 text-slate-400">
-                ├── 📂 FALL-2026 (Khóa Mùa Thu 2026) /
+              <div className="pl-8 text-amber-300 font-medium">
+                ├── 📂 01_HinhHocSinh / (Hình ảnh & Thẻ học viên: [Mã-HV].jpg)
               </div>
-              <div className="pl-12 text-slate-400">
-                ├── 📂 PMH / (Đơn xin nghỉ, toa thuốc học sinh cơ sở Phú Mỹ Hưng)
-              </div>
-              <div className="pl-12 text-slate-400">
-                └── 📂 PL /  (Đơn xin nghỉ, toa thuốc học sinh cơ sở Phú Lâm)
+              <div className="pl-8 text-emerald-300 font-medium">
+                └── 📂 02_DonNghiPhep / (Đơn xin nghỉ phép, toa thuốc & minh chứng vắng phép)
               </div>
             </div>
           </div>
