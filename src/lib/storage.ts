@@ -89,7 +89,7 @@ export interface AppStore {
   };
 }
 
-const STORAGE_KEY = 'royal_extracurricular_store_v1';
+const STORAGE_KEY = 'royal_extracurricular_store_v3';
 
 export function getInitialStore(): AppStore {
   return {
@@ -155,6 +155,14 @@ export function deduplicateEnrollments(enrollments: Enrollment[] = []): Enrollme
 
 export function loadStore(): AppStore {
   try {
+    // Clear out deprecated store caches
+    try {
+      localStorage.removeItem('royal_extracurricular_store_v1');
+      localStorage.removeItem('royal_extracurricular_store_v2');
+    } catch {
+      // noop
+    }
+
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       const initial = getInitialStore();
@@ -163,6 +171,12 @@ export function loadStore(): AppStore {
     }
     const parsed = JSON.parse(raw);
     const initial = getInitialStore();
+
+    // If cached store is from old schema/count (not 50 students or not 5 classes), reset to initial
+    if (!parsed.students || parsed.students.length !== 50 || !parsed.classes || parsed.classes.length !== 5) {
+      saveStore(initial);
+      return initial;
+    }
 
     // Migration and backward compatibility
     const terms: AcademicTerm[] = (parsed.terms || initial.terms).map((t: AcademicTerm) => ({

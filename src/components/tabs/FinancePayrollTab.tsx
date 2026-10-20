@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Receipt, 
   QrCode, 
@@ -75,10 +75,61 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   // Class Transfer Calculator State
   const [transferState, setTransferState] = useState({
     student_id: store.students[0]?.id || '',
-    from_class_id: store.classes[0]?.id || '',
-    to_class_id: store.classes[1]?.id || '',
+    from_class_id: '',
+    to_class_id: '',
     remaining_sessions: 10,
   });
+
+  // 1. Lấy danh sách ghi danh đang hoạt động của học sinh được chọn
+  const activeEnrollments = useMemo(() => {
+    return store.enrollments.filter(
+      e => e.student_id === transferState.student_id && e.status === 'active'
+    );
+  }, [store.enrollments, transferState.student_id]);
+
+  // 2. Lấy chi tiết các lớp học sinh đang học thực tế (chỉ lớp active)
+  const currentStudentClasses = useMemo(() => {
+    return activeEnrollments
+      .map(e => store.classes.find(c => c.id === e.class_id))
+      .filter((c): c is ExtracurricularClass => Boolean(c));
+  }, [activeEnrollments, store.classes]);
+
+  // 3. Tự động đồng bộ lớp hiện tại (from_class_id) khi người dùng đổi học sinh
+  useEffect(() => {
+    if (currentStudentClasses.length > 0) {
+      // Nếu lớp hiện tại không nằm trong danh sách lớp đang học của học sinh mới, chọn lớp đầu tiên
+      const isCurrentValid = currentStudentClasses.some(c => c.id === transferState.from_class_id);
+      if (!isCurrentValid) {
+        const defaultFromId = currentStudentClasses[0].id;
+        const availableToClasses = store.classes.filter(c => c.id !== defaultFromId);
+        setTransferState(prev => ({
+          ...prev,
+          from_class_id: defaultFromId,
+          to_class_id: prev.to_class_id === defaultFromId 
+            ? (availableToClasses[0]?.id || '') 
+            : (prev.to_class_id || availableToClasses[0]?.id || '')
+        }));
+      }
+    } else {
+      setTransferState(prev => ({
+        ...prev,
+        from_class_id: ''
+      }));
+    }
+  }, [transferState.student_id, currentStudentClasses, store.classes]);
+
+  // 4. Đảm bảo to_class_id luôn loại trừ from_class_id (không chuyển vào cùng một lớp)
+  useEffect(() => {
+    if (transferState.from_class_id && transferState.to_class_id === transferState.from_class_id) {
+      const availableToClasses = store.classes.filter(c => c.id !== transferState.from_class_id);
+      if (availableToClasses.length > 0) {
+        setTransferState(prev => ({
+          ...prev,
+          to_class_id: availableToClasses[0].id
+        }));
+      }
+    }
+  }, [transferState.from_class_id, transferState.to_class_id, store.classes]);
 
   // Open Verify Modal & Initialize with invoice data
   const openVerifyModal = (invoice: TuitionInvoice) => {
@@ -319,15 +370,20 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   };
 
   // Class Transfer Calculation
-  const fromClass = store.classes.find(c => c.id === transferState.from_class_id);
+  const fromClass = currentStudentClasses.find(c => c.id === transferState.from_class_id);
   const toClass = store.classes.find(c => c.id === transferState.to_class_id);
   const oldRate = fromClass?.price_per_session || 0;
   const newRate = toClass?.price_per_session || 0;
-  const surcharge = Math.max(0, (newRate - oldRate) * transferState.remaining_sessions);
+  const surcharge = (fromClass && toClass && currentStudentClasses.length > 0)
+    ? Math.max(0, (newRate - oldRate) * transferState.remaining_sessions)
+    : 0;
 
   const handleExecuteTransfer = () => {
     const student = store.students.find(s => s.id === transferState.student_id);
-    if (!student || !fromClass || !toClass) return;
+    if (!student || !fromClass || !toClass || currentStudentClasses.length === 0 || fromClass.id === toClass.id) {
+      alert('Vui lòng chọn học sinh có lớp đang học và lớp chuyển đến hợp lệ!');
+      return;
+    }
 
     onUpdateStore(prev => {
       // 1. Update old enrollment to transferred
@@ -999,24 +1055,45 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 onChange={(e) => setTransferState({ ...transferState, student_id: e.target.value })}
                 className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
               >
-                {store.students.map(s => (
-                  <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-                ))}
+                {store.students.map(s => {
+                  const activeCount = store.enrollments.filter(e => e.student_id === s.id && e.status === 'active').length;
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.code}) {activeCount > 0 ? `• [${activeCount} lớp đang học]` : '• [Chưa có lớp]'}
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-slate-400 font-medium mb-1">Lớp học hiện tại</label>
+                <label className="block text-slate-400 font-medium mb-1">
+                  Lớp học hiện tại {currentStudentClasses.length > 0 && (
+                    <span className="text-amber-400 font-normal">({currentStudentClasses.length} lớp đang học)</span>
+                  )}
+                </label>
                 <select
                   value={transferState.from_class_id}
                   onChange={(e) => setTransferState({ ...transferState, from_class_id: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                  disabled={currentStudentClasses.length === 0}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {store.classes.map(c => (
-                    <option key={c.id} value={c.id}>{c.name} ({formatVND(c.price_per_session)}/buổi)</option>
-                  ))}
+                  {currentStudentClasses.length === 0 ? (
+                    <option value="">[ Học sinh chưa có lớp đang học ]</option>
+                  ) : (
+                    currentStudentClasses.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({formatVND(c.price_per_session)}/buổi)
+                      </option>
+                    ))
+                  )}
                 </select>
+                {currentStudentClasses.length === 0 && (
+                  <p className="text-[11px] text-amber-400/90 mt-1 italic">
+                    * Học sinh này chưa tham gia lớp học nào đang hoạt động. Không thể chuyển lớp.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -1024,11 +1101,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 <select
                   value={transferState.to_class_id}
                   onChange={(e) => setTransferState({ ...transferState, to_class_id: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                  disabled={currentStudentClasses.length === 0}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {store.classes.map(c => (
-                    <option key={c.id} value={c.id}>{c.name} ({formatVND(c.price_per_session)}/buổi)</option>
-                  ))}
+                  {store.classes
+                    .filter(c => c.id !== transferState.from_class_id)
+                    .map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({formatVND(c.price_per_session)}/buổi)
+                      </option>
+                    ))}
                 </select>
               </div>
             </div>
@@ -1041,7 +1123,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 max={30}
                 value={transferState.remaining_sessions}
                 onChange={(e) => setTransferState({ ...transferState, remaining_sessions: Number(e.target.value) })}
-                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono"
+                disabled={currentStudentClasses.length === 0}
+                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
 
@@ -1049,11 +1132,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             <div className="p-4 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-2">
               <div className="flex justify-between text-slate-400">
                 <span>Đơn giá lớp cũ:</span>
-                <span className="font-mono text-white">{formatVND(oldRate)} / buổi</span>
+                <span className="font-mono text-white">
+                  {fromClass ? `${formatVND(oldRate)} / buổi` : (currentStudentClasses.length === 0 ? 'Không có lớp' : 'Chưa chọn')}
+                </span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Đơn giá lớp mới:</span>
-                <span className="font-mono text-white">{formatVND(newRate)} / buổi</span>
+                <span className="font-mono text-white">
+                  {toClass ? `${formatVND(newRate)} / buổi` : 'Chưa chọn'}
+                </span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Số buổi chuyển:</span>
@@ -1063,7 +1150,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               <div className="pt-2 border-t border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-white text-sm">Tiền phụ thu chênh lệch:</span>
                 <span className={`text-base font-extrabold font-mono ${surcharge > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                  {surcharge > 0 ? formatVND(surcharge) : '0 đ (Chuyển ngang)'}
+                  {currentStudentClasses.length === 0 
+                    ? '0 đ (Không khả dụng)' 
+                    : surcharge > 0 
+                    ? formatVND(surcharge) 
+                    : '0 đ (Chuyển ngang)'}
                 </span>
               </div>
             </div>
@@ -1071,7 +1162,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             <div className="pt-2 flex justify-end">
               <button
                 onClick={handleExecuteTransfer}
-                className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20"
+                disabled={currentStudentClasses.length === 0 || !transferState.from_class_id || !transferState.to_class_id || transferState.from_class_id === transferState.to_class_id}
+                className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
               >
                 Xác Nhận Biên Bản Chuyển Lớp
               </button>
