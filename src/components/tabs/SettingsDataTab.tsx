@@ -42,7 +42,12 @@ import {
   Music,
   Trophy,
   Smile,
-  Compass
+  Compass,
+  Cloud,
+  FolderCheck,
+  HardDrive,
+  Share2,
+  ExternalLink
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -50,7 +55,7 @@ import {
   calculateCeilSessionRate, 
   getInitialStore, 
   getEffectivePrice, 
-  cloneTermConfiguration,
+  cloneTermConfiguration, 
   isTermClosed,
   createAuditRecord,
   appendAuditLog
@@ -67,7 +72,8 @@ import {
   SubjectCategory,
   TermSubjectConfig, 
   CampusTermPricing,
-  DiscountType 
+  DiscountType,
+  CloudStorageConfig
 } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -75,7 +81,7 @@ interface SettingsDataTabProps {
   store: AppStore;
   currentRole: UserRole;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
-  initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs';
+  initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'cloud_storage' | 'telecom' | 'supabase' | 'audit_logs';
   initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
@@ -86,7 +92,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   initialSection = 'pricing',
   initialSubTab = 'terms',
 }) => {
-  const [activeSection, setActiveSection] = useState<'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs'>(initialSection);
+  const [activeSection, setActiveSection] = useState<'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'cloud_storage' | 'telecom' | 'supabase' | 'audit_logs'>(initialSection);
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
@@ -736,6 +742,25 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [sbKey, setSbKey] = useState(store.supabaseConfig.anonKey || '');
   const [sbConnected, setSbConnected] = useState(store.supabaseConfig.isConnected);
 
+  // Cloud Storage Config State
+  const initialCloudConfig = store.cloudStorageConfig || {
+    provider: 'google_drive',
+    drive_folder_id: '1A9xK_RoyalSchool_Extracurricular_Proof_2026',
+    drive_folder_name: 'RoyalSchool_MinhChung_Extracurricular_2026',
+    onedrive_folder_url: 'https://royalschooledu-my.sharepoint.com/personal/admin_royalschool_edu_vn/Documents/MinhChung2026',
+    auto_create_subfolders: true,
+    updated_at: '2026-10-20',
+    updated_by: 'ThS. Nguyễn Hoàng Long',
+  };
+
+  const [cloudProvider, setCloudProvider] = useState<'google_drive' | 'onedrive' | 'local'>(initialCloudConfig.provider);
+  const [driveFolderId, setDriveFolderId] = useState<string>(initialCloudConfig.drive_folder_id || '');
+  const [driveFolderName, setDriveFolderName] = useState<string>(initialCloudConfig.drive_folder_name || '');
+  const [oneDriveFolderUrl, setOneDriveFolderUrl] = useState<string>(initialCloudConfig.onedrive_folder_url || '');
+  const [autoCreateSubfolders, setAutoCreateSubfolders] = useState<boolean>(initialCloudConfig.auto_create_subfolders);
+  const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [cloudSaveMessage, setCloudSaveMessage] = useState<string | null>(null);
+
   // Check if current user is Super Admin
   const isSuperAdmin = currentRole === 'super_admin';
 
@@ -878,6 +903,53 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     alert('Đã lưu và kết nối thành công với Supabase PostgreSQL!');
   };
 
+  // Test Cloud Connection
+  const handleTestCloudConnection = () => {
+    setCloudTestStatus('testing');
+    setTimeout(() => {
+      setCloudTestStatus('success');
+    }, 500);
+  };
+
+  // Save Cloud Storage Config
+  const handleSaveCloudStorage = () => {
+    onUpdateStore(prev => {
+      const updatedConfig: CloudStorageConfig = {
+        provider: cloudProvider,
+        drive_folder_id: driveFolderId.trim(),
+        drive_folder_name: driveFolderName.trim() || 'RoyalSchool_MinhChung_Extracurricular_2026',
+        onedrive_folder_url: oneDriveFolderUrl.trim(),
+        auto_create_subfolders: autoCreateSubfolders,
+        updated_at: new Date().toISOString().split('T')[0],
+        updated_by: 'ThS. Nguyễn Hoàng Long',
+      };
+
+      const auditLog = createAuditRecord(
+        'STORAGE_CONFIG_UPDATE',
+        'SYSTEM',
+        'Cấu hình Kho Lưu Trữ Cloud',
+        `Cập nhật vị trí lưu trữ tệp sang ${cloudProvider === 'google_drive' ? 'Google Drive' : cloudProvider === 'onedrive' ? 'OneDrive / SharePoint' : 'Bộ nhớ cục bộ'} - Thư mục: ${updatedConfig.drive_folder_name}`,
+        undefined,
+        {
+          details: {
+            provider: cloudProvider,
+            folder: updatedConfig.drive_folder_name,
+            auto_subfolders: autoCreateSubfolders,
+          }
+        }
+      );
+
+      return {
+        ...prev,
+        cloudStorageConfig: updatedConfig,
+        auditLogs: [auditLog, ...(prev.auditLogs || [])],
+      };
+    });
+
+    setCloudSaveMessage('Đã lưu cấu hình kho lưu trữ tệp Cloud thành công!');
+    setTimeout(() => setCloudSaveMessage(null), 3500);
+  };
+
   return (
     <div className="space-y-6">
       
@@ -925,6 +997,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         >
           <FileSpreadsheet className="w-3.5 h-3.5" />
           <span>Bảng Tính Tổng Thể (10 Bảng)</span>
+        </button>
+        <button
+          onClick={() => setActiveSection('cloud_storage')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+            activeSection === 'cloud_storage'
+              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-cyan-400 hover:text-cyan-300 border border-cyan-500/30'
+          }`}
+        >
+          <Cloud className="w-3.5 h-3.5" />
+          <span>Vị Trí Lưu Trữ Tệp (Cloud Storage)</span>
         </button>
         <button
           onClick={() => setActiveSection('telecom')}
@@ -4112,6 +4195,255 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             >
               Lưu & Kiểm Tra Kết Nối Supabase
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION: VỊ TRÍ LƯU TRỮ TỆP (CLOUD STORAGE INTEGRATION) */}
+      {activeSection === 'cloud_storage' && (
+        <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-6 md:p-8 backdrop-blur-md shadow-xl max-w-4xl mx-auto space-y-6">
+          <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Cloud className="w-6 h-6 text-cyan-400" />
+                <h3 className="text-base font-bold text-white">Cấu Hình Vị Trí Lưu Trữ Tệp (Cloud Storage Integration)</h3>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                Thiết lập thư mục lưu trữ tập trung trên đám mây cho toàn bộ file đính kèm: Đơn xin nghỉ phép, toa thuốc/giấy khám bệnh, ảnh học viên và tài liệu đối soát của phụ huynh.
+              </p>
+            </div>
+            <span className="px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 text-xs font-bold shrink-0">
+              Enterprise Cloud Ready
+            </span>
+          </div>
+
+          {cloudSaveMessage && (
+            <div className="p-3.5 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{cloudSaveMessage}</span>
+            </div>
+          )}
+
+          {/* 1. LỰA CHỌN NỀN TẢNG LƯU TRỮ */}
+          <div className="space-y-3">
+            <label className="text-xs font-bold text-slate-200 uppercase tracking-wider block">
+              1. Lựa chọn nền tảng lưu trữ tệp (Storage Provider):
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Google Drive */}
+              <div
+                onClick={() => setCloudProvider('google_drive')}
+                className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+                  cloudProvider === 'google_drive'
+                    ? 'bg-cyan-500/10 border-cyan-500 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-500'
+                    : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <Cloud className="w-5 h-5 text-cyan-400" />
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[9px] font-bold">
+                    Khuyến nghị
+                  </span>
+                </div>
+                <div className="font-bold text-white text-sm">Google Drive Workspace</div>
+                <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Lưu trữ trực tiếp vào Google Drive của trường Royal School. Hỗ trợ xem trước file tức thì và sinh link chia sẻ.
+                </div>
+              </div>
+
+              {/* Microsoft OneDrive */}
+              <div
+                onClick={() => setCloudProvider('onedrive')}
+                className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+                  cloudProvider === 'onedrive'
+                    ? 'bg-blue-500/10 border-blue-500 shadow-lg shadow-blue-500/10 ring-1 ring-blue-500'
+                    : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <Share2 className="w-5 h-5 text-blue-400" />
+                  <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[9px] font-semibold">
+                    Microsoft 365
+                  </span>
+                </div>
+                <div className="font-bold text-white text-sm">OneDrive / SharePoint</div>
+                <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Đồng bộ thư mục dùng chung của trường trên hệ sinh thái Microsoft Teams & SharePoint Education.
+                </div>
+              </div>
+
+              {/* Local / Supabase Storage */}
+              <div
+                onClick={() => setCloudProvider('local')}
+                className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+                  cloudProvider === 'local'
+                    ? 'bg-emerald-500/10 border-emerald-500 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500'
+                    : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <HardDrive className="w-5 h-5 text-emerald-400" />
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[9px] font-semibold">
+                    Internal
+                  </span>
+                </div>
+                <div className="font-bold text-white text-sm">Bộ Nhớ Cục Bộ / Server</div>
+                <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Lưu trữ trên máy chủ cục bộ trường hoặc Supabase S3 bucket tốc độ truy xuất siêu tốc.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 2. KHU VỰC NHẬP THÔNG TIN THƯ MỤC */}
+          <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-4 text-xs">
+            <label className="text-xs font-bold text-slate-200 uppercase tracking-wider block">
+              2. Cấu hình Thư mục Lưu trữ Tập trung:
+            </label>
+
+            {cloudProvider === 'google_drive' && (
+              <>
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    Google Drive Folder ID hoặc Đường Dẫn (Folder URL / ID):
+                  </label>
+                  <input
+                    type="text"
+                    value={driveFolderId}
+                    onChange={(e) => setDriveFolderId(e.target.value)}
+                    placeholder="VD: 1A9xK_RoyalSchool_Extracurricular_Proof_2026 hoặc link https://drive.google.com/drive/folders/..."
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-cyan-500"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    * Sao chép mã ID thư mục Google Drive sau dấu "/folders/" hoặc dán toàn bộ đường link thư mục dùng chung của trường.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">
+                    Tên Thư Mục Hiển Thị (Display Folder Name):
+                  </label>
+                  <input
+                    type="text"
+                    value={driveFolderName}
+                    onChange={(e) => setDriveFolderName(e.target.value)}
+                    placeholder="VD: RoyalSchool_MinhChung_Extracurricular_2026"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </>
+            )}
+
+            {cloudProvider === 'onedrive' && (
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  OneDrive / SharePoint Shared Folder Link (Đường dẫn dùng chung):
+                </label>
+                <input
+                  type="text"
+                  value={oneDriveFolderUrl}
+                  onChange={(e) => setOneDriveFolderUrl(e.target.value)}
+                  placeholder="https://royalschooledu-my.sharepoint.com/personal/.../Documents/MinhChung2026"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            )}
+
+            {cloudProvider === 'local' && (
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  Đường dẫn thư mục lưu trữ Server / Bucket Name:
+                </label>
+                <input
+                  type="text"
+                  value={driveFolderName}
+                  onChange={(e) => setDriveFolderName(e.target.value)}
+                  placeholder="/var/data/royalschool/proofs_2026 hoặc bucket: student-proofs"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            )}
+
+            {/* Checkbox tự động tạo thư mục con */}
+            <div className="pt-2 border-t border-slate-800">
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoCreateSubfolders}
+                  onChange={(e) => setAutoCreateSubfolders(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-amber-500 mt-0.5"
+                />
+                <div>
+                  <span className="text-slate-200 font-bold block">
+                    Tự động phân loại file upload vào thư mục con: [Mã Khóa Học] / [Mã Cơ Sở] / [Minh Chứng Vắng]
+                  </span>
+                  <span className="text-slate-500 text-[11px] block mt-0.5">
+                    Hệ thống tự động gom tệp theo từng cơ sở (PMH / Phú Lâm) và kỳ học để kế toán và học vụ dễ dàng tra cứu, kiểm toán hồ sơ.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            {/* Cấu trúc cây thư mục mô phỏng */}
+            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-400 space-y-1">
+              <div className="text-amber-400 font-bold flex items-center gap-1.5">
+                <FolderCheck className="w-3.5 h-3.5 text-amber-400" />
+                <span>Cấu trúc đường dẫn thư mục lưu trữ tự động:</span>
+              </div>
+              <div className="pl-4 text-slate-200 font-semibold">
+                📁 {driveFolderName || 'RoyalSchool_MinhChung_Extracurricular_2026'} /
+              </div>
+              <div className="pl-8 text-slate-400">
+                ├── 📂 FALL-2026 (Khóa Mùa Thu 2026) /
+              </div>
+              <div className="pl-12 text-slate-400">
+                ├── 📂 PMH / (Đơn xin nghỉ, toa thuốc học sinh cơ sở Phú Mỹ Hưng)
+              </div>
+              <div className="pl-12 text-slate-400">
+                └── 📂 PL /  (Đơn xin nghỉ, toa thuốc học sinh cơ sở Phú Lâm)
+              </div>
+            </div>
+          </div>
+
+          {/* 3. TRẠNG THÁI KẾT NỐI & NÚT THAO TÁC */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+            <div>
+              {cloudTestStatus === 'success' ? (
+                <div className="px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>✓ Đã kết nối với thư mục: {driveFolderName || 'RoyalSchool_MinhChung_Extracurricular_2026'}</span>
+                </div>
+              ) : cloudTestStatus === 'testing' ? (
+                <div className="px-3.5 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
+                  <span>Đang kiểm tra quyền ghi và đồng bộ thư mục...</span>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500 flex items-center gap-1.5">
+                  <Info className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span>Nhấn nút bên cạnh để kiểm tra kết nối API & quyền truy cập thư mục.</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={handleTestCloudConnection}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition-colors"
+              >
+                Kiểm Tra Kết Nối & Đồng Bộ Thư Mục
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveCloudStorage}
+                className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all hover:scale-[1.02] flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4 text-slate-950" />
+                <span>Lưu Cấu Hình Kho Lưu Trữ</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

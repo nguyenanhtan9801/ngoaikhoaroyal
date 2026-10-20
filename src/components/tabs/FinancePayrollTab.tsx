@@ -32,6 +32,7 @@ interface FinancePayrollTabProps {
   currentUser?: AppUser | null;
   selectedCampusId: string;
   selectedTermId: string;
+  searchQuery?: string;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onPrintReceipt: (invoice: TuitionInvoice) => void;
   initialSection?: 'invoices' | 'payroll' | 'transfer';
@@ -43,6 +44,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   currentUser,
   selectedCampusId,
   selectedTermId,
+  searchQuery = '',
   onUpdateStore,
   onPrintReceipt,
   initialSection = 'invoices',
@@ -219,21 +221,41 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     }
   };
 
-  // Filter invoices
-  const filteredInvoices = store.invoices.filter(i => {
-    const cls = store.classes.find(c => c.id === i.class_id);
-    if (!cls) return true;
-    const matchCampus = selectedCampusId === 'all' || cls.campus_id === selectedCampusId;
-    const matchTerm = cls.term_id === selectedTermId;
-    if (!matchCampus || !matchTerm) return false;
+  // 1. Base filtered invoices by Campus, Term, and Search Query
+  const baseFilteredInvoices = useMemo(() => {
+    return store.invoices.filter(inv => {
+      const cls = store.classes.find(c => c.id === inv.class_id);
+      const student = store.students.find(s => s.id === inv.student_id);
 
-    if (invoiceStatusFilter === 'paid') return i.payment_status === 'paid';
-    if (invoiceStatusFilter === 'partial') return i.payment_status === 'partial';
-    if (invoiceStatusFilter === 'unpaid') return i.payment_status === 'unpaid' && !i.is_trial_pending;
-    if (invoiceStatusFilter === 'trial_pending') return !!i.is_trial_pending;
-    if (invoiceStatusFilter === 'cancelled') return i.payment_status === 'cancelled';
-    return true;
-  });
+      // 1. Lọc theo Cơ sở
+      const matchCampus = selectedCampusId === 'all' || cls?.campus_id === selectedCampusId;
+
+      // 2. Lọc theo Niên khóa
+      const matchTerm = selectedTermId === 'all' || cls?.term_id === selectedTermId;
+
+      // 3. Lọc theo từ khóa tìm kiếm
+      const query = (searchQuery || '').trim().toLowerCase();
+      const matchQuery = !query || 
+        inv.invoice_code.toLowerCase().includes(query) ||
+        (student?.name && student.name.toLowerCase().includes(query)) ||
+        (student?.code && student.code.toLowerCase().includes(query)) ||
+        (cls?.name && cls.name.toLowerCase().includes(query));
+
+      return Boolean(matchCampus && matchTerm && matchQuery);
+    });
+  }, [store.invoices, store.classes, store.students, selectedCampusId, selectedTermId, searchQuery]);
+
+  // 2. Filtered invoices by status sub-filter
+  const filteredInvoices = useMemo(() => {
+    return baseFilteredInvoices.filter(i => {
+      if (invoiceStatusFilter === 'paid') return i.payment_status === 'paid';
+      if (invoiceStatusFilter === 'partial') return i.payment_status === 'partial';
+      if (invoiceStatusFilter === 'unpaid') return i.payment_status === 'unpaid' && !i.is_trial_pending;
+      if (invoiceStatusFilter === 'trial_pending') return !!i.is_trial_pending;
+      if (invoiceStatusFilter === 'cancelled') return i.payment_status === 'cancelled';
+      return true;
+    });
+  }, [baseFilteredInvoices, invoiceStatusFilter]);
 
   // Manual Verification of Payment (Whole or Partial)
   const handleConfirmPayment = () => {
@@ -504,6 +526,22 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               <p className="text-[11px] text-slate-400 mt-0.5">
                 Mỗi lớp/môn học có hóa đơn và mã VietQR Napas247 riêng biệt. Kế toán xác nhận gạch nợ thủ công.
               </p>
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Phạm vi đối soát:</span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  Khóa: {store.terms.find(t => t.id === selectedTermId)?.name || 'Tất cả niên khóa'}
+                </span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-500/10 text-sky-300 border border-sky-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+                  Cơ sở: {store.campuses.find(c => c.id === selectedCampusId)?.name || 'Tất cả cơ sở'}
+                </span>
+                {searchQuery && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                    Từ khóa: &quot;{searchQuery}&quot;
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="flex items-center gap-3">
@@ -516,28 +554,28 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
               <span className="text-[10px] uppercase font-bold text-slate-400">Tổng Phải Thu (Gross/Net)</span>
               <div className="text-sm font-extrabold font-mono text-white mt-1">
-                {formatVND(filteredInvoices.reduce((sum, i) => sum + i.net_payable, 0))}
+                {formatVND(baseFilteredInvoices.reduce((sum, i) => sum + (i.net_payable || i.gross_amount || 0), 0))}
               </div>
             </div>
 
             <div className="p-3 rounded-2xl bg-emerald-950/30 border border-emerald-500/30">
               <span className="text-[10px] uppercase font-bold text-emerald-400">Đã Thu Lũy Kế</span>
               <div className="text-sm font-extrabold font-mono text-emerald-400 mt-1">
-                {formatVND(filteredInvoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0))}
+                {formatVND(baseFilteredInvoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0))}
               </div>
             </div>
 
             <div className="p-3 rounded-2xl bg-rose-950/30 border border-rose-500/30">
               <span className="text-[10px] uppercase font-bold text-rose-400">Công Nợ Cần Thu</span>
               <div className="text-sm font-extrabold font-mono text-rose-400 mt-1">
-                {formatVND(filteredInvoices.reduce((sum, i) => sum + (i.outstanding_amount || 0), 0))}
+                {formatVND(baseFilteredInvoices.reduce((sum, i) => sum + (i.outstanding_amount || 0), 0))}
               </div>
             </div>
 
             <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30">
               <span className="text-[10px] uppercase font-bold text-amber-400">Đang Nợ Một Phần</span>
               <div className="text-sm font-extrabold font-mono text-amber-300 mt-1">
-                {filteredInvoices.filter(i => i.payment_status === 'partial').length} Hóa Đơn
+                {baseFilteredInvoices.filter(i => i.payment_status === 'partial').length} Hóa Đơn
               </div>
             </div>
           </div>
@@ -553,7 +591,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                Tất cả ({store.invoices.length})
+                Tất cả ({baseFilteredInvoices.length})
               </button>
               <button
                 onClick={() => setInvoiceStatusFilter('trial_pending')}
@@ -564,7 +602,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 }`}
               >
                 <Sparkles className="w-3 h-3 text-purple-400" />
-                <span>Chờ học thử ({store.invoices.filter(i => i.is_trial_pending).length})</span>
+                <span>Chờ học thử ({baseFilteredInvoices.filter(i => i.is_trial_pending).length})</span>
               </button>
               <button
                 onClick={() => setInvoiceStatusFilter('paid')}
@@ -574,7 +612,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                Đã thanh toán ({store.invoices.filter(i => i.payment_status === 'paid').length})
+                Đã thanh toán ({baseFilteredInvoices.filter(i => i.payment_status === 'paid').length})
               </button>
               <button
                 onClick={() => setInvoiceStatusFilter('partial')}
@@ -585,7 +623,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 }`}
               >
                 <Coins className="w-3 h-3 text-amber-400" />
-                <span>Nợ một phần ({store.invoices.filter(i => i.payment_status === 'partial').length})</span>
+                <span>Nợ một phần ({baseFilteredInvoices.filter(i => i.payment_status === 'partial').length})</span>
               </button>
               <button
                 onClick={() => setInvoiceStatusFilter('unpaid')}
@@ -595,17 +633,17 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     : 'bg-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                Chưa nộp ({store.invoices.filter(i => i.payment_status === 'unpaid' && !i.is_trial_pending).length})
+                Chưa nộp ({baseFilteredInvoices.filter(i => i.payment_status === 'unpaid' && !i.is_trial_pending).length})
               </button>
               <button
                 onClick={() => setInvoiceStatusFilter('cancelled')}
                 className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all ${
                   invoiceStatusFilter === 'cancelled'
                     ? 'bg-slate-700 text-white font-bold'
-                    : 'bg-slate-800 text-slate-400 hover:text-white'
+                    : 'bg-slate-800 text-slate-500 hover:text-white'
                 }`}
               >
-                Đã hủy thử ({store.invoices.filter(i => i.payment_status === 'cancelled').length})
+                Đã hủy ({baseFilteredInvoices.filter(i => i.payment_status === 'cancelled').length})
               </button>
             </div>
 
@@ -889,6 +927,17 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 &bull; <strong>Giáo viên cơ hữu:</strong> Mức cố định trên từng buổi dạy thực tế (chấm công qua sổ điểm danh).<br />
                 &bull; <strong>Giáo viên thỉnh giảng / Đối tác:</strong> % Doanh thu thực tế của lớp (Nhà trường tạm ứng chi trả đủ).
               </p>
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Phạm vi quyết toán:</span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  Khóa: {store.terms.find(t => t.id === selectedTermId)?.name || 'Tất cả niên khóa'}
+                </span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-500/10 text-sky-300 border border-sky-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+                  Cơ sở: {store.campuses.find(c => c.id === selectedCampusId)?.name || 'Tất cả cơ sở'}
+                </span>
+              </div>
             </div>
 
             <ViewToggle viewMode={payrollViewMode} onViewModeChange={setPayrollViewMode} />
@@ -898,7 +947,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           {payrollViewMode === 'cards' && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {store.teachers.map(teacher => {
-                const assignedClasses = store.classes.filter(c => c.primary_teacher_id === teacher.id);
+                const assignedClasses = store.classes.filter(c => {
+                  const matchTeacher = c.primary_teacher_id === teacher.id;
+                  const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
+                  const matchTerm = selectedTermId === 'all' || c.term_id === selectedTermId;
+                  return matchTeacher && matchCampus && matchTerm;
+                });
 
                 return (
                   <div key={teacher.id} className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
@@ -969,7 +1023,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {store.teachers.map(teacher => {
-                    const assignedClasses = store.classes.filter(c => c.primary_teacher_id === teacher.id);
+                    const assignedClasses = store.classes.filter(c => {
+                      const matchTeacher = c.primary_teacher_id === teacher.id;
+                      const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
+                      const matchTerm = selectedTermId === 'all' || c.term_id === selectedTermId;
+                      return matchTeacher && matchCampus && matchTerm;
+                    });
                     return (
                       <tr key={teacher.id} className="hover:bg-slate-800/30 transition-colors">
                         <td className="py-3 px-4">

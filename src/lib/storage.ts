@@ -25,7 +25,8 @@ import {
   SystemNotification,
   AppUser,
   AuditLogRecord,
-  LogActionType
+  LogActionType,
+  CloudStorageConfig
 } from '../types';
 
 import {
@@ -87,6 +88,7 @@ export interface AppStore {
     anonKey: string;
     isConnected: boolean;
   };
+  cloudStorageConfig?: CloudStorageConfig;
 }
 
 const STORAGE_KEY = 'royal_extracurricular_store_v3';
@@ -126,6 +128,15 @@ export function getInitialStore(): AppStore {
       url: '',
       anonKey: '',
       isConnected: false,
+    },
+    cloudStorageConfig: {
+      provider: 'google_drive',
+      drive_folder_id: '1A9xK_RoyalSchool_Extracurricular_Proof_2026',
+      drive_folder_name: 'RoyalSchool_MinhChung_Extracurricular_2026',
+      onedrive_folder_url: 'https://royalschooledu-my.sharepoint.com/personal/admin_royalschool_edu_vn/Documents/MinhChung2026',
+      auto_create_subfolders: true,
+      updated_at: '2026-10-20',
+      updated_by: 'ThS. Nguyễn Hoàng Long',
     },
   };
 }
@@ -217,6 +228,9 @@ export function loadStore(): AppStore {
         ? parsed.auditLogs
         : initialAuditLogs;
 
+    const cloudStorageConfig: CloudStorageConfig = 
+      parsed.cloudStorageConfig || initial.cloudStorageConfig;
+
     return {
       ...initial,
       ...parsed,
@@ -227,6 +241,7 @@ export function loadStore(): AppStore {
       campusPricings,
       enrollments,
       auditLogs,
+      cloudStorageConfig,
     };
   } catch (err) {
     console.error('Failed to load store from localStorage', err);
@@ -505,6 +520,7 @@ export function createAuditRecord(
       after?: any;
       ip_address?: string;
       status?: 'success' | 'failed';
+      [key: string]: any;
     };
     timestamp?: string;
   }

@@ -18,6 +18,7 @@ import {
   BookmarkCheck,
   Receipt,
   HeartPulse,
+  GraduationCap,
   ArrowRightLeft,
   CheckCircle2,
   Menu,
@@ -115,9 +116,9 @@ export const Navbar: React.FC<NavbarProps> = ({
       items: [
         { 
           id: 'sub_students', 
-          label: 'Hồ Sơ Học Viên & Y Tế', 
-          icon: HeartPulse, 
-          desc: 'Học sinh Royal, học sinh ngoài trường, cảnh báo dị ứng thực phẩm, in thẻ học viên' 
+          label: 'Hồ Sơ Học Viên', 
+          icon: GraduationCap, 
+          desc: 'Danh sách học viên, hình thẻ, học sinh Royal, học sinh ngoài trường, thông tin y tế' 
         },
         { 
           id: 'sub_parents', 

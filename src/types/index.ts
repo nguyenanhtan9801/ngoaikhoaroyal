@@ -218,6 +218,9 @@ export interface Student {
   regular_class?: string;
   is_royal_student: boolean; // true = eligible for snacks
   medical_notes?: string; // e.g. "Dị ứng đậu phộng, uống sữa không đường"
+  avatar_url?: string; // Hình thẻ học sinh 3x4 (URL hoặc base64, có thể tải lên sau)
+  photo_stored_at?: string; // Vị trí/Thư mục Cloud lưu trữ tệp (VD: Google Drive: RoyalSchool_MinhChung_2026/TheHocVien)
+  photo_updated_at?: string; // Ngày cập nhật hình thẻ
   status: 'active' | 'graduated' | 'dropped';
   created_at: string;
 }
@@ -288,6 +291,8 @@ export interface AttendanceRecord {
   session_date: string;
   status: 'present' | 'absent_excused' | 'absent_unexcused';
   note?: string;
+  proof_url?: string;         // Đường dẫn file minh chứng trên Google Drive / OneDrive
+  proof_file_name?: string;   // Tên tệp minh chứng đính kèm
 }
 
 export interface MakeupCredit {
@@ -394,6 +399,16 @@ export interface SystemNotification {
   metadata?: Record<string, any>;
 }
 
+export interface CloudStorageConfig {
+  provider: 'google_drive' | 'onedrive' | 'local';
+  drive_folder_id?: string;        // ID thư mục Google Drive (VD: 1A2B3C...xyz)
+  drive_folder_name?: string;      // Tên thư mục (VD: RoyalSchool_MinhChung_2026)
+  onedrive_folder_url?: string;    // Link thư mục OneDrive / SharePoint
+  auto_create_subfolders: boolean; // Tự động tạo thư mục con theo Tháng/Khóa học
+  updated_at?: string;
+  updated_by?: string;
+}
+
 export type LogActionType = 
   | 'AUTH_LOGIN_SUCCESS'      // Đăng nhập thành công
   | 'AUTH_LOGIN_FAILED'       // Đăng nhập thất bại (sai pass/bị khóa)
@@ -410,7 +425,8 @@ export type LogActionType =
   | 'DATABASE_RESET'          // Dọn sạch / Reset database
   | 'EXCEL_IMPORT'            // Import Master Excel
   | 'USER_CREATE'             // Tạo tài khoản nhân sự
-  | 'USER_PASSWORD_CHANGE';   // Đổi mật khẩu
+  | 'USER_PASSWORD_CHANGE'    // Đổi mật khẩu
+  | 'STORAGE_CONFIG_UPDATE';  // Cập nhật cấu hình lưu trữ Cloud
 
 export interface AuditLogRecord {
   id: string;
@@ -429,5 +445,6 @@ export interface AuditLogRecord {
     after?: any;              // Dữ liệu sau khi sửa
     ip_address?: string;      // Địa chỉ IP hoặc User-Agent thiết bị
     status?: 'success' | 'failed';
+    [key: string]: any;
   };
 }

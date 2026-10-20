@@ -880,7 +880,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         <button
                           onClick={() => onNavigateToStudents(lead.assigned_student_code)}
                           className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors"
-                          title="Chuyển tới Hồ Sơ Học Viên & Y Tế"
+                          title="Chuyển tới Hồ Sơ Học Viên"
                         >
                           <span>Hồ sơ</span>
                           <ExternalLink className="w-3 h-3" />
@@ -1046,7 +1046,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                 <button
                                   onClick={() => onNavigateToStudents(lead.assigned_student_code)}
                                   className="p-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-semibold flex items-center gap-0.5 transition-colors"
-                                  title="Xem tại Hồ Sơ Học Viên & Y Tế"
+                                  title="Xem tại Hồ Sơ Học Viên"
                                 >
                                   <ExternalLink className="w-3 h-3" />
                                 </button>

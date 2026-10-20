@@ -15,6 +15,7 @@ import {
   Receipt,
   Settings,
   HeartPulse,
+  GraduationCap,
   ArrowRightLeft,
   UserCheck,
   CheckCircle2
@@ -37,7 +38,7 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     sub_kpi: { parent: 'Tổng Quan & Báo Cáo', title: 'Tổng Quan Hiệu Suất & Thống Kê', icon: Layers, badge: 'Chỉ Số Hiệu Suất' },
     
     // Nhóm 2: Học Viên & Tuyển Sinh
-    sub_students: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên & Y Tế', icon: HeartPulse, badge: 'Học Viên & Y Tế' },
+    sub_students: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên', icon: GraduationCap, badge: 'Hồ Sơ Học Viên' },
     sub_parents: { parent: 'Học Viên & Tuyển Sinh', title: 'Đơn Đăng Ký Tuyển Sinh', icon: Users, badge: 'Cổng Phụ Huynh' },
     sub_credits: { parent: 'Học Viên & Tuyển Sinh', title: 'Sổ Bảo Lưu & Cấn Trừ Học Phí', icon: BookmarkCheck, badge: 'Hạn 365 Ngày' },
 
@@ -59,7 +60,7 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     // Fallback legacy routes
     sub_finance: { parent: 'Tài Chính & Kế Toán', title: 'Doanh Thu & Quyết Toán Thù Lao', icon: Receipt, badge: 'Kế Toán' },
     sub_finance_clearance: { parent: 'Tài Chính & Kế Toán', title: 'Thu Học Phí & Mã Chuyển Khoản', icon: Receipt },
-    sub_students_health: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên & Y Tế', icon: HeartPulse, badge: 'Y Tế' },
+    sub_students_health: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên', icon: GraduationCap, badge: 'Học Viên' },
   };
 
   const current = routeMeta[currentRoute] || {

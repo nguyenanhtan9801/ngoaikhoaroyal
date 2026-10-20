@@ -15,7 +15,14 @@ import {
   Edit2,
   Filter,
   Sparkles,
-  XCircle
+  XCircle,
+  Camera,
+  Upload,
+  Trash2,
+  Cloud,
+  User,
+  X,
+  Save
 } from 'lucide-react';
 import { AppStore, generateStudentCode, formatVND, deduplicateEnrollments, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
@@ -71,6 +78,19 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const [convertingStudent, setConvertingStudent] = useState<Student | null>(null);
   const [enrollingStudent, setEnrollingStudent] = useState<Student | null>(null);
 
+  // Student Photo Upload & Preview Modal
+  const [photoModalStudent, setPhotoModalStudent] = useState<Student | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [photoUploadSuccess, setPhotoUploadSuccess] = useState<string | null>(null);
+
+  // Cloud Storage destination folder config
+  const cloudFolder = store.cloudStorageConfig?.drive_folder_name || 'RoyalSchool_MinhChung_Extracurricular_2026';
+  const cloudProviderLabel = store.cloudStorageConfig?.provider === 'onedrive' 
+    ? 'OneDrive / SharePoint' 
+    : store.cloudStorageConfig?.provider === 'local' 
+      ? 'Bộ nhớ cục bộ' 
+      : 'Google Drive';
+
   // New Student Form State
   const [formData, setFormData] = useState({
     name: '',
@@ -82,7 +102,92 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     regular_class: 'Grade 4A1',
     is_royal_student: true,
     medical_notes: '',
+    avatar_url: '',
+    photo_stored_at: '',
   });
+
+  // Handle image file selection
+  const handlePhotoFileChange = (
+    file: File, 
+    callback: (dataUrl: string, storedPath: string) => void, 
+    studentCode?: string
+  ) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = (e.target?.result as string) || '';
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const targetCode = studentCode || 'STUDENT_CARD';
+      const storedPath = `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${targetCode}_${sanitizedName}`;
+      callback(dataUrl, storedPath);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Save or delete photo from modal
+  const handleSaveModalPhoto = (dataUrl: string | null) => {
+    if (!photoModalStudent) return;
+    const student = photoModalStudent;
+    const now = new Date().toISOString().split('T')[0];
+
+    if (dataUrl) {
+      const storedPath = `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${student.code}.jpg`;
+      const updateLog = createAuditRecord(
+        'STUDENT_UPDATE',
+        'ACADEMIC',
+        `Hình thẻ Học viên ${student.name}`,
+        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu vào ${storedPath}`,
+        null,
+        {
+          target_id: student.code,
+          details: {
+            photo_stored_at: storedPath,
+            status: 'success',
+          }
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        students: prev.students.map(s => 
+          s.id === student.id 
+            ? { ...s, avatar_url: dataUrl, photo_stored_at: storedPath, photo_updated_at: now } 
+            : s
+        ),
+        auditLogs: [updateLog, ...(prev.auditLogs || [])],
+      }));
+      setPhotoUploadSuccess(`Đã lưu hình thẻ vào vị trí Cloud: ${cloudFolder}/TheHocVien`);
+      setTimeout(() => {
+        setPhotoUploadSuccess(null);
+        setPhotoModalStudent(null);
+        setPhotoPreview(null);
+      }, 1100);
+    } else {
+      const removeLog = createAuditRecord(
+        'STUDENT_UPDATE',
+        'ACADEMIC',
+        `Hình thẻ Học viên ${student.name}`,
+        `Gỡ bỏ ảnh thẻ của học viên ${student.name} (${student.code})`,
+        null,
+        {
+          target_id: student.code,
+          details: { action: 'delete_photo', status: 'success' }
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        students: prev.students.map(s => 
+          s.id === student.id 
+            ? { ...s, avatar_url: undefined, photo_stored_at: undefined, photo_updated_at: undefined } 
+            : s
+        ),
+        auditLogs: [removeLog, ...(prev.auditLogs || [])],
+      }));
+      setPhotoModalStudent(null);
+      setPhotoPreview(null);
+    }
+  };
 
   // Enrollment Modal State
   const [selectedClassId, setSelectedClassId] = useState('');
@@ -162,16 +267,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     if (editingStudent) {
       // Edit
+      const storedAt = formData.avatar_url && (!editingStudent.avatar_url || formData.avatar_url !== editingStudent.avatar_url)
+        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${editingStudent.code}.jpg`
+        : (formData.photo_stored_at || editingStudent.photo_stored_at);
+
       const updateLog = createAuditRecord(
         'STUDENT_UPDATE',
         'ACADEMIC',
         'Hồ sơ Học sinh',
-        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code})`,
+        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code})${formData.avatar_url !== editingStudent.avatar_url ? ' - Đồng bộ hình thẻ vào Cloud' : ''}`,
         null,
         {
           target_id: editingStudent.code,
           details: {
             status: 'success',
+            photo_stored_at: storedAt,
             before: {
               name: editingStudent.name,
               parent_phone: editingStudent.parent_phone,
@@ -191,13 +301,24 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       onUpdateStore(prev => ({
         ...prev,
         students: prev.students.map(s => 
-          s.id === editingStudent.id ? { ...s, ...formData } : s
+          s.id === editingStudent.id 
+            ? { 
+                ...s, 
+                ...formData, 
+                photo_stored_at: storedAt, 
+                photo_updated_at: formData.avatar_url ? (s.photo_updated_at || new Date().toISOString().split('T')[0]) : undefined 
+              } 
+            : s
         ),
         auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
     } else {
       // Add
       const code = generateStudentCode(formData.is_royal_student, store.students);
+      const storedAt = formData.avatar_url
+        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${code}.jpg`
+        : undefined;
+
       const newStudent: Student = {
         id: `std_${Date.now()}`,
         code,
@@ -210,6 +331,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         regular_class: formData.regular_class,
         is_royal_student: formData.is_royal_student,
         medical_notes: formData.medical_notes,
+        avatar_url: formData.avatar_url || undefined,
+        photo_stored_at: storedAt,
+        photo_updated_at: formData.avatar_url ? new Date().toISOString().split('T')[0] : undefined,
         status: 'active',
         created_at: new Date().toISOString().split('T')[0],
       };
@@ -218,12 +342,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         'STUDENT_CREATE',
         'ACADEMIC',
         'Hồ sơ Học sinh',
-        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code})`,
+        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
         null,
         {
           target_id: newStudent.code,
           details: {
             status: 'success',
+            has_photo: !!newStudent.avatar_url,
+            photo_stored_at: storedAt,
             after: {
               code: newStudent.code,
               name: newStudent.name,
@@ -258,6 +384,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       regular_class: student.regular_class || '',
       is_royal_student: student.is_royal_student,
       medical_notes: student.medical_notes || '',
+      avatar_url: student.avatar_url || '',
+      photo_stored_at: student.photo_stored_at || '',
     });
     setShowAddModal(true);
   };
@@ -518,6 +646,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 regular_class: 'Grade 4A1',
                 is_royal_student: true,
                 medical_notes: '',
+                avatar_url: '',
+                photo_stored_at: '',
               });
               setShowAddModal(true);
             }}
@@ -536,6 +666,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                 <tr>
+                  <th className="py-3 px-3 text-center w-14">Hình Thẻ</th>
                   <th className="py-3 px-4">Mã HV</th>
                   <th className="py-3 px-4">Họ và Tên</th>
                   <th className="py-3 px-4">Ngày Sinh & Giới Tính</th>
@@ -555,6 +686,41 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
+                      <td className="py-2.5 px-3 text-center">
+                        {student.avatar_url ? (
+                          <div
+                            onClick={() => {
+                              setPhotoModalStudent(student);
+                              setPhotoPreview(student.avatar_url || null);
+                            }}
+                            className="relative group cursor-pointer inline-block w-9 h-11 rounded-lg overflow-hidden border border-amber-500/40 shadow-sm align-middle"
+                            title={`Xem / Đổi ảnh thẻ của ${student.name} - Lưu tại: ${student.photo_stored_at || cloudFolder}`}
+                          >
+                            <img
+                              src={student.avatar_url}
+                              alt={student.name}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
+                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                              <Camera className="w-3.5 h-3.5 text-white" />
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhotoModalStudent(student);
+                              setPhotoPreview(null);
+                            }}
+                            className="inline-flex flex-col items-center justify-center w-9 h-11 rounded-lg bg-slate-900 border border-dashed border-slate-700 hover:border-amber-500/60 text-slate-500 hover:text-amber-400 transition-all group align-middle"
+                            title="Tải ảnh thẻ lên Cloud (Lưu vào vị trí đã cấu hình)"
+                          >
+                            <Camera className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                            <span className="text-[7.5px] font-bold">+Ảnh</span>
+                          </button>
+                        )}
+                      </td>
+
                       <td className="py-3 px-4">
                         <span className={`px-2 py-0.5 rounded font-mono font-bold text-xs ${
                           student.is_royal_student
@@ -667,6 +833,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
                           <button
+                            onClick={() => {
+                              setPhotoModalStudent(student);
+                              setPhotoPreview(student.avatar_url || null);
+                            }}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white"
+                            title="Quản lý ảnh thẻ 3x4 (Lưu vào Cloud)"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                          </button>
+                          <button
                             onClick={() => handleOpenEdit(student)}
                             className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white"
                             title="Sửa thông tin"
@@ -718,35 +894,71 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 key={student.id}
                 className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-5 backdrop-blur-md shadow-xl flex flex-col justify-between hover:border-slate-700/80 transition-all relative overflow-hidden"
               >
-                {/* Badge for Royal vs Outside */}
-                <div className="flex items-center justify-between mb-3">
-                  <span className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold border ${
-                    student.is_royal_student
-                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                      : 'bg-slate-800 text-slate-300 border-slate-700'
-                  }`}>
-                    {student.code}
-                  </span>
+                {/* Header row with Photo and Badges */}
+                <div className="flex items-start gap-3 mb-3">
+                  {student.avatar_url ? (
+                    <div
+                      onClick={() => {
+                        setPhotoModalStudent(student);
+                        setPhotoPreview(student.avatar_url || null);
+                      }}
+                      className="relative group cursor-pointer w-12 h-14 rounded-2xl overflow-hidden border border-amber-500/40 shadow-md shrink-0"
+                      title={`Xem / Thay ảnh thẻ (Lưu tại: ${student.photo_stored_at || cloudFolder})`}
+                    >
+                      <img
+                        src={student.avatar_url}
+                        alt={student.name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                      />
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                        <Camera className="w-4 h-4 text-white" />
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhotoModalStudent(student);
+                        setPhotoPreview(null);
+                      }}
+                      className="w-12 h-14 rounded-2xl bg-slate-900 border border-dashed border-slate-700 hover:border-amber-500/60 flex flex-col items-center justify-center gap-1 text-slate-500 hover:text-amber-400 transition-all group shrink-0"
+                      title="Chưa có hình thẻ - Nhấp để tải lên Cloud"
+                    >
+                      <Camera className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                      <span className="text-[9px] font-medium">+Ảnh thẻ</span>
+                    </button>
+                  )}
 
-                  <div className="flex items-center gap-1.5">
-                    {student.is_royal_student ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
-                        <Crown className="w-3 h-3 text-amber-400" />
-                        Royal Student
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold border ${
+                        student.is_royal_student
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                          : 'bg-slate-800 text-slate-300 border-slate-700'
+                      }`}>
+                        {student.code}
                       </span>
-                    ) : (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
-                        Học sinh ngoài
-                      </span>
-                    )}
+
+                      {student.is_royal_student ? (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                          <Crown className="w-3 h-3 text-amber-400" />
+                          Royal
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                          Ngoài trường
+                        </span>
+                      )}
+                    </div>
+
+                    <h4 className="text-base font-bold text-white flex items-center justify-between">
+                      <span className="truncate">{student.name}</span>
+                      <span className="text-xs text-slate-400 font-normal shrink-0 ml-1">{student.gender}</span>
+                    </h4>
                   </div>
                 </div>
 
                 <div>
-                  <h4 className="text-base font-bold text-white flex items-center justify-between">
-                    <span>{student.name}</span>
-                    <span className="text-xs text-slate-400 font-normal">{student.gender}</span>
-                  </h4>
 
                   <div className="mt-2 space-y-1 text-xs text-slate-400">
                     <div className="flex items-center gap-2">
@@ -834,6 +1046,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 <div className="mt-5 pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
                     <button
+                      onClick={() => {
+                        setPhotoModalStudent(student);
+                        setPhotoPreview(student.avatar_url || null);
+                      }}
+                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                      title="Quản lý hình thẻ 3x4 (Lưu vào Cloud)"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                    </button>
+                    <button
                       onClick={() => handleOpenEdit(student)}
                       className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
                       title="Chỉnh sửa thông tin"
@@ -887,6 +1109,80 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             </h3>
 
             <form onSubmit={handleSaveStudent} className="space-y-3.5 text-xs">
+              {/* Ảnh thẻ 3x4 (Có thể tải lên sau - Tự động đồng bộ vào Cloud) */}
+              <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center gap-3.5">
+                <div className="relative group shrink-0">
+                  {formData.avatar_url ? (
+                    <img 
+                      src={formData.avatar_url} 
+                      alt="Ảnh thẻ" 
+                      className="w-14 h-18 object-cover rounded-xl border border-amber-500/50 shadow-md"
+                    />
+                  ) : (
+                    <div className="w-14 h-18 rounded-xl bg-slate-950 border border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-500 p-1 text-center">
+                      <Camera className="w-4 h-4 mb-0.5 text-slate-400" />
+                      <span className="text-[9px] font-medium leading-none">Ảnh 3x4</span>
+                    </div>
+                  )}
+                  {formData.avatar_url && (
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, avatar_url: '', photo_stored_at: '' })}
+                      className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white flex items-center justify-center hover:bg-rose-600 shadow-sm"
+                      title="Gỡ ảnh"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-white text-xs">Hình thẻ học sinh (3x4)</span>
+                    <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-medium">
+                      Có thể tải lên sau
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    Tệp ảnh được lưu trữ tự động vào vị trí Cloud đã cấu hình:
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-300 font-mono bg-slate-950 px-2 py-1 rounded-lg border border-slate-800/80 truncate">
+                    <Cloud className="w-3 h-3 text-amber-400 shrink-0" />
+                    <span className="truncate">{cloudProviderLabel}: {cloudFolder}/TheHocVien</span>
+                  </div>
+
+                  <div className="mt-2 flex items-center gap-2">
+                    <label className="cursor-pointer px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-[11px] flex items-center gap-1 transition-colors">
+                      <Upload className="w-3 h-3" />
+                      <span>{formData.avatar_url ? 'Thay đổi ảnh thẻ' : 'Chọn ảnh thẻ'}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            handlePhotoFileChange(file, (dataUrl, storedPath) => {
+                              setFormData(prev => ({
+                                ...prev,
+                                avatar_url: dataUrl,
+                                photo_stored_at: storedPath,
+                              }));
+                            }, editingStudent?.code);
+                          }
+                        }}
+                      />
+                    </label>
+                    {formData.avatar_url && (
+                      <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                        Đã chọn ảnh
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Họ và tên học sinh *</label>
@@ -1357,6 +1653,162 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all"
                 >
                   Xác Nhận Dừng Học (Hủy HĐ)
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Photo Upload & Management Modal */}
+      {photoModalStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 animate-fadeIn">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Camera className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-bold text-white">Hình Thẻ Học Viên (Ảnh 3x4)</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setPhotoModalStudent(null);
+                  setPhotoPreview(null);
+                  setPhotoUploadSuccess(null);
+                }}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Student Info Bar */}
+            <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between text-xs">
+              <div>
+                <div className="font-bold text-white text-sm">{photoModalStudent.name}</div>
+                <div className="text-slate-400 mt-0.5">{photoModalStudent.school_name || 'Royal School'} &bull; {photoModalStudent.regular_class || 'Chưa xếp lớp'}</div>
+              </div>
+              <span className={`px-2.5 py-1 rounded-lg font-mono font-bold text-xs ${
+                photoModalStudent.is_royal_student
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  : 'bg-slate-800 text-slate-300 border border-slate-700'
+              }`}>
+                {photoModalStudent.code}
+              </span>
+            </div>
+
+            {/* Cloud Storage Destination Info Banner */}
+            <div className="p-3 rounded-2xl bg-gradient-to-r from-sky-950/40 to-indigo-950/40 border border-sky-500/30 space-y-1.5">
+              <div className="flex items-center gap-2 text-sky-400 font-bold text-xs">
+                <Cloud className="w-4 h-4 text-sky-400 shrink-0" />
+                <span>Vị Trí Lưu Trữ Đám Mây Đã Cấu Hình:</span>
+              </div>
+              <div className="text-[11px] text-slate-300 font-mono bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-sky-500/20 break-all">
+                {cloudProviderLabel}: <span className="text-amber-300">{cloudFolder}/TheHocVien/{photoModalStudent.code}.jpg</span>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                * Hình thẻ học sinh có thể tải lên sau bất cứ lúc nào. Tệp sẽ được tự động đồng bộ vào vị trí lưu trữ đã cài đặt trong Cấu hình Hệ thống.
+              </p>
+            </div>
+
+            {/* Photo Preview & Upload Zone */}
+            <div className="flex flex-col items-center justify-center p-5 rounded-2xl bg-slate-900/60 border border-dashed border-slate-700 space-y-3">
+              {photoPreview || photoModalStudent.avatar_url ? (
+                <div className="relative group">
+                  <img
+                    src={photoPreview || photoModalStudent.avatar_url}
+                    alt={photoModalStudent.name}
+                    className="w-28 h-36 object-cover rounded-2xl border-2 border-amber-500/50 shadow-lg"
+                  />
+                  <div className="absolute inset-0 bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                    <label className="cursor-pointer p-2 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs flex items-center gap-1 shadow-md hover:bg-amber-600 transition-colors">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Chọn ảnh khác</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            handlePhotoFileChange(file, (dataUrl) => {
+                              setPhotoPreview(dataUrl);
+                            }, photoModalStudent.code);
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div className="w-28 h-36 rounded-2xl bg-slate-950 border-2 border-dashed border-slate-700 flex flex-col items-center justify-center text-slate-500 gap-1.5 p-2 text-center">
+                  <Camera className="w-8 h-8 text-slate-400" />
+                  <span className="text-xs font-semibold text-slate-400">Ảnh thẻ 3x4</span>
+                  <span className="text-[10px] text-slate-500">Chưa có ảnh</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <label className="cursor-pointer px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/20 transition-all">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{photoPreview || photoModalStudent.avatar_url ? 'Tải tệp ảnh mới' : 'Tải lên hình thẻ (3x4)'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        handlePhotoFileChange(file, (dataUrl) => {
+                          setPhotoPreview(dataUrl);
+                        }, photoModalStudent.code);
+                      }
+                    }}
+                  />
+                </label>
+
+                {(photoPreview || photoModalStudent.avatar_url) && (
+                  <button
+                    onClick={() => {
+                      setPhotoPreview(null);
+                      if (photoModalStudent.avatar_url) {
+                        handleSaveModalPhoto(null);
+                      }
+                    }}
+                    className="p-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 transition-colors"
+                    title="Gỡ hình thẻ"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {photoUploadSuccess && (
+                <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 animate-fadeIn">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{photoUploadSuccess}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <button
+                onClick={() => {
+                  setPhotoModalStudent(null);
+                  setPhotoPreview(null);
+                  setPhotoUploadSuccess(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+              >
+                Đóng
+              </button>
+
+              {photoPreview && (
+                <button
+                  onClick={() => handleSaveModalPhoto(photoPreview)}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20 transition-all flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Lưu Vào Kho Lưu Trữ Đã Cấu Hình</span>
                 </button>
               )}
             </div>

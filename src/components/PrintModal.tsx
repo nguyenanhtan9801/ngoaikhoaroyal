@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Printer, QrCode } from 'lucide-react';
+import { X, Printer, QrCode, User } from 'lucide-react';
 import { TuitionInvoice, MakeupCredit, Student, ExtracurricularClass } from '../types';
 import { formatVND } from '../lib/storage';
 import { RoyalLogo } from './RoyalLogo';
@@ -406,9 +406,19 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
               </div>
 
               <div className="flex items-center gap-4">
-                <div className="w-24 h-28 rounded-2xl bg-slate-200 border-2 border-slate-300 flex items-center justify-center font-bold text-slate-400 text-xs">
-                  Ảnh 3x4
-                </div>
+                {document.student.avatar_url ? (
+                  <img
+                    src={document.student.avatar_url}
+                    alt={document.student.name}
+                    className="w-24 h-28 rounded-2xl object-cover border-2 border-amber-600 shadow-sm"
+                  />
+                ) : (
+                  <div className="w-24 h-28 rounded-2xl bg-slate-200 border-2 border-slate-300 flex flex-col items-center justify-center font-bold text-slate-400 text-xs text-center p-1">
+                    <User className="w-6 h-6 text-slate-400 mb-1" />
+                    <span>Ảnh 3x4</span>
+                    <span className="text-[9px] font-normal text-slate-500">(Chưa tải)</span>
+                  </div>
+                )}
 
                 <div className="space-y-1 text-xs">
                   <div className="font-black text-base text-slate-900">{document.student.name}</div>

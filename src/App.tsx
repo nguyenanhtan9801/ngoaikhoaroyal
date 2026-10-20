@@ -524,6 +524,7 @@ export default function App() {
             <AttendanceTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               selectedClass={focusedClass}
               onSelectClass={setFocusedClass}
               onUpdateStore={updateStore}
@@ -550,6 +551,7 @@ export default function App() {
               currentUser={currentUser}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
+              searchQuery={searchQuery}
               onUpdateStore={updateStore}
               onPrintReceipt={handlePrintReceipt}
               initialSection="invoices"
@@ -563,6 +565,7 @@ export default function App() {
               currentUser={currentUser}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
+              searchQuery={searchQuery}
               onUpdateStore={updateStore}
               onPrintReceipt={handlePrintReceipt}
               initialSection="payroll"
@@ -576,6 +579,7 @@ export default function App() {
               currentUser={currentUser}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
+              searchQuery={searchQuery}
               onUpdateStore={updateStore}
               onPrintReceipt={handlePrintReceipt}
               initialSection="transfer"
