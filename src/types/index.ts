@@ -212,6 +212,16 @@ export interface Enrollment {
   trial_notes?: string;                 // Ghi chú đánh giá sau buổi học thử
 }
 
+export interface InvoicePaymentRecord {
+  id: string;
+  payment_date: string;          // Ngày nộp tiền
+  amount: number;                // Số tiền nộp trong đợt này
+  payment_method: 'bank_transfer' | 'cash'; // Chuyển khoản / Tiền mặt
+  payment_reference: string;     // Mã giao dịch ngân hàng / Mã sao kê
+  verified_by: string;           // Kế toán xác nhận
+  notes?: string;                // Ghi chú đợt đóng (VD: Đóng đợt 1 - 2.000.000đ)
+}
+
 export interface TuitionInvoice {
   id: string;
   invoice_code: string;
@@ -232,6 +242,7 @@ export interface TuitionInvoice {
   created_at: string;
   is_trial_pending?: boolean; // Tạm hoãn thu toàn khóa cho đến khi qua buổi học thử
   trial_fee?: number;         // Đơn giá 1 buổi thử (mặc định 0 nếu miễn phí thử)
+  payment_history?: InvoicePaymentRecord[]; // Lịch sử các lần đóng tiền
 }
 
 export interface ClassSession {

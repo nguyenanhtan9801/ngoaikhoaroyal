@@ -542,6 +542,7 @@ export default function App() {
             <FinancePayrollTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
               onUpdateStore={updateStore}
@@ -554,6 +555,7 @@ export default function App() {
             <FinancePayrollTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
               onUpdateStore={updateStore}
@@ -566,6 +568,7 @@ export default function App() {
             <FinancePayrollTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
               onUpdateStore={updateStore}
