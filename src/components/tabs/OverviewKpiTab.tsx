@@ -41,8 +41,17 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
 
   const filteredClassIds = new Set(filteredClasses.map(c => c.id));
 
-  // Filter attendance records
-  const filteredAttendance = store.attendance.filter(a => filteredClassIds.has(a.class_id));
+  // Filter attendance records (Exclude students currently in 'trial' or 'trial_dropped' status from official attendance rate until promoted to 'active')
+  const filteredAttendance = store.attendance.filter(a => {
+    if (!filteredClassIds.has(a.class_id)) return false;
+    const enrollment = store.enrollments.find(
+      e => e.student_id === a.student_id && e.class_id === a.class_id
+    );
+    if (enrollment && (enrollment.status === 'trial' || enrollment.status === 'trial_dropped')) {
+      return false;
+    }
+    return true;
+  });
 
   const totalAttendance = filteredAttendance.length;
   const presentCount = filteredAttendance.filter(a => a.status === 'present').length;
@@ -56,8 +65,10 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const snacksConsumed = filteredSessions.reduce((acc, s) => acc + (s.snacks_consumed || 0), 0);
   const snacksReturned = filteredSessions.reduce((acc, s) => acc + (s.snacks_returned || 0), 0);
 
-  // Filter invoices
-  const filteredInvoices = store.invoices.filter(i => filteredClassIds.has(i.class_id));
+  // Filter official invoices (exclude trial_pending and cancelled from official debt/billed KPIs)
+  const filteredInvoices = store.invoices.filter(
+    i => filteredClassIds.has(i.class_id) && i.payment_status !== 'cancelled' && !i.is_trial_pending
+  );
   const totalBilled = filteredInvoices.reduce((acc, i) => acc + i.net_payable, 0);
   const totalPaid = filteredInvoices.reduce((acc, i) => acc + i.paid_amount, 0);
   const totalDebt = filteredInvoices.reduce((acc, i) => acc + i.outstanding_amount, 0);

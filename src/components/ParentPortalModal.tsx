@@ -92,8 +92,6 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   onOpenAdminLogin,
   onLogout,
 }) => {
-  if (!isOpen) return null;
-
   // Check role authorization for "Xem hồ sơ tiếp nhận"
   // CHỈ HIỆN CHO NHÂN SỰ ĐƯỢC PHÂN CÔNG LÀ TUYỂN SINH, GIÁO VỤ HOẶC ADMIN
   const isAuthorizedStaff = Boolean(
@@ -152,13 +150,16 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
   // Auto-scroll to top when step transitions to 'success' or 'form'
   useEffect(() => {
+    if (!isOpen) return;
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
     if (isStandalonePage && typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
-  }, [currentStep, isStandalonePage]);
+  }, [currentStep, isStandalonePage, isOpen]);
+
+  if (!isOpen) return null;
 
   // Selected campus & term entities
   const selectedCampus = store.campuses.find(c => c.id === regForm.desired_campus_id) || store.campuses[0];
@@ -339,8 +340,8 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     const subjectNamesList = registeredSubjectItems.map(s => s.subject_name).join(', ');
 
     const discountPolicy = regForm.is_royal_student
-      ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
-      : `Học sinh Ngoài trường / Vãng lai (${detailedSelectedSubjects.length} môn - Không áp dụng suất bánh sữa)`;
+      ? `Học sinh chính khóa ROYAL SCHOOL`
+      : `Học sinh ngoài trường`;
 
     const newLead: ParentRegistration = {
       id: `preg_${Date.now()}`,
@@ -686,7 +687,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                     <div className="flex justify-between items-center">
                       <span className="text-slate-400 font-medium">Phân loại học sinh:</span>
                       <span className={submittedRegistration.isRoyal ? "text-amber-400 font-bold" : "text-slate-200 font-medium"}>
-                        {submittedRegistration.isRoyal ? "HS chính khóa Royal (Có suất bánh sữa)" : "Học sinh ngoài trường"}
+                        {submittedRegistration.isRoyal ? "Học sinh chính khóa ROYAL SCHOOL" : "Học sinh ngoài trường"}
                       </span>
                     </div>
                   </div>
@@ -854,56 +855,40 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                 </div>
 
                 {/* Phân loại học sinh - Royal vs Ngoài trường */}
-                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                  <span className="text-xs font-semibold text-slate-300 block">
-                    Phân loại học sinh & Chế độ ăn nhẹ bánh sữa:
-                  </span>
+                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                     <button
                       type="button"
                       onClick={() => setRegForm({ ...regForm, is_royal_student: true })}
-                      className={`p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all ${
+                      className={`p-3 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
                         regForm.is_royal_student
                           ? 'bg-amber-500/15 border-amber-500 text-white shadow-sm shadow-amber-500/20'
                           : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
                       }`}
                     >
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
                         regForm.is_royal_student ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-600'
                       }`}>
                         <Check className="w-3.5 h-3.5 stroke-[3]" />
                       </div>
-                      <div>
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          <span>Học sinh chính khóa Royal School</span>
-                          <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-bold">Suất Bánh Sữa</span>
-                        </div>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
-                          Được phục vụ suất ăn nhẹ/bánh sữa tươi sau giờ học lúc 16:30 trước khi vào lớp ngoại khóa.
-                        </p>
-                      </div>
+                      <div className="font-bold text-white">Học sinh chính khóa ROYAL SCHOOL</div>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setRegForm({ ...regForm, is_royal_student: false })}
-                      className={`p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all ${
+                      className={`p-3 rounded-xl border text-left flex items-center gap-2.5 transition-all ${
                         !regForm.is_royal_student
                           ? 'bg-cyan-500/15 border-cyan-500 text-white shadow-sm shadow-cyan-500/20'
                           : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
                       }`}
                     >
-                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
                         !regForm.is_royal_student ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-600'
                       }`}>
                         <Check className="w-3.5 h-3.5 stroke-[3]" />
                       </div>
-                      <div>
-                        <div className="font-bold text-white">Học sinh ngoài trường / Vãng lai</div>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
-                          Không áp dụng chính sách suất ăn nhẹ bánh sữa của bếp ăn Royal School.
-                        </p>
-                      </div>
+                      <div className="font-bold text-white">Học sinh ngoài trường</div>
                     </button>
                   </div>
                 </div>

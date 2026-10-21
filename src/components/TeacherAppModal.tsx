@@ -14,7 +14,7 @@ import {
   Lock,
   Coffee
 } from 'lucide-react';
-import { AppStore } from '../lib/storage';
+import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek } from '../lib/storage';
 import { Teacher, ExtracurricularClass, Student, AttendanceRecord, ClassSession } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 
@@ -31,8 +31,6 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   onClose,
   onUpdateStore,
 }) => {
-  if (!isOpen) return null;
-
   // Selected teacher
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(store.teachers[0]?.id || '');
   const teacher = store.teachers.find(t => t.id === selectedTeacherId) || store.teachers[0];
@@ -46,9 +44,14 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   const [sessionDate, setSessionDate] = useState<string>('2026-09-23');
   const [savedBanner, setSavedBanner] = useState(false);
 
-  // Enrolled students in this class (including trial enrollments)
+  const classDays = getClassDaysOfWeek(currentClass, store.timeSlots);
+
+  // Enrolled students in this class scheduled for sessionDate (including trial enrollments)
   const classEnrollments = store.enrollments.filter(
-    e => e.class_id === currentClass?.id && (e.status === 'active' || e.status === 'trial')
+    e =>
+      e.class_id === currentClass?.id &&
+      (e.status === 'active' || e.status === 'trial') &&
+      isStudentScheduledForDate(e, sessionDate, classDays)
   );
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
@@ -62,6 +65,7 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   const [attendanceState, setAttendanceState] = useState<Record<string, { status: 'present' | 'absent_excused' | 'absent_unexcused'; note: string }>>({});
 
   React.useEffect(() => {
+    if (!isOpen) return;
     const map: Record<string, { status: 'present' | 'absent_excused' | 'absent_unexcused'; note: string }> = {};
     enrolledStudents.forEach(s => {
       const match = store.attendance.find(
@@ -74,7 +78,9 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
       }
     });
     setAttendanceState(map);
-  }, [selectedClassId, sessionDate]);
+  }, [selectedClassId, sessionDate, isOpen]);
+
+  if (!isOpen) return null;
 
   // Is future date check (> 2026-10-14)
   const isFutureDate = sessionDate > '2026-10-14';

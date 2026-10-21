@@ -23,7 +23,8 @@ import {
   User,
   X,
   Save,
-  ExternalLink
+  ExternalLink,
+  Calendar
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -33,13 +34,22 @@ import {
   createAuditRecord, 
   appendAuditLog,
   GOOGLE_DRIVE_FOLDER_ID,
-  GOOGLE_DRIVE_ROOT_URL
+  GOOGLE_DRIVE_ROOT_URL,
+  uploadFileToServer,
+  formatDateVN,
+  getClassDaysOfWeek,
+  getDayLabel,
+  formatDaysListLabel,
+  formatStudentScheduleLabel,
+  getDefaultClassStartDate,
+  calculateRemainingSessions,
+  calculateClassProratedPricing
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
-import { uploadFileToServer } from '../../lib/fileStorage';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { RoyalLogo } from '../RoyalLogo';
+import { showToast } from '../../lib/toast';
 
 interface StudentsTabProps {
   store: AppStore;
@@ -138,16 +148,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     const now = new Date().toISOString().split('T')[0];
 
     if (dataUrl) {
-      const storedPath = `Server: /uploads/students/${student.code}.jpg`;
+      const storedPath = `Google Drive: ${cloudFolder}/01_HinhHocSinh/${student.code}.jpg`;
       uploadFileToServer(dataUrl, `${student.code}.jpg`, 'students').catch(err => {
-        console.warn('Server photo upload error:', err);
+        console.warn('Drive photo upload error:', err);
       });
 
       const updateLog = createAuditRecord(
         'STUDENT_UPDATE',
         'ACADEMIC',
         `Hình thẻ Học viên ${student.name}`,
-        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu vào Server: /uploads/students/${student.code}.jpg và đồng bộ Drive`,
+        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu lên Google Drive (${cloudFolder}/01_HinhHocSinh/${student.code}.jpg)`,
         null,
         {
           target_id: student.code,
@@ -168,7 +178,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ),
         auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
-      setPhotoUploadSuccess(`Đã lưu ảnh thẻ vào Server: /uploads/students/${student.code}.jpg`);
+      setPhotoUploadSuccess(`Đã tải ảnh thẻ lên Google Drive: ${cloudFolder}/01_HinhHocSinh/${student.code}.jpg`);
+      showToast(`Đã cập nhật ảnh thẻ học viên ${student.name} (${student.code})!`, 'success', {
+        title: 'Lưu ảnh thẻ thành công',
+      });
       setTimeout(() => {
         setPhotoUploadSuccess(null);
         setPhotoModalStudent(null);
@@ -203,8 +216,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
   // Enrollment Modal State
   const [selectedClassId, setSelectedClassId] = useState('');
+  const [enrolledDaysOfWeek, setEnrolledDaysOfWeek] = useState<string[]>([]);
+  const [enrollStartDate, setEnrollStartDate] = useState('');
   const [registeredSessions, setRegisteredSessions] = useState(24);
-  const [isTrialMode, setIsTrialMode] = useState(true);
+  const [isManualSessionOverride, setIsManualSessionOverride] = useState(false);
+  const [isTrialMode, setIsTrialMode] = useState(false);
   const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
 
   // Trial Action Modal State (Promote to Active or Drop after Trial)
@@ -270,6 +286,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
 
     setConvertingStudent(null);
+    showToast(`Đã chuyển đổi học sinh ${student.name} sang mã ROYAL SCHOOL (${newCode})!`, 'success', {
+      title: 'Chuyển đổi phân loại thành công',
+    });
   };
 
   // Save Add / Edit Student
@@ -379,6 +398,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       }));
     }
 
+    showToast(
+      editingStudent
+        ? `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code}) thành công!`
+        : `Đã thêm mới hồ sơ học viên ${formData.name} thành công!`,
+      'success',
+      { title: editingStudent ? 'Cập nhật hồ sơ học sinh' : 'Thêm mới học sinh' }
+    );
     setShowAddModal(false);
     setEditingStudent(null);
   };
@@ -413,19 +439,28 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     const firstAvailable = store.classes.find(c => !studentActiveEnrolledClassIds.has(c.id));
 
     if (firstAvailable) {
+      const clsDays = getClassDaysOfWeek(firstAvailable, store);
+      const defStart = getDefaultClassStartDate(firstAvailable, store, undefined, clsDays);
+      const calc = calculateRemainingSessions(firstAvailable, defStart, store, clsDays);
       setSelectedClassId(firstAvailable.id);
-      setRegisteredSessions(firstAvailable.total_sessions);
+      setEnrolledDaysOfWeek([...clsDays]);
+      setEnrollStartDate(defStart);
+      setRegisteredSessions(calc.remainingSessions);
+      setIsManualSessionOverride(false);
       setEnrollmentError(null);
     } else {
       setSelectedClassId('');
+      setEnrolledDaysOfWeek([]);
+      setEnrollStartDate(new Date().toISOString().split('T')[0]);
       setRegisteredSessions(24);
+      setIsManualSessionOverride(false);
       setEnrollmentError('Học viên này đã ghi danh vào tất cả các lớp học hiện có trong hệ thống!');
     }
-    setIsTrialMode(true);
+    setIsTrialMode(false);
     setEnrollingStudent(student);
   };
 
-  // Enroll in Class with duplicate validation & Trial Policy
+  // Enroll in Class with duplicate validation & Prorated + Day-Specific + Trial Policy
   const handleConfirmEnrollment = () => {
     if (!enrollingStudent) return;
     if (!selectedClassId) {
@@ -449,37 +484,65 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     setEnrollmentError(null);
 
+    const classDays = getClassDaysOfWeek(cls, store);
+    const chosenDays = enrolledDaysOfWeek.length > 0 ? enrolledDaysOfWeek : classDays;
+    const startDate = enrollStartDate || getDefaultClassStartDate(cls, store, undefined, chosenDays);
+    const autoCalc = calculateRemainingSessions(cls, startDate, store, chosenDays);
+    const pricing = calculateClassProratedPricing(cls, registeredSessions, enrollingStudent.is_royal_student, store);
     const enrollmentStatus: 'trial' | 'active' = isTrialMode ? 'trial' : 'active';
+    const todayStr = new Date().toISOString().split('T')[0];
+    const subObj = store.subjects.find(s => s.id === cls.subject_id);
+    const subShortName = (subObj?.name || cls.name).split('(')[0].trim();
+    const scheduleLabel = formatStudentScheduleLabel(autoCalc.enrolledDaysOfWeek, autoCalc.daysOfWeek);
+
     const newEnrollment: Enrollment = {
       id: `enr_${Date.now()}`,
       student_id: enrollingStudent.id,
       class_id: cls.id,
-      registered_sessions: registeredSessions,
-      joined_date: new Date().toISOString().split('T')[0],
+      registered_sessions: pricing.effectiveSessions,
+      joined_date: startDate,
+      enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+      is_partial_schedule: autoCalc.isPartialSchedule,
       status: enrollmentStatus,
-      trial_session_date: isTrialMode ? new Date().toISOString().split('T')[0] : undefined,
-      trial_notes: isTrialMode ? 'Học sinh đăng ký học thử 1 buổi đầu tiên' : undefined,
+      is_trial: isTrialMode,
+      trial_session_date: isTrialMode ? startDate : undefined,
+      trial_attended: false,
+      trial_notes: isTrialMode
+        ? `Học sinh đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(startDate)} (${scheduleLabel} • ${pricing.effectiveSessions}/${pricing.totalSessions} buổi)`
+        : undefined,
     };
 
-    // Calculate mid-course tuition: price_per_session * registeredSessions
-    const grossAmount = cls.price_per_session * registeredSessions;
+    const proratedNote = autoCalc.isPartialSchedule
+      ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${pricing.effectiveSessions} buổi x ${formatVND(pricing.sessionRate)}/buổi)`
+      : pricing.isMidCourse
+      ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDate)})`
+      : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
 
-    // Create Invoice with separate subject/class
+    // Create Invoice with prorated & day-specific metadata
     const newInvoice: TuitionInvoice = {
       id: `inv_${Date.now()}`,
       invoice_code: `INV-${new Date().getFullYear()}-${String(store.invoices.length + 1).padStart(4, '0')}`,
       student_id: enrollingStudent.id,
       class_id: cls.id,
-      gross_amount: grossAmount,
+      gross_amount: pricing.proratedGrossFee,
+      discount_amount: pricing.discountAmount,
       credit_deducted: 0,
-      net_payable: grossAmount,
+      net_payable: pricing.netPayable,
       paid_amount: 0,
-      outstanding_amount: grossAmount,
+      outstanding_amount: pricing.netPayable,
       payment_status: 'unpaid',
       due_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0], // 1 week
       is_trial_pending: isTrialMode,
       trial_fee: 0,
-      created_at: new Date().toISOString().split('T')[0],
+      registered_sessions: pricing.effectiveSessions,
+      total_class_sessions: pricing.totalSessions,
+      session_rate: pricing.sessionRate,
+      start_date: startDate,
+      enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+      is_partial_schedule: autoCalc.isPartialSchedule,
+      is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
+      prorated_note: proratedNote,
+      created_at: todayStr,
     };
 
     onUpdateStore(prev => {
@@ -495,6 +558,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       };
     });
 
+    showToast(
+      `Đã xếp lớp "${cls.name}" cho học sinh ${enrollingStudent.name} (${pricing.effectiveSessions} buổi)!`,
+      'success',
+      { title: 'Ghi danh lớp ngoại khóa thành công' }
+    );
     setEnrollingStudent(null);
   };
 
@@ -510,12 +578,19 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ...prev,
         enrollments: prev.enrollments.map(e => 
           e.id === enrollmentId 
-            ? { ...e, status: 'active', trial_outcome: 'promoted', trial_notes: 'Xác nhận lên học chính thức toàn khóa' } 
+            ? { 
+                ...e, 
+                status: 'active', 
+                trial_attended: true,
+                trial_completed_action: 'promoted',
+                trial_outcome: 'promoted', 
+                trial_notes: 'Xác nhận lên học chính thức toàn khóa (Buổi thử tính là buổi 1)' 
+              } 
             : e
         ),
         invoices: prev.invoices.map(inv => 
           inv.student_id === enr.student_id && inv.class_id === enr.class_id && inv.is_trial_pending
-            ? { ...inv, is_trial_pending: false }
+            ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' }
             : inv
         ),
         notifications: [
@@ -523,7 +598,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             id: `notif_${Date.now()}`,
             type: 'enrollment_over_quota',
             title: 'Học viên chính thức theo học sau buổi thử 1',
-            message: `Học sinh ${student?.name || ''} đã chuyển sang học CHÍNH THỨC lớp ${cls?.name || ''}. Hóa đơn học phí đã kích hoạt thanh toán.`,
+            message: `Học sinh ${student?.name || ''} đã chuyển sang học CHÍNH THỨC lớp ${cls?.name || ''}. Hóa đơn học phí đã kích hoạt thanh toán VietQR.`,
             date: new Date().toISOString().split('T')[0],
             severity: 'low',
             read: false,
@@ -534,6 +609,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
     setTrialActionModal(null);
     setTrialNotes('');
+    showToast('Đã chuyển học viên lên học CHÍNH THỨC toàn khóa và kích hoạt hóa đơn!', 'success', {
+      title: 'Chuyển lên học chính thức',
+    });
   };
 
   // Drop Trial Enrollment (Nghỉ sau buổi học thử 1 - Hủy hóa đơn, không nợ, giải phóng chỗ)
@@ -548,7 +626,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ...prev,
         enrollments: prev.enrollments.map(e => 
           e.id === enrollmentId 
-            ? { ...e, status: 'trial_dropped', trial_outcome: 'dropped', trial_notes: notes || 'Học sinh dừng học sau buổi thử 1' } 
+            ? { 
+                ...e, 
+                status: 'trial_dropped', 
+                trial_attended: true,
+                trial_completed_action: 'dropped',
+                trial_outcome: 'dropped', 
+                trial_notes: notes || 'Học sinh dừng học sau buổi thử 1 (Trial Dropped)' 
+              } 
             : e
         ),
         // Cancel the full-course invoice with 0 fee, no bad debt
@@ -580,6 +665,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
     setTrialActionModal(null);
     setTrialNotes('');
+    showToast('Đã chốt dừng học thử — Hủy hóa đơn và giải phóng chỉ tiêu sĩ số lớp!', 'info', {
+      title: 'Dừng sau buổi học thử',
+    });
   };
 
   return (
@@ -691,15 +779,15 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                 <tr>
                   <th className="py-3 px-3 text-center w-14">Hình Thẻ</th>
-                  <th className="py-3 px-4">Mã HV</th>
+                  <th className="py-3 px-3 whitespace-nowrap">Mã HV</th>
                   <th className="py-3 px-4">Họ và Tên</th>
-                  <th className="py-3 px-4">Ngày Sinh & Giới Tính</th>
-                  <th className="py-3 px-4">Phân Loại / Bánh Sữa</th>
-                  <th className="py-3 px-4">Trường & Lớp</th>
-                  <th className="py-3 px-4">Phụ Huynh & SĐT</th>
-                  <th className="py-3 px-4">Lưu Ý Y Tế & Dị Ứng</th>
+                  <th className="py-3 px-3">Ngày Sinh & Giới Tính</th>
+                  <th className="py-3 px-3">Phân Loại / Bánh Sữa</th>
+                  <th className="py-3 px-3">Trường & Lớp</th>
+                  <th className="py-3 px-3">Phụ Huynh & SĐT</th>
+                  <th className="py-3 px-3 w-40 max-w-[160px]">Lưu Ý Y Tế & Dị Ứng</th>
                   <th className="py-3 px-4">Lớp Đang Học</th>
-                  <th className="py-3 px-4 text-right">Thao Tác</th>
+                  <th className="py-3 px-4 text-right whitespace-nowrap">Thao Tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
@@ -745,8 +833,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         )}
                       </td>
 
-                      <td className="py-3 px-4">
-                        <span className={`px-2 py-0.5 rounded font-mono font-bold text-xs ${
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <span className={`px-2 py-0.5 rounded font-mono font-bold text-xs inline-block whitespace-nowrap ${
                           student.is_royal_student
                             ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                             : 'bg-slate-800 text-slate-300 border border-slate-700'
@@ -754,7 +842,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           {student.code}
                         </span>
                         {student.previous_student_code && (
-                          <div className="text-[10px] text-cyan-400 font-mono mt-0.5">
+                          <div className="text-[10px] text-cyan-400 font-mono mt-0.5 whitespace-nowrap">
                             Cũ: {student.previous_student_code}
                           </div>
                         )}
@@ -764,39 +852,39 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         <div className="font-bold text-white text-sm">{student.name}</div>
                       </td>
 
-                      <td className="py-3 px-4 text-slate-300">
+                      <td className="py-3 px-3 text-slate-300 whitespace-nowrap">
                         <div>{student.dob}</div>
                         <div className="text-[10px] text-slate-500">{student.gender}</div>
                       </td>
 
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3">
                         {student.is_royal_student ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 inline-flex items-center gap-1">
-                            <Crown className="w-3 h-3 text-amber-400" />
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 inline-flex items-center gap-1 whitespace-nowrap">
+                            <Crown className="w-3 h-3 text-amber-400 shrink-0" />
                             Royal (Bánh sữa)
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
                             Ngoài trường
                           </span>
                         )}
                       </td>
 
-                      <td className="py-3 px-4 text-slate-300">
+                      <td className="py-3 px-3 text-slate-300">
                         <div>{student.school_name || 'Royal School'}</div>
                         <div className="text-[10px] text-slate-500">{student.regular_class || 'Chưa xếp lớp'}</div>
                       </td>
 
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3">
                         <div className="text-white font-medium">{student.parent_name}</div>
-                        <div className="text-amber-400 font-mono text-[11px]">{student.parent_phone}</div>
+                        <div className="text-amber-400 font-mono text-[11px] whitespace-nowrap">{student.parent_phone}</div>
                       </td>
 
-                      <td className="py-3 px-4 max-w-xs">
+                      <td className="py-3 px-3 w-40 max-w-[160px]">
                         {student.medical_notes ? (
-                          <div className="flex items-start gap-1 p-1 rounded-lg bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300">
+                          <div className="flex items-start gap-1.5 p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300">
                             <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                            <span className="truncate">{student.medical_notes}</span>
+                            <span className="whitespace-normal break-words leading-snug">{student.medical_notes}</span>
                           </div>
                         ) : (
                           <span className="text-slate-500 text-[11px] italic">Bình thường</span>
@@ -811,37 +899,56 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               if (!c) return null;
                               const isTrial = enr.status === 'trial';
                               const shortName = c.name.split('-')[0].trim();
+                              const clsDays = getClassDaysOfWeek(c, store);
+                              const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
+                                ? enr.enrolled_days_of_week
+                                : clsDays;
+                              const isPartial = enr.is_partial_schedule || studentDays.length < clsDays.length;
+                              const regSess = enr.registered_sessions || c.total_sessions || 24;
+                              const attendedCount = store.attendance.filter(
+                                a => a.student_id === student.id && a.class_id === c.id && a.status === 'present'
+                              ).length;
+
                               return (
-                                <div key={enr.id} className="flex items-center gap-1.5 flex-wrap">
-                                  {isTrial ? (
-                                    <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1 shadow-sm">
-                                      <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
-                                      <span>{shortName} (Học thử buổi 1)</span>
+                                <div key={enr.id} className="flex flex-col gap-1">
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    {isTrial ? (
+                                      <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold inline-flex items-center gap-1 shadow-sm w-fit">
+                                        <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                        <span>{shortName} (Học Thử Buổi 1)</span>
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium inline-flex items-center gap-1 w-fit">
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                        <span>{shortName} (Chính thức)</span>
+                                      </span>
+                                    )}
+                                    <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold border ${
+                                      isPartial
+                                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                        : 'bg-slate-800/80 text-slate-300 border-slate-700'
+                                    }`}>
+                                      Lịch: {studentDays.join(', ')} ({attendedCount}/{regSess}b)
                                     </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium flex items-center gap-1">
-                                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                      <span>{shortName} (Chính thức)</span>
-                                    </span>
-                                  )}
+                                  </div>
 
                                   {isTrial && (
-                                    <div className="flex items-center gap-1">
+                                    <div className="flex items-center gap-1 flex-wrap">
                                       <button
                                         onClick={() => setTrialActionModal({ type: 'promote', student, enrollment: enr, className: c.name })}
-                                        className="px-1.5 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold flex items-center gap-0.5 transition-colors"
-                                        title="Lên chính thức (Kích hoạt hóa đơn toàn khóa)"
+                                        className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9.5px] font-bold flex items-center gap-1 transition-colors"
+                                        title="Chuyển Lên Chính Thức (Kích hoạt hóa đơn toàn khóa)"
                                       >
-                                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-                                        <span>Lên CT</span>
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                        <span>✓ Lên chính thức</span>
                                       </button>
                                       <button
                                         onClick={() => setTrialActionModal({ type: 'drop', student, enrollment: enr, className: c.name })}
-                                        className="px-1.5 py-0.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[9px] font-bold flex items-center gap-0.5 transition-colors"
-                                        title="Nghỉ sau buổi thử (Hủy HĐ, giải phóng chỗ)"
+                                        className="px-2 py-0.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[9.5px] font-bold flex items-center gap-1 transition-colors"
+                                        title="Dừng Sau Buổi Thử (Hủy HĐ, giải phóng sĩ số lớp)"
                                       >
-                                        <XCircle className="w-2.5 h-2.5 text-rose-400" />
-                                        <span>Nghỉ thử</span>
+                                        <XCircle className="w-3 h-3 text-rose-400" />
+                                        <span>✕ Dừng học thử</span>
                                       </button>
                                     </div>
                                   )}
@@ -1025,35 +1132,57 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           const c = store.classes.find(cl => cl.id === enr.class_id);
                           if (!c) return null;
                           const isTrial = enr.status === 'trial';
+                          const shortName = c.name.split('-')[0].trim();
+                          const clsDays = getClassDaysOfWeek(c, store);
+                          const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
+                            ? enr.enrolled_days_of_week
+                            : clsDays;
+                          const isPartial = enr.is_partial_schedule || studentDays.length < clsDays.length;
+                          const regSess = enr.registered_sessions || c.total_sessions || 24;
+                          const attendedCount = store.attendance.filter(
+                            a => a.student_id === student.id && a.class_id === c.id && a.status === 'present'
+                          ).length;
+
                           return (
-                            <div key={enr.id} className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-900/90 border border-slate-800">
-                              {isTrial ? (
-                                <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
-                                  <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
-                                  <span className="truncate">{c.name.split('-')[0].trim()} (Học thử)</span>
+                            <div key={enr.id} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                {isTrial ? (
+                                  <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                    <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                    <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium flex items-center gap-1">
+                                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                    <span className="truncate">{shortName} (Chính thức)</span>
+                                  </span>
+                                )}
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${
+                                  isPartial
+                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                                }`}>
+                                  Lịch: {studentDays.join(', ')} ({attendedCount}/{regSess} buổi)
                                 </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium flex items-center gap-1">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                  <span className="truncate">{c.name.split('-')[0].trim()}</span>
-                                </span>
-                              )}
+                              </div>
 
                               {isTrial && (
-                                <div className="flex items-center gap-1 shrink-0">
+                                <div className="flex items-center gap-1.5">
                                   <button
                                     onClick={() => setTrialActionModal({ type: 'promote', student, enrollment: enr, className: c.name })}
-                                    className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold transition-colors"
-                                    title="Lên chính thức (Kích hoạt hóa đơn toàn khóa)"
+                                    className="flex-1 px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                                    title="Chuyển Lên Chính Thức (Kích hoạt hóa đơn toàn khóa)"
                                   >
-                                    Lên CT
+                                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                    <span>✓ Lên chính thức</span>
                                   </button>
                                   <button
                                     onClick={() => setTrialActionModal({ type: 'drop', student, enrollment: enr, className: c.name })}
-                                    className="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[10px] font-bold transition-colors"
-                                    title="Dừng học thử (Hủy HĐ, không nợ)"
+                                    className="flex-1 px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                                    title="Dừng Sau Buổi Thử (Hủy HĐ, không nợ)"
                                   >
-                                    Nghỉ thử
+                                    <XCircle className="w-3 h-3 text-rose-400" />
+                                    <span>✕ Dừng học thử</span>
                                   </button>
                                 </div>
                               )}
@@ -1242,8 +1371,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     onChange={(e) => setFormData({ ...formData, is_royal_student: e.target.value === 'true' })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-bold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="true">Học sinh Royal (Cấp mã RY... + Bánh sữa)</option>
-                    <option value="false">Học sinh ngoài trường (Mã EXT... - Không bánh sữa)</option>
+                    <option value="true">Học sinh chính khóa ROYAL SCHOOL</option>
+                    <option value="false">Học sinh ngoài trường</option>
                   </select>
                 </div>
               </div>
@@ -1443,7 +1572,15 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       } else {
                         setEnrollmentError(null);
                       }
-                      if (c) setRegisteredSessions(c.total_sessions);
+                      if (c) {
+                        const clsDays = getClassDaysOfWeek(c, store);
+                        const defStart = getDefaultClassStartDate(c, store, undefined, clsDays);
+                        const calc = calculateRemainingSessions(c, defStart, store, clsDays);
+                        setEnrolledDaysOfWeek([...clsDays]);
+                        setEnrollStartDate(defStart);
+                        setRegisteredSessions(calc.remainingSessions);
+                        setIsManualSessionOverride(false);
+                      }
                     }}
                     className={`w-full px-3 py-2 rounded-xl bg-slate-900 border text-white focus:outline-none transition-colors ${
                       isCurrentClassAlreadyEnrolled || enrollmentError
@@ -1468,82 +1605,274 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">
-                    Số buổi học đăng ký thực tế (Học sinh vào giữa chừng)
+                {/* Enrollment Mode Pills */}
+                <div className="space-y-2">
+                  <label className="block text-slate-400 font-medium">
+                    Hình thức nhập học môn này:
                   </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={registeredSessions}
-                    onChange={(e) => setRegisteredSessions(Number(e.target.value))}
-                    disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 disabled:opacity-40 text-white focus:outline-none focus:border-amber-500 font-mono"
-                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsTrialMode(false)}
+                      className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        !isTrialMode
+                          ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/60 shadow-sm ring-1 ring-emerald-500/20'
+                          : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                      }`}
+                    >
+                      <span>🎓 Học Chính Thức Ngay</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsTrialMode(true)}
+                      className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        isTrialMode
+                          ? 'bg-purple-500/25 text-purple-200 border border-purple-500/60 shadow-sm ring-1 ring-purple-500/25'
+                          : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                      }`}
+                    >
+                      <span>🧪 Học Thử 1 Buổi Đầu</span>
+                    </button>
+                  </div>
+                  {isTrialMode && (
+                    <div className="p-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-[11px] text-purple-200 leading-relaxed">
+                      ℹ️ Học sinh được trải nghiệm 1 buổi học đầu tiên. Hóa đơn học phí toàn khóa sẽ ở trạng thái <strong>&ldquo;Tạm hoãn / Chờ hoàn thành học thử&rdquo;</strong> và chỉ kích hoạt khi học sinh tiếp tục học buổi thứ 2.
+                    </div>
+                  )}
                 </div>
 
-                {/* Trial Session Policy Option */}
-                <div className="p-3 rounded-2xl bg-gradient-to-r from-purple-500/10 via-indigo-500/10 to-transparent border border-purple-500/30 flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    id="trialModeCheckbox"
-                    checked={isTrialMode}
-                    onChange={(e) => setIsTrialMode(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded text-purple-600 focus:ring-purple-500 bg-slate-900 border-slate-700 cursor-pointer"
-                  />
-                  <label htmlFor="trialModeCheckbox" className="text-xs text-slate-300 cursor-pointer select-none">
-                    <div className="font-bold text-white flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                      <span>Chính sách "Học thử 1 buổi đầu tiên"</span>
-                      <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 text-[9px] font-bold">Mặc định</span>
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                      Học sinh trải nghiệm 1 buổi đầu tiên. Hóa đơn toàn khóa được tạm hoãn chờ (không nhắc nợ). Khi điểm danh buổi 2 hoặc phụ huynh xác nhận học tiếp, hệ thống sẽ kích hoạt chính thức.
-                    </div>
-                  </label>
-                </div>
-
-                {/* Live Tuition Calculation */}
+                {/* KHU VỰC CẤU HÌNH LỊCH HỌC THEO THỨ + NGÀY BẮT ĐẦU & TÍNH HỌC PHÍ THEO SỐ BUỔI CÒN LẠI */}
                 {selectedClassId && (() => {
                   const c = store.classes.find(cl => cl.id === selectedClassId);
                   if (!c) return null;
-                  const total = c.price_per_session * registeredSessions;
+                  const clsDays = getClassDaysOfWeek(c, store);
+                  const activeDays = enrolledDaysOfWeek.length > 0 ? enrolledDaysOfWeek.filter(d => clsDays.includes(d)) : clsDays;
+                  const finalDays = activeDays.length > 0 ? activeDays : clsDays;
+                  const currentStart = enrollStartDate || getDefaultClassStartDate(c, store, undefined, finalDays);
+                  const autoCalc = calculateRemainingSessions(c, currentStart, store, finalDays);
+                  const pricing = calculateClassProratedPricing(c, registeredSessions, enrollingStudent.is_royal_student, store);
+
                   return (
-                    <div className={`p-3 rounded-2xl space-y-1 ${
-                      isTrialMode 
-                        ? 'bg-purple-950/40 border border-purple-500/40' 
-                        : 'bg-slate-900/90 border border-amber-500/30'
-                    }`}>
-                      <div className="flex justify-between text-slate-400">
-                        <span>Đơn giá buổi:</span>
-                        <span className="font-mono text-white">{formatVND(c.price_per_session)}</span>
+                    <div className="space-y-3">
+                      <div className="p-3 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-2.5">
+                        
+                        {/* Bộ chọn Lịch học trong tuần của Học sinh */}
+                        <div className="pb-2.5 border-b border-slate-800/80 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                              <span>Lịch học thực tế của bé trong tuần <span className="text-rose-400">*</span>:</span>
+                            </label>
+                            {autoCalc.isPartialSchedule && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const fullCalc = calculateRemainingSessions(c, currentStart, store, clsDays);
+                                  setEnrolledDaysOfWeek([...clsDays]);
+                                  setRegisteredSessions(fullCalc.remainingSessions);
+                                  setIsManualSessionOverride(false);
+                                }}
+                                className="text-[10px] text-amber-300 underline font-semibold"
+                              >
+                                Chọn đủ {clsDays.length} buổi/tuần
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-wrap pt-0.5">
+                            {clsDays.map(dayCode => {
+                              const isSelected = finalDays.includes(dayCode);
+                              return (
+                                <button
+                                  key={dayCode}
+                                  type="button"
+                                  onClick={() => {
+                                    let nextDays = finalDays;
+                                    if (isSelected) {
+                                      if (finalDays.length <= 1) return;
+                                      nextDays = finalDays.filter(d => d !== dayCode);
+                                    } else {
+                                      nextDays = clsDays.filter(d => d === dayCode || finalDays.includes(d));
+                                    }
+                                    const nextCalc = calculateRemainingSessions(c, currentStart, store, nextDays);
+                                    setEnrolledDaysOfWeek(nextDays);
+                                    setRegisteredSessions(nextCalc.remainingSessions);
+                                    setIsManualSessionOverride(false);
+                                  }}
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 shadow-sm ring-1 ring-amber-400'
+                                      : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-700'
+                                  }`}
+                                >
+                                  <span>{isSelected ? '✓' : ''}</span>
+                                  <span>{getDayLabel(dayCode)} ({dayCode})</span>
+                                </button>
+                              );
+                            })}
+                            <span className="text-[10px] text-amber-300 font-bold">
+                              &rarr; {formatStudentScheduleLabel(finalDays, clsDays)} ({finalDays.length}/{clsDays.length} buổi/tuần)
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                            <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Ngày bắt đầu học chính thức <span className="text-rose-400">*</span>:</span>
+                          </label>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextD = getDefaultClassStartDate(c, store, undefined, finalDays);
+                                const nextCalc = calculateRemainingSessions(c, nextD, store, finalDays);
+                                setEnrollStartDate(nextD);
+                                setRegisteredSessions(nextCalc.remainingSessions);
+                                setIsManualSessionOverride(false);
+                              }}
+                              className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-500/30 text-[10px] font-semibold"
+                            >
+                              Buổi kế tiếp
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const fullStartCalc = calculateRemainingSessions(c, autoCalc.termStartDate, store, finalDays);
+                                setEnrollStartDate(autoCalc.termStartDate);
+                                setRegisteredSessions(fullStartCalc.remainingSessions);
+                                setIsManualSessionOverride(false);
+                              }}
+                              className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-[10px] font-semibold"
+                            >
+                              Đầu khóa
+                            </button>
+                          </div>
+                        </div>
+
+                        <input
+                          type="date"
+                          min={autoCalc.termStartDate}
+                          max={autoCalc.termEndDate}
+                          value={currentStart}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEnrollStartDate(val);
+                            const nextCalc = calculateRemainingSessions(c, val, store, finalDays);
+                            setRegisteredSessions(nextCalc.remainingSessions);
+                            setIsManualSessionOverride(false);
+                          }}
+                          disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
+                          className="w-full px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400"
+                        />
+
+                        {/* Reactive Counter Grid */}
+                        <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                          <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
+                            <div className="text-[9px] text-slate-400 uppercase font-semibold">Lịch lớp ({clsDays.join(', ')})</div>
+                            <div className="font-mono font-bold text-white text-xs mt-0.5">{pricing.totalSessions} buổi</div>
+                          </div>
+                          <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
+                            <div className="text-[9px] text-slate-400 uppercase font-semibold">Lịch của bé</div>
+                            <div className="font-mono font-bold text-xs mt-0.5 text-amber-300">
+                              {finalDays.join(', ')} ({finalDays.length}b/tuần)
+                            </div>
+                          </div>
+                          <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/40">
+                            <div className="text-[9px] text-emerald-300 uppercase font-bold">Tổng thực học</div>
+                            <div className="font-mono font-black text-emerald-400 text-xs mt-0.5">{pricing.effectiveSessions} buổi</div>
+                          </div>
+                        </div>
+
+                        {/* Manual Override Input */}
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-[11px] text-slate-400">
+                            Điều chỉnh linh hoạt số buổi:
+                            {isManualSessionOverride && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRegisteredSessions(autoCalc.remainingSessions);
+                                  setIsManualSessionOverride(false);
+                                }}
+                                className="ml-1.5 text-[10px] text-amber-300 underline"
+                              >
+                                Tự động ({autoCalc.remainingSessions}b)
+                              </button>
+                            )}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={pricing.totalSessions}
+                            value={registeredSessions}
+                            onChange={(e) => {
+                              const val = Math.min(pricing.totalSessions, Math.max(1, Number(e.target.value) || 1));
+                              setRegisteredSessions(val);
+                              setIsManualSessionOverride(true);
+                            }}
+                            disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
+                            className="w-20 px-2.5 py-1 rounded-lg bg-slate-900 border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs text-center focus:outline-none"
+                          />
+                        </div>
                       </div>
-                      <div className="flex justify-between text-slate-400">
-                        <span>Số buổi đăng ký:</span>
-                        <span className="font-mono text-white">{registeredSessions} buổi</span>
+
+                      {/* Dynamic Pricing Breakdown */}
+                      <div className={`p-3 rounded-2xl space-y-1.5 ${
+                        isTrialMode 
+                          ? 'bg-purple-950/40 border border-purple-500/40' 
+                          : 'bg-slate-900/90 border border-amber-500/30'
+                      }`}>
+                        <div className="flex justify-between text-slate-400">
+                          <span>Lịch học của lớp:</span>
+                          <span className="font-mono text-slate-200">{formatDaysListLabel(clsDays)} (Toàn khóa: {pricing.totalSessions}b)</span>
+                        </div>
+                        <div className="flex justify-between text-slate-400">
+                          <span>Lịch học của bé:</span>
+                          <span className="font-mono font-bold text-amber-300">{formatStudentScheduleLabel(finalDays, clsDays)} ({pricing.effectiveSessions}b)</span>
+                        </div>
+                        <div className="flex justify-between text-slate-400">
+                          <span>Đơn giá 1 buổi (Ceil):</span>
+                          <span className="font-mono font-bold text-white">{formatVND(pricing.sessionRate)}/buổi</span>
+                        </div>
+                        <div className="flex justify-between text-slate-200 pt-1 border-t border-slate-800/80">
+                          <span className="font-semibold">
+                            Học phí áp dụng:
+                          </span>
+                          <span className="font-mono font-bold text-emerald-300">
+                            {pricing.effectiveSessions < pricing.totalSessions
+                              ? `${pricing.effectiveSessions}b × ${formatVND(pricing.sessionRate)} = ${formatVND(pricing.proratedGrossFee)} (Thay vì ${formatVND(pricing.fullCourseFee)})`
+                              : formatVND(pricing.proratedGrossFee)}
+                          </span>
+                        </div>
+                        {pricing.discountAmount > 0 && (
+                          <div className="flex justify-between text-amber-300">
+                            <span>{pricing.discountLabel}:</span>
+                            <span className="font-mono font-bold">-{formatVND(pricing.discountAmount)}</span>
+                          </div>
+                        )}
+                        {isTrialMode ? (
+                          <>
+                            <div className="flex justify-between text-purple-300 font-bold border-t border-purple-800/60 pt-1 text-sm">
+                              <span>Học phí buổi thử 1:</span>
+                              <span className="font-mono text-emerald-400">0 ₫ (Miễn phí 100%)</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 italic">
+                              * Hóa đơn thực học ({formatVND(pricing.netPayable)}) sẽ ở trạng thái chờ duyệt sau khi học xong buổi 1.
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex justify-between text-emerald-400 font-bold border-t border-slate-800 pt-1 text-sm">
+                              <span>Học phí thực đóng:</span>
+                              <span className="font-mono font-black">{formatVND(pricing.netPayable)}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 italic mt-1">
+                              Hệ thống tự động phát hành hóa đơn {pricing.effectiveSessions}/{pricing.totalSessions} buổi kèm mã VietQR.
+                            </div>
+                          </>
+                        )}
                       </div>
-                      {isTrialMode ? (
-                        <>
-                          <div className="flex justify-between text-purple-300 font-bold border-t border-purple-800/60 pt-1 text-sm">
-                            <span>Học phí buổi thử 1:</span>
-                            <span className="font-mono text-emerald-400">0 ₫ (Miễn phí 100%)</span>
-                          </div>
-                          <div className="text-[10px] text-slate-400 italic">
-                            * Hóa đơn toàn khóa ({formatVND(total)}) sẽ ở trạng thái chờ duyệt sau khi học xong buổi 1.
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex justify-between text-amber-400 font-bold border-t border-slate-800 pt-1 text-sm">
-                            <span>Học phí cần thu:</span>
-                            <span className="font-mono">{formatVND(total)}</span>
-                          </div>
-                          <div className="text-[10px] text-slate-500 italic mt-1">
-                            Hệ thống tự động phát hành hóa đơn học phí kèm mã VietQR riêng biệt.
-                          </div>
-                        </>
-                      )}
                     </div>
                   );
                 })()}
@@ -1564,7 +1893,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled || !!enrollmentError}
                   className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20 transition-all"
                 >
-                  Xác Nhận Ghi Danh
+                  Xác Nhận Ghi Danh ({registeredSessions} buổi)
                 </button>
               </div>
             </div>

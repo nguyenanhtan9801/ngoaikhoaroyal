@@ -16,6 +16,8 @@ import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
 import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
+import { ToastContainer } from './components/ToastContainer';
+import { showToast } from './lib/toast';
 import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser } from './types';
@@ -200,7 +202,9 @@ export default function App() {
     }));
 
     setCurrentRoute('sub_credits');
-    alert(`Đã lập Phiếu bảo lưu học phí ${newCredit.credit_code} cho học sinh ${student.name}!`);
+    showToast(`Đã lập Phiếu bảo lưu học phí ${newCredit.credit_code} cho học sinh ${student.name}!`, 'success', {
+      title: 'Cấp phiếu bảo lưu thành công',
+    });
   };
 
   // Print Handlers
@@ -307,6 +311,7 @@ export default function App() {
             setIsParentPortalOpen(true);
           }}
         />
+        <ToastContainer />
       </div>
     );
   }
@@ -388,6 +393,7 @@ export default function App() {
             setIsParentPortalOpen(true);
           }}
         />
+        <ToastContainer />
       </div>
     );
   }
@@ -695,6 +701,9 @@ export default function App() {
           setIsParentPortalOpen(true);
         }}
       />
+
+      {/* Global Bottom-Right Floating Toast Notifications */}
+      <ToastContainer />
 
     </div>
   );

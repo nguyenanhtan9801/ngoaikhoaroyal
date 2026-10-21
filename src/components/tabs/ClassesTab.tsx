@@ -21,6 +21,7 @@ import {
 import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { ExtracurricularClass, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { showToast } from '../../lib/toast';
 
 const WEEKDAYS = [
   { code: 'T2', label: 'Thứ 2' },
@@ -214,7 +215,9 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
   const handleOpenAddModal = () => {
     if (isSelectedTermClosed) {
-      alert('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.');
+      showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.', 'error', {
+        title: 'Khóa học đã đóng',
+      });
       return;
     }
 
@@ -259,13 +262,17 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
     // Hard constraint: exactly 2 days per class
     if (!formData.days_of_week || formData.days_of_week.length !== 2) {
-      alert('Vui lòng chọn đúng 2 ngày học trong tuần trước khi lưu lớp!');
+      showToast('Vui lòng chọn đúng 2 ngày học trong tuần trước khi lưu lớp!', 'warning', {
+        title: 'Thiếu cấu hình ngày học',
+      });
       return;
     }
 
     // Check if target term is closed
     if (isTermClosed(formData.term_id, store)) {
-      alert('Không thể lưu lớp học vào Khóa học đã ĐÓNG.');
+      showToast('Không thể lưu lớp học vào Khóa học đã ĐÓNG.', 'error', {
+        title: 'Khóa học đã đóng',
+      });
       return;
     }
 
@@ -331,6 +338,13 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       }));
     }
 
+    showToast(
+      editingClass
+        ? `Đã cập nhật thông tin lớp "${formData.name}" thành công!`
+        : `Đã mở lớp ngoại khóa "${formData.name}" thành công!`,
+      'success',
+      { title: editingClass ? 'Cập nhật lớp học' : 'Mở lớp học mới' }
+    );
     setShowAddModal(false);
     setEditingClass(null);
   };
@@ -419,7 +433,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   const facility = store.facilities.find(f => f.id === cls.facility_id);
                   const timeSlot = store.timeSlots.find(t => t.id === cls.time_slot_id);
                   const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
-                  const enrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
+                  const enrollments = store.enrollments.filter(e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'));
+                  const trialCount = enrollments.filter(e => e.status === 'trial').length;
                   const isOverQuota = enrollments.length > cls.max_students;
                   const classDays = getClassDays(cls, store);
                   const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
@@ -463,6 +478,11 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                         }`}>
                           {enrollments.length} / {cls.max_students}
                         </span>
+                        {trialCount > 0 && (
+                          <div className="text-[9px] text-purple-300 font-semibold mt-0.5">
+                            ({trialCount} học thử)
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-4 font-mono font-bold text-amber-400">{formatVND(cls.price_per_session)}</td>
@@ -530,7 +550,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             const timeSlot = store.timeSlots.find(t => t.id === cls.time_slot_id);
             const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
             
-            const enrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
+            const enrollments = store.enrollments.filter(e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'));
+            const trialCount = enrollments.filter(e => e.status === 'trial').length;
             const studentCount = enrollments.length;
             const isOverQuota = studentCount > cls.max_students;
             const classDays = getClassDays(cls, store);
@@ -589,6 +610,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       <span className="text-slate-400">Sĩ số lớp:</span>
                       <span className={`font-mono font-bold ${isOverQuota ? 'text-rose-400' : 'text-white'}`}>
                         {studentCount} / {cls.max_students} học viên
+                        {trialCount > 0 && <span className="text-purple-300 text-[10px] ml-1">({trialCount} thử)</span>}
                         {isOverQuota && ' (Vượt chỉ tiêu)'}
                       </span>
                     </div>

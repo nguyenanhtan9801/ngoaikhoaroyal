@@ -233,9 +233,14 @@ export interface Enrollment {
   class_id: string;
   registered_sessions: number;
   joined_date: string;
+  enrolled_days_of_week?: string[];     // Mảng các thứ bé thực học (VD: ['T2'] thay vì ['T2', 'T4'])
+  is_partial_schedule?: boolean;        // Đánh dấu học bán phần theo tuần (1 phần buổi trong tuần)
   status: 'trial' | 'active' | 'trial_dropped' | 'transferred' | 'completed' | 'dropped';
+  is_trial?: boolean;                    // Đánh dấu lớp này bắt đầu bằng học thử
   trial_session_date?: string;          // Ngày diễn ra buổi học thử đầu tiên
-  trial_outcome?: 'promoted' | 'dropped'; // Kết quả sau buổi thử
+  trial_attended?: boolean;             // Buổi thử đã được điểm danh hay chưa
+  trial_completed_action?: 'promoted' | 'dropped'; // Kết quả xử lý sau buổi thử
+  trial_outcome?: 'promoted' | 'dropped'; // Kết quả sau buổi thử (tương thích ngược)
   trial_notes?: string;                 // Ghi chú đánh giá sau buổi học thử
 }
 
@@ -258,6 +263,7 @@ export interface TuitionInvoice {
   class_id: string;
   gross_amount: number;
   credit_deducted: number; // deducted from makeup credit
+  discount_amount?: number; // Số tiền ưu đãi giảm trừ (nếu có)
   net_payable: number;
   paid_amount: number;
   outstanding_amount: number;
@@ -271,6 +277,14 @@ export interface TuitionInvoice {
   created_at: string;
   is_trial_pending?: boolean; // Tạm hoãn thu toàn khóa cho đến khi qua buổi học thử
   trial_fee?: number;         // Đơn giá 1 buổi thử (mặc định 0 nếu miễn phí thử)
+  registered_sessions?: number; // Số buổi thực tế học sinh đăng ký
+  total_class_sessions?: number; // Tổng số buổi chuẩn toàn khóa của lớp
+  session_rate?: number;      // Đơn giá 1 buổi (Ceil) áp dụng
+  start_date?: string;        // Ngày bắt đầu học chính thức (YYYY-MM-DD)
+  enrolled_days_of_week?: string[]; // Mảng các thứ học sinh thực học (VD: ['T2'])
+  is_partial_schedule?: boolean;    // Đánh dấu học bán phần theo tuần
+  is_prorated?: boolean;      // Đánh dấu hóa đơn tính theo số buổi còn lại hoặc lịch riêng
+  prorated_note?: string;     // Ghi chú minh bạch trên hóa đơn
   payment_history?: InvoicePaymentRecord[]; // Lịch sử các lần đóng tiền
 }
 
@@ -455,6 +469,7 @@ export type LogActionType =
   | 'EXCEL_IMPORT'            // Import Master Excel
   | 'USER_CREATE'             // Tạo tài khoản nhân sự
   | 'USER_PASSWORD_CHANGE'    // Đổi mật khẩu
+  | 'PROMOTE_TRIAL_TO_ACTIVE' // Kích hoạt học thử lên chính thức
   | 'STORAGE_CONFIG_UPDATE';  // Cập nhật cấu hình lưu trữ Cloud
 
 export interface AuditLogRecord {

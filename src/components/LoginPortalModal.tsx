@@ -46,8 +46,6 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   currentParentStudent,
   onSetParentStudent,
 }) => {
-  if (!isOpen) return null;
-
   const [activeTab, setActiveTab] = useState<'staff' | 'parent'>('staff');
   
   // Staff Form
@@ -59,6 +57,8 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   // Parent Form
   const [parentPhone, setParentPhone] = useState('0903 889 911');
   const [parentError, setParentError] = useState<string | null>(null);
+
+  if (!isOpen) return null;
 
   const staffAccounts: { role: UserRole; name: string; title: string; email: string; avatarBg: string }[] = [
     {

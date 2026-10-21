@@ -21,10 +21,12 @@ import {
   Check,
   AlertCircle
 } from 'lucide-react';
-import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords } from '../../lib/storage';
+import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords, formatDaysListLabel, getClassDaysOfWeek } from '../../lib/storage';
 import { generateVietQRUrl } from '../../lib/vietqr';
 import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { StudentSearchCombobox } from '../StudentSearchCombobox';
+import { showToast } from '../../lib/toast';
 
 interface FinancePayrollTabProps {
   store: AppStore;
@@ -328,6 +330,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         if (inv.id === verifyingInvoice.id) {
           return {
             ...inv,
+            is_trial_pending: false,
             paid_amount: newPaid,
             outstanding_amount: newOutstanding,
             payment_status: newStatus,
@@ -339,6 +342,20 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         }
         return inv;
       }),
+      enrollments: prev.enrollments.map(enr => {
+        if (
+          enr.student_id === verifyingInvoice.student_id &&
+          enr.class_id === verifyingInvoice.class_id &&
+          enr.status === 'trial'
+        ) {
+          return {
+            ...enr,
+            status: 'active',
+            trial_completed_action: 'promoted',
+          };
+        }
+        return enr;
+      }),
       auditLogs: [paymentLog, ...(prev.auditLogs || [])],
     }));
 
@@ -347,6 +364,52 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     setPaymentRefInput('');
     setPaymentNotesInput('');
     setValidationError(null);
+    showToast(
+      `Đã gạch nợ đợt ${updatedHistory.length} số tiền ${formatVND(numAmount)} cho hóa đơn ${verifyingInvoice.invoice_code}!`,
+      'success',
+      { title: 'Gạch nợ học phí thành công' }
+    );
+  };
+
+  // Activate a trial-pending invoice to official unpaid status & promote student enrollment
+  const handleActivateTrialInvoice = (invoice: TuitionInvoice) => {
+    const student = store.students.find(s => s.id === invoice.student_id);
+    const cls = store.classes.find(c => c.id === invoice.class_id);
+    onUpdateStore(prev => {
+      const updatedEnrollments = prev.enrollments.map(e =>
+        e.student_id === invoice.student_id && e.class_id === invoice.class_id && e.status === 'trial'
+          ? { ...e, status: 'active' as const, trial_completed_action: 'promoted' as const }
+          : e
+      );
+      const updatedInvoices = prev.invoices.map(inv =>
+        inv.id === invoice.id
+          ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' as const }
+          : inv
+      );
+      return appendAuditLog(
+        {
+          ...prev,
+          enrollments: updatedEnrollments,
+          invoices: updatedInvoices,
+        },
+        createAuditRecord(
+          'PROMOTE_TRIAL_TO_ACTIVE',
+          'FINANCE',
+          cls?.name || invoice.invoice_code,
+          `Kích hoạt thu phí chính thức toàn khóa từ hóa đơn học thử ${invoice.invoice_code} của học viên "${student?.name || invoice.student_id}". Mở mã VietQR thu học phí.`,
+          currentUser,
+          {
+            target_id: invoice.id,
+            details: { status: 'success', after: { status: 'active', is_trial_pending: false } },
+          }
+        )
+      );
+    });
+    showToast(
+      `Đã kích hoạt thu phí chính thức cho học viên ${student?.name || invoice.student_id} (${invoice.invoice_code})!`,
+      'success',
+      { title: 'Kích hoạt hóa đơn chính thức' }
+    );
   };
 
   // Settle Payroll for a Teacher & Class
@@ -388,7 +451,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       ],
     }));
 
-    alert(`Đã quyết toán thù lao cho ${teacher.name} thành công: ${formatVND(totalPayroll)}!`);
+    showToast(
+      `Đã quyết toán thù lao cho ${teacher.name} thành công: ${formatVND(totalPayroll)}!`,
+      'success',
+      { title: 'Quyết toán thù lao GV' }
+    );
   };
 
   // Class Transfer Calculation
@@ -403,7 +470,9 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const handleExecuteTransfer = () => {
     const student = store.students.find(s => s.id === transferState.student_id);
     if (!student || !fromClass || !toClass || currentStudentClasses.length === 0 || fromClass.id === toClass.id) {
-      alert('Vui lòng chọn học sinh có lớp đang học và lớp chuyển đến hợp lệ!');
+      showToast('Vui lòng chọn học sinh có lớp đang học và lớp chuyển đến hợp lệ!', 'warning', {
+        title: 'Chưa đủ điều kiện chuyển lớp',
+      });
       return;
     }
 
@@ -466,15 +535,35 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         }
       );
 
+      const newTransferRecord = {
+        id: `tr_${Date.now()}`,
+        student_id: student.id,
+        from_class_id: fromClass.id,
+        to_class_id: toClass.id,
+        transfer_date: new Date().toISOString().split('T')[0],
+        remaining_sessions: transferState.remaining_sessions,
+        old_session_rate: oldRate,
+        new_session_rate: newRate,
+        surcharge_amount: surcharge,
+        created_by: currentUser?.full_name || 'Phòng Học vụ - Kế toán',
+      };
+
       return {
         ...prev,
         enrollments: updatedEnrollments,
         invoices: updatedInvoices,
+        transfers: [newTransferRecord, ...(prev.transfers || [])],
         auditLogs: [transferLog, ...(prev.auditLogs || [])],
       };
     });
 
-    alert(`Chuyển lớp thành công cho ${student.name}! ${surcharge > 0 ? `Đã phát hành hóa đơn phụ thu: ${formatVND(surcharge)}` : 'Không phát sinh phụ thu.'}`);
+    showToast(
+      `Chuyển lớp thành công cho ${student.name} sang lớp ${toClass.name}! ${
+        surcharge > 0 ? `Đã phát hành hóa đơn phụ thu: ${formatVND(surcharge)}.` : 'Không phát sinh phụ thu (Chuyển ngang).'
+      }`,
+      'success',
+      { title: 'Xác nhận chuyển lớp thành công' }
+    );
   };
 
   return (
@@ -552,9 +641,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           {/* Quick Invoice Financial Metrics Row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4 border-b border-slate-800 bg-slate-950/40">
             <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
-              <span className="text-[10px] uppercase font-bold text-slate-400">Tổng Phải Thu (Gross/Net)</span>
+              <span className="text-[10px] uppercase font-bold text-slate-400">Tổng Phải Thu Chính Thức</span>
               <div className="text-sm font-extrabold font-mono text-white mt-1">
-                {formatVND(baseFilteredInvoices.reduce((sum, i) => sum + (i.net_payable || i.gross_amount || 0), 0))}
+                {formatVND(
+                  baseFilteredInvoices
+                    .filter(i => i.payment_status !== 'cancelled' && !i.is_trial_pending)
+                    .reduce((sum, i) => sum + (i.net_payable || i.gross_amount || 0), 0)
+                )}
               </div>
             </div>
 
@@ -568,14 +661,18 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             <div className="p-3 rounded-2xl bg-rose-950/30 border border-rose-500/30">
               <span className="text-[10px] uppercase font-bold text-rose-400">Công Nợ Cần Thu</span>
               <div className="text-sm font-extrabold font-mono text-rose-400 mt-1">
-                {formatVND(baseFilteredInvoices.reduce((sum, i) => sum + (i.outstanding_amount || 0), 0))}
+                {formatVND(
+                  baseFilteredInvoices
+                    .filter(i => i.payment_status !== 'cancelled' && !i.is_trial_pending)
+                    .reduce((sum, i) => sum + (i.outstanding_amount || 0), 0)
+                )}
               </div>
             </div>
 
-            <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30">
-              <span className="text-[10px] uppercase font-bold text-amber-400">Đang Nợ Một Phần</span>
-              <div className="text-sm font-extrabold font-mono text-amber-300 mt-1">
-                {baseFilteredInvoices.filter(i => i.payment_status === 'partial').length} Hóa Đơn
+            <div className="p-3 rounded-2xl bg-purple-950/30 border border-purple-500/30">
+              <span className="text-[10px] uppercase font-bold text-purple-300">Tạm Hoãn (Đang Học Thử)</span>
+              <div className="text-sm font-extrabold font-mono text-purple-300 mt-1">
+                {baseFilteredInvoices.filter(i => i.is_trial_pending).length} Hóa Đơn
               </div>
             </div>
           </div>
@@ -700,18 +797,68 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         )}
                       </div>
 
-                      {/* Class */}
-                      <div className="text-xs text-slate-300 font-semibold mb-2 flex items-center justify-between">
-                        <span className="truncate">{cls?.name}</span>
-                        <span className="text-[10px] text-slate-500 font-mono shrink-0">Hạn: {invoice.due_date}</span>
-                      </div>
+                      {/* Class & Session Count Badge */}
+                      {(() => {
+                        const enr = store.enrollments.find(
+                          e => e.student_id === invoice.student_id && e.class_id === invoice.class_id && e.status !== 'trial_dropped'
+                        );
+                        const regSessions = invoice.registered_sessions || enr?.registered_sessions || cls?.total_sessions || 24;
+                        const totalSessions = invoice.total_class_sessions || cls?.total_sessions || 24;
+                        const isMidCourse = invoice.is_prorated ?? (regSessions < totalSessions);
+                        const clsDays = getClassDaysOfWeek(cls, store.timeSlots);
+                        const studentDays = invoice.enrolled_days_of_week || enr?.enrolled_days_of_week || clsDays;
+                        const isPartialWeek =
+                          invoice.is_partial_schedule ??
+                          enr?.is_partial_schedule ??
+                          (studentDays.length > 0 && studentDays.length < clsDays.length);
+
+                        return (
+                          <div className="mb-2 space-y-1">
+                            <div className="text-xs text-slate-300 font-semibold flex items-center justify-between gap-2">
+                              <span className="truncate">{cls?.name}</span>
+                              <span className="text-[10px] text-slate-500 font-mono shrink-0">Hạn: {invoice.due_date}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                              {isPartialWeek ? (
+                                <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-bold text-[10px]">
+                                  🗓️ Chỉ học {formatDaysListLabel(studentDays)} ({regSessions}/{totalSessions} buổi)
+                                </span>
+                              ) : isMidCourse ? (
+                                <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-bold text-[10px]">
+                                  ⚡ {regSessions}/{totalSessions} buổi - Vào giữa khóa
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-slate-800/90 text-slate-300 border border-slate-700 font-mono text-[10px]">
+                                  {regSessions}/{totalSessions} buổi ({formatDaysListLabel(clsDays)})
+                                </span>
+                              )}
+                              {invoice.start_date && (
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                  Từ: {invoice.start_date.split('-').reverse().join('/')}
+                                </span>
+                              )}
+                            </div>
+                            {invoice.prorated_note && (isMidCourse || isPartialWeek) && (
+                              <div className="text-[10px] text-cyan-300/80 italic">
+                                {invoice.prorated_note}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {/* Financial breakdown */}
                       <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 space-y-1.5 text-xs">
                         <div className="flex justify-between text-slate-400">
-                          <span>Học phí gốc:</span>
+                          <span>Học phí tính theo số buổi:</span>
                           <span className="font-mono text-slate-200">{formatVND(invoice.gross_amount)}</span>
                         </div>
+                        {(invoice.discount_amount ?? 0) > 0 && (
+                          <div className="flex justify-between text-amber-400">
+                            <span>Ưu đãi học phí:</span>
+                            <span className="font-mono">-{formatVND(invoice.discount_amount || 0)}</span>
+                          </div>
+                        )}
                         {invoice.credit_deducted > 0 && (
                           <div className="flex justify-between text-cyan-400">
                             <span>Khấu trừ bảo lưu:</span>
@@ -728,9 +875,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         </div>
                         <div className="flex justify-between text-xs pt-1 border-t border-slate-800/60">
                           <span className="text-slate-400">Còn nợ:</span>
-                          <span className={`font-mono font-bold ${invoice.outstanding_amount > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                            {formatVND(invoice.outstanding_amount)}
-                          </span>
+                          {invoice.is_trial_pending ? (
+                            <span className="font-mono font-bold text-purple-300 text-[11px]">
+                              Chưa phát sinh (Đang học thử)
+                            </span>
+                          ) : (
+                            <span className={`font-mono font-bold ${invoice.outstanding_amount > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              {formatVND(invoice.outstanding_amount)}
+                            </span>
+                          )}
                         </div>
 
                         {invoice.payment_history && invoice.payment_history.length > 0 && (
@@ -747,32 +900,54 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
                     {/* Actions */}
                     <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => setViewingQrInvoice(invoice)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-colors"
-                          title="Tạo mã VietQR Napas247"
-                        >
-                          <QrCode className="w-3.5 h-3.5" />
-                          <span>Mã QR</span>
-                        </button>
+                      {invoice.is_trial_pending ? (
+                        <div className="w-full flex items-center justify-between gap-2">
+                          <span className="text-[10px] text-purple-300/90 italic">
+                            Tạm hoãn mã QR chờ kết quả buổi thử
+                          </span>
+                          <button
+                            onClick={() => handleActivateTrialInvoice(invoice)}
+                            className="px-2.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] transition-colors flex items-center gap-1 shrink-0 shadow-sm shadow-purple-600/20"
+                            title="Chuyển học sinh lên Chính thức và mở mã VietQR thu học phí"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Lên chính thức & Mở QR</span>
+                          </button>
+                        </div>
+                      ) : invoice.payment_status === 'cancelled' ? (
+                        <span className="text-[11px] text-slate-500 italic">
+                          Hóa đơn đã hủy (Học sinh dừng sau buổi học thử)
+                        </span>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => setViewingQrInvoice(invoice)}
+                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-colors"
+                              title="Tạo mã VietQR Napas247"
+                            >
+                              <QrCode className="w-3.5 h-3.5" />
+                              <span>Mã QR</span>
+                            </button>
 
-                        <button
-                          onClick={() => onPrintReceipt(invoice)}
-                          className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                          title="In Biên Lai Thu Tiền"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                            <button
+                              onClick={() => onPrintReceipt(invoice)}
+                              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                              title="In Biên Lai Thu Tiền"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
 
-                      {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
-                        <button
-                          onClick={() => openVerifyModal(invoice)}
-                          className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow-sm shadow-emerald-600/20"
-                        >
-                          Gạch nợ
-                        </button>
+                          {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
+                            <button
+                              onClick={() => openVerifyModal(invoice)}
+                              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow-sm shadow-emerald-600/20"
+                            >
+                              Gạch nợ
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -818,10 +993,51 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
                         <td className="py-3 px-4">
                           <div className="font-semibold text-slate-200">{cls?.name}</div>
+                          {(() => {
+                            const enr = store.enrollments.find(
+                              e => e.student_id === invoice.student_id && e.class_id === invoice.class_id && e.status !== 'trial_dropped'
+                            );
+                            const regSessions = invoice.registered_sessions || enr?.registered_sessions || cls?.total_sessions || 24;
+                            const totalSessions = invoice.total_class_sessions || cls?.total_sessions || 24;
+                            const isMidCourse = invoice.is_prorated ?? (regSessions < totalSessions);
+                            const clsDays = getClassDaysOfWeek(cls, store.timeSlots);
+                            const studentDays = invoice.enrolled_days_of_week || enr?.enrolled_days_of_week || clsDays;
+                            const isPartialWeek =
+                              invoice.is_partial_schedule ??
+                              enr?.is_partial_schedule ??
+                              (studentDays.length > 0 && studentDays.length < clsDays.length);
+
+                            return (
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                {isPartialWeek ? (
+                                  <span
+                                    className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-bold text-[10px]"
+                                    title={invoice.prorated_note || `Lịch riêng: Chỉ học ${formatDaysListLabel(studentDays)} (${regSessions}/${totalSessions} buổi)`}
+                                  >
+                                    🗓️ Chỉ học {formatDaysListLabel(studentDays)} ({regSessions}/{totalSessions}b)
+                                  </span>
+                                ) : isMidCourse ? (
+                                  <span
+                                    className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono font-bold text-[10px]"
+                                    title={invoice.prorated_note || `Tính học phí giữa khóa: ${regSessions}/${totalSessions} buổi`}
+                                  >
+                                    {regSessions}/{totalSessions} buổi - Vào giữa khóa
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono text-[10px]">
+                                    {regSessions}/{totalSessions} buổi ({formatDaysListLabel(clsDays)})
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
 
                         <td className="py-3 px-4 font-mono text-slate-300">
-                          {formatVND(invoice.gross_amount)}
+                          <div>{formatVND(invoice.gross_amount)}</div>
+                          {(invoice.discount_amount ?? 0) > 0 && (
+                            <div className="text-[10px] text-amber-400">-ƯĐ: {formatVND(invoice.discount_amount || 0)}</div>
+                          )}
                         </td>
 
                         <td className="py-3 px-4 font-mono text-cyan-400">
@@ -840,7 +1056,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         </td>
 
                         <td className="py-3 px-4 font-mono font-bold">
-                          {invoice.outstanding_amount > 0 ? (
+                          {invoice.is_trial_pending ? (
+                            <span className="text-purple-300 text-[11px]" title="Chưa phát sinh công nợ - Đang chờ hoàn thành buổi học thử">
+                              0 đ (Chờ thử)
+                            </span>
+                          ) : invoice.outstanding_amount > 0 ? (
                             <span className="text-rose-400">{formatVND(invoice.outstanding_amount)}</span>
                           ) : (
                             <span className="text-emerald-400">0 đ</span>
@@ -878,29 +1098,44 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
                         <td className="py-3 px-4 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              onClick={() => setViewingQrInvoice(invoice)}
-                              className="p-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors"
-                              title="Tạo mã VietQR Napas247"
-                            >
-                              <QrCode className="w-3.5 h-3.5" />
-                            </button>
-
-                            <button
-                              onClick={() => onPrintReceipt(invoice)}
-                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                              title="In Biên Lai Thu Tiền"
-                            >
-                              <Printer className="w-3.5 h-3.5" />
-                            </button>
-
-                            {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
+                            {invoice.is_trial_pending ? (
                               <button
-                                onClick={() => openVerifyModal(invoice)}
-                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition-colors"
+                                onClick={() => handleActivateTrialInvoice(invoice)}
+                                className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10px] transition-colors inline-flex items-center gap-1"
+                                title="Kích hoạt thu học phí chính thức và mở mã VietQR"
                               >
-                                Gạch nợ
+                                <CheckCircle2 className="w-3 h-3" />
+                                <span>Lên chính thức</span>
                               </button>
+                            ) : invoice.payment_status === 'cancelled' ? (
+                              <span className="text-[10px] text-slate-500 italic">Đã hủy</span>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => setViewingQrInvoice(invoice)}
+                                  className="p-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors"
+                                  title="Tạo mã VietQR Napas247"
+                                >
+                                  <QrCode className="w-3.5 h-3.5" />
+                                </button>
+
+                                <button
+                                  onClick={() => onPrintReceipt(invoice)}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                                  title="In Biên Lai Thu Tiền"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                </button>
+
+                                {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
+                                  <button
+                                    onClick={() => openVerifyModal(invoice)}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition-colors"
+                                  >
+                                    Gạch nợ
+                                  </button>
+                                )}
+                              </>
                             )}
                           </div>
                         </td>
@@ -1108,21 +1343,20 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
           <div className="space-y-3 text-xs">
             <div>
-              <label className="block text-slate-400 font-medium mb-1">Chọn Học sinh cần chuyển lớp</label>
-              <select
-                value={transferState.student_id}
-                onChange={(e) => setTransferState({ ...transferState, student_id: e.target.value })}
-                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
-              >
-                {store.students.map(s => {
-                  const activeCount = store.enrollments.filter(e => e.student_id === s.id && e.status === 'active').length;
-                  return (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.code}) {activeCount > 0 ? `• [${activeCount} lớp đang học]` : '• [Chưa có lớp]'}
-                    </option>
-                  );
-                })}
-              </select>
+              <label className="block text-slate-400 font-medium mb-1">
+                Chọn Học sinh cần chuyển lớp
+              </label>
+              <StudentSearchCombobox
+                students={store.students}
+                enrollments={store.enrollments}
+                classes={store.classes}
+                selectedStudentId={transferState.student_id}
+                onSelectStudent={(studentId) =>
+                  setTransferState({ ...transferState, student_id: studentId })
+                }
+                placeholder="Gõ tên, mã học sinh (RY-...), SĐT phụ huynh để tìm nhanh..."
+                prioritizeActiveEnrollments={true}
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1372,6 +1606,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   <span>Số tiền quét mã QR:</span>
                   <strong className="text-emerald-400 font-mono text-sm font-extrabold">{formatVND(outstanding > 0 ? outstanding : netPayable)}</strong>
                 </div>
+                {viewingQrInvoice.prorated_note && (
+                  <div className="text-slate-400 flex justify-between">
+                    <span>Đối chiếu buổi học:</span>
+                    <strong className="text-cyan-300 font-mono text-[11px]">{viewingQrInvoice.prorated_note}</strong>
+                  </div>
+                )}
                 <div className="text-slate-400 flex justify-between">
                   <span>Nội dung CK:</span>
                   <strong className="text-cyan-300 font-mono">HP {student?.code} {cls?.name.split('-')[0].trim()}</strong>

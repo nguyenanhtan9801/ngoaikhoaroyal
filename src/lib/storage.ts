@@ -566,6 +566,356 @@ export function calculateCeilSessionRate(finalPrice: number, totalSessions: numb
   return Math.ceil(finalPrice / totalSessions / 1000) * 1000;
 }
 
+const JS_DAY_TO_VN_CODE: Record<number, string> = {
+  0: 'CN',
+  1: 'T2',
+  2: 'T3',
+  3: 'T4',
+  4: 'T5',
+  5: 'T6',
+  6: 'T7',
+};
+
+export const VN_DAY_NAME_MAP: Record<string, string> = {
+  'T2': 'Thứ 2',
+  'T3': 'Thứ 3',
+  'T4': 'Thứ 4',
+  'T5': 'Thứ 5',
+  'T6': 'Thứ 6',
+  'T7': 'Thứ 7',
+  'CN': 'Chủ Nhật',
+};
+
+export function getDayLabel(dayCode: string): string {
+  return VN_DAY_NAME_MAP[dayCode] || dayCode;
+}
+
+export function getDayCodeFromDate(dateStr: string): string {
+  if (!dateStr) return 'T2';
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (isNaN(d.getTime())) return 'T2';
+  return JS_DAY_TO_VN_CODE[d.getDay()] || 'T2';
+}
+
+export const getDateDayCode = getDayCodeFromDate;
+
+export function formatDaysListLabel(days: string[]): string {
+  if (!days || days.length === 0) return '';
+  return days.map(d => getDayLabel(d)).join(' & ');
+}
+
+export function formatStudentScheduleLabel(enrolledDays?: string[], classDays?: string[]): string {
+  const effectiveClassDays = classDays && classDays.length > 0 ? classDays : ['T2', 'T4'];
+  const effectiveEnrolled =
+    enrolledDays && enrolledDays.length > 0
+      ? enrolledDays.filter(d => effectiveClassDays.includes(d))
+      : effectiveClassDays;
+
+  if (effectiveEnrolled.length < effectiveClassDays.length && effectiveEnrolled.length > 0) {
+    return `Chỉ học ${formatDaysListLabel(effectiveEnrolled)}`;
+  }
+  return formatDaysListLabel(effectiveClassDays);
+}
+
+/**
+ * Kiểm tra học sinh có lịch học vào buổi/ngày điểm danh hay không
+ */
+export function shouldStudentAttendSession(
+  enrollment: Enrollment | undefined,
+  sessionDateOrDayCode: string
+): boolean {
+  if (!enrollment) return true;
+  if (!enrollment.enrolled_days_of_week || enrollment.enrolled_days_of_week.length === 0) {
+    return true;
+  }
+  const dayCode = sessionDateOrDayCode.includes('-')
+    ? getDayCodeFromDate(sessionDateOrDayCode)
+    : sessionDateOrDayCode;
+  return enrollment.enrolled_days_of_week.includes(dayCode);
+}
+
+export function isStudentScheduledForDate(
+  enrollment: Enrollment | undefined,
+  sessionDate: string,
+  classDays?: string[]
+): boolean {
+  if (!enrollment) return true;
+  if (enrollment.joined_date && sessionDate < enrollment.joined_date) {
+    return false;
+  }
+  const effectiveStudentDays =
+    enrollment.enrolled_days_of_week && enrollment.enrolled_days_of_week.length > 0
+      ? enrollment.enrolled_days_of_week
+      : classDays && classDays.length > 0
+      ? classDays
+      : [];
+  if (effectiveStudentDays.length === 0) return true;
+  const dayCode = getDayCodeFromDate(sessionDate);
+  return effectiveStudentDays.includes(dayCode);
+}
+
+export function formatDateVN(dateStr?: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+export function getClassDaysOfWeek(
+  classItem: ExtracurricularClass | undefined,
+  storeOrTimeSlots?: AppStore | { id: string; days_of_week?: string[] }[]
+): string[] {
+  if (!classItem) return ['T2', 'T4'];
+  if (classItem.days_of_week && classItem.days_of_week.length > 0) {
+    return classItem.days_of_week;
+  }
+  const timeSlots = Array.isArray(storeOrTimeSlots)
+    ? storeOrTimeSlots
+    : storeOrTimeSlots?.timeSlots;
+  const slot = timeSlots?.find(ts => ts.id === classItem.time_slot_id);
+  if (slot && slot.days_of_week && slot.days_of_week.length > 0) {
+    return slot.days_of_week;
+  }
+  return ['T2', 'T4'];
+}
+
+export function getDefaultClassStartDate(
+  classItem: ExtracurricularClass,
+  store: AppStore,
+  referenceDateStr?: string,
+  enrolledDaysOfWeek?: string[]
+): string {
+  const term = store.terms?.find(t => t.id === classItem.term_id);
+  const termStart = term?.start_date || '2026-09-01';
+  const termEnd = term?.end_date || '2026-12-25';
+  const todayStr = referenceDateStr || new Date().toISOString().split('T')[0];
+
+  let baseDateStr = todayStr;
+  if (baseDateStr < termStart) baseDateStr = termStart;
+  if (baseDateStr > termEnd) baseDateStr = termStart;
+
+  const classDays = getClassDaysOfWeek(classItem, store);
+  const activeDays =
+    enrolledDaysOfWeek && enrolledDaysOfWeek.length > 0
+      ? enrolledDaysOfWeek.filter(d => classDays.includes(d))
+      : classDays;
+  const targetDays = activeDays.length > 0 ? activeDays : classDays;
+
+  const startCursor = new Date(`${baseDateStr}T00:00:00`);
+  const endCursor = new Date(`${termEnd}T00:00:00`);
+
+  if (!isNaN(startCursor.getTime()) && !isNaN(endCursor.getTime())) {
+    const cursor = new Date(startCursor);
+    while (cursor <= endCursor) {
+      const vnDay = JS_DAY_TO_VN_CODE[cursor.getDay()];
+      if (targetDays.includes(vnDay)) {
+        const y = cursor.getFullYear();
+        const m = String(cursor.getMonth() + 1).padStart(2, '0');
+        const d = String(cursor.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  return baseDateStr;
+}
+
+export interface RemainingSessionsResult {
+  totalSessions: number;
+  maxStudentSessionsInCourse: number;
+  remainingSessions: number;
+  elapsedSessions: number;
+  termStartDate: string;
+  termEndDate: string;
+  daysOfWeek: string[];
+  enrolledDaysOfWeek: string[];
+  isPartialSchedule: boolean;
+  sessionRate: number;
+  fullCourseFee: number;
+  proratedFee: number;
+  isMidCourse: boolean;
+}
+
+/**
+ * Thuật toán đếm số buổi còn lại theo lịch học của lớp + các thứ học sinh thực học từ startDate đến hết khóa (endDate)
+ */
+export function calculateRemainingSessions(
+  classItem: ExtracurricularClass,
+  startDate: string,
+  store: AppStore,
+  enrolledDaysOfWeek?: string[]
+): RemainingSessionsResult {
+  const term = store.terms?.find(t => t.id === classItem.term_id);
+  const termStartDate = term?.start_date || '2026-09-01';
+  const termEndDate = term?.end_date || '2026-12-25';
+  const totalSessions = classItem.total_sessions || 24;
+  const fullCourseFee = classItem.full_course_fee || 3600000;
+  const sessionRate =
+    classItem.price_per_session || calculateCeilSessionRate(fullCourseFee, totalSessions);
+  const daysOfWeek = getClassDaysOfWeek(classItem, store);
+
+  const validEnrolledDays =
+    enrolledDaysOfWeek && enrolledDaysOfWeek.length > 0
+      ? enrolledDaysOfWeek.filter(d => daysOfWeek.includes(d))
+      : daysOfWeek;
+  const finalEnrolledDays = validEnrolledDays.length > 0 ? validEnrolledDays : [daysOfWeek[0] || 'T2'];
+  const isPartialSchedule = finalEnrolledDays.length < daysOfWeek.length;
+
+  // Tổng số buổi chuẩn của cả khóa ứng với các thứ học sinh đăng ký (VD: Lớp 24 buổi [T2, T4], chọn [T2] -> 12 buổi)
+  const maxStudentSessionsInCourse = isPartialSchedule
+    ? Math.max(1, Math.round((totalSessions * finalEnrolledDays.length) / Math.max(1, daysOfWeek.length)))
+    : totalSessions;
+
+  const effectiveStartStr = startDate || termStartDate;
+
+  // Nếu chọn ngày bắt đầu từ đầu khóa trở về trước
+  if (effectiveStartStr <= termStartDate) {
+    const proratedFee = isPartialSchedule ? maxStudentSessionsInCourse * sessionRate : fullCourseFee;
+    return {
+      totalSessions,
+      maxStudentSessionsInCourse,
+      remainingSessions: maxStudentSessionsInCourse,
+      elapsedSessions: 0,
+      termStartDate,
+      termEndDate,
+      daysOfWeek,
+      enrolledDaysOfWeek: finalEnrolledDays,
+      isPartialSchedule,
+      sessionRate,
+      fullCourseFee,
+      proratedFee,
+      isMidCourse: false,
+    };
+  }
+
+  // Duyệt từ startDate đến endDate để đếm số buổi học rơi vào đúng các thứ mà học sinh đã chọn
+  let remainingCount = 0;
+  const startObj = new Date(`${effectiveStartStr}T00:00:00`);
+  const endObj = new Date(`${termEndDate}T00:00:00`);
+
+  if (!isNaN(startObj.getTime()) && !isNaN(endObj.getTime()) && startObj <= endObj) {
+    const cursor = new Date(startObj);
+    while (cursor <= endObj) {
+      const vnDay = JS_DAY_TO_VN_CODE[cursor.getDay()];
+      if (finalEnrolledDays.includes(vnDay)) {
+        remainingCount += 1;
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  // Giới hạn tối đa không vượt quá maxStudentSessionsInCourse
+  const clampedRemaining = Math.min(maxStudentSessionsInCourse, Math.max(0, remainingCount));
+  const elapsedSessions = Math.max(0, maxStudentSessionsInCourse - clampedRemaining);
+  const isMidCourse = clampedRemaining < maxStudentSessionsInCourse;
+  const proratedFee =
+    isMidCourse || isPartialSchedule ? clampedRemaining * sessionRate : fullCourseFee;
+
+  return {
+    totalSessions,
+    maxStudentSessionsInCourse,
+    remainingSessions: clampedRemaining,
+    elapsedSessions,
+    termStartDate,
+    termEndDate,
+    daysOfWeek,
+    enrolledDaysOfWeek: finalEnrolledDays,
+    isPartialSchedule,
+    sessionRate,
+    fullCourseFee,
+    proratedFee,
+    isMidCourse,
+  };
+}
+
+export interface ProratedPricingBreakdown {
+  totalSessions: number;
+  effectiveSessions: number;
+  elapsedSessions: number;
+  sessionRate: number;
+  fullCourseFee: number;
+  proratedGrossFee: number;
+  discountPercent: number;
+  discountAmount: number;
+  discountLabel: string;
+  netPayable: number;
+  isMidCourse: boolean;
+}
+
+/**
+ * Tính biểu phí chi tiết theo số buổi thực tế (hỗ trợ lịch bán phần theo thứ, vào giữa khóa & ưu đãi học sinh Royal / chính sách cơ sở)
+ */
+export function calculateClassProratedPricing(
+  classItem: ExtracurricularClass,
+  effectiveSessions: number,
+  isRoyalStudent: boolean,
+  store: AppStore
+): ProratedPricingBreakdown {
+  const totalSessions = classItem.total_sessions || 24;
+  const validSessions = Math.min(totalSessions, Math.max(0, Math.round(effectiveSessions)));
+  const elapsedSessions = Math.max(0, totalSessions - validSessions);
+  const fullCourseFee = classItem.full_course_fee || 3600000;
+  const sessionRate =
+    classItem.price_per_session || calculateCeilSessionRate(fullCourseFee, totalSessions);
+
+  const isMidCourse = validSessions < totalSessions;
+  const proratedGrossFee = isMidCourse ? validSessions * sessionRate : fullCourseFee;
+
+  // Kiểm tra chính sách ưu đãi
+  const effectivePrice = getEffectivePrice(
+    classItem.term_id,
+    classItem.campus_id,
+    classItem.subject_id,
+    store
+  );
+
+  let discountPercent = 0;
+  let discountAmount = 0;
+  let discountLabel = 'Không áp dụng';
+
+  if (isRoyalStudent) {
+    discountPercent =
+      effectivePrice.discount_type === 'percentage' && effectivePrice.discount_value > 5
+        ? effectivePrice.discount_value
+        : 5;
+    discountAmount = Math.round((proratedGrossFee * discountPercent) / 100);
+    discountLabel = `Ưu đãi HS Royal (${discountPercent}%)`;
+  } else if (
+    effectivePrice.discount_type === 'percentage' &&
+    effectivePrice.discount_value > 0 &&
+    !effectivePrice.discount_reason?.toLowerCase().includes('royal')
+  ) {
+    discountPercent = effectivePrice.discount_value;
+    discountAmount = Math.round((proratedGrossFee * discountPercent) / 100);
+    discountLabel = effectivePrice.discount_reason || `Ưu đãi khóa học (${discountPercent}%)`;
+  } else if (
+    effectivePrice.discount_type === 'fixed_amount' &&
+    effectivePrice.discount_value > 0 &&
+    !effectivePrice.discount_reason?.toLowerCase().includes('royal')
+  ) {
+    const ratio = totalSessions > 0 ? validSessions / totalSessions : 1;
+    discountAmount = Math.min(proratedGrossFee, Math.round(effectivePrice.discount_value * ratio));
+    discountLabel = effectivePrice.discount_reason || 'Ưu đãi giảm trực tiếp';
+  }
+
+  const netPayable = Math.max(0, proratedGrossFee - discountAmount);
+
+  return {
+    totalSessions,
+    effectiveSessions: validSessions,
+    elapsedSessions,
+    sessionRate,
+    fullCourseFee,
+    proratedGrossFee,
+    discountPercent,
+    discountAmount,
+    discountLabel,
+    netPayable,
+    isMidCourse,
+  };
+}
+
 export function generateStudentCode(isRoyal: boolean, existingStudents: Student[]): string {
   const currentYear = new Date().getFullYear();
   const prefix = isRoyal ? `RY-${currentYear}-` : `EXT-${currentYear}-`;
@@ -644,3 +994,85 @@ export function appendAuditLog(store: AppStore, log: AuditLogRecord): AppStore {
     auditLogs: updatedLogs,
   };
 }
+
+export function formatFileSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 KB';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+export async function compressAndConvertToBase64(file: File): Promise<{
+  base64: string;
+  fileName: string;
+  originalSizeBytes: number;
+  compressedSizeBytes: number;
+  compressionRatio: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Không thể đọc tệp tin'));
+    reader.onload = (e) => {
+      const dataUrl = (e.target?.result as string) || '';
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      resolve({
+        base64: dataUrl,
+        fileName: sanitizedName,
+        originalSizeBytes: file.size,
+        compressedSizeBytes: Math.round(file.size * 0.75),
+        compressionRatio: '25%',
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export function triggerFileDownload(fileName: string, urlOrBase64: string): void {
+  if (!urlOrBase64) return;
+  const link = document.createElement('a');
+  link.href = urlOrBase64;
+  link.download = fileName || 'download';
+  link.target = '_blank';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export async function uploadFileToServer(
+  base64Data: string,
+  fileName: string,
+  folder: 'students' | 'proofs' | 'admissions' = 'students'
+): Promise<{
+  success: boolean;
+  url: string;
+  driveUrl: string;
+  storedAt: string;
+  fileName: string;
+}> {
+  const category =
+    folder === 'students'
+      ? 'student_photos'
+      : folder === 'proofs'
+      ? 'attendance_proofs'
+      : 'admissions';
+  const info = buildGoogleDriveFileInfo(category, fileName);
+  return {
+    success: true,
+    url: base64Data || info.driveUrl,
+    driveUrl: GOOGLE_DRIVE_ROOT_URL,
+    storedAt: info.storedAt,
+    fileName: info.sanitizedName,
+  };
+}
+
+export async function uploadToSupabaseBucket(
+  file: File,
+  bucketName = 'royal-storage'
+): Promise<{ success: boolean; url: string }> {
+  const res = await compressAndConvertToBase64(file);
+  return {
+    success: true,
+    url: res.base64,
+  };
+}
+

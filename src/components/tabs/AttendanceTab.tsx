@@ -33,17 +33,24 @@ import {
   AppStore, 
   formatVND, 
   createAuditRecord, 
-  appendAuditLog
-} from '../../lib/storage';
-import { 
+  appendAuditLog,
   compressAndConvertToBase64, 
   triggerFileDownload, 
   uploadToSupabaseBucket, 
   uploadFileToServer,
-  formatFileSize 
-} from '../../lib/fileStorage';
-import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole, AppUser } from '../../types';
+  formatFileSize,
+  GOOGLE_DRIVE_FOLDER_ID,
+  GOOGLE_DRIVE_ROOT_URL,
+  getDateDayCode,
+  getDayLabel,
+  formatDaysListLabel,
+  isStudentScheduledForDate,
+  formatStudentScheduleLabel,
+  formatDateVN
+} from '../../lib/storage';
+import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { showToast } from '../../lib/toast';
 
 interface AttendanceTabProps {
   store: AppStore;
@@ -204,7 +211,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   );
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [isSubstitute, setIsSubstitute] = useState<boolean>(false);
-  const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
   // Modal proof attachment state (Upload & Compression)
   const [proofModalStudent, setProofModalStudent] = useState<Student | null>(null);
@@ -217,7 +223,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const [compressionStats, setCompressionStats] = useState<{
     originalSize: string;
     compressedSize: string;
-    ratio: number;
+    ratio: string;
   } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
 
@@ -227,31 +233,53 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     record: StudentAttendanceLocal;
   } | null>(null);
 
-  if (!currentClass) {
-    return (
-      <div className="p-8 text-center rounded-3xl bg-[#111827]/80 border border-slate-800 text-slate-400">
-        Chưa có lớp học nào trong hệ thống.
-      </div>
-    );
-  }
+  const [showOffScheduleStudents, setShowOffScheduleStudents] = useState<boolean>(false);
 
-  // Enrolled students in this class (active and trial)
-  const classEnrollments = store.enrollments.filter(
-    e => e.class_id === currentClass.id && (e.status === 'active' || e.status === 'trial')
+  const selectedDayCode = useMemo(() => getDateDayCode(selectedDate), [selectedDate]);
+  const selectedDayLabel = useMemo(() => getDayLabel(selectedDayCode), [selectedDayCode]);
+
+  // All active/trial enrollments in this class
+  const allClassEnrollments = currentClass
+    ? store.enrollments.filter(
+        e => e.class_id === currentClass.id && (e.status === 'active' || e.status === 'trial')
+      )
+    : [];
+
+  // Split enrollments into:
+  // 1) Scheduled for selectedDate (matches student's enrolled_days_of_week AND selectedDate >= joined_date)
+  // 2) Off-schedule for selectedDate (partial weekly schedule not matching selectedDayCode, or before joined_date)
+  const classEnrollments = allClassEnrollments.filter(e =>
+    isStudentScheduledForDate(e, selectedDate, classDays)
   );
+
+  const offScheduleEnrollments = allClassEnrollments.filter(
+    e => !isStudentScheduledForDate(e, selectedDate, classDays)
+  );
+
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
     .filter(Boolean) as Student[];
 
+  const offScheduleStudents = offScheduleEnrollments
+    .map(e => {
+      const student = store.students.find(s => s.id === e.student_id);
+      return student ? { student, enrollment: e } : null;
+    })
+    .filter(Boolean) as { student: Student; enrollment: Enrollment }[];
+
   // Existing session for this date
-  const currentSession = store.sessions.find(
-    s => s.class_id === currentClass.id && s.session_date === selectedDate
-  );
+  const currentSession = currentClass
+    ? store.sessions.find(
+        s => s.class_id === currentClass.id && s.session_date === selectedDate
+      )
+    : undefined;
 
   // Existing attendance map for this date
-  const existingAttendance = store.attendance.filter(
-    a => a.class_id === currentClass.id && a.session_date === selectedDate
-  );
+  const existingAttendance = currentClass
+    ? store.attendance.filter(
+        a => a.class_id === currentClass.id && a.session_date === selectedDate
+      )
+    : [];
 
   const initialStatusMap: Record<string, StudentAttendanceLocal> = {};
   enrolledStudents.forEach(s => {
@@ -283,6 +311,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Update attendance state when selectedDate or store.attendance changes (Guaranteed Persistence)
   useEffect(() => {
+    if (!currentClass) return;
     const newMap: Record<string, StudentAttendanceLocal> = {};
     enrolledStudents.forEach(s => {
       const existing = store.attendance.find(
@@ -304,6 +333,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
     setAttendanceState(newMap);
   }, [selectedDate, currentClass?.id, store.attendance]);
+
+  if (!currentClass) {
+    return (
+      <div className="p-8 text-center rounded-3xl bg-[#111827]/80 border border-slate-800 text-slate-400">
+        Chưa có lớp học nào trong hệ thống.
+      </div>
+    );
+  }
 
   // Royal Snacks live calculation for this session
   const royalStudents = enrolledStudents.filter(s => s.is_royal_student);
@@ -447,7 +484,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   // Save Attendance Session with Strict Validations
   const handleSaveAttendance = () => {
     if (isFutureDate) {
-      alert(`RÀNG BUỘC THỜI GIAN: Ngày ${selectedDate} là ngày trong tương lai. Hệ thống chỉ cho phép điểm danh cho ngày hôm nay hoặc quá khứ!`);
+      showToast(
+        `RÀNG BUỘC THỜI GIAN: Ngày ${selectedDate} là ngày trong tương lai. Hệ thống chỉ cho phép điểm danh cho ngày hôm nay hoặc quá khứ!`,
+        'error',
+        { title: 'Khóa điểm danh ngày tương lai' }
+      );
       return;
     }
 
@@ -531,7 +572,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         }
       });
 
-      // 4. Trial Session Policy: Auto-promote to Active upon attending Session 2
+      // 4. Trial Session Policy: Track Session 1 & Auto-promote to Active upon attending Session 2
       let updatedEnrollments = [...prev.enrollments];
       let updatedInvoices = [...prev.invoices];
       const newlyPromoted: string[] = [];
@@ -540,22 +581,55 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         const enr = updatedEnrollments.find(e => e.student_id === s.id && e.class_id === currentClass.id);
         if (enr && enr.status === 'trial') {
           const currentStatus = attendanceState[s.id]?.status || 'present';
+          const priorPresentRecords = prev.attendance.filter(
+            a => a.student_id === s.id && a.class_id === currentClass.id && a.session_date !== selectedDate && a.status === 'present'
+          );
+
           if (currentStatus === 'present') {
-            const priorPresentRecords = prev.attendance.filter(
-              a => a.student_id === s.id && a.class_id === currentClass.id && a.session_date !== selectedDate && a.status === 'present'
-            );
-            if (priorPresentRecords.length >= 1 || newSession.session_number >= 2) {
+            const hasCompletedFirstTrialSession =
+              priorPresentRecords.length >= 1 ||
+              Boolean(enr.trial_attended && enr.trial_session_date && enr.trial_session_date !== selectedDate);
+
+            if (hasCompletedFirstTrialSession) {
+              // Kịch bản 1: Học tiếp tục buổi thứ 2 -> Tự động chuyển sang Chính thức (Active) & kích hoạt hóa đơn toàn khóa
               updatedEnrollments = updatedEnrollments.map(e => 
                 e.id === enr.id 
-                  ? { ...e, status: 'active', trial_outcome: 'promoted', trial_notes: `Tự động lên chính thức sau buổi học thứ ${priorPresentRecords.length + 1}` }
+                  ? { 
+                      ...e, 
+                      status: 'active', 
+                      trial_attended: true,
+                      trial_completed_action: 'promoted',
+                      trial_outcome: 'promoted', 
+                      trial_notes: `Tự động chuyển sang Chính thức (Active) khi tham gia buổi học thứ ${priorPresentRecords.length + 1} (Buổi học thử đầu tiên được tính là buổi chính thức số 1)` 
+                    }
                   : e
               );
               updatedInvoices = updatedInvoices.map(inv => 
                 inv.student_id === s.id && inv.class_id === currentClass.id && inv.is_trial_pending
-                  ? { ...inv, is_trial_pending: false }
+                  ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' }
                   : inv
               );
+              newNotifications.unshift({
+                id: `notif_trial_promote_${Date.now()}_${s.id}`,
+                type: 'enrollment_over_quota',
+                title: `Tự động lên Chính thức sau học thử: ${s.name}`,
+                message: `Học sinh ${s.name} tiếp tục tham gia buổi học thứ 2 lớp ${currentClass.name}. Hệ thống tự động tính buổi học thử là buổi số 1 và kích hoạt thu học phí trọn khóa!`,
+                date: selectedDate,
+                severity: 'low',
+                read: false,
+              });
               newlyPromoted.push(s.name);
+            } else {
+              // Ghi nhận đã tham gia buổi học thử đầu tiên (Buổi 1)
+              updatedEnrollments = updatedEnrollments.map(e =>
+                e.id === enr.id
+                  ? {
+                      ...e,
+                      trial_attended: true,
+                      trial_session_date: e.trial_session_date || selectedDate,
+                    }
+                  : e
+              );
             }
           }
         }
@@ -568,7 +642,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         'ATTENDANCE_SAVE',
         'ACADEMIC',
         `Sổ Điểm danh Lớp ${currentClass.name}`,
-        `Lưu điểm danh ngày ${selectedDate} lớp ${currentClass.name} (Có mặt: ${enrolledStudents.filter(s => attendanceState[s.id]?.status === 'present').length}, Vắng CP: ${liveReturned}, Suất bánh sữa hoàn: ${liveReturned})`,
+        `Lưu điểm danh ngày ${selectedDate} lớp ${currentClass.name} (Có mặt: ${enrolledStudents.filter(s => attendanceState[s.id]?.status === 'present').length}, Vắng CP: ${liveReturned}, Suất bánh sữa hoàn: ${liveReturned}${newlyPromoted.length > 0 ? `, Tự động lên chính thức: ${newlyPromoted.join(', ')}` : ''})`,
         currentUser,
         {
           details: {
@@ -577,6 +651,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             snacks_allocated: totalRoyalCount,
             snacks_consumed: liveConsumed,
             snacks_returned: liveReturned,
+            newly_promoted_trials: newlyPromoted,
             status: 'success',
           }
         }
@@ -617,8 +692,102 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       };
     });
 
-    setSuccessBanner(`Đã lưu điểm danh buổi ngày ${selectedDate} và tự động kết toán suất bánh sữa thành công!`);
-    setTimeout(() => setSuccessBanner(null), 4000);
+    showToast(
+      `Đã lưu điểm danh buổi ngày ${selectedDate} và tự động kết toán suất bánh sữa thành công!`,
+      'success',
+      { title: 'Lưu điểm danh thành công' }
+    );
+  };
+
+  // Quick manual promote / drop trial student directly from Attendance Sheet
+  const handleQuickTrialAction = (student: Student, action: 'promote' | 'drop') => {
+    if (!currentClass) return;
+    onUpdateStore(prev => {
+      const enr = prev.enrollments.find(e => e.student_id === student.id && e.class_id === currentClass.id && e.status === 'trial');
+      if (!enr) return prev;
+
+      if (action === 'promote') {
+        return {
+          ...prev,
+          enrollments: prev.enrollments.map(e =>
+            e.id === enr.id
+              ? {
+                  ...e,
+                  status: 'active',
+                  trial_attended: true,
+                  trial_completed_action: 'promoted',
+                  trial_outcome: 'promoted',
+                  trial_notes: 'Xác nhận chuyển lên Chính thức (Active) từ Sổ Điểm Danh (Buổi thử tính là buổi 1)',
+                }
+              : e
+          ),
+          invoices: prev.invoices.map(inv =>
+            inv.student_id === student.id && inv.class_id === currentClass.id && inv.is_trial_pending
+              ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' }
+              : inv
+          ),
+          notifications: [
+            {
+              id: `notif_${Date.now()}`,
+              type: 'enrollment_over_quota',
+              title: 'Chuyển lên học chính thức sau buổi thử',
+              message: `Học sinh ${student.name} đã chuyển lên học CHÍNH THỨC lớp ${currentClass.name}. Hóa đơn học phí trọn khóa đã kích hoạt thu phí.`,
+              date: selectedDate,
+              severity: 'low',
+              read: false,
+            },
+            ...prev.notifications,
+          ],
+        };
+      } else {
+        return {
+          ...prev,
+          enrollments: prev.enrollments.map(e =>
+            e.id === enr.id
+              ? {
+                  ...e,
+                  status: 'trial_dropped',
+                  trial_attended: true,
+                  trial_completed_action: 'dropped',
+                  trial_outcome: 'dropped',
+                  trial_notes: 'Dừng không học tiếp sau buổi học thử đầu tiên (Trial Dropped)',
+                }
+              : e
+          ),
+          invoices: prev.invoices.map(inv =>
+            inv.student_id === student.id && inv.class_id === currentClass.id
+              ? {
+                  ...inv,
+                  is_trial_pending: false,
+                  payment_status: 'cancelled',
+                  outstanding_amount: 0,
+                  net_payable: 0,
+                  payment_reference: 'MIỄN PHÍ BUỔI HỌC THỬ (DỪNG HỌC)',
+                }
+              : inv
+          ),
+          notifications: [
+            {
+              id: `notif_${Date.now()}`,
+              type: 'drop_alert',
+              title: 'Dừng sau buổi học thử (Trial Dropped)',
+              message: `Học sinh ${student.name} dừng học sau buổi thử lớp ${currentClass.name}. Đã hủy hóa đơn học phí khóa học và giải phóng 1 chỉ tiêu sĩ số lớp.`,
+              date: selectedDate,
+              severity: 'medium',
+              read: false,
+            },
+            ...prev.notifications,
+          ],
+        };
+      }
+    });
+    showToast(
+      action === 'promote'
+        ? `Đã chuyển học sinh ${student.name} sang Chính thức (Active) & kích hoạt hóa đơn toàn khóa!`
+        : `Đã chốt dừng học sau buổi thử cho ${student.name} (Trial Dropped) — Hủy hóa đơn & giải phóng sĩ số lớp!`,
+      action === 'promote' ? 'success' : 'info',
+      { title: action === 'promote' ? 'Chuyển lên học chính thức' : 'Chốt dừng sau buổi học thử' }
+    );
   };
 
   return (
@@ -840,13 +1009,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           </div>
         )}
 
-        {successBanner && (
-          <div className="mt-3 p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center gap-2 text-emerald-300 text-xs font-semibold">
-            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-            <span>{successBanner}</span>
-          </div>
-        )}
-
       </div>
 
       {/* Royal Snack Live Summary Bar */}
@@ -881,18 +1043,89 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
         <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <span>Sổ Điểm Danh Học Viên ({enrolledStudents.length} học sinh)</span>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+              <span>Sổ Điểm Danh Học Viên Ca {selectedDayLabel} ({enrolledStudents.length}/{allClassEnrollments.length} học sinh có lịch học)</span>
+              {offScheduleStudents.length > 0 && (
+                <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold">
+                  Đã lọc {offScheduleStudents.length} HV không thuộc lịch {selectedDayLabel}
+                </span>
+              )}
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              * Học sinh nợ phí vẫn được điểm danh. Trạng thái Vắng CP có thể tải hoặc không tải minh chứng (tệp tải lên được lưu trên server).
+              * Hệ thống tự động hiển thị đúng học sinh có đăng ký học vào <strong>{selectedDayLabel} ({formatDateVN(selectedDate)})</strong>. Học sinh học lệch thứ/bán phần sẽ không bị tính vắng sai và không phát sinh suất bánh sữa dư.
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {offScheduleStudents.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowOffScheduleStudents(prev => !prev)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                  showOffScheduleStudents
+                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                    : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/40 hover:text-cyan-300'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                <span>
+                  {showOffScheduleStudents
+                    ? `Ẩn HV khác lịch (${offScheduleStudents.length})`
+                    : `Xem HV nghỉ theo lịch riêng (${offScheduleStudents.length})`}
+                </span>
+              </button>
+            )}
             <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
           </div>
         </div>
+
+        {/* Off-Schedule Students Info Drawer (When toggled or when partial-schedule students are hidden today) */}
+        {offScheduleStudents.length > 0 && showOffScheduleStudents && (
+          <div className="mx-4 mt-4 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs font-bold text-cyan-300 flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span>
+                  Danh sách học viên của lớp KHÔNG thuộc ca học {selectedDayLabel} ({formatDateVN(selectedDate)}) — Tự động miễn điểm danh & không tính bánh sữa:
+                </span>
+              </div>
+              <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                {offScheduleStudents.length} học viên
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {offScheduleStudents.map(({ student, enrollment }) => {
+                const isBeforeJoin = enrollment.joined_date && selectedDate < enrollment.joined_date;
+                const studentDaysText =
+                  enrollment.enrolled_days_of_week && enrollment.enrolled_days_of_week.length > 0
+                    ? formatDaysListLabel(enrollment.enrolled_days_of_week)
+                    : formatDaysListLabel(classDays);
+
+                return (
+                  <div
+                    key={student.id}
+                    className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 opacity-85"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-200 text-xs truncate flex items-center gap-1.5">
+                        <span>{student.name}</span>
+                        <span className="text-[10px] font-mono text-slate-400">({student.code})</span>
+                      </div>
+                      <div className="text-[10px] text-cyan-300 font-semibold mt-0.5">
+                        {isBeforeJoin
+                          ? `⏳ Bắt đầu học từ: ${formatDateVN(enrollment.joined_date)}`
+                          : `🗓️ Lịch cố định: Chỉ học ${studentDaysText} (${enrollment.registered_sessions} buổi)`}
+                      </div>
+                    </div>
+                    <span className="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-bold shrink-0">
+                      Không thuộc ca
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* VIEW 1: CARDS VIEW */}
         {viewMode === 'cards' && (
@@ -927,12 +1160,38 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-extrabold text-white text-sm">{student.name}</span>
                         {isTrial && (
-                          <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[9px] font-bold flex items-center gap-1">
-                            <Sparkles className="w-2.5 h-2.5 text-purple-400" />
-                            [Học Thử]
+                          <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                            <span>[ 🧪 Học Thử Buổi 1 ]</span>
+                          </span>
+                        )}
+                        {enr && (enr.is_partial_schedule || (enr.enrolled_days_of_week && enr.enrolled_days_of_week.length < classDays.length)) && (
+                          <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold">
+                            🗓️ Chỉ học {formatDaysListLabel(enr.enrolled_days_of_week || classDays)} ({enr.registered_sessions}b)
                           </span>
                         )}
                       </div>
+                      {isTrial && (
+                        <div className="flex items-center gap-1.5 mt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickTrialAction(student, 'promote')}
+                            className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9.5px] font-bold flex items-center gap-1 transition-colors"
+                            title="Chuyển Lên Chính Thức (Kích hoạt thu học phí trọn khóa)"
+                          >
+                            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                            <span>Chuyển Lên Chính Thức</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickTrialAction(student, 'drop')}
+                            className="px-2 py-0.5 rounded-md bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[9.5px] font-bold flex items-center gap-1 transition-colors"
+                            title="Dừng Sau Buổi Thử (Hủy hóa đơn, giải phóng sĩ số lớp)"
+                          >
+                            <XCircle className="w-2.5 h-2.5 text-rose-400" />
+                            <span>Dừng Sau Buổi Thử</span>
+                          </button>
+                        </div>
+                      )}
                       <div className="flex items-center gap-2 mt-1">
                         <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
                           student.is_royal_student
@@ -993,10 +1252,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       {(proofUrl || attendanceState[student.id]?.proof_base64) ? (
                         <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-950/80 border border-slate-800">
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[9px] font-bold shrink-0 flex items-center gap-1">
-                              <Server className="w-2.5 h-2.5 text-emerald-400" />
-                              <span>Đã lưu Server</span>
-                            </span>
+                            <a
+                              href={GOOGLE_DRIVE_ROOT_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-[9px] font-bold shrink-0 flex items-center gap-1"
+                              title="Mở thư mục Google Drive lưu đơn nghỉ phép"
+                            >
+                              <ExternalLink className="w-2.5 h-2.5 text-emerald-400" />
+                              <span>Google Drive</span>
+                            </a>
                             <span className="text-[11px] text-slate-200 font-mono truncate" title={proofFileName || 'don_nghi_phep.jpg'}>
                               {proofFileName || 'don_nghi_phep.jpg'}
                             </span>
@@ -1158,13 +1423,39 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
                           <span>{student.name}</span>
                           {isTrial && (
-                            <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[9px] font-bold flex items-center gap-1">
-                              <Sparkles className="w-2.5 h-2.5 text-purple-400" />
-                              [Học Thử]
+                            <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                              <span>[ 🧪 Học Thử Buổi 1 ]</span>
+                            </span>
+                          )}
+                          {enr && (enr.is_partial_schedule || (enr.enrolled_days_of_week && enr.enrolled_days_of_week.length < classDays.length)) && (
+                            <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold">
+                              🗓️ Chỉ học {formatDaysListLabel(enr.enrolled_days_of_week || classDays)} ({enr.registered_sessions}b)
                             </span>
                           )}
                         </div>
                         <div className="text-[10px] text-slate-500">PH: {student.parent_phone}</div>
+                        {isTrial && (
+                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={() => handleQuickTrialAction(student, 'promote')}
+                              className="px-1.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold flex items-center gap-0.5 transition-colors"
+                              title="Chuyển Lên Chính Thức"
+                            >
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                              <span>Lên chính thức</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleQuickTrialAction(student, 'drop')}
+                              className="px-1.5 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[9px] font-bold flex items-center gap-0.5 transition-colors"
+                              title="Dừng Sau Buổi Thử"
+                            >
+                              <XCircle className="w-2.5 h-2.5 text-rose-400" />
+                              <span>Dừng sau buổi thử</span>
+                            </button>
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-4">
@@ -1195,10 +1486,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           <div className="pt-1.5">
                             {(proofUrl || attendanceState[student.id]?.proof_base64) ? (
                               <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 text-[11px]">
-                                <span className="flex items-center gap-1 text-emerald-400 font-bold text-[9px] px-1 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 shrink-0">
-                                  <Server className="w-2.5 h-2.5" />
-                                  <span>Server</span>
-                                </span>
+                                <a
+                                  href={GOOGLE_DRIVE_ROOT_URL}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 text-emerald-400 font-bold text-[9px] px-1 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 shrink-0"
+                                  title="Mở thư mục Google Drive lưu đơn nghỉ phép"
+                                >
+                                  <ExternalLink className="w-2.5 h-2.5" />
+                                  <span>Drive</span>
+                                </a>
                                 <span className="font-mono text-slate-200 max-w-[110px] truncate" title={proofFileName || 'don_nghi_phep.jpg'}>
                                   {proofFileName || 'don_nghi_phep.jpg'}
                                 </span>
@@ -1374,9 +1671,20 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             </div>
 
             {/* Notice about optional proof */}
-            <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center gap-2">
-              <Check className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>Minh chứng là <strong>không bắt buộc</strong>. Thầy cô có thể tải tệp lên máy chủ hoặc chỉ cần ghi chú lý do xin phép.</span>
+            <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Minh chứng là <strong>không bắt buộc</strong>. Tệp tải lên sẽ được đồng bộ vào Google Drive nhà trường.</span>
+              </div>
+              <a
+                href={GOOGLE_DRIVE_ROOT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-[10px] font-bold shrink-0 flex items-center gap-1"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span>Mở Drive</span>
+              </a>
             </div>
 
             {/* Error Message */}
@@ -1387,24 +1695,24 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </div>
             )}
 
-            {/* Tùy chọn tải tệp minh chứng lên Server */}
+            {/* Tùy chọn tải tệp minh chứng lên Google Drive */}
             <div className="space-y-1.5 p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                   <Upload className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Tải tệp minh chứng (Ảnh / PDF / Giấy khám)</span>
+                  <span>Tải đơn nghỉ phép / giấy khám lên Google Drive</span>
                 </label>
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-medium">Tùy chọn</span>
               </div>
               <p className="text-[10px] text-slate-400">
-                Thầy cô có thể tải hoặc không tải minh chứng. Tệp tải lên sẽ được lưu trữ an toàn trên server.
+                Tệp tải lên sẽ lưu trực tiếp vào thư mục Google Drive: <span className="text-emerald-400 font-mono">{GOOGLE_DRIVE_FOLDER_ID}/02_DonNghiPhep</span>
               </p>
               
               <div className="mt-2">
                 <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-700 hover:border-amber-500 rounded-xl cursor-pointer bg-slate-950/60 hover:bg-slate-950 transition-colors">
                   <Upload className="w-6 h-6 text-slate-400 mb-1" />
                   <span className="text-xs text-slate-300 font-semibold">
-                    {proofUploadActive ? 'Đang lưu tệp lên Server...' : 'Nhấn để chọn file ảnh hoặc PDF'}
+                    {proofUploadActive ? 'Đang tải tệp lên Google Drive...' : 'Nhấn để chọn file ảnh hoặc PDF'}
                   </span>
                   <span className="text-[10px] text-slate-500 mt-0.5">JPG, PNG, PDF tối đa 15MB</span>
                   <input
@@ -1419,11 +1727,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               {proofFileNameInput && (
                 <div className="mt-2 p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-xs text-emerald-300 flex items-center justify-between">
                   <div className="flex items-center gap-1.5 truncate">
-                    <Server className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <ExternalLink className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span className="font-mono text-[11px] truncate">{proofFileNameInput}</span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[10px] text-emerald-400 font-bold">✓ Đã lưu Server</span>
+                    <span className="text-[10px] text-emerald-400 font-bold">✓ Đã lưu Google Drive</span>
                     <button
                       type="button"
                       onClick={() => {

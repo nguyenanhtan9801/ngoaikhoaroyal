@@ -112,12 +112,31 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                   <tr className="border-b border-slate-200">
                     <td className="p-3">
                       <div className="font-bold">{document.cls?.name}</div>
-                      <div className="text-[11px] text-slate-500">Khóa Ngoại Khóa Hoàng Gia</div>
+                      <div className="text-[11px] text-slate-600">
+                        {document.invoice.prorated_note || 'Khóa Ngoại Khóa Hoàng Gia'}
+                      </div>
                     </td>
-                    <td className="p-3 text-center font-mono">{document.cls?.total_sessions}</td>
-                    <td className="p-3 text-right font-mono">{formatVND(document.cls?.price_per_session || 0)}</td>
+                    <td className="p-3 text-center font-mono font-bold">
+                      {document.invoice.registered_sessions
+                        ? `${document.invoice.registered_sessions}/${document.invoice.total_class_sessions || document.cls?.total_sessions || 24}`
+                        : document.cls?.total_sessions}
+                    </td>
+                    <td className="p-3 text-right font-mono">
+                      {formatVND(document.invoice.session_rate || document.cls?.price_per_session || 0)}
+                    </td>
                     <td className="p-3 text-right font-mono font-bold">{formatVND(document.invoice.gross_amount)}</td>
                   </tr>
+
+                  {(document.invoice.discount_amount ?? 0) > 0 && (
+                    <tr className="border-b border-slate-200 bg-amber-50/60">
+                      <td colSpan={3} className="p-3 text-amber-900 font-semibold italic">
+                        Ưu đãi học phí theo chính sách trường (Giảm trên số buổi thực học)
+                      </td>
+                      <td className="p-3 text-right font-mono font-bold text-amber-900">
+                        -{formatVND(document.invoice.discount_amount || 0)}
+                      </td>
+                    </tr>
+                  )}
 
                   {document.invoice.credit_deducted > 0 && (
                     <tr className="border-b border-slate-200 bg-amber-50">

@@ -76,6 +76,7 @@ import {
   CloudStorageConfig
 } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { showToast } from '../../lib/toast';
 
 interface SettingsDataTabProps {
   store: AppStore;
@@ -313,7 +314,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     );
 
     if (relatedSubjects.length > 0) {
-      alert(`Không thể xóa phân loại "${cat.name}" (${cat.code}) vì hiện đang có ${relatedSubjects.length} môn học trực thuộc (${relatedSubjects.map(s => s.name).join(', ')}). Vui lòng chuyển các môn học này sang phân loại khác trước khi xóa.`);
+      showToast(
+        `Không thể xóa phân loại "${cat.name}" (${cat.code}) vì hiện đang có ${relatedSubjects.length} môn học trực thuộc (${relatedSubjects.map(s => s.name).join(', ')}).`,
+        'warning',
+        { title: 'Không thể xóa phân loại' }
+      );
       return;
     }
 
@@ -332,7 +337,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const cleanName = categoryFormData.name.trim();
 
     if (!cleanCode || !cleanName) {
-      alert('Vui lòng nhập đầy đủ Mã phân loại và Tên phân loại.');
+      showToast('Vui lòng nhập đầy đủ Mã phân loại và Tên phân loại.', 'warning');
       return;
     }
 
@@ -342,7 +347,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
            c.id !== editingCategory?.id
     );
     if (duplicate) {
-      alert(`Mã phân loại "${cleanCode}" hoặc Tên "${cleanName}" đã tồn tại. Vui lòng chọn giá trị khác.`);
+      showToast(`Mã phân loại "${cleanCode}" hoặc Tên "${cleanName}" đã tồn tại. Vui lòng chọn giá trị khác.`, 'warning');
       return;
     }
 
@@ -716,6 +721,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       }));
     }
 
+    showToast(
+      editingCampus
+        ? `Đã cập nhật cơ sở "${campusFormData.name}" (${cleanCode}) thành công!`
+        : `Đã thêm mới cơ sở "${campusFormData.name}" (${cleanCode}) thành công!`,
+      'success',
+      { title: 'Lưu cấu hình cơ sở' }
+    );
     setShowCampusModal(false);
     setEditingCampus(null);
   };
@@ -768,12 +780,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // Handle Clean Seed Data / Reset
   const handleExecuteReset = () => {
     if (!isSuperAdmin) {
-      alert('Quyền hạn bị từ chối: Chỉ Quản trị viên Cấp cao mới được thực hiện đặt lại dữ liệu.');
+      showToast('Quyền hạn bị từ chối: Chỉ Quản trị viên Cấp cao mới được thực hiện đặt lại dữ liệu.', 'error');
       return;
     }
 
     if (resetConfirmCode !== 'DELETE_CONFIRM') {
-      alert('Mật mã bảo mật không chính xác. Bạn phải nhập chính xác chuỗi ký tự: DELETE_CONFIRM');
+      showToast('Mật mã bảo mật không chính xác. Bạn phải nhập chính xác chuỗi ký tự: DELETE_CONFIRM', 'error');
       return;
     }
 
@@ -837,7 +849,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       return updated;
     });
 
-    setResetSuccessMessage(`Đã thực hiện dọn sạch dữ liệu theo Option: ${selectedResetOption.toUpperCase()} thành công!`);
+    const resetMsg = `Đã thực hiện dọn sạch dữ liệu theo Option: ${selectedResetOption.toUpperCase()} thành công!`;
+    setResetSuccessMessage(resetMsg);
+    showToast(resetMsg, 'success', { title: 'Dọn sạch dữ liệu hệ thống' });
     setResetConfirmCode('');
     setTimeout(() => setResetSuccessMessage(null), 5000);
   };
@@ -846,7 +860,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const handleRestoreInitialSeed = () => {
     const initial = getInitialStore();
     onUpdateStore(() => initial);
-    alert('Đã khôi phục toàn bộ Dữ Liệu Mẫu Chuẩn Hoàng Gia ban đầu!');
+    showToast('Đã khôi phục toàn bộ Dữ Liệu Mẫu Chuẩn Hoàng Gia ban đầu!', 'success', {
+      title: 'Khôi phục dữ liệu mẫu',
+    });
   };
 
   // Handle Excel File Upload
@@ -885,8 +901,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         };
       });
       setImportStatus({ loading: false, message: result.message, isError: false });
+      showToast(result.message || `Import đồng bộ tệp "${file.name}" thành công!`, 'success', {
+        title: 'Nhập dữ liệu Excel thành công',
+      });
     } else {
       setImportStatus({ loading: false, message: result.message, isError: true });
+      showToast(result.message || 'Lỗi khi đọc tệp Excel!', 'error');
     }
   };
 
@@ -901,7 +921,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       },
     }));
     setSbConnected(true);
-    alert('Đã lưu và kết nối thành công với Supabase PostgreSQL!');
+    showToast('Đã lưu và kết nối thành công với Supabase PostgreSQL!', 'success', {
+      title: 'Kết nối Supabase thành công',
+    });
   };
 
   // Test Cloud Connection
@@ -959,6 +981,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     });
 
     setCloudSaveMessage('Đã lưu cấu hình kho lưu trữ tệp Cloud thành công!');
+    showToast('Đã lưu cấu hình kho lưu trữ tệp Cloud thành công!', 'success', {
+      title: 'Lưu cấu hình Cloud Storage',
+    });
     setTimeout(() => setCloudSaveMessage(null), 3500);
   };
 

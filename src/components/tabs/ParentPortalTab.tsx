@@ -24,9 +24,26 @@ import {
   BookOpen,
   Info
 } from 'lucide-react';
-import { AppStore, generateStudentCode, formatVND, calculateCeilSessionRate, getEffectivePrice, createAuditRecord, appendAuditLog } from '../../lib/storage';
+import { 
+  AppStore, 
+  generateStudentCode, 
+  formatVND, 
+  calculateCeilSessionRate, 
+  getEffectivePrice, 
+  createAuditRecord, 
+  appendAuditLog,
+  formatDateVN,
+  getClassDaysOfWeek,
+  getDayLabel,
+  formatDaysListLabel,
+  formatStudentScheduleLabel,
+  getDefaultClassStartDate,
+  calculateRemainingSessions,
+  calculateClassProratedPricing
+} from '../../lib/storage';
 import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { showToast } from '../../lib/toast';
 
 interface ParentPortalTabProps {
   store: AppStore;
@@ -61,6 +78,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const [selectedLeadForEnroll, setSelectedLeadForEnroll] = useState<ParentRegistration | null>(null);
   const [assignedClassesBySubject, setAssignedClassesBySubject] = useState<Record<string, string>>({});
   const [subjectAssignModes, setSubjectAssignModes] = useState<Record<string, 'assign_now' | 'unassigned'>>({});
+  const [subjectEnrollmentTypes, setSubjectEnrollmentTypes] = useState<Record<string, 'official' | 'trial'>>({});
+  const [subjectEnrolledDays, setSubjectEnrolledDays] = useState<Record<string, string[]>>({});
+  const [subjectStartDates, setSubjectStartDates] = useState<Record<string, string>>({});
+  const [subjectCustomSessions, setSubjectCustomSessions] = useState<Record<string, number | undefined>>({});
   const [unassignedReasons, setUnassignedReasons] = useState<Record<string, string>>({});
   const [customStudentCode, setCustomStudentCode] = useState<string>('');
   const [enrollNote, setEnrollNote] = useState<string>('');
@@ -69,14 +90,6 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const [editingLeadContact, setEditingLeadContact] = useState<ParentRegistration | null>(null);
   const [contactNoteInput, setContactNoteInput] = useState<string>('');
   const [contactStatusInput, setContactStatusInput] = useState<'pending' | 'contacted' | 'partially_enrolled' | 'canceled'>('contacted');
-
-  // Success alert toast banner
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
 
   const handleCopyShareLink = () => {
     try {
@@ -202,15 +215,22 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     const subjects = getSubjectsForLead(lead);
     const initialMap: Record<string, string> = {};
     const initialModes: Record<string, 'assign_now' | 'unassigned'> = {};
+    const initialEnrollTypes: Record<string, 'official' | 'trial'> = {};
+    const initialEnrolledDays: Record<string, string[]> = {};
+    const initialStartDates: Record<string, string> = {};
     const initialReasons: Record<string, string> = {};
 
     subjects.forEach(sub => {
+      initialEnrollTypes[sub.subject_id] = 'official';
       // If already assigned in lead, preserve it
       if (lead.assigned_class_ids && lead.assigned_class_ids.length > 0) {
         const alreadyClass = store.classes.find(c => c.subject_id === sub.subject_id && lead.assigned_class_ids?.includes(c.id));
         if (alreadyClass) {
+          const clsDays = getClassDaysOfWeek(alreadyClass, store);
           initialMap[sub.subject_id] = alreadyClass.id;
           initialModes[sub.subject_id] = 'assign_now';
+          initialEnrolledDays[sub.subject_id] = [...clsDays];
+          initialStartDates[sub.subject_id] = getDefaultClassStartDate(alreadyClass, store, undefined, clsDays);
           return;
         }
       }
@@ -220,7 +240,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         c => c.campus_id === lead.desired_campus_id && c.subject_id === sub.subject_id && c.status === 'active'
       );
       const nonFullClass = campusClasses.find(c => {
-        const enrolled = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
+        const enrolled = store.enrollments.filter(e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')).length;
         return enrolled < c.max_students;
       });
 
@@ -228,17 +248,25 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       const matchedClass = nonFullClass || fallbackClass;
 
       if (matchedClass) {
+        const clsDays = getClassDaysOfWeek(matchedClass, store);
         initialMap[sub.subject_id] = matchedClass.id;
         initialModes[sub.subject_id] = 'assign_now';
+        initialEnrolledDays[sub.subject_id] = [...clsDays];
+        initialStartDates[sub.subject_id] = getDefaultClassStartDate(matchedClass, store, undefined, clsDays);
       } else {
         initialMap[sub.subject_id] = '';
         initialModes[sub.subject_id] = 'unassigned';
+        initialEnrolledDays[sub.subject_id] = [];
         initialReasons[sub.subject_id] = 'Lớp hiện tại đã kín chỗ / Chờ mở thêm ca';
       }
     });
 
     setAssignedClassesBySubject(initialMap);
     setSubjectAssignModes(initialModes);
+    setSubjectEnrollmentTypes(initialEnrollTypes);
+    setSubjectEnrolledDays(initialEnrolledDays);
+    setSubjectStartDates(initialStartDates);
+    setSubjectCustomSessions({});
     setUnassignedReasons(initialReasons);
     setEnrollNote(`Tiếp nhận từ hồ sơ tuyển sinh trực tuyến ${lead.registration_code || ''}`);
   };
@@ -288,47 +316,82 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       };
     }
 
-    // 2. Tạo bản ghi ghi danh (enrollments) CHỈ cho các lớp được xếp ngay
+    // 2. Tạo bản ghi ghi danh (enrollments) & 3. Tạo hóa đơn học phí (invoices) theo đúng số buổi thực học
     const existingEnrollmentsForStudent = store.enrollments.filter(e => e.student_id === studentId);
     const newEnrollments: Enrollment[] = [];
+    const newInvoices: TuitionInvoice[] = [];
+    const todayStr = new Date().toISOString().split('T')[0];
 
     selectedClassObjects.forEach((cls, idx) => {
-      const alreadyInClass = existingEnrollmentsForStudent.some(e => e.class_id === cls.id);
+      const classDays = getClassDaysOfWeek(cls, store);
+      const chosenDays = subjectEnrolledDays[cls.subject_id] && subjectEnrolledDays[cls.subject_id].length > 0
+        ? subjectEnrolledDays[cls.subject_id]
+        : classDays;
+      const startDate = subjectStartDates[cls.subject_id] || getDefaultClassStartDate(cls, store, undefined, chosenDays);
+      const autoCalc = calculateRemainingSessions(cls, startDate, store, chosenDays);
+      const effectiveSessions = subjectCustomSessions[cls.subject_id] ?? autoCalc.remainingSessions;
+      const pricing = calculateClassProratedPricing(cls, effectiveSessions, lead.is_royal_student, store);
+      const isTrial = subjectEnrollmentTypes[cls.subject_id] === 'trial';
+      const subObj = store.subjects.find(s => s.id === cls.subject_id);
+      const subShortName = (subObj?.name || cls.name).split('(')[0].trim();
+      const scheduleLabel = formatStudentScheduleLabel(autoCalc.enrolledDaysOfWeek, autoCalc.daysOfWeek);
+
+      const alreadyInClass = existingEnrollmentsForStudent.some(
+        e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial')
+      );
       if (!alreadyInClass) {
         newEnrollments.push({
           id: `enr_${Date.now()}_${idx}`,
           student_id: studentId,
           class_id: cls.id,
-          registered_sessions: cls.total_sessions || 24,
-          joined_date: new Date().toISOString().split('T')[0],
-          status: 'active',
+          registered_sessions: pricing.effectiveSessions,
+          joined_date: startDate,
+          enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+          is_partial_schedule: autoCalc.isPartialSchedule,
+          status: isTrial ? 'trial' : 'active',
+          is_trial: isTrial,
+          trial_session_date: isTrial ? startDate : undefined,
+          trial_attended: false,
+          trial_notes: isTrial
+            ? `Đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(startDate)} (${scheduleLabel} • ${pricing.effectiveSessions}/${pricing.totalSessions} buổi)`
+            : undefined,
         });
       }
-    });
 
-    // 3. Tạo hóa đơn học phí tương ứng (invoices) CHỈ cho các lớp được xếp ngay
-    const newInvoices: TuitionInvoice[] = [];
-    selectedClassObjects.forEach((cls, idx) => {
       // Check if invoice for this class and student already exists
-      const alreadyInvoiced = store.invoices.some(inv => inv.student_id === studentId && inv.class_id === cls.id);
+      const alreadyInvoiced = store.invoices.some(
+        inv => inv.student_id === studentId && inv.class_id === cls.id && inv.payment_status !== 'cancelled'
+      );
       if (!alreadyInvoiced) {
-        const tuitionRate = getEffectivePrice(cls.term_id, cls.campus_id, cls.subject_id, store);
-        const grossAmount = cls.full_course_fee || tuitionRate.course_fee || 3600000;
-        const discountAmount = lead.is_royal_student ? Math.round(grossAmount * 0.05) : 0;
-        const netAmount = Math.max(0, grossAmount - discountAmount);
+        const proratedNote = autoCalc.isPartialSchedule
+          ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${pricing.effectiveSessions} buổi x ${formatVND(pricing.sessionRate)}/buổi)`
+          : pricing.isMidCourse
+          ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDate)})`
+          : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
 
         newInvoices.push({
           id: `inv_${Date.now()}_${idx}`,
           invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`,
           student_id: studentId,
           class_id: cls.id,
-          gross_amount: grossAmount,
+          gross_amount: pricing.proratedGrossFee,
+          discount_amount: pricing.discountAmount,
           credit_deducted: 0,
-          net_payable: netAmount,
+          net_payable: pricing.netPayable,
           paid_amount: 0,
-          outstanding_amount: netAmount,
+          outstanding_amount: pricing.netPayable,
           payment_status: 'unpaid',
-          created_at: new Date().toISOString().split('T')[0],
+          is_trial_pending: isTrial,
+          trial_fee: 0,
+          registered_sessions: pricing.effectiveSessions,
+          total_class_sessions: pricing.totalSessions,
+          session_rate: pricing.sessionRate,
+          start_date: startDate,
+          enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+          is_partial_schedule: autoCalc.isPartialSchedule,
+          is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
+          prorated_note: proratedNote,
+          created_at: todayStr,
           due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
         });
       }
@@ -461,14 +524,6 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
   return (
     <div className="space-y-6">
-      
-      {/* Toast Alert */}
-      {toastMessage && (
-        <div className="fixed top-20 right-6 z-50 p-4 rounded-2xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-2xl flex items-center gap-2 animate-bounce">
-          <CheckCircle2 className="w-5 h-5 text-slate-950 shrink-0" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
 
       {/* TOP HEADER & ACTION BAR */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
@@ -1095,12 +1150,14 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             const clsA = selectedClassObjects[i];
             const clsB = selectedClassObjects[j];
 
-            const daysA = clsA.days_of_week && clsA.days_of_week.length > 0
-              ? clsA.days_of_week
-              : (store.timeSlots.find(ts => ts.id === clsA.time_slot_id)?.days_of_week || []);
-            const daysB = clsB.days_of_week && clsB.days_of_week.length > 0
-              ? clsB.days_of_week
-              : (store.timeSlots.find(ts => ts.id === clsB.time_slot_id)?.days_of_week || []);
+            const fullDaysA = getClassDaysOfWeek(clsA, store);
+            const fullDaysB = getClassDaysOfWeek(clsB, store);
+            const daysA = subjectEnrolledDays[clsA.subject_id] && subjectEnrolledDays[clsA.subject_id].length > 0
+              ? subjectEnrolledDays[clsA.subject_id]
+              : fullDaysA;
+            const daysB = subjectEnrolledDays[clsB.subject_id] && subjectEnrolledDays[clsB.subject_id].length > 0
+              ? subjectEnrolledDays[clsB.subject_id]
+              : fullDaysB;
 
             const commonDays = daysA.filter(d => daysB.includes(d));
             if (commonDays.length > 0) {
@@ -1124,17 +1181,50 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           }
         }
 
-        // Real-time Tuition Calculation
-        const totalGross = selectedClassObjects.reduce((acc, c) => acc + (c.full_course_fee || 3600000), 0);
-        const discountAmount = lead.is_royal_student ? Math.round(totalGross * 0.05) : 0;
-        const totalNet = Math.max(0, totalGross - discountAmount);
+        // Real-time Prorated & Day-Specific Tuition Calculation across all assigned classes
+        const assignedClassBreakdowns = selectedClassObjects.map(c => {
+          const classDays = getClassDaysOfWeek(c, store);
+          const enrolledDays = subjectEnrolledDays[c.subject_id] && subjectEnrolledDays[c.subject_id].length > 0
+            ? subjectEnrolledDays[c.subject_id]
+            : classDays;
+          const startDate = subjectStartDates[c.subject_id] || getDefaultClassStartDate(c, store, undefined, enrolledDays);
+          const autoCalc = calculateRemainingSessions(c, startDate, store, enrolledDays);
+          const effectiveSessions = subjectCustomSessions[c.subject_id] ?? autoCalc.remainingSessions;
+          const pricing = calculateClassProratedPricing(c, effectiveSessions, lead.is_royal_student, store);
+          const subjectName = store.subjects.find(s => s.id === c.subject_id)?.name || c.name;
+          const isTrial = subjectEnrollmentTypes[c.subject_id] === 'trial';
+          return {
+            cls: c,
+            subjectName,
+            startDate,
+            enrolledDays: autoCalc.enrolledDaysOfWeek,
+            classDays: autoCalc.daysOfWeek,
+            isPartialSchedule: autoCalc.isPartialSchedule,
+            autoCalc,
+            pricing,
+            isTrial,
+          };
+        });
+
+        const totalFullGross = assignedClassBreakdowns.reduce((acc, item) => acc + item.pricing.fullCourseFee, 0);
+        const totalGross = assignedClassBreakdowns.reduce((acc, item) => acc + item.pricing.proratedGrossFee, 0);
+        const discountAmount = assignedClassBreakdowns.reduce((acc, item) => acc + item.pricing.discountAmount, 0);
+        const totalNet = assignedClassBreakdowns.reduce((acc, item) => acc + item.pricing.netPayable, 0);
+        const hasAnyProrated = assignedClassBreakdowns.some(item => item.pricing.isMidCourse || item.isPartialSchedule);
+
+        const trialAssignedClasses = assignedClassBreakdowns.filter(item => item.isTrial);
+        const officialAssignedClasses = assignedClassBreakdowns.filter(item => !item.isTrial);
+        const trialAssignedCount = trialAssignedClasses.length;
+        const officialAssignedCount = officialAssignedClasses.length;
+
+        const immediatePayable = officialAssignedClasses.reduce((acc, item) => acc + item.pricing.netPayable, 0);
+        const trialDeferredAmount = Math.max(0, totalNet - immediatePayable);
 
         const totalRequested = subjects.length;
         const assignedCount = selectedClassObjects.length;
         const unassignedCount = totalRequested - assignedCount;
         const isFull = assignedCount === totalRequested && assignedCount > 0;
         const isPartial = assignedCount > 0 && assignedCount < totalRequested;
-        const isAllUnassigned = assignedCount === 0;
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md overflow-y-auto">
@@ -1156,7 +1246,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       </span>
                     </div>
                     <p className="text-xs text-slate-400">
-                      Phân bổ lớp học ngoại khóa tương ứng theo từng môn phụ huynh đã đăng ký
+                      Phân bổ lớp học ngoại khóa & tự động tính học phí theo số buổi thực học khi vào giữa khóa
                     </p>
                   </div>
                 </div>
@@ -1198,7 +1288,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     <div>
                       <span className="text-slate-400">Phân loại học sinh:</span>{' '}
                       <span className={lead.is_royal_student ? 'text-amber-400 font-bold' : 'text-slate-300 font-medium'}>
-                        {lead.is_royal_student ? 'HS chính khóa Royal (Có suất bánh sữa)' : 'Học sinh ngoài trường'}
+                        {lead.is_royal_student ? 'Học sinh chính khóa ROYAL SCHOOL' : 'Học sinh ngoài trường'}
                       </span>
                     </div>
                   </div>
@@ -1280,6 +1370,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       const subjectObj = store.subjects.find(s => s.id === sub.subject_id);
                       const mode = subjectAssignModes[sub.subject_id] ?? 'assign_now';
                       const isAssignNow = mode === 'assign_now';
+                      const enrollType = subjectEnrollmentTypes[sub.subject_id] ?? 'official';
+                      const isTrialEnroll = enrollType === 'trial';
                       const currentSelectedClassId = assignedClassesBySubject[sub.subject_id] || '';
                       const selectedClassObj = isAssignNow ? store.classes.find(c => c.id === currentSelectedClassId) : null;
                       const reasonText = unassignedReasons[sub.subject_id] || '';
@@ -1293,12 +1385,36 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         return 0;
                       });
 
+                      // Calculate prorated & day-specific session & fee breakdown if class is chosen
+                      const classDaysForSub = selectedClassObj ? getClassDaysOfWeek(selectedClassObj, store) : [];
+                      const currentEnrolledDays = selectedClassObj
+                        ? (subjectEnrolledDays[sub.subject_id] && subjectEnrolledDays[sub.subject_id].length > 0
+                            ? subjectEnrolledDays[sub.subject_id].filter(d => classDaysForSub.includes(d))
+                            : classDaysForSub)
+                        : [];
+                      const effectiveEnrolledDays = currentEnrolledDays.length > 0 ? currentEnrolledDays : classDaysForSub;
+                      const currentStartDate = selectedClassObj
+                        ? (subjectStartDates[sub.subject_id] || getDefaultClassStartDate(selectedClassObj, store, undefined, effectiveEnrolledDays))
+                        : '';
+                      const autoSessionInfo = selectedClassObj
+                        ? calculateRemainingSessions(selectedClassObj, currentStartDate, store, effectiveEnrolledDays)
+                        : null;
+                      const manualOverrideSessions = subjectCustomSessions[sub.subject_id];
+                      const effectiveSessions = autoSessionInfo
+                        ? (manualOverrideSessions ?? autoSessionInfo.remainingSessions)
+                        : 0;
+                      const pricingBreakdown = selectedClassObj && autoSessionInfo
+                        ? calculateClassProratedPricing(selectedClassObj, effectiveSessions, lead.is_royal_student, store)
+                        : null;
+
                       return (
                         <div 
                           key={sub.subject_id || idx} 
                           className={`p-4 rounded-2xl border transition-all ${
                             isAssignNow && selectedClassObj
-                              ? 'bg-slate-900/90 border-emerald-500/40 shadow-md ring-1 ring-emerald-500/10'
+                              ? isTrialEnroll
+                                ? 'bg-slate-900/90 border-purple-500/40 shadow-md ring-1 ring-purple-500/15'
+                                : 'bg-slate-900/90 border-emerald-500/40 shadow-md ring-1 ring-emerald-500/10'
                               : !isAssignNow
                               ? 'bg-slate-950/80 border-amber-500/30 shadow-sm'
                               : 'bg-slate-950/60 border-slate-800/80 border-dashed'
@@ -1311,8 +1427,23 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                 {idx + 1}
                               </span>
                               <div>
-                                <div className="font-bold text-sm text-white">
-                                  {sub.subject_name || subjectObj?.name || 'Môn ngoại khóa'}
+                                <div className="font-bold text-sm text-white flex items-center gap-2 flex-wrap">
+                                  <span>{sub.subject_name || subjectObj?.name || 'Môn ngoại khóa'}</span>
+                                  {isAssignNow && selectedClassObj && isTrialEnroll && (
+                                    <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold">
+                                      🧪 Học Thử 1 Buổi Đầu
+                                    </span>
+                                  )}
+                                  {isAssignNow && selectedClassObj && autoSessionInfo?.isPartialSchedule && (
+                                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold">
+                                      📅 {formatStudentScheduleLabel(autoSessionInfo.enrolledDaysOfWeek, autoSessionInfo.daysOfWeek)} ({autoSessionInfo.enrolledDaysOfWeek.length}/{autoSessionInfo.daysOfWeek.length} buổi/tuần)
+                                    </span>
+                                  )}
+                                  {isAssignNow && selectedClassObj && pricingBreakdown?.isMidCourse && (
+                                    <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-bold">
+                                      ⚡ Thực học: {pricingBreakdown.effectiveSessions}/{pricingBreakdown.totalSessions} buổi
+                                    </span>
+                                  )}
                                 </div>
                                 {sub.time_slot_label && (
                                   <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
@@ -1324,10 +1455,23 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2">
-                              {isAssignNow && selectedClassObj ? (
-                                <span className="text-emerald-400 font-mono font-bold text-xs bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
-                                  {formatVND(selectedClassObj.full_course_fee)}
-                                </span>
+                              {isAssignNow && selectedClassObj && pricingBreakdown ? (
+                                isTrialEnroll ? (
+                                  <span className="text-purple-300 font-mono font-bold text-xs bg-purple-500/15 px-2.5 py-1 rounded-lg border border-purple-500/30">
+                                    Dự kiến ({pricingBreakdown.effectiveSessions}b): {formatVND(pricingBreakdown.netPayable)} (Chờ thử)
+                                  </span>
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    {(pricingBreakdown.isMidCourse || autoSessionInfo?.isPartialSchedule) && (
+                                      <span className="text-slate-500 font-mono text-[11px] line-through">
+                                        {formatVND(pricingBreakdown.fullCourseFee)}
+                                      </span>
+                                    )}
+                                    <span className="text-emerald-400 font-mono font-bold text-xs bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
+                                      {formatVND(pricingBreakdown.netPayable)} ({pricingBreakdown.effectiveSessions} buổi)
+                                    </span>
+                                  </div>
+                                )
                               ) : !isAssignNow ? (
                                 <span className="text-amber-400 font-bold text-[11px] bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20 flex items-center gap-1">
                                   <Clock className="w-3 h-3" />
@@ -1355,7 +1499,14 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                 onClick={() => {
                                   setSubjectAssignModes(prev => ({ ...prev, [sub.subject_id]: 'assign_now' }));
                                   if (!assignedClassesBySubject[sub.subject_id] && sortedClasses.length > 0) {
-                                    setAssignedClassesBySubject(prev => ({ ...prev, [sub.subject_id]: sortedClasses[0].id }));
+                                    const firstCls = sortedClasses[0];
+                                    const clsDays = getClassDaysOfWeek(firstCls, store);
+                                    setAssignedClassesBySubject(prev => ({ ...prev, [sub.subject_id]: firstCls.id }));
+                                    setSubjectEnrolledDays(prev => ({ ...prev, [sub.subject_id]: [...clsDays] }));
+                                    setSubjectStartDates(prev => ({
+                                      ...prev,
+                                      [sub.subject_id]: getDefaultClassStartDate(firstCls, store, undefined, clsDays),
+                                    }));
                                   }
                                 }}
                                 className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
@@ -1391,46 +1542,471 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                           {/* 2. Xử lý hiển thị theo trạng thái chọn */}
                           {isAssignNow ? (
                             /* KHI CHỌN XẾP LỚP NGAY */
-                            <div className="pt-3 space-y-2 text-xs animate-fadeIn">
-                              <label className="block text-slate-300 font-medium">
-                                Chọn lớp học ngoại khóa phân bổ cho môn này:
-                              </label>
-                              
-                              <select
-                                value={currentSelectedClassId}
-                                onChange={(e) => {
-                                  const newClassId = e.target.value;
-                                  setAssignedClassesBySubject(prev => ({
-                                    ...prev,
-                                    [sub.subject_id]: newClassId,
-                                  }));
-                                }}
-                                className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border font-medium focus:outline-none transition-colors ${
-                                  currentSelectedClassId 
-                                    ? 'border-emerald-500/60 text-white' 
-                                    : 'border-slate-800 text-slate-400 focus:border-amber-500'
-                                }`}
-                              >
-                                <option value="">-- Vui lòng chọn lớp học ngoại khóa --</option>
-                                {sortedClasses.map(c => {
-                                  const enrolledCount = store.enrollments.filter(e => e.class_id === c.id && e.status === 'active').length;
-                                  const isFullClass = enrolledCount >= c.max_students;
-                                  const days = c.days_of_week?.join(', ') || 'Lịch mở';
-                                  const campusName = store.campuses.find(cp => cp.id === c.campus_id)?.name || 'Cơ sở';
-                                  const isDesiredCampus = c.campus_id === lead.desired_campus_id;
+                            <div className="pt-3 space-y-3 text-xs animate-fadeIn">
+                              <div className="space-y-1.5">
+                                <label className="block text-slate-300 font-medium">
+                                  Chọn lớp học ngoại khóa phân bổ cho môn này:
+                                </label>
+                                
+                                <select
+                                  value={currentSelectedClassId}
+                                  onChange={(e) => {
+                                    const newClassId = e.target.value;
+                                    setAssignedClassesBySubject(prev => ({
+                                      ...prev,
+                                      [sub.subject_id]: newClassId,
+                                    }));
+                                    const chosenCls = store.classes.find(c => c.id === newClassId);
+                                    if (chosenCls) {
+                                      const clsDays = getClassDaysOfWeek(chosenCls, store);
+                                      setSubjectEnrolledDays(prev => ({
+                                        ...prev,
+                                        [sub.subject_id]: [...clsDays],
+                                      }));
+                                      setSubjectStartDates(prev => ({
+                                        ...prev,
+                                        [sub.subject_id]: getDefaultClassStartDate(chosenCls, store, undefined, clsDays),
+                                      }));
+                                    }
+                                    setSubjectCustomSessions(prev => ({
+                                      ...prev,
+                                      [sub.subject_id]: undefined,
+                                    }));
+                                  }}
+                                  className={`w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border font-medium focus:outline-none transition-colors ${
+                                    currentSelectedClassId 
+                                      ? isTrialEnroll
+                                        ? 'border-purple-500/60 text-white'
+                                        : 'border-emerald-500/60 text-white' 
+                                      : 'border-slate-800 text-slate-400 focus:border-amber-500'
+                                  }`}
+                                >
+                                  <option value="">-- Vui lòng chọn lớp học ngoại khóa --</option>
+                                  {sortedClasses.map(c => {
+                                    const enrolledCount = store.enrollments.filter(
+                                      e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')
+                                    ).length;
+                                    const isFullClass = enrolledCount >= c.max_students;
+                                    const days = c.days_of_week?.join(', ') || 'Lịch mở';
+                                    const campusName = store.campuses.find(cp => cp.id === c.campus_id)?.name || 'Cơ sở';
+                                    const isDesiredCampus = c.campus_id === lead.desired_campus_id;
 
-                                  return (
-                                    <option key={c.id} value={c.id}>
-                                      {c.name} &bull; Sĩ số: {enrolledCount}/{c.max_students} &bull; {days} &bull; {formatVND(c.full_course_fee)} {isDesiredCampus ? '' : `(${campusName})`} {isFullClass ? '[HẾT CHỖ]' : ''}
-                                    </option>
-                                  );
-                                })}
-                              </select>
+                                    return (
+                                      <option key={c.id} value={c.id}>
+                                        {c.name} &bull; Sĩ số: {enrolledCount}/{c.max_students} &bull; {days} &bull; {formatVND(c.full_course_fee)} {isDesiredCampus ? '' : `(${campusName})`} {isFullClass ? '[HẾT CHỖ]' : ''}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </div>
+
+                              {/* BỘ CHỌN CHẾ ĐỘ NHẬP HỌC (ENROLLMENT MODE PILLS) */}
+                              <div className="pt-1 space-y-2">
+                                <div className="text-[11px] font-semibold text-slate-300 flex items-center justify-between">
+                                  <span>Hình thức nhập học môn này:</span>
+                                  <span className="text-[10px] text-slate-400">
+                                    {isTrialEnroll ? 'Hóa đơn tạm hoãn chờ kết quả buổi 1' : 'Kích hoạt hóa đơn thực học ngay'}
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSubjectEnrollmentTypes(prev => ({ ...prev, [sub.subject_id]: 'official' }))}
+                                    className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                                      !isTrialEnroll
+                                        ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/60 shadow-sm ring-1 ring-emerald-500/20'
+                                        : 'bg-slate-950/90 text-slate-400 hover:text-slate-200 border border-slate-800'
+                                    }`}
+                                  >
+                                    <span>🎓 Học Chính Thức Ngay</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => setSubjectEnrollmentTypes(prev => ({ ...prev, [sub.subject_id]: 'trial' }))}
+                                    className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                                      isTrialEnroll
+                                        ? 'bg-purple-500/25 text-purple-200 border border-purple-500/60 shadow-sm ring-1 ring-purple-500/25'
+                                        : 'bg-slate-950/90 text-slate-400 hover:text-slate-200 border border-slate-800'
+                                    }`}
+                                  >
+                                    <span>🧪 Học Thử 1 Buổi Đầu</span>
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[9px] font-extrabold">
+                                      Trải nghiệm
+                                    </span>
+                                  </button>
+                                </div>
+
+                                {/* Phản hồi giao diện khi chọn "Học Thử 1 Buổi Đầu" */}
+                                {isTrialEnroll && (
+                                  <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/30 text-[11px] text-purple-200 leading-relaxed flex items-start gap-2 animate-fadeIn">
+                                    <Info className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                                    <span>
+                                      ℹ️ Học sinh được trải nghiệm 1 buổi học đầu tiên. Hóa đơn học phí toàn khóa sẽ ở trạng thái <strong>&ldquo;Tạm hoãn / Chờ hoàn thành học thử&rdquo;</strong> và chỉ kích hoạt khi học sinh tiếp tục học buổi thứ 2.
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* KHU VỰC CẤU HÌNH LỊCH HỌC THEO THỨ TRONG TUẦN + NGÀY BẮT ĐẦU & SỐ BUỔI THỰC HỌC */}
+                              {selectedClassObj && autoSessionInfo && pricingBreakdown && (
+                                <div className="p-3.5 rounded-2xl bg-slate-950/95 border border-slate-800/90 space-y-3.5 shadow-inner">
+                                  
+                                  {/* Row 0: Bộ chọn Lịch học trong tuần của Học sinh (Student Enrolled Days Picker) */}
+                                  <div className="pb-3 border-b border-slate-800/80 space-y-2">
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                                      <div>
+                                        <label className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                                          <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                                          <span>Lịch học thực tế của bé trong tuần <span className="text-rose-400">*</span>:</span>
+                                        </label>
+                                        <p className="text-[10px] text-slate-400 mt-0.5">
+                                          Bấm bật/tắt từng thứ để đăng ký học đủ tuần hoặc chỉ học 1 phần buổi cố định trong tuần (tối thiểu 1 ngày)
+                                        </p>
+                                      </div>
+
+                                      <div className="flex items-center gap-1.5">
+                                        {autoSessionInfo.isPartialSchedule ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setSubjectEnrolledDays(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: [...autoSessionInfo.daysOfWeek],
+                                              }));
+                                              setSubjectCustomSessions(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: undefined,
+                                              }));
+                                            }}
+                                            className="px-2 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[10px] font-bold transition-colors cursor-pointer"
+                                          >
+                                            Chọn lại đủ {autoSessionInfo.daysOfWeek.length} buổi/tuần
+                                          </button>
+                                        ) : (
+                                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                                            Đang chọn đủ {autoSessionInfo.daysOfWeek.length} buổi/tuần
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Nút bấm chọn các thứ trong tuần của lớp */}
+                                    <div className="flex items-center gap-2.5 flex-wrap pt-0.5">
+                                      {autoSessionInfo.daysOfWeek.map(dayCode => {
+                                        const isDaySelected = autoSessionInfo.enrolledDaysOfWeek.includes(dayCode);
+                                        const isOnlyOneLeft = isDaySelected && autoSessionInfo.enrolledDaysOfWeek.length <= 1;
+
+                                        return (
+                                          <button
+                                            key={dayCode}
+                                            type="button"
+                                            onClick={() => {
+                                              if (isDaySelected) {
+                                                // Bắt buộc phải chọn ít nhất 1 ngày trong số các ngày học của lớp
+                                                if (autoSessionInfo.enrolledDaysOfWeek.length <= 1) {
+                                                  showToast('Ràng buộc lịch học: Bắt buộc phải chọn ít nhất 1 ngày học trong tuần cho học sinh!');
+                                                  return;
+                                                }
+                                                const updatedDays = autoSessionInfo.enrolledDaysOfWeek.filter(d => d !== dayCode);
+                                                setSubjectEnrolledDays(prev => ({
+                                                  ...prev,
+                                                  [sub.subject_id]: updatedDays,
+                                                }));
+                                              } else {
+                                                // Giữ đúng thứ tự ngày của lớp
+                                                const updatedDays = autoSessionInfo.daysOfWeek.filter(
+                                                  d => d === dayCode || autoSessionInfo.enrolledDaysOfWeek.includes(d)
+                                                );
+                                                setSubjectEnrolledDays(prev => ({
+                                                  ...prev,
+                                                  [sub.subject_id]: updatedDays,
+                                                }));
+                                              }
+                                              // Tự động reset manual session override để tính lại tức thì
+                                              setSubjectCustomSessions(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: undefined,
+                                              }));
+                                            }}
+                                            title={
+                                              isOnlyOneLeft
+                                                ? 'Bắt buộc chọn ít nhất 1 ngày trong tuần (Hãy bật ngày khác trước nếu muốn đổi thứ)'
+                                                : `Bật/tắt lịch học ${getDayLabel(dayCode)}`
+                                            }
+                                            className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition-all cursor-pointer ${
+                                              isDaySelected
+                                                ? 'bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 shadow-md shadow-amber-500/20 ring-2 ring-amber-400/60'
+                                                : 'bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700/80'
+                                            }`}
+                                          >
+                                            <span className={`w-4 h-4 rounded-md flex items-center justify-center text-[10px] font-black ${
+                                              isDaySelected ? 'bg-slate-950 text-amber-400' : 'bg-slate-800 text-slate-500'
+                                            }`}>
+                                              {isDaySelected ? '✓' : ''}
+                                            </span>
+                                            <span>{getDayLabel(dayCode)} ({dayCode})</span>
+                                          </button>
+                                        );
+                                      })}
+
+                                      <span className="text-[11px] text-slate-300 font-medium ml-1">
+                                        &rarr;{' '}
+                                        {autoSessionInfo.isPartialSchedule ? (
+                                          <strong className="text-amber-300">
+                                            Bé {formatStudentScheduleLabel(autoSessionInfo.enrolledDaysOfWeek, autoSessionInfo.daysOfWeek).toLowerCase()} hàng tuần ({autoSessionInfo.enrolledDaysOfWeek.length} buổi/tuần)
+                                          </strong>
+                                        ) : (
+                                          <strong className="text-emerald-400">
+                                            Bé học đủ {autoSessionInfo.daysOfWeek.length} buổi/tuần ({formatDaysListLabel(autoSessionInfo.daysOfWeek)})
+                                          </strong>
+                                        )}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {/* Row 1: Ngày bắt đầu học chính thức + Quick Preset Buttons */}
+                                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-800/80">
+                                    <div className="space-y-1 flex-1">
+                                      <label className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                                        <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                                        <span>Ngày bắt đầu học chính thức <span className="text-rose-400">*</span>:</span>
+                                      </label>
+                                      <p className="text-[10px] text-slate-400">
+                                        Khung khóa học: <span className="font-mono text-slate-300">{formatDateVN(autoSessionInfo.termStartDate)} &rarr; {formatDateVN(autoSessionInfo.termEndDate)}</span>
+                                      </p>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <input
+                                        type="date"
+                                        min={autoSessionInfo.termStartDate}
+                                        max={autoSessionInfo.termEndDate}
+                                        value={currentStartDate}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setSubjectStartDates(prev => ({
+                                            ...prev,
+                                            [sub.subject_id]: val,
+                                          }));
+                                          setSubjectCustomSessions(prev => ({
+                                            ...prev,
+                                            [sub.subject_id]: undefined,
+                                          }));
+                                        }}
+                                        className="px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400"
+                                      />
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const nextDate = getDefaultClassStartDate(selectedClassObj, store, undefined, effectiveEnrolledDays);
+                                          setSubjectStartDates(prev => ({ ...prev, [sub.subject_id]: nextDate }));
+                                          setSubjectCustomSessions(prev => ({ ...prev, [sub.subject_id]: undefined }));
+                                        }}
+                                        className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold transition-colors cursor-pointer"
+                                        title="Đặt về ngày diễn ra buổi học kế tiếp theo thứ đã chọn"
+                                      >
+                                        Buổi kế tiếp
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSubjectStartDates(prev => ({
+                                            ...prev,
+                                            [sub.subject_id]: autoSessionInfo.termStartDate,
+                                          }));
+                                          setSubjectCustomSessions(prev => ({ ...prev, [sub.subject_id]: undefined }));
+                                        }}
+                                        className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-[10px] font-semibold transition-colors cursor-pointer"
+                                        title="Tính từ ngày khai giảng đầu khóa"
+                                      >
+                                        Đầu khóa
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Row 2: Tự động đối soát & đếm số buổi còn lại (Reactive Counter) */}
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                                    <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80 flex flex-col justify-between">
+                                      <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                        Lịch học của lớp
+                                      </span>
+                                      <div className="mt-1 flex items-baseline justify-between gap-1">
+                                        <span className="font-mono font-bold text-xs text-white">
+                                          {formatDaysListLabel(autoSessionInfo.daysOfWeek)}
+                                        </span>
+                                        <span className="text-[10px] text-slate-400 font-mono">
+                                          Toàn khóa: {pricingBreakdown.totalSessions}b
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800/80 flex flex-col justify-between">
+                                      <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                                        Lịch học của bé
+                                      </span>
+                                      <div className="mt-1 flex items-baseline justify-between gap-1">
+                                        <span className={`font-bold text-xs ${autoSessionInfo.isPartialSchedule ? 'text-amber-300' : 'text-emerald-300'}`}>
+                                          {formatStudentScheduleLabel(autoSessionInfo.enrolledDaysOfWeek, autoSessionInfo.daysOfWeek)}
+                                        </span>
+                                        <span className="text-[10px] text-slate-400 font-mono">
+                                          {autoSessionInfo.enrolledDaysOfWeek.length} buổi/tuần
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/40 flex flex-col justify-between shadow-sm">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider">
+                                          Tổng thực học của bé
+                                        </span>
+                                        {manualOverrideSessions !== undefined && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setSubjectCustomSessions(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: undefined,
+                                              }))
+                                            }
+                                            className="text-[9px] text-amber-300 underline hover:text-amber-200 cursor-pointer"
+                                            title="Khôi phục số buổi đếm tự động theo lịch"
+                                          >
+                                            Tự động ({autoSessionInfo.remainingSessions}b)
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      <div className="mt-1 flex items-center justify-between gap-1.5">
+                                        <span className="font-mono font-black text-base text-emerald-400">
+                                          {pricingBreakdown.effectiveSessions} buổi
+                                        </span>
+
+                                        {/* Linh hoạt điều chỉnh nhanh số buổi */}
+                                        <div className="flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const nextVal = Math.max(1, pricingBreakdown.effectiveSessions - 1);
+                                              setSubjectCustomSessions(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: nextVal,
+                                              }));
+                                            }}
+                                            className="w-6 h-6 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-mono font-bold text-xs flex items-center justify-center cursor-pointer"
+                                            title="Giảm 1 buổi"
+                                          >
+                                            -
+                                          </button>
+                                          <input
+                                            type="number"
+                                            min={1}
+                                            max={pricingBreakdown.totalSessions}
+                                            value={pricingBreakdown.effectiveSessions}
+                                            onChange={(e) => {
+                                              const val = Math.min(
+                                                pricingBreakdown.totalSessions,
+                                                Math.max(1, Number(e.target.value) || 1)
+                                              );
+                                              setSubjectCustomSessions(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: val,
+                                              }));
+                                            }}
+                                            className="w-11 px-1 py-0.5 text-center rounded-lg bg-slate-950 border border-emerald-500/40 font-mono font-bold text-xs text-emerald-300 focus:outline-none"
+                                            title="Điều chỉnh số buổi thực học theo thỏa thuận phụ huynh"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const nextVal = Math.min(
+                                                pricingBreakdown.totalSessions,
+                                                pricingBreakdown.effectiveSessions + 1
+                                              );
+                                              setSubjectCustomSessions(prev => ({
+                                                ...prev,
+                                                [sub.subject_id]: nextVal,
+                                              }));
+                                            }}
+                                            className="w-6 h-6 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-mono font-bold text-xs flex items-center justify-center cursor-pointer"
+                                            title="Tăng 1 buổi"
+                                          >
+                                            +
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Row 3: Hiển thị bảng đối chiếu biểu phí minh bạch (Pricing Breakdown) */}
+                                  <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5 text-[11px]">
+                                    <div className="flex items-center justify-between text-slate-400">
+                                      <span>Lịch học của lớp:</span>
+                                      <span className="font-mono text-slate-200 font-medium">
+                                        {formatDaysListLabel(autoSessionInfo.daysOfWeek)} ({autoSessionInfo.daysOfWeek.length} buổi/tuần - Toàn khóa: {pricingBreakdown.totalSessions} buổi)
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center justify-between text-slate-400">
+                                      <span>Lịch học của bé:</span>
+                                      <span className="font-mono text-amber-300 font-bold">
+                                        {formatStudentScheduleLabel(autoSessionInfo.enrolledDaysOfWeek, autoSessionInfo.daysOfWeek)} ({autoSessionInfo.enrolledDaysOfWeek.length} buổi/tuần - Tổng thực học: {pricingBreakdown.effectiveSessions} buổi)
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center justify-between text-slate-400">
+                                      <span>Đơn giá 1 buổi (Ceil):</span>
+                                      <span className="font-mono font-bold text-slate-200">
+                                        {formatVND(pricingBreakdown.sessionRate)}/buổi
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center justify-between text-slate-200 pt-1.5 border-t border-slate-800/80">
+                                      <span className="font-semibold">
+                                        Học phí áp dụng:
+                                      </span>
+                                      <span className="font-mono font-bold text-emerald-300 text-right">
+                                        {pricingBreakdown.effectiveSessions < pricingBreakdown.totalSessions ? (
+                                          <>
+                                            {pricingBreakdown.effectiveSessions} buổi × {formatVND(pricingBreakdown.sessionRate)}/buổi = {formatVND(pricingBreakdown.proratedGrossFee)}{' '}
+                                            <span className="text-slate-500 font-normal">
+                                              (Thay vì <span className="line-through">{formatVND(pricingBreakdown.fullCourseFee)}</span>)
+                                            </span>
+                                          </>
+                                        ) : (
+                                          formatVND(pricingBreakdown.proratedGrossFee)
+                                        )}
+                                      </span>
+                                    </div>
+
+                                    {pricingBreakdown.discountAmount > 0 && (
+                                      <div className="flex items-center justify-between text-amber-300">
+                                        <span>{pricingBreakdown.discountLabel} (tính trên học phí thực học):</span>
+                                        <span className="font-mono font-bold">-{formatVND(pricingBreakdown.discountAmount)}</span>
+                                      </div>
+                                    )}
+
+                                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-800 font-bold text-xs">
+                                      <span className="text-white">
+                                        {isTrialEnroll ? 'Học phí môn này (Tạm hoãn chờ học thử):' : 'Học phí thực đóng môn này:'}
+                                      </span>
+                                      <span className={`font-mono text-sm font-black ${isTrialEnroll ? 'text-purple-300' : 'text-emerald-400'}`}>
+                                        {formatVND(pricingBreakdown.netPayable)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
 
                               {/* Class Details Pill if chosen */}
                               {selectedClassObj ? (
-                                <div className="mt-2 p-2.5 rounded-xl bg-slate-950/90 border border-emerald-500/30 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2 shadow-sm">
-                                  <div className="flex items-center gap-3">
+                                <div className={`p-2.5 rounded-xl bg-slate-950/90 border text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2 shadow-sm ${
+                                  isTrialEnroll ? 'border-purple-500/30' : 'border-emerald-500/30'
+                                }`}>
+                                  <div className="flex items-center gap-3 flex-wrap">
                                     <span>
                                       Cơ sở: <strong className="text-white">{store.campuses.find(cp => cp.id === selectedClassObj.campus_id)?.name}</strong>
                                     </span>
@@ -1441,8 +2017,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                       GV: <strong className="text-amber-300">{store.teachers.find(t => t.id === selectedClassObj.primary_teacher_id)?.name || 'Chuyên gia Royal'}</strong>
                                     </span>
                                   </div>
-                                  <div className="text-emerald-400 font-mono font-bold">
-                                    Học phí thực tế: {formatVND(selectedClassObj.full_course_fee)}
+                                  <div className={isTrialEnroll ? 'text-purple-300 font-mono font-bold' : 'text-emerald-400 font-mono font-bold'}>
+                                    {pricingBreakdown && autoSessionInfo
+                                      ? `Lịch: ${autoSessionInfo.enrolledDaysOfWeek.join(', ')} • ${pricingBreakdown.effectiveSessions}/${pricingBreakdown.totalSessions} buổi`
+                                      : `Trọn khóa: ${selectedClassObj.total_sessions} buổi`}
                                   </div>
                                 </div>
                               ) : (
@@ -1528,10 +2106,36 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     )}
                   </div>
 
+                  {/* Per-subject Session Summary Row */}
+                  {assignedClassBreakdowns.length > 0 && (
+                    <div className="p-2.5 rounded-xl bg-slate-950/90 border border-slate-800/90 text-[11px] flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-slate-400 font-semibold">Tổng hợp lịch & số buổi thực học các môn được xếp:</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {assignedClassBreakdowns.map((item, i) => (
+                          <span
+                            key={i}
+                            className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono font-bold"
+                          >
+                            {item.subjectName.split('(')[0].trim()}: {formatStudentScheduleLabel(item.enrolledDays, item.classDays)} ({item.pricing.effectiveSessions}/{item.pricing.totalSessions} buổi)
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                     <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
-                      <span className="text-slate-400 text-[11px] block">Tổng học phí gốc ({assignedCount} lớp):</span>
-                      <span className="text-white font-bold font-mono text-base">{formatVND(totalGross)}</span>
+                      <span className="text-slate-400 text-[11px] block">
+                        {hasAnyProrated ? `Học phí theo buổi thực học (${assignedCount} lớp):` : `Tổng học phí gốc (${assignedCount} lớp):`}
+                      </span>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-white font-bold font-mono text-base">{formatVND(totalGross)}</span>
+                        {hasAnyProrated && totalFullGross > totalGross && (
+                          <span className="text-slate-500 font-mono text-xs line-through">
+                            {formatVND(totalFullGross)}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800">
@@ -1543,22 +2147,30 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       </span>
                     </div>
 
-                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
-                      <span className="text-emerald-300 font-bold text-[11px] block uppercase tracking-wider">
-                        Tổng học phí thực nộp:
+                    <div className={`p-3 rounded-xl border ${
+                      trialAssignedCount > 0 && officialAssignedCount === 0
+                        ? 'bg-purple-500/15 border-purple-500/40'
+                        : 'bg-emerald-500/10 border-emerald-500/30'
+                    }`}>
+                      <span className={`font-bold text-[11px] block uppercase tracking-wider ${
+                        trialAssignedCount > 0 && officialAssignedCount === 0 ? 'text-purple-300' : 'text-emerald-300'
+                      }`}>
+                        {trialAssignedCount > 0 && officialAssignedCount === 0 ? 'Học phí dự kiến thực học:' : 'Tổng học phí thực nộp:'}
                       </span>
-                      <span className="text-emerald-400 font-black font-mono text-xl sm:text-2xl tracking-tight">
+                      <span className={`font-black font-mono text-xl sm:text-2xl tracking-tight ${
+                        trialAssignedCount > 0 && officialAssignedCount === 0 ? 'text-purple-300' : 'text-emerald-400'
+                      }`}>
                         {formatVND(totalNet)}
                       </span>
+                      {trialAssignedCount > 0 && (
+                        <div className="text-[10px] text-purple-300 font-semibold mt-1 leading-snug">
+                          {officialAssignedCount === 0
+                            ? '(Chưa phát sinh công nợ - Chờ kết quả buổi học thử)'
+                            : `(Thu ngay ${formatVND(immediatePayable)} • Tạm hoãn ${formatVND(trialDeferredAmount)} chờ học thử)`}
+                        </div>
+                      )}
                     </div>
                   </div>
-
-                  {lead.is_royal_student && (
-                    <div className="text-[11px] text-amber-300/90 flex items-center gap-1.5 pt-1">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span>Bé là học sinh chính khóa Royal School: Được hưởng trọn suất bánh sữa dinh dưỡng sau giờ học cho tất cả các môn đã xếp lớp.</span>
-                    </div>
-                  )}
                 </div>
 
                 {/* 6. Ghi chú lưu học vụ */}
@@ -1609,14 +2221,20 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     onClick={handleConfirmEnrollment}
                     className={`px-5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 shadow-lg transition-all cursor-pointer ${
                       assignedCount > 0 
-                        ? 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95'
+                        ? trialAssignedCount > 0 && officialAssignedCount === 0
+                          ? 'bg-gradient-to-r from-purple-500 to-amber-500 hover:from-purple-400 hover:to-amber-400 text-slate-950 shadow-purple-500/25 active:scale-95'
+                          : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95'
                         : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 shadow-sm active:scale-95'
                     }`}
                   >
                     <Check className="w-4 h-4 stroke-[3]" />
                     <span>
                       {assignedCount > 0 
-                        ? `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (${assignedCount} lớp)`
+                        ? trialAssignedCount > 0 && officialAssignedCount === 0
+                          ? `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (Học Thử ${trialAssignedCount} Lớp)`
+                          : trialAssignedCount > 0
+                          ? `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (${officialAssignedCount} Chính Thức, ${trialAssignedCount} Học Thử)`
+                          : `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (${assignedCount} lớp)`
                         : `Tiếp Nhận & Cấp Mã Học Viên (Lưu Chờ Xếp Lớp)`}
                     </span>
                   </button>

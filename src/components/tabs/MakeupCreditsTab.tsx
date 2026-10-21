@@ -16,6 +16,8 @@ import {
 import { AppStore, formatVND, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { MakeupCredit, Student, ExtracurricularClass, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { StudentSearchCombobox } from '../StudentSearchCombobox';
+import { showToast } from '../../lib/toast';
 
 interface MakeupCreditsTabProps {
   store: AppStore;
@@ -104,6 +106,11 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
     }));
 
     setShowIssueModal(false);
+    showToast(
+      `Đã lập phiếu bảo lưu ${newCredit.credit_code} cho học sinh ${selectedStudent.name} (${formatVND(newCredit.total_credit_amount)})!`,
+      'success',
+      { title: 'Cấp phiếu bảo lưu thành công' }
+    );
   };
 
   // Handle Apply Credit to Next Term Class/Invoice
@@ -161,6 +168,11 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
     });
 
     setApplyingCredit(null);
+    showToast(
+      `Đã cấn trừ phiếu bảo lưu ${applyingCredit.credit_code} vào lớp ${targetClass.name} thành công!`,
+      'success',
+      { title: 'Cấn trừ bảo lưu thành công' }
+    );
   };
 
   return (
@@ -444,15 +456,14 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
             <form onSubmit={handleCreateCredit} className="space-y-3.5 text-xs">
               <div>
                 <label className="block text-slate-400 font-medium mb-1">Chọn Học sinh *</label>
-                <select
-                  value={issueForm.student_id}
-                  onChange={(e) => setIssueForm({ ...issueForm, student_id: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
-                >
-                  {store.students.map(s => (
-                    <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-                  ))}
-                </select>
+                <StudentSearchCombobox
+                  students={store.students}
+                  enrollments={store.enrollments}
+                  classes={store.classes}
+                  selectedStudentId={issueForm.student_id}
+                  onSelectStudent={(studentId) => setIssueForm({ ...issueForm, student_id: studentId })}
+                  placeholder="Gõ tên, mã học sinh (RY-...), SĐT phụ huynh để tìm nhanh..."
+                />
               </div>
 
               <div>
