@@ -38,12 +38,12 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     sub_kpi: { parent: 'Tổng Quan & Báo Cáo', title: 'Tổng Quan Hiệu Suất & Thống Kê', icon: Layers, badge: 'Chỉ Số Hiệu Suất' },
     
     // Nhóm 2: Học Viên & Tuyển Sinh
-    sub_students: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên', icon: GraduationCap, badge: 'Hồ Sơ Học Viên' },
     sub_parents: { parent: 'Học Viên & Tuyển Sinh', title: 'Đơn Đăng Ký Tuyển Sinh', icon: Users, badge: 'Cổng Phụ Huynh' },
-    sub_credits: { parent: 'Học Viên & Tuyển Sinh', title: 'Sổ Bảo Lưu & Cấn Trừ Học Phí', icon: BookmarkCheck, badge: 'Hạn 365 Ngày' },
+    sub_students: { parent: 'Học Viên & Tuyển Sinh', title: 'Hồ Sơ Học Viên', icon: GraduationCap, badge: 'Hồ Sơ Học Viên' },
+    sub_credits: { parent: 'Học Viên & Tuyển Sinh', title: 'Bảo Lưu', icon: BookmarkCheck, badge: 'Hạn 365 Ngày' },
 
     // Nhóm 3: Đào Tạo & Vận Hành
-    sub_term_subjects: { parent: 'Đào Tạo & Vận Hành', title: 'Cấu Hình Khóa Học & Môn Học', icon: School, badge: 'Môn & Khóa Học' },
+    sub_term_subjects: { parent: 'Đào Tạo & Vận Hành', title: 'Khóa Học & Môn Học', icon: School, badge: 'Môn & Khóa Học' },
     sub_pricing: { parent: 'Đào Tạo & Vận Hành', title: 'Biểu Phí Theo Cơ Sở', icon: DollarSign, badge: 'Theo Cơ Sở & Môn' },
     sub_classes: { parent: 'Đào Tạo & Vận Hành', title: 'Lớp Học Ngoại Khóa', icon: Calendar, badge: 'Phòng Học & Giáo Viên' },
     sub_attendance: { parent: 'Đào Tạo & Vận Hành', title: 'Sổ Điểm Danh & Dạy Thay', icon: CheckCircle2, badge: 'Chuyên Cần & Bù Trừ' },

@@ -11,8 +11,8 @@ import {
   Save, 
   ShieldCheck,
   UserCheck,
-  Coffee,
-  Lock
+  Lock,
+  Coffee
 } from 'lucide-react';
 import { AppStore } from '../lib/storage';
 import { Teacher, ExtracurricularClass, Student, AttendanceRecord, ClassSession } from '../types';
@@ -228,12 +228,15 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Controls Bar */}

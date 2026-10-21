@@ -1854,9 +1854,20 @@ export const initialAttendance: AttendanceRecord[] = [
   { id: 'att_07', session_id: 'ses_swim_pmh_01', class_id: 'cls_swim_pmh_01', student_id: 'std_37', session_date: '2026-09-02', status: 'present' },
 
   // Buổi 2 Bơi PMH (std_02 vắng có phép - sốt nhẹ)
-  { id: 'att_08', session_id: 'ses_swim_pmh_02', class_id: 'cls_swim_pmh_01', student_id: 'std_01', session_date: '2026-09-07', status: 'present' },
-  { id: 'att_09', session_id: 'ses_swim_pmh_02', class_id: 'cls_swim_pmh_01', student_id: 'std_02', session_date: '2026-09-07', status: 'absent_excused', note: 'Phụ huynh gọi điện xin nghỉ sốt siêu vi' },
-  { id: 'att_10', session_id: 'ses_swim_pmh_02', class_id: 'cls_swim_pmh_01', student_id: 'std_03', session_date: '2026-09-07', status: 'present' },
+  { 
+    id: 'att_09', 
+    session_id: 'ses_swim_pmh_02', 
+    class_id: 'cls_swim_pmh_01', 
+    student_id: 'std_02', 
+    session_date: '2026-09-07', 
+    status: 'absent_excused', 
+    note: 'Phụ huynh gọi điện xin nghỉ sốt siêu vi, gửi toa thuốc BV Nhi Đồng',
+    proof_file_name: 'Giay_Kham_Benh_Vien_Nhi_Dong_std02.jpg',
+    proof_url: 'https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?w=800&auto=format&fit=crop&q=80',
+    proof_base64: 'https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?w=800&auto=format&fit=crop&q=80',
+    uploaded_at: '2026-09-07 08:15:00',
+    uploaded_by: 'Cô Thu Thảo (GV Bơi)'
+  },
   { id: 'att_11', session_id: 'ses_swim_pmh_02', class_id: 'cls_swim_pmh_01', student_id: 'std_04', session_date: '2026-09-07', status: 'present' },
   { id: 'att_12', session_id: 'ses_swim_pmh_02', class_id: 'cls_swim_pmh_01', student_id: 'std_05', session_date: '2026-09-07', status: 'present' },
   { id: 'att_13', session_id: 'ses_swim_pmh_02', class_id: 'cls_swim_pmh_01', student_id: 'std_36', session_date: '2026-09-07', status: 'present' },

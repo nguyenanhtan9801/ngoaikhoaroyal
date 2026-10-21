@@ -115,20 +115,20 @@ export const Navbar: React.FC<NavbarProps> = ({
       icon: Users,
       items: [
         { 
-          id: 'sub_students', 
-          label: 'Hồ Sơ Học Viên', 
-          icon: GraduationCap, 
-          desc: 'Danh sách học viên, hình thẻ, học sinh Royal, học sinh ngoài trường, thông tin y tế' 
-        },
-        { 
           id: 'sub_parents', 
           label: 'Đơn Đăng Ký Tuyển Sinh', 
           icon: Users, 
           desc: 'Hồ sơ tiếp nhận trực tuyến từ phụ huynh dành cho cán bộ tuyển sinh và học vụ' 
         },
         { 
+          id: 'sub_students', 
+          label: 'Hồ Sơ Học Viên', 
+          icon: GraduationCap, 
+          desc: 'Danh sách học viên, hình thẻ, học sinh Royal, học sinh ngoài trường, thông tin y tế' 
+        },
+        { 
           id: 'sub_credits', 
-          label: 'Sổ Bảo Lưu & Cấn Trừ Học Phí', 
+          label: 'Bảo Lưu', 
           icon: BookmarkCheck, 
           desc: 'Cấp phiếu nghỉ từ 3 buổi trở lên, theo dõi hạn 365 ngày và cấn trừ khóa mới' 
         },
@@ -141,7 +141,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       items: [
         { 
           id: 'sub_term_subjects', 
-          label: 'Cấu Hình Khóa Học & Môn Học', 
+          label: 'Khóa Học & Môn Học', 
           icon: School, 
           desc: 'Quản lý danh mục môn, kích hoạt môn cho từng khóa, đóng mở niên khóa' 
         },

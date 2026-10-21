@@ -17,20 +17,31 @@ import {
   Sparkles,
   ExternalLink,
   Upload,
-  Link as LinkIcon,
   X,
   Paperclip,
-  FolderCheck,
-  Check
+  Check,
+  Eye,
+  Download,
+  Trash2,
+  Edit2,
+  ShieldCheck,
+  Image as ImageIcon,
+  RefreshCw,
+  Server
 } from 'lucide-react';
 import { 
   AppStore, 
   formatVND, 
   createAuditRecord, 
-  appendAuditLog,
-  GOOGLE_DRIVE_FOLDER_ID,
-  GOOGLE_DRIVE_ROOT_URL
+  appendAuditLog
 } from '../../lib/storage';
+import { 
+  compressAndConvertToBase64, 
+  triggerFileDownload, 
+  uploadToSupabaseBucket, 
+  uploadFileToServer,
+  formatFileSize 
+} from '../../lib/fileStorage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole, AppUser } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 
@@ -99,6 +110,9 @@ interface StudentAttendanceLocal {
   note: string;
   proof_url?: string;
   proof_file_name?: string;
+  proof_base64?: string;
+  uploaded_at?: string;
+  uploaded_by?: string;
 }
 
 export const AttendanceTab: React.FC<AttendanceTabProps> = ({
@@ -192,13 +206,26 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const [isSubstitute, setIsSubstitute] = useState<boolean>(false);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
-  // Modal proof attachment state
+  // Modal proof attachment state (Upload & Compression)
   const [proofModalStudent, setProofModalStudent] = useState<Student | null>(null);
   const [proofUrlInput, setProofUrlInput] = useState<string>('');
+  const [proofBase64Input, setProofBase64Input] = useState<string>('');
   const [proofFileNameInput, setProofFileNameInput] = useState<string>('');
   const [proofNoteInput, setProofNoteInput] = useState<string>('');
   const [proofUploadActive, setProofUploadActive] = useState<boolean>(false);
   const [proofError, setProofError] = useState<string | null>(null);
+  const [compressionStats, setCompressionStats] = useState<{
+    originalSize: string;
+    compressedSize: string;
+    ratio: number;
+  } | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+
+  // Modal proof preview state (In-App Lightbox View - Zero Google Drive auth needed)
+  const [previewProofModal, setPreviewProofModal] = useState<{
+    student: Student;
+    record: StudentAttendanceLocal;
+  } | null>(null);
 
   if (!currentClass) {
     return (
@@ -235,6 +262,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         note: existing.note || '',
         proof_url: existing.proof_url || '',
         proof_file_name: existing.proof_file_name || '',
+        proof_base64: existing.proof_base64 || '',
+        uploaded_at: existing.uploaded_at,
+        uploaded_by: existing.uploaded_by,
       };
     } else {
       initialStatusMap[s.id] = { status: 'present', note: '' };
@@ -251,7 +281,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   }, [currentClass?.id]);
 
-  // Update attendance state when selectedDate changes
+  // Update attendance state when selectedDate or store.attendance changes (Guaranteed Persistence)
   useEffect(() => {
     const newMap: Record<string, StudentAttendanceLocal> = {};
     enrolledStudents.forEach(s => {
@@ -264,13 +294,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           note: existing.note || '',
           proof_url: existing.proof_url || '',
           proof_file_name: existing.proof_file_name || '',
+          proof_base64: existing.proof_base64 || '',
+          uploaded_at: existing.uploaded_at,
+          uploaded_by: existing.uploaded_by,
         };
       } else {
         newMap[s.id] = { status: 'present', note: '' };
       }
     });
     setAttendanceState(newMap);
-  }, [selectedDate, currentClass?.id]);
+  }, [selectedDate, currentClass?.id, store.attendance]);
 
   // Royal Snacks live calculation for this session
   const royalStudents = enrolledStudents.filter(s => s.is_royal_student);
@@ -288,29 +321,34 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   });
 
-  // Handle Status Change with mandatory proof modal for Excused Absences
+  // Handle Status Change: 1-click status change (Proof is OPTIONAL)
   const handleSetStatus = (student: Student, targetStatus: 'present' | 'absent_excused' | 'absent_unexcused') => {
     if (isFutureDate) return;
 
-    if (targetStatus === 'absent_excused') {
-      // Open Proof Modal
-      const existing = attendanceState[student.id];
-      setProofModalStudent(student);
-      setProofUrlInput(existing?.proof_url || '');
-      setProofFileNameInput(existing?.proof_file_name || '');
-      setProofNoteInput(existing?.note || 'Phụ huynh xin phép qua Zalo / Đơn thuốc bác sĩ');
-      setProofError(null);
-      setProofUploadActive(false);
-    } else {
-      // Direct set for present or absent_unexcused
-      setAttendanceState(prev => ({
+    setAttendanceState(prev => {
+      const existing = prev[student.id];
+      return {
         ...prev,
         [student.id]: {
-          ...prev[student.id],
+          ...existing,
           status: targetStatus,
+          note: existing?.note || (targetStatus === 'absent_excused' ? 'Phụ huynh xin phép' : ''),
         },
-      }));
-    }
+      };
+    });
+  };
+
+  // Explicitly open the Proof Modal to upload/edit proof file or detailed note (Optional)
+  const handleOpenProofModal = (student: Student) => {
+    const existing = attendanceState[student.id];
+    setProofModalStudent(student);
+    setProofUrlInput(existing?.proof_url || '');
+    setProofBase64Input(existing?.proof_base64 || '');
+    setProofFileNameInput(existing?.proof_file_name || '');
+    setProofNoteInput(existing?.note || 'Phụ huynh xin phép qua Zalo / SĐT');
+    setProofError(null);
+    setProofUploadActive(false);
+    setCompressionStats(null);
   };
 
   const setNote = (studentId: string, note: string) => {
@@ -323,66 +361,93 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }));
   };
 
-  // Confirm Excused Absence Proof Modal
+  // Process selected file with client-side compression and Upload to Server (/api/upload)
+  const processSelectedFile = async (file: File) => {
+    if (!file) return;
+    setProofUploadActive(true);
+    setProofError(null);
+
+    try {
+      // 1. Client-side compression & base64 conversion (< 500KB)
+      const result = await compressAndConvertToBase64(file);
+      setProofBase64Input(result.base64);
+      setProofFileNameInput(result.fileName);
+      setCompressionStats({
+        originalSize: formatFileSize(result.originalSizeBytes),
+        compressedSize: formatFileSize(result.compressedSizeBytes),
+        ratio: result.compressionRatio,
+      });
+
+      // 2. Upload file directly to backend server (/api/upload)
+      const serverRes = await uploadFileToServer(result.base64, result.fileName, 'proofs');
+      if (serverRes.success && serverRes.url) {
+        setProofUrlInput(serverRes.url);
+        if (serverRes.fileName) setProofFileNameInput(serverRes.fileName);
+      } else {
+        // Fallback to local Base64/Google Drive link if server offline
+        setProofUrlInput(result.base64);
+      }
+    } catch (err: any) {
+      setProofError(err?.message || 'Lỗi khi xử lý và lưu tệp lên server!');
+    } finally {
+      setProofUploadActive(false);
+    }
+  };
+
+  const handleSimulateUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processSelectedFile(file);
+    }
+  };
+
+  // Remove proof from student while keeping excused absence status
+  const handleRemoveProof = (studentId: string) => {
+    if (confirm('Bạn có chắc muốn gỡ bỏ tệp minh chứng của học sinh này? Trạng thái vắng có phép vẫn sẽ được giữ nguyên.')) {
+      setAttendanceState(prev => ({
+        ...prev,
+        [studentId]: {
+          ...prev[studentId],
+          proof_url: undefined,
+          proof_file_name: undefined,
+          proof_base64: undefined,
+          uploaded_at: undefined,
+          uploaded_by: undefined,
+        },
+      }));
+    }
+  };
+
+  // Confirm Excused Absence Proof Modal (Proof file is OPTIONAL)
   const handleConfirmProof = () => {
     if (!proofModalStudent) return;
-
-    if (!proofUrlInput.trim()) {
-      setProofError('Bắt buộc phải tải lên tệp hoặc dán đường dẫn liên kết Google Drive / OneDrive minh chứng!');
-      return;
-    }
 
     setAttendanceState(prev => ({
       ...prev,
       [proofModalStudent.id]: {
         ...prev[proofModalStudent.id],
         status: 'absent_excused',
-        note: proofNoteInput.trim() || 'Nghỉ có phép kèm minh chứng',
-        proof_url: proofUrlInput.trim(),
-        proof_file_name: proofFileNameInput || 'Minh_chung_vang_phep.pdf',
+        note: proofNoteInput.trim() || 'Nghỉ có phép',
+        proof_url: proofUrlInput.trim() || proofBase64Input.trim() || undefined,
+        proof_file_name: proofFileNameInput.trim() || undefined,
+        proof_base64: proofBase64Input.trim() || undefined,
+        uploaded_at: (proofUrlInput || proofBase64Input) ? new Date().toISOString() : undefined,
+        uploaded_by: (proofUrlInput || proofBase64Input) ? (currentUser?.full_name || 'Giáo viên') : undefined,
       },
     }));
 
     setProofModalStudent(null);
     setProofError(null);
-  };
-
-  // Mock upload action to simulated Google Drive Folder
-  const handleSimulateUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setProofUploadActive(true);
-    setProofError(null);
-
-    const folderId = store.cloudStorageConfig?.drive_folder_id || GOOGLE_DRIVE_FOLDER_ID;
-    const campusCode = store.campuses.find(c => c.id === currentClass.campus_id)?.code || 'PMH';
-    const sanitizedFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-
-    // Simulate direct Google Drive file URL generated after upload into configured folder
-    setTimeout(() => {
-      const generatedUrl = `https://drive.google.com/file/d/1KVk_${campusCode}_${Date.now()}_${sanitizedFileName}/view?usp=sharing`;
-      setProofUrlInput(generatedUrl);
-      setProofFileNameInput(file.name);
-      setProofUploadActive(false);
-    }, 400);
+    setProofBase64Input('');
+    setProofUrlInput('');
+    setProofFileNameInput('');
+    setCompressionStats(null);
   };
 
   // Save Attendance Session with Strict Validations
   const handleSaveAttendance = () => {
     if (isFutureDate) {
       alert(`RÀNG BUỘC THỜI GIAN: Ngày ${selectedDate} là ngày trong tương lai. Hệ thống chỉ cho phép điểm danh cho ngày hôm nay hoặc quá khứ!`);
-      return;
-    }
-
-    // Check mandatory proof for all students marked absent_excused
-    const unprovenStudents = enrolledStudents.filter(s => {
-      const rec = attendanceState[s.id];
-      return rec?.status === 'absent_excused' && (!rec.proof_url || !rec.proof_url.trim());
-    });
-
-    if (unprovenStudents.length > 0) {
-      alert(`Học sinh nghỉ có phép bắt buộc phải có minh chứng hợp lệ để đảm bảo quyền lợi bảo lưu và hoàn trả bánh sữa!\nVui lòng bổ sung minh chứng cho: ${unprovenStudents.map(s => s.name).join(', ')}`);
       return;
     }
 
@@ -407,7 +472,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       };
       updatedSessions.push(newSession);
 
-      // 2. Attendance records with proof
+      // 2. Attendance records with guaranteed Base64 & URL permanence
       const remainingAttendance = prev.attendance.filter(
         a => !(a.class_id === currentClass.id && a.session_date === selectedDate)
       );
@@ -422,6 +487,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         note: attendanceState[s.id]?.note || '',
         proof_url: attendanceState[s.id]?.proof_url,
         proof_file_name: attendanceState[s.id]?.proof_file_name,
+        proof_base64: attendanceState[s.id]?.proof_base64,
+        uploaded_at: attendanceState[s.id]?.uploaded_at || new Date().toISOString(),
+        uploaded_by: attendanceState[s.id]?.uploaded_by || currentUser?.full_name || 'Giáo viên',
       }));
 
       const finalAttendance = [...remainingAttendance, ...newRecords];
@@ -591,7 +659,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </p>
             </div>
           </div>
-
           <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={() => onPrintAttendanceBook(currentClass, selectedDate)}
@@ -818,22 +885,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               <span>Sổ Điểm Danh Học Viên ({enrolledStudents.length} học sinh)</span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              * Học sinh nợ phí vẫn được điểm danh. Trạng thái Vắng CP bắt buộc đính kèm minh chứng để bảo lưu & hoàn bánh sữa.
+              * Học sinh nợ phí vẫn được điểm danh. Trạng thái Vắng CP có thể tải hoặc không tải minh chứng (tệp tải lên được lưu trên server).
             </p>
           </div>
 
           <div className="flex items-center gap-2.5">
-            <a
-              href={GOOGLE_DRIVE_ROOT_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-semibold text-xs transition-colors shrink-0"
-              title="Mở thư mục Google Drive lưu trữ đơn nghỉ phép & minh chứng vắng phép"
-            >
-              <FolderCheck className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="hidden sm:inline">Drive Đơn Nghỉ Phép</span>
-              <ExternalLink className="w-3 h-3 text-cyan-400" />
-            </a>
             <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
           </div>
         </div>
@@ -906,35 +962,79 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                   {/* Proof Attachment Badge if Vắng CP */}
                   {currentStatus === 'absent_excused' && (
-                    <div className="mb-3 p-2 rounded-xl bg-amber-500/10 border border-amber-500/30">
-                      <div className="flex items-center justify-between text-xs mb-1">
-                        <span className="font-bold text-amber-300 flex items-center gap-1">
+                    <div className="mb-3 p-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-amber-300 flex items-center gap-1.5">
                           <Paperclip className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Minh chứng nghỉ phép:</span>
+                          <span>Đơn xin nghỉ & minh chứng:</span>
                         </span>
-                        {!isFutureDate && (
+                        <div className="flex items-center gap-1">
+                          {!isFutureDate && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenProofModal(student)}
+                              className="text-[10px] text-amber-400 hover:text-amber-300 underline font-semibold px-1 py-0.5 rounded hover:bg-amber-500/10"
+                              title="Thay đổi hoặc nạp lại tệp minh chứng"
+                            >
+                              Đổi tệp
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => handleSetStatus(student, 'absent_excused')}
-                            className="text-[10px] text-amber-400 hover:text-amber-300 underline font-semibold"
+                            onClick={() => handleRemoveProof(student.id)}
+                            className="text-[10px] text-rose-400 hover:text-rose-300 p-0.5 rounded hover:bg-rose-500/10"
+                            title="Gỡ tệp minh chứng"
                           >
-                            Cập nhật
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
-                        )}
+                        </div>
                       </div>
-                      {proofUrl ? (
-                        <a
-                          href={proofUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200 underline break-all"
-                        >
-                          <ExternalLink className="w-3 h-3 text-cyan-400 shrink-0" />
-                          <span>{proofFileName || 'Xem tệp minh chứng trên Drive'}</span>
-                        </a>
+
+                      {(proofUrl || attendanceState[student.id]?.proof_base64) ? (
+                        <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-950/80 border border-slate-800">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[9px] font-bold shrink-0 flex items-center gap-1">
+                              <Server className="w-2.5 h-2.5 text-emerald-400" />
+                              <span>Đã lưu Server</span>
+                            </span>
+                            <span className="text-[11px] text-slate-200 font-mono truncate" title={proofFileName || 'don_nghi_phep.jpg'}>
+                              {proofFileName || 'don_nghi_phep.jpg'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewProofModal({ student, record: attendanceState[student.id] })}
+                              className="px-2 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-[10px] font-bold flex items-center gap-1 transition-colors"
+                              title="Xem đơn trực tiếp trong ứng dụng"
+                            >
+                              <Eye className="w-3 h-3 text-cyan-400" />
+                              <span>Xem đơn</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => triggerFileDownload(proofFileName || 'don_xin_nghi_phep.jpg', attendanceState[student.id]?.proof_base64 || proofUrl || '')}
+                              className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                              title="Tải tệp xuống máy"
+                            >
+                              <Download className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
                       ) : (
-                        <div className="text-[11px] text-rose-400 font-bold">
-                          ⚠️ Chưa có file minh chứng!
+                        <div className="flex items-center justify-between p-2 rounded-xl bg-slate-900/80 border border-slate-800 text-slate-400 text-[11px]">
+                          <span className="flex items-center gap-1.5 text-slate-300">
+                            <Check className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <span>Chưa đính kèm file (Tùy chọn)</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenProofModal(student)}
+                            className="px-2 py-0.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-[10px] transition-colors"
+                          >
+                            + Nạp file
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1092,22 +1192,60 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         )}
 
                         {currentStatus === 'absent_excused' && (
-                          <div className="pt-1">
-                            {proofUrl ? (
-                              <a
-                                href={proofUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold hover:bg-cyan-500/30 transition-colors"
-                                title="Mở minh chứng trên Drive"
-                              >
-                                <ExternalLink className="w-3 h-3 text-cyan-400" />
-                                <span>{proofFileName || 'Minh chứng Drive'}</span>
-                              </a>
+                          <div className="pt-1.5">
+                            {(proofUrl || attendanceState[student.id]?.proof_base64) ? (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-900 border border-emerald-500/30 text-[11px]">
+                                <span className="flex items-center gap-1 text-emerald-400 font-bold text-[9px] px-1 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 shrink-0">
+                                  <Server className="w-2.5 h-2.5" />
+                                  <span>Server</span>
+                                </span>
+                                <span className="font-mono text-slate-200 max-w-[110px] truncate" title={proofFileName || 'don_nghi_phep.jpg'}>
+                                  {proofFileName || 'don_nghi_phep.jpg'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewProofModal({ student, record: attendanceState[student.id] })}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold text-[10px] transition-colors"
+                                  title="Xem đơn trực tiếp trong ứng dụng"
+                                >
+                                  <Eye className="w-3 h-3 text-cyan-400" />
+                                  <span>Xem</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => triggerFileDownload(proofFileName || 'don_xin_nghi_phep.jpg', attendanceState[student.id]?.proof_base64 || proofUrl || '')}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                                  title="Tải tệp xuống"
+                                >
+                                  <Download className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveProof(student.id)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                                  title="Gỡ bỏ tệp (vẫn giữ trạng thái Vắng CP)"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenProofModal(student)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-amber-400 transition-colors"
+                                  title="Đổi hoặc nạp lại đơn khác"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                </button>
+                              </div>
                             ) : (
-                              <span className="text-rose-400 font-bold text-[10px] block">
-                                ⚠️ Thiếu minh chứng!
-                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenProofModal(student)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-amber-500/40 text-slate-300 hover:text-white text-[10px] font-semibold transition-colors"
+                                title="Đính kèm file minh chứng lên server (tùy chọn)"
+                              >
+                                <Paperclip className="w-3 h-3 text-amber-400" />
+                                <span>+ Đính kèm file (Tùy chọn)</span>
+                              </button>
                             )}
                           </div>
                         )}
@@ -1217,9 +1355,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               <div>
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <Paperclip className="w-5 h-5 text-amber-400" />
-                  <span>Đính Kèm Minh Chứng Vắng Có Phép</span>
+                  <span>Cập Nhật Minh Chứng & Lý Do Vắng Có Phép</span>
                 </h3>
-                <p className="text-xs text-slate-400 mt-1">
+                <p className="text-xs text-slate-300 mt-1">
                   Học sinh: <strong className="text-white">{proofModalStudent.name}</strong> ({proofModalStudent.code})
                 </p>
                 <p className="text-[11px] text-slate-400">
@@ -1235,26 +1373,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </button>
             </div>
 
-            {/* Cloud Storage Destination Alert */}
-            <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-300 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <FolderCheck className="w-4 h-4 text-cyan-400 shrink-0" />
-                <div className="text-[11px] leading-relaxed truncate">
-                  <span>Thư mục lưu trữ Google Drive: </span>
-                  <strong className="text-white font-mono block truncate">
-                    {GOOGLE_DRIVE_FOLDER_ID}/02_DonNghiPhep/{currentClass.campus_id}
-                  </strong>
-                </div>
-              </div>
-              <a
-                href={GOOGLE_DRIVE_ROOT_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold text-xs border border-cyan-500/30 transition-colors shrink-0"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Mở Google Drive</span>
-              </a>
+            {/* Notice about optional proof */}
+            <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center gap-2">
+              <Check className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>Minh chứng là <strong>không bắt buộc</strong>. Thầy cô có thể tải tệp lên máy chủ hoặc chỉ cần ghi chú lý do xin phép.</span>
             </div>
 
             {/* Error Message */}
@@ -1265,21 +1387,24 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </div>
             )}
 
-            {/* Method 1: File Upload */}
+            {/* Tùy chọn tải tệp minh chứng lên Server */}
             <div className="space-y-1.5 p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
-              <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                <Upload className="w-3.5 h-3.5 text-amber-400" />
-                <span>Cách 1: Tải tệp lên (File Upload: Ảnh / PDF / Giấy Khám)</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                  <Upload className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Tải tệp minh chứng (Ảnh / PDF / Giấy khám)</span>
+                </label>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-medium">Tùy chọn</span>
+              </div>
               <p className="text-[10px] text-slate-400">
-                Tệp được tự động tải lên và đồng bộ vào thư mục Google Drive dùng chung của trường.
+                Thầy cô có thể tải hoặc không tải minh chứng. Tệp tải lên sẽ được lưu trữ an toàn trên server.
               </p>
               
               <div className="mt-2">
                 <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-700 hover:border-amber-500 rounded-xl cursor-pointer bg-slate-950/60 hover:bg-slate-950 transition-colors">
                   <Upload className="w-6 h-6 text-slate-400 mb-1" />
                   <span className="text-xs text-slate-300 font-semibold">
-                    {proofUploadActive ? 'Đang tải lên Cloud...' : 'Nhấn để chọn file ảnh hoặc PDF'}
+                    {proofUploadActive ? 'Đang lưu tệp lên Server...' : 'Nhấn để chọn file ảnh hoặc PDF'}
                   </span>
                   <span className="text-[10px] text-slate-500 mt-0.5">JPG, PNG, PDF tối đa 15MB</span>
                   <input
@@ -1292,51 +1417,37 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </div>
 
               {proofFileNameInput && (
-                <div className="mt-2 p-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-xs text-emerald-300 flex items-center justify-between">
+                <div className="mt-2 p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-xs text-emerald-300 flex items-center justify-between">
                   <div className="flex items-center gap-1.5 truncate">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <Server className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span className="font-mono text-[11px] truncate">{proofFileNameInput}</span>
                   </div>
-                  <span className="text-[10px] text-emerald-400 font-bold shrink-0">✓ Đã nạp</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[10px] text-emerald-400 font-bold">✓ Đã lưu Server</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProofFileNameInput('');
+                        setProofUrlInput('');
+                        setProofBase64Input('');
+                      }}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 underline font-semibold"
+                    >
+                      Gỡ file
+                    </button>
+                  </div>
                 </div>
               )}
-            </div>
-
-            {/* Method 2: Paste Direct Link */}
-            <div className="space-y-1.5 p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <LinkIcon className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Cách 2: Dán đường dẫn liên kết trực tiếp (Drive URL)</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProofUrlInput(GOOGLE_DRIVE_ROOT_URL);
-                    setProofFileNameInput('Don_xin_nghi_phep_Drive.pdf');
-                  }}
-                  className="text-[10px] text-cyan-400 hover:text-cyan-300 underline font-semibold"
-                >
-                  Dán link Thư mục Google Drive trường
-                </button>
-              </div>
-              <input
-                type="text"
-                placeholder={GOOGLE_DRIVE_ROOT_URL}
-                value={proofUrlInput}
-                onChange={(e) => setProofUrlInput(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-mono placeholder-slate-600 focus:outline-none focus:border-cyan-500"
-              />
             </div>
 
             {/* Note / Reason */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-300">
-                Lý do nghỉ phép & Chi tiết minh chứng:
+                Lý do nghỉ phép & Ghi chú của phụ huynh:
               </label>
               <input
                 type="text"
-                placeholder="VD: Sốt phát ban theo đơn BS Bệnh viện Nhi Đồng 1"
+                placeholder="VD: Phụ huynh gọi điện báo con sốt phát ban"
                 value={proofNoteInput}
                 onChange={(e) => setProofNoteInput(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-600 focus:outline-none focus:border-amber-500"
@@ -1344,10 +1455,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
               <div className="flex items-center gap-1.5 flex-wrap pt-1">
                 {[
+                  'Phụ huynh gọi điện xin phép',
                   'Sốt siêu vi có toa thuốc bác sĩ',
                   'Đơn xin phép của phụ huynh qua Zalo',
                   'Trùng lịch thi chính khóa trường Royal',
-                  'Chấn thương khớp cần nghỉ hồi phục',
+                  'Chấn thương cần nghỉ hồi phục',
                 ].map(tag => (
                   <button
                     key={tag}
@@ -1377,8 +1489,118 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20 transition-all hover:scale-[1.02] flex items-center gap-1.5"
               >
                 <Check className="w-4 h-4 text-slate-950" />
-                <span>Lưu Minh Chứng & Xác Nhận Vắng CP</span>
+                <span>{proofFileNameInput ? 'Lưu Minh Chứng & Xác Nhận Vắng CP' : 'Xác Nhận Vắng Có Phép (Không File)'}</span>
               </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: XEM MINH CHỨNG ĐƠN NGHỈ PHÉP (LIGHTBOX PREVIEW) */}
+      {previewProofModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="relative w-full max-w-2xl rounded-3xl bg-[#111827] border border-cyan-500/30 p-6 shadow-2xl shadow-cyan-500/10 space-y-4">
+            
+            <div className="flex items-start justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Eye className="w-5 h-5 text-cyan-400" />
+                  <span>Minh Chứng Đơn Xin Nghỉ Phép</span>
+                </h3>
+                <p className="text-xs text-slate-300 mt-1">
+                  Học sinh: <strong className="text-white">{previewProofModal.student.name}</strong> ({previewProofModal.student.code}) • Lớp: <strong className="text-amber-400">{currentClass.name}</strong>
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Ngày nghỉ: <span className="text-slate-200 font-semibold">{selectedDate}</span> • Lý do: <span className="text-amber-300 font-medium">{previewProofModal.record.note || 'Nghỉ có phép'}</span>
+                </p>
+              </div>
+
+              <button
+                onClick={() => setPreviewProofModal(null)}
+                className="p-1 rounded-xl bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Image / Document Preview Area */}
+            <div className="max-h-[60vh] overflow-auto flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-950 border border-slate-800">
+              {previewProofModal.record.proof_base64 || (previewProofModal.record.proof_url && (previewProofModal.record.proof_url.startsWith('data:') || previewProofModal.record.proof_url.startsWith('/uploads/'))) ? (
+                previewProofModal.record.proof_file_name?.toLowerCase().endsWith('.pdf') ? (
+                  <div className="w-full h-[50vh] flex flex-col items-center justify-center p-4 text-center space-y-3">
+                    <Paperclip className="w-12 h-12 text-amber-400" />
+                    <div className="text-sm font-bold text-white">{previewProofModal.record.proof_file_name}</div>
+                    <a
+                      href={previewProofModal.record.proof_url || previewProofModal.record.proof_base64}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      <span>Mở xem tệp PDF</span>
+                    </a>
+                  </div>
+                ) : (
+                  <img
+                    src={previewProofModal.record.proof_base64 || previewProofModal.record.proof_url}
+                    alt="Minh chứng nghỉ phép"
+                    className="max-h-[50vh] max-w-full object-contain rounded-xl shadow-lg border border-slate-700"
+                  />
+                )
+              ) : previewProofModal.record.proof_url?.startsWith('http') ? (
+                <div className="p-6 text-center space-y-3">
+                  <div className="w-16 h-16 mx-auto rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                    <Paperclip className="w-8 h-8" />
+                  </div>
+                  <div className="text-xs text-slate-300 font-mono break-all max-w-md mx-auto">
+                    {previewProofModal.record.proof_file_name || 'Đơn nghỉ phép Google Drive'}
+                  </div>
+                  <a
+                    href={previewProofModal.record.proof_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 text-xs font-bold shadow-lg shadow-cyan-500/20 transition-all"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    <span>Mở Tệp Trực Tiếp Trong Google Drive</span>
+                  </a>
+                </div>
+              ) : (
+                <div className="p-6 text-center text-slate-400 text-xs">
+                  <span>Không tìm thấy bản xem trước trực quan. Vui lòng mở qua Google Drive hoặc tải về.</span>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="pt-2 flex items-center justify-between border-t border-slate-800">
+              <div className="text-[11px] text-slate-400 flex items-center gap-1.5 truncate mr-2">
+                <Paperclip className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span className="font-mono truncate">{previewProofModal.record.proof_file_name || 'don_xin_nghi_phep.jpg'}</span>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => triggerFileDownload(
+                    previewProofModal.record.proof_file_name || 'don_xin_nghi_phep.jpg',
+                    previewProofModal.record.proof_base64 || previewProofModal.record.proof_url || ''
+                  )}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Tải Về</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPreviewProofModal(null)}
+                  className="px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold transition-colors"
+                >
+                  Đóng
+                </button>
+              </div>
             </div>
 
           </div>

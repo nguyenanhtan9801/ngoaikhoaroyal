@@ -1,5 +1,6 @@
 import express from 'express';
 import type { Request, Response } from 'express';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,7 +14,18 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
-app.use(express.json({ limit: '10mb' }));
+// Server-Side Uploads Directories
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const PROOFS_DIR = path.join(UPLOADS_DIR, 'proofs');
+const STUDENTS_DIR = path.join(UPLOADS_DIR, 'students');
+
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
+if (!fs.existsSync(STUDENTS_DIR)) fs.mkdirSync(STUDENTS_DIR, { recursive: true });
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Initialize GoogleGenAI SDK Server-Side
 const ai = new GoogleGenAI({
@@ -168,6 +180,93 @@ Hãy xuất ra bản phân tích hoặc văn bản dự thảo chuẩn xác (n�
   } catch (err: any) {
     console.error('AI analyze error:', err);
     res.status(500).json({ error: err?.message || 'Lỗi phân tích AI' });
+  }
+});
+
+// Endpoint to upload files to Server Storage
+app.post('/api/upload', async (req: Request, res: Response) => {
+  try {
+    const { fileData, fileName, folder = 'proofs' } = req.body;
+
+    if (!fileData || typeof fileData !== 'string') {
+      res.status(400).json({ error: 'Dữ liệu tệp không hợp lệ.' });
+      return;
+    }
+
+    const targetFolder = folder === 'students' ? STUDENTS_DIR : PROOFS_DIR;
+    if (!fs.existsSync(targetFolder)) {
+      fs.mkdirSync(targetFolder, { recursive: true });
+    }
+
+    let base64Content = fileData;
+    let extension = '.jpg';
+
+    if (fileData.startsWith('data:')) {
+      const match = fileData.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        const mimeType = match[1];
+        base64Content = match[2];
+        if (mimeType.includes('pdf')) extension = '.pdf';
+        else if (mimeType.includes('png')) extension = '.png';
+        else if (mimeType.includes('webp')) extension = '.webp';
+        else if (mimeType.includes('jpeg') || mimeType.includes('jpg')) extension = '.jpg';
+      }
+    }
+
+    const buffer = Buffer.from(base64Content, 'base64');
+    const timestamp = Date.now();
+    let sanitizedName = (fileName || `proof_${timestamp}${extension}`)
+      .replace(/[^a-zA-Z0-9._-]/g, '_');
+    
+    if (!path.extname(sanitizedName)) {
+      sanitizedName += extension;
+    }
+
+    const uniqueFileName = `${timestamp}_${sanitizedName}`;
+    const destinationPath = path.join(targetFolder, uniqueFileName);
+
+    await fs.promises.writeFile(destinationPath, buffer);
+
+    const relativeUrl = `/uploads/${folder === 'students' ? 'students' : 'proofs'}/${uniqueFileName}`;
+    
+    console.log(`[Server Storage] File saved successfully: ${destinationPath} (${buffer.length} bytes)`);
+
+    res.json({
+      success: true,
+      url: relativeUrl,
+      fileName: uniqueFileName,
+      storedPath: `Server: ${relativeUrl}`,
+      size: buffer.length,
+      mimeType: extension === '.pdf' ? 'application/pdf' : 'image/jpeg',
+    });
+  } catch (err: any) {
+    console.error('[Server Storage] Error saving file to server:', err);
+    res.status(500).json({ error: 'Không thể lưu tệp lên server: ' + (err?.message || 'Lỗi không xác định') });
+  }
+});
+
+// Endpoint to list uploaded files in server
+app.get('/api/files/proofs', async (_req: Request, res: Response) => {
+  try {
+    if (!fs.existsSync(PROOFS_DIR)) {
+      res.json({ files: [] });
+      return;
+    }
+    const files = await fs.promises.readdir(PROOFS_DIR);
+    const fileStats = await Promise.all(
+      files.map(async (file) => {
+        const stat = await fs.promises.stat(path.join(PROOFS_DIR, file));
+        return {
+          fileName: file,
+          url: `/uploads/proofs/${file}`,
+          size: stat.size,
+          createdAt: stat.birthtime,
+        };
+      })
+    );
+    res.json({ files: fileStats });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Lỗi đọc danh sách tệp trên server' });
   }
 });
 

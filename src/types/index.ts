@@ -295,8 +295,11 @@ export interface AttendanceRecord {
   session_date: string;
   status: 'present' | 'absent_excused' | 'absent_unexcused';
   note?: string;
-  proof_url?: string;         // Đường dẫn file minh chứng trên Google Drive / OneDrive
-  proof_file_name?: string;   // Tên tệp minh chứng đính kèm
+  proof_file_name?: string;     // Tên file gốc (VD: don_xin_nghi_phep.jpg)
+  proof_url?: string;           // URL xem ảnh cố định (Supabase Storage hoặc Drive link công khai)
+  proof_base64?: string;        // Dữ liệu ảnh nén base64 lưu dự phòng nội bộ
+  uploaded_at?: string;         // Thời gian upload
+  uploaded_by?: string;         // Giáo viên/Nhân viên thực hiện
 }
 
 export interface MakeupCredit {
@@ -416,9 +419,11 @@ export interface GoogleDriveSubfolders {
 }
 
 export interface CloudStorageConfig {
-  provider: 'google_drive' | 'onedrive' | 'local';        // Toàn bộ hình ảnh & file lưu trên Cloud (Mặc định Google Drive)
-  drive_folder_id?: string;        // ID thư mục gốc Google Drive (VD: 1RoyalSchoolDriveStorage2026PMHPL)
-  drive_folder_name: string;       // Tên thư mục gốc (VD: RoyalSchool_Drive_Storage_2026)
+  provider: 'internal_base64' | 'google_drive' | 'onedrive' | 'local'; // Phương thức lưu trữ chính (Khuyên dùng: internal_base64)
+  storage_mode?: 'internal_base64' | 'google_drive_webapp' | 'google_drive_folder';
+  google_script_url?: string;      // Google Apps Script Web App Endpoint vượt rào cản auth
+  drive_folder_id?: string;        // ID thư mục gốc Google Drive
+  drive_folder_name: string;       // Tên thư mục gốc
   drive_root_url?: string;         // Link xem thư mục gốc trên Google Drive
   drive_storage_quota?: {
     used_bytes: number;

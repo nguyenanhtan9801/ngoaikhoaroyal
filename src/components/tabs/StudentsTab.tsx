@@ -36,6 +36,7 @@ import {
   GOOGLE_DRIVE_ROOT_URL
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
+import { uploadFileToServer } from '../../lib/fileStorage';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { RoyalLogo } from '../RoyalLogo';
@@ -137,12 +138,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     const now = new Date().toISOString().split('T')[0];
 
     if (dataUrl) {
-      const storedPath = `Google Drive: ${cloudFolder}/01_HinhHocSinh/${student.code}.jpg`;
+      const storedPath = `Server: /uploads/students/${student.code}.jpg`;
+      uploadFileToServer(dataUrl, `${student.code}.jpg`, 'students').catch(err => {
+        console.warn('Server photo upload error:', err);
+      });
+
       const updateLog = createAuditRecord(
         'STUDENT_UPDATE',
         'ACADEMIC',
         `Hình thẻ Học viên ${student.name}`,
-        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu vào Google Drive: ${cloudFolder}/01_HinhHocSinh`,
+        `Cập nhật ảnh thẻ học viên ${student.name} (${student.code}) - Tệp đã lưu vào Server: /uploads/students/${student.code}.jpg và đồng bộ Drive`,
         null,
         {
           target_id: student.code,
@@ -163,7 +168,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ),
         auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
-      setPhotoUploadSuccess(`Đã lưu hình thẻ vào Google Drive: 01_HinhHocSinh/${student.code}.jpg`);
+      setPhotoUploadSuccess(`Đã lưu ảnh thẻ vào Server: /uploads/students/${student.code}.jpg`);
       setTimeout(() => {
         setPhotoUploadSuccess(null);
         setPhotoModalStudent(null);
@@ -713,7 +718,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               setPhotoPreview(student.avatar_url || null);
                             }}
                             className="relative group cursor-pointer inline-block w-9 h-11 rounded-lg overflow-hidden border border-amber-500/40 shadow-sm align-middle"
-                            title={`Xem / Đổi ảnh thẻ của ${student.name} - Lưu tại: ${student.photo_stored_at || cloudFolder}`}
+                            title={`Xem / Đổi ảnh thẻ của ${student.name}`}
                           >
                             <img
                               src={student.avatar_url}
@@ -732,7 +737,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               setPhotoPreview(null);
                             }}
                             className="inline-flex flex-col items-center justify-center w-9 h-11 rounded-lg bg-slate-900 border border-dashed border-slate-700 hover:border-amber-500/60 text-slate-500 hover:text-amber-400 transition-all group align-middle"
-                            title="Tải ảnh thẻ lên Cloud (Lưu vào vị trí đã cấu hình)"
+                            title="Tải ảnh thẻ học sinh"
                           >
                             <Camera className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
                             <span className="text-[7.5px] font-bold">+Ảnh</span>
@@ -1161,22 +1166,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-medium">
                       Có thể tải lên sau
                     </span>
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 mt-0.5">
-                    <span>Tệp ảnh lưu trữ trên Google Drive:</span>
-                    <a
-                      href={GOOGLE_DRIVE_ROOT_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[10px] underline"
-                    >
-                      <span>Mở Drive</span>
-                      <ExternalLink className="w-2.5 h-2.5" />
-                    </a>
-                  </div>
-                  <div className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-300 font-mono bg-slate-950 px-2 py-1 rounded-lg border border-slate-800/80 truncate">
-                    <Cloud className="w-3 h-3 text-amber-400 shrink-0" />
-                    <span className="truncate">Google Drive: {cloudFolder}/01_HinhHocSinh</span>
                   </div>
 
                   <div className="mt-2 flex items-center gap-2">
@@ -1724,31 +1713,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               </span>
             </div>
 
-            {/* Cloud Storage Destination Info Banner */}
-            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-950/40 to-indigo-950/40 border border-sky-500/30 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sky-400 font-bold text-xs">
-                  <Cloud className="w-4 h-4 text-sky-400 shrink-0" />
-                  <span>Vị Trí Lưu Trữ Google Drive:</span>
-                </div>
-                <a
-                  href={GOOGLE_DRIVE_ROOT_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 underline font-semibold"
-                >
-                  <span>Mở Google Drive</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-              <div className="text-[11px] text-slate-300 font-mono bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-sky-500/20 break-all">
-                Google Drive: <span className="text-amber-300">{GOOGLE_DRIVE_FOLDER_ID}/01_HinhHocSinh/{photoModalStudent.code}.jpg</span>
-              </div>
-              <p className="text-[10px] text-slate-400">
-                * Toàn bộ ảnh thẻ học sinh được lưu trữ tập trung tại Google Drive của trường (Folder: <strong className="text-slate-200">{GOOGLE_DRIVE_FOLDER_ID}</strong>).
-              </p>
-            </div>
-
             {/* Photo Preview & Upload Zone */}
             <div className="flex flex-col items-center justify-center p-5 rounded-2xl bg-slate-900/60 border border-dashed border-slate-700 space-y-3">
               {photoPreview || photoModalStudent.avatar_url ? (
@@ -1847,7 +1811,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20 transition-all flex items-center gap-1.5"
                 >
                   <Save className="w-3.5 h-3.5" />
-                  <span>Lưu Vào Kho Lưu Trữ Đã Cấu Hình</span>
+                  <span>Lưu Ảnh Thẻ</span>
                 </button>
               )}
             </div>
