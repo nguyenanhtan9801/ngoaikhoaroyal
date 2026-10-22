@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, Printer, QrCode, User } from 'lucide-react';
-import { TuitionInvoice, MakeupCredit, Student, ExtracurricularClass } from '../types';
+import { TuitionInvoice, MakeupCredit, Student, ExtracurricularClass, ClassTransfer } from '../types';
 import { formatVND } from '../lib/storage';
 import { RoyalLogo } from './RoyalLogo';
 
@@ -9,7 +9,18 @@ export type PrintDocumentType =
   | { type: 'attendance_book'; cls: ExtracurricularClass; sessionDate: string; students: Student[] }
   | { type: 'credit_slip'; credit: MakeupCredit; student?: Student; cls?: ExtracurricularClass }
   | { type: 'snack_slip'; campusName: string; termName: string; totalAllocated: number; totalConsumed: number; totalReturned: number }
-  | { type: 'student_card'; student: Student };
+  | { type: 'student_card'; student: Student }
+  | {
+      type: 'transfer_agreement';
+      transfer: ClassTransfer;
+      student?: Student;
+      fromClass?: ExtracurricularClass;
+      toClass?: ExtracurricularClass;
+      fromCampusName?: string;
+      toCampusName?: string;
+      fromSubjectName?: string;
+      toSubjectName?: string;
+    };
 
 interface PrintModalProps {
   document: PrintDocumentType | null;
@@ -464,6 +475,209 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
 
               <div className="pt-2 border-t border-amber-200 text-center text-[10px] text-slate-500 font-mono">
                 Thẻ có giá trị vào lớp và nhận suất ăn nhẹ sau giờ học
+              </div>
+            </div>
+          )}
+
+          {/* DOCUMENT 6: TRANSFER AGREEMENT (BIÊN BẢN CHUYỂN MÔN & LỚP NGOẠI KHÓA) */}
+          {document.type === 'transfer_agreement' && (
+            <div className="space-y-6 text-slate-900 text-xs leading-relaxed">
+              <div className="text-center space-y-1">
+                <h2 className="text-xl sm:text-2xl font-black uppercase tracking-wide text-slate-900">
+                  BIÊN BẢN CHUYỂN MÔN & LỚP NGOẠI KHÓA
+                </h2>
+                <div className="text-xs uppercase font-bold text-amber-700 tracking-wider">
+                  COURSE &amp; CLASS TRANSFER AGREEMENT
+                </div>
+                <div className="text-[11px] text-slate-500 font-mono pt-1">
+                  Số / No: <strong className="text-slate-900">{document.transfer.transfer_code || document.transfer.id}</strong> &bull; Ngày lập / Date: {document.transfer.transfer_date}
+                </div>
+              </div>
+
+              {/* I. THÔNG TIN HỌC VIÊN */}
+              <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50/80 space-y-2">
+                <div className="font-bold text-slate-900 uppercase text-[11px] border-b border-slate-200 pb-1 flex items-center justify-between">
+                  <span>I. THÔNG TIN HỌC VIÊN / STUDENT INFORMATION</span>
+                  <span className="font-mono text-slate-500 font-normal">Hệ Ngoại Khóa Royal School</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-1">
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Họ và tên học sinh:</span>
+                    <strong className="text-sm text-slate-900">{document.student?.name}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Mã học sinh:</span>
+                    <span className="font-mono font-bold text-amber-700">{document.student?.code}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Lớp chính khóa:</span>
+                    <span className="font-semibold text-slate-800">{document.student?.regular_class || 'Royal School'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Họ tên phụ huynh:</span>
+                    <span className="font-semibold text-slate-800">{document.student?.parent_name}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Số điện thoại liên hệ:</span>
+                    <span className="font-mono font-bold text-slate-800">{document.student?.parent_phone}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Đối tượng học sinh:</span>
+                    <span className="font-semibold text-slate-800">
+                      {document.student?.is_royal_student ? 'Học sinh chính khóa Royal School' : 'Học sinh ngoài trường'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* II. CHI TIẾT CHUYỂN LỚP */}
+              <div className="border border-slate-200 rounded-2xl overflow-hidden space-y-0">
+                <div className="bg-slate-100 p-2.5 font-bold text-slate-900 uppercase text-[11px] border-b border-slate-200">
+                  II. CHI TIẾT ĐIỀU CHUYỂN LỚP HỌC / TRANSFER DETAILS
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                  {/* From Class */}
+                  <div className="p-4 space-y-2 bg-white">
+                    <div className="flex items-center justify-between border-b border-dashed border-slate-200 pb-1">
+                      <span className="font-bold text-slate-600 uppercase text-[10px]">LỚP CHUYỂN ĐI (FROM CLASS)</span>
+                      <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">Lớp cũ</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] block">Tên lớp học:</span>
+                      <strong className="text-slate-900">{document.fromClass?.name}</strong>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Cơ sở đào tạo:</span>
+                        <span>{document.fromCampusName || 'Royal School PMH'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Đơn giá buổi cũ:</span>
+                        <span className="font-mono font-bold text-slate-900">{formatVND(document.transfer.old_session_rate)}/b</span>
+                      </div>
+                    </div>
+                    <div className="pt-1 text-[11px] text-slate-600">
+                      Số buổi chuyển đi: <strong className="font-mono text-slate-900">{document.transfer.remaining_sessions} buổi</strong>
+                    </div>
+                  </div>
+
+                  {/* To Class */}
+                  <div className="p-4 space-y-2 bg-amber-50/30">
+                    <div className="flex items-center justify-between border-b border-dashed border-amber-200 pb-1">
+                      <span className="font-bold text-amber-800 uppercase text-[10px]">LỚP CHUYỂN ĐẾN (TO CLASS)</span>
+                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">Lớp mới</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[10px] block">Tên lớp học:</span>
+                      <strong className="text-slate-900">{document.toClass?.name}</strong>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Cơ sở tiếp nhận:</span>
+                        <span className="font-bold text-amber-900">{document.toCampusName || 'Royal School'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Đơn giá buổi mới:</span>
+                        <span className="font-mono font-bold text-slate-900">{formatVND(document.transfer.new_session_rate)}/b</span>
+                      </div>
+                    </div>
+                    <div className="pt-1 text-[11px] text-slate-700">
+                      Lịch học tiếp nhận: <strong className="text-slate-900">{document.toClass?.days_of_week?.join(' & ') || 'Theo lịch lớp'}</strong> &bull; Số buổi học tại lớp mới:{' '}
+                      <strong className="font-mono text-amber-800">
+                        {document.transfer.remaining_sessions + (document.transfer.converted_sessions || 0)} buổi
+                        {document.transfer.converted_sessions ? ` (+${document.transfer.converted_sessions} buổi quy đổi)` : ''}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* III. ĐỐI SOÁT TÀI CHÍNH */}
+              <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50/80 space-y-2">
+                <div className="font-bold text-slate-900 uppercase text-[11px] border-b border-slate-200 pb-1 flex items-center justify-between">
+                  <span>III. QUYẾT TOÁN CHÊNH LỆCH HỌC PHÍ / FINANCIAL SETTLEMENT</span>
+                  <span className="text-[10px] font-mono text-slate-500">Quy chế chuyển môn ngoại khóa</span>
+                </div>
+
+                {document.transfer.surcharge_amount > 0 ? (
+                  <div className="p-3 rounded-xl bg-amber-100/70 border border-amber-300 text-amber-950 space-y-1">
+                    <div className="flex justify-between items-center text-sm font-bold">
+                      <span>Phụ thu chênh lệch đơn giá (Đơn giá mới &gt; Đơn giá cũ):</span>
+                      <span className="font-mono text-base text-amber-800">+{formatVND(document.transfer.surcharge_amount)}</span>
+                    </div>
+                    <div className="text-[11px] text-amber-900">
+                      Công thức: ({formatVND(document.transfer.new_session_rate)} - {formatVND(document.transfer.old_session_rate)}) &times; {document.transfer.remaining_sessions} buổi = {formatVND(document.transfer.surcharge_amount)}
+                    </div>
+                    {document.transfer.invoice_id && (
+                      <div className="text-[10px] text-slate-600 pt-0.5">
+                        Mã hóa đơn phụ thu: <strong>{document.transfer.invoice_id}</strong> &bull; Phương thức: Quét mã VietQR / Chuyển khoản ngân hàng.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-950 space-y-1">
+                    <div className="flex justify-between items-center text-sm font-bold">
+                      <span>Chuyển ngang học phí (Đơn giá mới &le; Đơn giá cũ):</span>
+                      <span className="font-mono text-base text-emerald-700">0 đ</span>
+                    </div>
+                    {document.transfer.surplus_handling === 'issue_credit_note' ? (
+                      <div className="text-[11px] text-emerald-800">
+                        &bull; <strong>Chính sách linh hoạt:</strong> Nhà trường cấp <strong>Phiếu bảo lưu phần dư trị giá {formatVND(document.transfer.surplus_amount || 0)}</strong> (Thời hạn 365 ngày) cho học sinh sử dụng cho các khóa học kế tiếp.
+                      </div>
+                    ) : document.transfer.surplus_handling === 'convert_sessions' ? (
+                      <div className="text-[11px] text-emerald-800">
+                        &bull; <strong>Chính sách quy đổi:</strong> Số tiền thặng dư {formatVND(document.transfer.surplus_amount || 0)} được quy đổi thành <strong>+{document.transfer.converted_sessions} buổi học thêm</strong> tại lớp mới.
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-600">
+                        &bull; Theo quy chế vận hành Royal School: Chuyển ngang số buổi chưa học, không hoàn trả chênh lệch tiền thừa khi chuyển sang môn có đơn giá thấp hơn.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* IV. ĐIỀU KHOẢN VẬN HÀNH & BÁNH SỮA */}
+              <div className="border border-slate-200 rounded-2xl p-3 bg-white text-[11px] text-slate-600 space-y-1">
+                <div className="font-bold text-slate-800 uppercase text-[10px]">
+                  IV. ĐIỀU KHOẢN VẬN HÀNH &amp; CHẾ ĐỘ DINH DƯỠNG / TERMS &amp; NUTRITION
+                </div>
+                <p>
+                  1. Học sinh được kích hoạt ghi danh tại lớp mới kể từ ngày <strong>{document.transfer.transfer_date}</strong>, sĩ số và danh sách điểm danh được tự động đồng bộ trên hệ thống.
+                </p>
+                <p>
+                  2. Đối với học sinh chính khóa Royal School, định mức suất ăn xế / bánh sữa được tự động chuyển giao và phục vụ tại phòng học của lớp mới bắt đầu từ buổi học kế tiếp.
+                </p>
+                <p>
+                  3. Biên bản này được lập thành 03 bản có giá trị pháp lý như nhau: 01 bản giao Phụ huynh, 01 bản lưu tại Phòng Học vụ, 01 bản chuyển Phòng Kế toán đối soát.
+                </p>
+              </div>
+
+              {/* V. CHỮ KÝ XÁC NHẬN */}
+              <div className="grid grid-cols-3 gap-4 pt-4 text-center text-xs">
+                <div>
+                  <div className="font-bold uppercase text-slate-900">Đại Diện Phụ Huynh</div>
+                  <div className="text-[10px] text-slate-500 italic">(Ký và ghi rõ họ tên)</div>
+                  <div className="h-20 flex items-end justify-center font-semibold text-slate-800">
+                    {document.student?.parent_name}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-bold uppercase text-slate-900">Chuyên Viên Học Vụ</div>
+                  <div className="text-[10px] text-slate-500 italic">(Ký và ghi rõ họ tên)</div>
+                  <div className="h-20 flex items-end justify-center font-semibold text-slate-800">
+                    {document.transfer.created_by || 'Ban Học Vụ Ngoại Khóa'}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-bold uppercase text-slate-900">Bộ Phận Kế Toán</div>
+                  <div className="text-[10px] text-slate-500 italic">(Ký, đóng dấu xác nhận)</div>
+                  <div className="h-20 flex items-end justify-center font-semibold text-slate-800">
+                    Phòng Kế Toán Royal School
+                  </div>
+                </div>
               </div>
             </div>
           )}

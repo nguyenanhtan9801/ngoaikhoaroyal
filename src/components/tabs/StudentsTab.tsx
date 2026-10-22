@@ -43,7 +43,8 @@ import {
   formatStudentScheduleLabel,
   getDefaultClassStartDate,
   calculateRemainingSessions,
-  calculateClassProratedPricing
+  calculateClassProratedPricing,
+  getCampusPricingForClass
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
@@ -1371,7 +1372,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     onChange={(e) => setFormData({ ...formData, is_royal_student: e.target.value === 'true' })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-bold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="true">Học sinh chính khóa ROYAL SCHOOL</option>
+                    <option value="true">Học sinh ROYAL SCHOOL</option>
                     <option value="false">Học sinh ngoài trường</option>
                   </select>
                 </div>
@@ -1591,6 +1592,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     <option value="" disabled>-- Chọn lớp học cần ghi danh --</option>
                     {store.classes.map(c => {
                       const isEnrolled = studentActiveEnrolledClassIds.has(c.id);
+                      const campusPrice = getCampusPricingForClass(c, store);
                       return (
                         <option 
                           key={c.id} 
@@ -1598,7 +1600,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           disabled={isEnrolled}
                           className={isEnrolled ? 'text-slate-500 bg-slate-900 font-normal italic' : 'text-white bg-slate-900 font-semibold'}
                         >
-                          {c.name} {isEnrolled ? '⛔ [ĐÃ GHI DANH - KHÔNG THỂ CHỌN TRÙNG]' : ` - Đơn giá: ${formatVND(c.price_per_session)}/buổi`}
+                          {c.name} [{campusPrice.campusCode}] {isEnrolled ? '⛔ [ĐÃ GHI DANH - KHÔNG THỂ CHỌN TRÙNG]' : ` - Đơn giá: ${formatVND(campusPrice.sessionRate)}/buổi`}
                         </option>
                       );
                     })}
@@ -1832,25 +1834,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           <span className="font-mono font-bold text-amber-300">{formatStudentScheduleLabel(finalDays, clsDays)} ({pricing.effectiveSessions}b)</span>
                         </div>
                         <div className="flex justify-between text-slate-400">
-                          <span>Đơn giá 1 buổi (Ceil):</span>
+                          <span>Đơn giá 1 buổi chuẩn (Cơ sở {pricing.campusCode}):</span>
                           <span className="font-mono font-bold text-white">{formatVND(pricing.sessionRate)}/buổi</span>
                         </div>
                         <div className="flex justify-between text-slate-200 pt-1 border-t border-slate-800/80">
                           <span className="font-semibold">
-                            Học phí áp dụng:
+                            Học phí khóa học ({pricing.campusCode}):
                           </span>
-                          <span className="font-mono font-bold text-emerald-300">
-                            {pricing.effectiveSessions < pricing.totalSessions
-                              ? `${pricing.effectiveSessions}b × ${formatVND(pricing.sessionRate)} = ${formatVND(pricing.proratedGrossFee)} (Thay vì ${formatVND(pricing.fullCourseFee)})`
-                              : formatVND(pricing.proratedGrossFee)}
+                          <span className="font-mono font-bold text-slate-300">
+                            {formatVND(pricing.fullCourseFee)} ({pricing.totalSessions} buổi)
                           </span>
                         </div>
-                        {pricing.discountAmount > 0 && (
-                          <div className="flex justify-between text-amber-300">
-                            <span>{pricing.discountLabel}:</span>
-                            <span className="font-mono font-bold">-{formatVND(pricing.discountAmount)}</span>
-                          </div>
-                        )}
                         {isTrialMode ? (
                           <>
                             <div className="flex justify-between text-purple-300 font-bold border-t border-purple-800/60 pt-1 text-sm">
@@ -1858,17 +1852,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               <span className="font-mono text-emerald-400">0 ₫ (Miễn phí 100%)</span>
                             </div>
                             <div className="text-[10px] text-slate-400 italic">
-                              * Hóa đơn thực học ({formatVND(pricing.netPayable)}) sẽ ở trạng thái chờ duyệt sau khi học xong buổi 1.
+                              * Hóa đơn thực học ({pricing.effectiveSessions}b × {formatVND(pricing.sessionRate)} = {formatVND(pricing.netPayable)}) sẽ ở trạng thái chờ duyệt sau khi học xong buổi 1.
                             </div>
                           </>
                         ) : (
                           <>
                             <div className="flex justify-between text-emerald-400 font-bold border-t border-slate-800 pt-1 text-sm">
-                              <span>Học phí thực đóng:</span>
-                              <span className="font-mono font-black">{formatVND(pricing.netPayable)}</span>
+                              <span>Học phí thực đóng môn này:</span>
+                              <span className="font-mono font-black">
+                                {pricing.effectiveSessions < pricing.totalSessions
+                                  ? `${pricing.effectiveSessions}b × ${formatVND(pricing.sessionRate)} = ${formatVND(pricing.netPayable)}`
+                                  : formatVND(pricing.netPayable)}
+                              </span>
                             </div>
                             <div className="text-[10px] text-slate-500 italic mt-1">
-                              Hệ thống tự động phát hành hóa đơn {pricing.effectiveSessions}/{pricing.totalSessions} buổi kèm mã VietQR.
+                              Hệ thống tự động phát hành hóa đơn {pricing.effectiveSessions}/{pricing.totalSessions} buổi theo đơn giá chuẩn Cơ sở {pricing.campusCode} kèm mã VietQR.
                             </div>
                           </>
                         )}

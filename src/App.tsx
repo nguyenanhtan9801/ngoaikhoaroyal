@@ -18,9 +18,9 @@ import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
 import { ToastContainer } from './components/ToastContainer';
 import { showToast } from './lib/toast';
-import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog } from './lib/storage';
+import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, validateCreditNoteCreation, formatVND } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
-import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser } from './types';
+import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
@@ -174,37 +174,95 @@ export default function App() {
 
   // Quick Issue Credit from Alert Card
   const handleIssueCreditForStudent = (student: Student, cls: ExtracurricularClass, dates: string[]) => {
+    const validation = validateCreditNoteCreation(student.id, cls.id, store);
+    if (validation.hasExistingCredit) {
+      showToast(
+        validation.quotaErrorMessage || 'Môn học này đã được cấp 1 phiếu bảo lưu trong khóa học hiện tại!',
+        'warning',
+        { title: 'Vượt định mức bảo lưu (1 lần/môn/khóa)' }
+      );
+      setCurrentRoute('sub_credits');
+      return;
+    }
+
+    const effectiveCount = Math.max(dates.length, validation.maxConsecutiveExcused);
+    if (effectiveCount < 3) {
+      showToast(
+        validation.streakErrorMessage ||
+          `Không đủ điều kiện: Học sinh cần có ít nhất 3 buổi vắng có phép liên tục không ngắt quãng (Hiện tại: ${effectiveCount} buổi).`,
+        'error',
+        { title: 'Chưa đủ điều kiện bảo lưu' }
+      );
+      return;
+    }
+
+    const effectiveDates =
+      validation.validSessionDates.length >= 3 ? validation.validSessionDates : dates;
+
     const today = new Date();
     const expiry = new Date(today);
     expiry.setFullYear(today.getFullYear() + 1);
+    const expiryStr = expiry.toISOString().split('T')[0];
 
     const newCredit: MakeupCredit = {
       id: `cred_${Date.now()}`,
-      credit_code: `MC-${today.getFullYear()}-${String(store.makeupCredits.length + 1).padStart(4, '0')}`,
+      credit_code: `CRE-${today.getFullYear()}-${String(store.makeupCredits.length + 1).padStart(4, '0')}`,
       student_id: student.id,
+      student_name: student.name,
       source_class_id: cls.id,
+      source_term_id: cls.term_id,
       subject_id: cls.subject_id,
       term_id: cls.term_id,
-      consecutive_absent_count: dates.length,
-      consecutive_dates: dates,
+      consecutive_absent_sessions: effectiveDates.length,
+      consecutive_absent_count: effectiveDates.length,
+      absent_dates: effectiveDates,
+      consecutive_dates: effectiveDates,
+      unit_price_old: cls.price_per_session,
       source_rate: cls.price_per_session,
       credit_rule: 'monetary',
-      total_credit_amount: cls.price_per_session * dates.length,
-      transferred_sessions: dates.length,
+      total_credit_amount: cls.price_per_session * effectiveDates.length,
+      transferred_sessions: effectiveDates.length,
       issue_date: today.toISOString().split('T')[0],
-      expiry_date: expiry.toISOString().split('T')[0],
+      expiry_date: expiryStr,
+      expires_at: expiryStr,
       status: 'issued',
+      note: `Bảo lưu ${effectiveDates.length} buổi vắng có phép liên tiếp có minh chứng hợp lệ`,
     };
+
+    const creditLog = createAuditRecord(
+      'CREDIT_ISSUE',
+      'FINANCE',
+      'Phiếu Bảo Lưu Học Phí',
+      `Lập phiếu bảo lưu ${newCredit.credit_code} cho học sinh ${student.name} (Vắng liên tiếp ${newCredit.consecutive_absent_count} buổi, Giá trị: ${formatVND(newCredit.total_credit_amount)})`,
+      currentUser,
+      {
+        target_id: newCredit.credit_code,
+        details: {
+          status: 'success',
+          after: {
+            credit_code: newCredit.credit_code,
+            student_name: student.name,
+            class_name: cls.name,
+            amount: newCredit.total_credit_amount,
+            absent_count: newCredit.consecutive_absent_count,
+            expiry_date: newCredit.expiry_date,
+          },
+        },
+      }
+    );
 
     updateStore(prev => ({
       ...prev,
       makeupCredits: [newCredit, ...prev.makeupCredits],
+      auditLogs: [creditLog, ...(prev.auditLogs || [])],
     }));
 
     setCurrentRoute('sub_credits');
-    showToast(`Đã lập Phiếu bảo lưu học phí ${newCredit.credit_code} cho học sinh ${student.name}!`, 'success', {
-      title: 'Cấp phiếu bảo lưu thành công',
-    });
+    showToast(
+      `Đã lập Phiếu bảo lưu học phí ${newCredit.credit_code} cho học sinh ${student.name} (${effectiveDates.length} buổi • ${formatVND(newCredit.total_credit_amount)})!`,
+      'success',
+      { title: 'Cấp phiếu bảo lưu thành công' }
+    );
   };
 
   // Print Handlers
@@ -263,6 +321,28 @@ export default function App() {
     setPrintableDoc({
       type: 'student_card',
       student,
+    });
+  };
+
+  const handlePrintTransferAgreement = (tr: ClassTransfer) => {
+    const student = store.students.find(s => s.id === tr.student_id);
+    const fromClass = store.classes.find(c => c.id === tr.from_class_id);
+    const toClass = store.classes.find(c => c.id === tr.to_class_id);
+    const fromCampus = store.campuses.find(c => c.id === fromClass?.campus_id);
+    const toCampus = store.campuses.find(c => c.id === toClass?.campus_id);
+    const fromSubject = store.subjects.find(s => s.id === fromClass?.subject_id);
+    const toSubject = store.subjects.find(s => s.id === toClass?.subject_id);
+
+    setPrintableDoc({
+      type: 'transfer_agreement',
+      transfer: tr,
+      student,
+      fromClass,
+      toClass,
+      fromCampusName: fromCampus?.name,
+      toCampusName: toCampus?.name,
+      fromSubjectName: fromSubject?.name,
+      toSubjectName: toSubject?.name,
     });
   };
 
@@ -459,6 +539,7 @@ export default function App() {
             <ParentPortalTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               onUpdateStore={updateStore}
               onOpenParentPortal={() => setIsParentPortalOpen(true)}
               onNavigateToStudents={(studentCode) => {
@@ -472,6 +553,7 @@ export default function App() {
             <MakeupCreditsTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               onUpdateStore={updateStore}
               onPrintCreditSlip={handlePrintCreditSlip}
             />
@@ -518,6 +600,9 @@ export default function App() {
               currentRole={currentRole}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
+              searchQuery={searchQuery}
+              onSelectCampusId={setSelectedCampusId}
+              onSelectTermId={setSelectedTermId}
               onUpdateStore={updateStore}
               onSelectClassForAttendance={(cls) => {
                 setFocusedClass(cls);
@@ -560,6 +645,7 @@ export default function App() {
               searchQuery={searchQuery}
               onUpdateStore={updateStore}
               onPrintReceipt={handlePrintReceipt}
+              onPrintTransferAgreement={handlePrintTransferAgreement}
               initialSection="invoices"
             />
           )}
@@ -574,6 +660,7 @@ export default function App() {
               searchQuery={searchQuery}
               onUpdateStore={updateStore}
               onPrintReceipt={handlePrintReceipt}
+              onPrintTransferAgreement={handlePrintTransferAgreement}
               initialSection="payroll"
             />
           )}
@@ -588,6 +675,7 @@ export default function App() {
               searchQuery={searchQuery}
               onUpdateStore={updateStore}
               onPrintReceipt={handlePrintReceipt}
+              onPrintTransferAgreement={handlePrintTransferAgreement}
               initialSection="transfer"
             />
           )}

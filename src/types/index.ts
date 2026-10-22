@@ -316,29 +316,52 @@ export interface AttendanceRecord {
   uploaded_by?: string;         // Giáo viên/Nhân viên thực hiện
 }
 
-export interface MakeupCredit {
+export interface CreditRedeemedInfo {
+  target_term_id: string;        // Khóa sau được cấn trừ
+  target_class_id: string;       // Lớp sau
+  redemption_type: 'by_sessions' | 'by_amount'; // 'by_sessions' nếu rate_old >= rate_new, 'by_amount' nếu rate_old < rate_new
+  applied_sessions?: number;     // Số buổi được bảo lưu (nếu rate_old >= rate_new)
+  deducted_amount: number;       // Số tiền thực tế giảm trừ trên hóa đơn mới
+  remaining_balance_due: number; // Số tiền phụ huynh cần đóng thêm (nếu có)
+  redeemed_at: string;
+  invoice_id?: string;
+  invoice_code?: string;
+}
+
+export interface CreditNote {
   id: string;
-  credit_code: string;
+  credit_code: string;                  // CRE-YYYY-XXXX
   student_id: string;
-  source_class_id: string;
+  student_name?: string;
+  source_class_id: string;              // Lớp nguồn
+  source_term_id?: string;              // Khóa học nguồn
   subject_id: string;
   term_id: string;
-  consecutive_absent_count: number;
-  consecutive_dates: string[];
-  source_rate: number;
+  consecutive_absent_sessions?: number; // Số buổi vắng liên tiếp (Bắt buộc >= 3)
+  consecutive_absent_count: number;     // Số buổi vắng liên tiếp (Bắt buộc >= 3)
+  absent_dates?: string[];              // Danh sách các ngày nghỉ liên tiếp
+  consecutive_dates: string[];          // Danh sách các ngày nghỉ liên tiếp
+  unit_price_old?: number;              // Đơn giá buổi cũ
+  source_rate: number;                  // Đơn giá buổi cũ
   credit_rule: 'monetary' | 'sessions';
-  total_credit_amount: number;
+  total_credit_amount: number;          // Tổng tiền bảo lưu = Số buổi x unit_price_old
   transferred_sessions: number;
   issue_date: string;
-  expiry_date: string; // 1 year from issue
-  status: 'issued' | 'applied' | 'expired';
+  expiry_date: string;                  // 1 year from issue
+  expires_at?: string;                  // Hạn 365 ngày
+  status: 'available' | 'used' | 'expired' | 'cancelled' | 'issued' | 'applied';
   applied_class_id?: string;
   applied_at?: string;
   note?: string;
+  // Dữ liệu khi cấn trừ vào khóa sau:
+  redeemed_info?: CreditRedeemedInfo;
 }
+
+export type MakeupCredit = CreditNote;
 
 export interface ClassTransfer {
   id: string;
+  transfer_code?: string;
   student_id: string;
   from_class_id: string;
   to_class_id: string;
@@ -346,6 +369,13 @@ export interface ClassTransfer {
   old_session_rate: number;
   new_session_rate: number;
   surcharge_amount: number;
+  surplus_amount?: number;
+  surplus_handling?: 'standard_no_refund' | 'issue_credit_note' | 'convert_sessions';
+  converted_sessions?: number;
+  credit_note_id?: string;
+  invoice_id?: string;
+  reason?: string;
+  notes?: string;
   transfer_date: string;
   created_by: string;
 }
@@ -403,9 +433,12 @@ export interface ParentRegistration {
   contact_notes?: string;
   student_id?: string;
   assigned_student_id?: string;
+  linked_student_id?: string;
   assigned_class_id?: string;
   assigned_class_ids?: string[];
   assigned_student_code?: string;
+  is_duplicate_lead?: boolean;
+  duplicate_of_lead_id?: string;
   attachment_file_name?: string;
   attachment_url?: string;        // Link chứng từ đính kèm (giấy khai sinh, học bạ) trên Google Drive
   attachment_stored_at?: string;  // Vị trí lưu trữ Google Drive: 03_DonTuyenSinh
@@ -469,7 +502,6 @@ export type LogActionType =
   | 'EXCEL_IMPORT'            // Import Master Excel
   | 'USER_CREATE'             // Tạo tài khoản nhân sự
   | 'USER_PASSWORD_CHANGE'    // Đổi mật khẩu
-  | 'PROMOTE_TRIAL_TO_ACTIVE' // Kích hoạt học thử lên chính thức
   | 'STORAGE_CONFIG_UPDATE';  // Cập nhật cấu hình lưu trữ Cloud
 
 export interface AuditLogRecord {

@@ -19,11 +19,19 @@ import {
   X,
   CreditCard,
   Check,
-  AlertCircle
+  AlertCircle,
+  FileText,
+  ShieldCheck,
+  Layers,
+  Info,
+  SlidersHorizontal,
+  BookmarkCheck,
+  ChevronRight,
+  Eye
 } from 'lucide-react';
 import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords, formatDaysListLabel, getClassDaysOfWeek } from '../../lib/storage';
 import { generateVietQRUrl } from '../../lib/vietqr';
-import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord } from '../../types';
+import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord, ClassTransfer, CreditNote } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
@@ -37,6 +45,7 @@ interface FinancePayrollTabProps {
   searchQuery?: string;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onPrintReceipt: (invoice: TuitionInvoice) => void;
+  onPrintTransferAgreement?: (transfer: ClassTransfer) => void;
   initialSection?: 'invoices' | 'payroll' | 'transfer';
 }
 
@@ -49,6 +58,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   searchQuery = '',
   onUpdateStore,
   onPrintReceipt,
+  onPrintTransferAgreement,
   initialSection = 'invoices',
 }) => {
   const [activeSection, setActiveSection] = useState<'invoices' | 'payroll' | 'transfer'>(initialSection);
@@ -84,6 +94,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     remaining_sessions: 10,
   });
 
+  const [targetCampusId, setTargetCampusId] = useState<string>(selectedCampusId || store.campuses[0]?.id || '');
+  const [targetSubjectId, setTargetSubjectId] = useState<string>('all');
+  const [surplusHandling, setSurplusHandling] = useState<'standard_no_refund' | 'issue_credit_note' | 'convert_sessions'>('standard_no_refund');
+  const [transferReason, setTransferReason] = useState<string>('Phụ huynh đăng ký chuyển đổi môn học / cơ sở theo nguyện vọng');
+  const [managerOverrideQuota, setManagerOverrideQuota] = useState<boolean>(false);
+  const [viewingTransferQr, setViewingTransferQr] = useState<boolean>(false);
+
   // 1. Lấy danh sách ghi danh đang hoạt động của học sinh được chọn
   const activeEnrollments = useMemo(() => {
     return store.enrollments.filter(
@@ -98,21 +115,52 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       .filter((c): c is ExtracurricularClass => Boolean(c));
   }, [activeEnrollments, store.classes]);
 
+  const fromClass = useMemo(() => {
+    return currentStudentClasses.find(c => c.id === transferState.from_class_id);
+  }, [currentStudentClasses, transferState.from_class_id]);
+
+  // Tự động tính "Số buổi còn lại chưa học" theo sổ điểm danh hoặc lịch khóa
+  const autoRemainingInfo = useMemo(() => {
+    if (!fromClass || !transferState.student_id) return { elapsed: 0, total: 20, remaining: 10 };
+    const total = fromClass.total_sessions || 20;
+    // Điểm danh thực tế của học sinh trong lớp này
+    const attendedCount = store.attendance.filter(
+      a => a.class_id === fromClass.id && a.student_id === transferState.student_id
+    ).length;
+
+    const today = new Date().toISOString().split('T')[0];
+    const completedSessions = store.sessions.filter(
+      s => s.class_id === fromClass.id && (s.status === 'completed' || s.session_date <= today)
+    ).length;
+
+    const elapsed = attendedCount > 0 ? attendedCount : completedSessions;
+    const remaining = Math.max(1, total - elapsed);
+    return { elapsed, total, remaining };
+  }, [fromClass, transferState.student_id, store.attendance, store.sessions]);
+
+  // Tự động đồng bộ số buổi còn lại khi chuyển lớp hoặc đổi học sinh
+  useEffect(() => {
+    if (autoRemainingInfo.remaining > 0) {
+      setTransferState(prev => ({
+        ...prev,
+        remaining_sessions: autoRemainingInfo.remaining,
+      }));
+    }
+  }, [autoRemainingInfo.remaining, transferState.from_class_id, transferState.student_id]);
+
   // 3. Tự động đồng bộ lớp hiện tại (from_class_id) khi người dùng đổi học sinh
   useEffect(() => {
     if (currentStudentClasses.length > 0) {
-      // Nếu lớp hiện tại không nằm trong danh sách lớp đang học của học sinh mới, chọn lớp đầu tiên
       const isCurrentValid = currentStudentClasses.some(c => c.id === transferState.from_class_id);
       if (!isCurrentValid) {
-        const defaultFromId = currentStudentClasses[0].id;
-        const availableToClasses = store.classes.filter(c => c.id !== defaultFromId);
+        const defaultFrom = currentStudentClasses[0];
         setTransferState(prev => ({
           ...prev,
-          from_class_id: defaultFromId,
-          to_class_id: prev.to_class_id === defaultFromId 
-            ? (availableToClasses[0]?.id || '') 
-            : (prev.to_class_id || availableToClasses[0]?.id || '')
+          from_class_id: defaultFrom.id,
         }));
+        if (defaultFrom.campus_id) {
+          setTargetCampusId(defaultFrom.campus_id);
+        }
       }
     } else {
       setTransferState(prev => ({
@@ -120,20 +168,42 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         from_class_id: ''
       }));
     }
-  }, [transferState.student_id, currentStudentClasses, store.classes]);
+  }, [transferState.student_id, currentStudentClasses]);
 
-  // 4. Đảm bảo to_class_id luôn loại trừ from_class_id (không chuyển vào cùng một lớp)
+  // Đồng bộ cơ sở đích khi lớp hiện tại thay đổi
   useEffect(() => {
-    if (transferState.from_class_id && transferState.to_class_id === transferState.from_class_id) {
-      const availableToClasses = store.classes.filter(c => c.id !== transferState.from_class_id);
-      if (availableToClasses.length > 0) {
+    if (fromClass?.campus_id && !targetCampusId) {
+      setTargetCampusId(fromClass.campus_id);
+    }
+  }, [fromClass?.campus_id]);
+
+  // 4. Lọc lớp học chuyển đến theo Cơ sở đích & Môn học đích (loại trừ lớp cũ)
+  const filteredTargetClasses = useMemo(() => {
+    return store.classes.filter(c => {
+      if (c.id === transferState.from_class_id) return false;
+      if (targetCampusId && c.campus_id !== targetCampusId) return false;
+      if (targetSubjectId && targetSubjectId !== 'all' && c.subject_id !== targetSubjectId) return false;
+      return true;
+    });
+  }, [store.classes, transferState.from_class_id, targetCampusId, targetSubjectId]);
+
+  // 5. Đảm bảo to_class_id luôn hợp lệ trong filteredTargetClasses
+  useEffect(() => {
+    if (filteredTargetClasses.length > 0) {
+      const isValid = filteredTargetClasses.some(c => c.id === transferState.to_class_id);
+      if (!isValid) {
         setTransferState(prev => ({
           ...prev,
-          to_class_id: availableToClasses[0].id
+          to_class_id: filteredTargetClasses[0].id
         }));
       }
+    } else {
+      setTransferState(prev => ({
+        ...prev,
+        to_class_id: ''
+      }));
     }
-  }, [transferState.from_class_id, transferState.to_class_id, store.classes]);
+  }, [filteredTargetClasses, transferState.to_class_id]);
 
   // Open Verify Modal & Initialize with invoice data
   const openVerifyModal = (invoice: TuitionInvoice) => {
@@ -386,23 +456,24 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' as const }
           : inv
       );
+      const promoAudit = createAuditRecord(
+        'CLASS_ASSIGN',
+        'FINANCE',
+        cls?.name || invoice.invoice_code,
+        `Kích hoạt thu phí chính thức toàn khóa từ hóa đơn học thử ${invoice.invoice_code} của học viên "${student?.name || invoice.student_id}". Mở mã VietQR thu học phí.`,
+        currentUser,
+        {
+          target_id: invoice.id,
+          details: { status: 'success', after: { status: 'active', is_trial_pending: false } },
+        }
+      );
       return appendAuditLog(
         {
           ...prev,
           enrollments: updatedEnrollments,
           invoices: updatedInvoices,
         },
-        createAuditRecord(
-          'PROMOTE_TRIAL_TO_ACTIVE',
-          'FINANCE',
-          cls?.name || invoice.invoice_code,
-          `Kích hoạt thu phí chính thức toàn khóa từ hóa đơn học thử ${invoice.invoice_code} của học viên "${student?.name || invoice.student_id}". Mở mã VietQR thu học phí.`,
-          currentUser,
-          {
-            target_id: invoice.id,
-            details: { status: 'success', after: { status: 'active', is_trial_pending: false } },
-          }
-        )
+        promoAudit
       );
     });
     showToast(
@@ -459,13 +530,50 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   };
 
   // Class Transfer Calculation
-  const fromClass = currentStudentClasses.find(c => c.id === transferState.from_class_id);
   const toClass = store.classes.find(c => c.id === transferState.to_class_id);
   const oldRate = fromClass?.price_per_session || 0;
   const newRate = toClass?.price_per_session || 0;
-  const surcharge = (fromClass && toClass && currentStudentClasses.length > 0)
-    ? Math.max(0, (newRate - oldRate) * transferState.remaining_sessions)
+  const rateDiff = newRate - oldRate;
+  const isHigherRate = rateDiff > 0;
+  const surcharge = (fromClass && toClass && currentStudentClasses.length > 0 && isHigherRate)
+    ? rateDiff * transferState.remaining_sessions
     : 0;
+  const surplus = (fromClass && toClass && currentStudentClasses.length > 0 && !isHigherRate)
+    ? Math.abs(rateDiff) * transferState.remaining_sessions
+    : 0;
+  const convertedSessions = useMemo(() => {
+    if (newRate <= 0 || surplus <= 0) return 0;
+    return Math.floor(surplus / newRate);
+  }, [surplus, newRate]);
+
+  // Kiểm tra trùng lịch học với các môn khác mà học sinh đang theo học
+  const conflictingClasses = useMemo(() => {
+    if (!toClass || !transferState.student_id) return [];
+    const otherEnrs = store.enrollments.filter(
+      e => e.student_id === transferState.student_id && e.status === 'active' && e.class_id !== transferState.from_class_id
+    );
+    const toDays = toClass.days_of_week || [];
+    return otherEnrs
+      .map(e => store.classes.find(c => c.id === e.class_id))
+      .filter((otherCls): otherCls is ExtracurricularClass => {
+        if (!otherCls) return false;
+        const otherDays = otherCls.days_of_week || [];
+        const hasCommonDay = toDays.some(d => otherDays.includes(d));
+        const isSameSlot = otherCls.time_slot_id === toClass.time_slot_id;
+        return hasCommonDay && isSameSlot;
+      });
+  }, [toClass, transferState.student_id, transferState.from_class_id, store.enrollments, store.classes]);
+
+  // Kiểm tra sĩ số lớp mới
+  const targetEnrollmentCount = useMemo(() => {
+    if (!toClass) return 0;
+    return store.enrollments.filter(e => e.class_id === toClass.id && (e.status === 'active' || e.status === 'trial')).length;
+  }, [toClass, store.enrollments]);
+
+  const isTargetClassFull = useMemo(() => {
+    if (!toClass) return false;
+    return targetEnrollmentCount >= toClass.max_students;
+  }, [toClass, targetEnrollmentCount]);
 
   const handleExecuteTransfer = () => {
     const student = store.students.find(s => s.id === transferState.student_id);
@@ -476,31 +584,93 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       return;
     }
 
+    if (isTargetClassFull && !managerOverrideQuota) {
+      showToast(`Lớp đích đã đủ sĩ số (${targetEnrollmentCount}/${toClass.max_students}). Vui lòng phê duyệt ngoại lệ của Quản lý để tiếp nhận!`, 'warning', {
+        title: 'Lớp đích đã đầy sĩ số',
+      });
+      return;
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const expiryDate = new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0];
+    const transferCode = `TRF-2026-${String((store.transfers?.length || 0) + 1).padStart(5, '0')}`;
+    const invoiceCode = surcharge > 0 ? `INV-CHUYENLOP-${String(store.invoices.length + 1).padStart(4, '0')}` : undefined;
+    const creditCode = (surplusHandling === 'issue_credit_note' && surplus > 0)
+      ? `CRE-2026-${String((store.makeupCredits?.length || 0) + 1).padStart(4, '0')}`
+      : undefined;
+
+    const extraSessions = surplusHandling === 'convert_sessions' ? convertedSessions : 0;
+    const totalNewSessions = transferState.remaining_sessions + extraSessions;
+
+    let createdCreditNote: CreditNote | undefined = undefined;
+    if (creditCode && surplus > 0) {
+      createdCreditNote = {
+        id: `cr_${Date.now()}`,
+        credit_code: creditCode,
+        student_id: student.id,
+        student_name: student.name,
+        source_class_id: fromClass.id,
+        term_id: fromClass.term_id,
+        subject_id: fromClass.subject_id,
+        consecutive_absent_count: 0,
+        consecutive_dates: [],
+        source_rate: oldRate,
+        credit_rule: 'monetary',
+        total_credit_amount: surplus,
+        transferred_sessions: Math.round(surplus / newRate),
+        issue_date: today,
+        expiry_date: expiryDate,
+        expires_at: expiryDate,
+        status: 'available',
+        note: `Bảo lưu số tiền thặng dư chuyển môn từ lớp ${fromClass.name} sang ${toClass.name} (Biên bản ${transferCode})`,
+      };
+    }
+
+    const newTransferRecord: ClassTransfer = {
+      id: `tr_${Date.now()}`,
+      transfer_code: transferCode,
+      student_id: student.id,
+      from_class_id: fromClass.id,
+      to_class_id: toClass.id,
+      remaining_sessions: transferState.remaining_sessions,
+      old_session_rate: oldRate,
+      new_session_rate: newRate,
+      surcharge_amount: surcharge,
+      surplus_amount: surplus,
+      surplus_handling: surplusHandling,
+      converted_sessions: extraSessions,
+      credit_note_id: createdCreditNote?.id,
+      invoice_id: invoiceCode ? `inv_surcharge_${Date.now()}` : undefined,
+      reason: transferReason || 'Chuyển môn / lớp theo nguyện vọng của học sinh',
+      transfer_date: today,
+      created_by: currentUser?.full_name ? formatCapitalizeWords(currentUser.full_name) : 'Học vụ Royal School',
+    };
+
     onUpdateStore(prev => {
-      // 1. Update old enrollment to transferred
+      // 1. Cập nhật trạng thái lớp cũ thành transferred (giải phóng chỗ)
       const updatedEnrollments = prev.enrollments.map(e => {
-        if (e.student_id === student.id && e.class_id === fromClass.id) {
+        if (e.student_id === student.id && e.class_id === fromClass.id && e.status === 'active') {
           return { ...e, status: 'transferred' as const };
         }
         return e;
       });
 
-      // 2. Add new enrollment
+      // 2. Tạo bản ghi ghi danh mới ở lớp chuyển đến (kèm số buổi quy đổi nếu có)
       updatedEnrollments.push({
         id: `enr_${Date.now()}`,
         student_id: student.id,
         class_id: toClass.id,
-        registered_sessions: transferState.remaining_sessions,
-        joined_date: new Date().toISOString().split('T')[0],
+        registered_sessions: totalNewSessions,
+        joined_date: today,
         status: 'active',
       });
 
-      // 3. If surcharge, add invoice for surcharge
+      // 3. Nếu phát sinh phụ thu chênh lệch, lập hóa đơn phụ thu
       let updatedInvoices = [...prev.invoices];
-      if (surcharge > 0) {
+      if (surcharge > 0 && newTransferRecord.invoice_id) {
         updatedInvoices.unshift({
-          id: `inv_surcharge_${Date.now()}`,
-          invoice_code: `INV-CHUYENLOP-${String(prev.invoices.length + 1).padStart(4, '0')}`,
+          id: newTransferRecord.invoice_id,
+          invoice_code: invoiceCode!,
           student_id: student.id,
           class_id: toClass.id,
           gross_amount: surcharge,
@@ -510,60 +680,79 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           outstanding_amount: surcharge,
           payment_status: 'unpaid',
           due_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
-          created_at: new Date().toISOString().split('T')[0],
+          created_at: today,
         });
       }
+
+      // 4. Nếu chọn cấp phiếu bảo lưu thặng dư, thêm vào makeupCredits
+      let updatedCredits = [...(prev.makeupCredits || [])];
+      if (createdCreditNote) {
+        updatedCredits.unshift(createdCreditNote);
+      }
+
+      // 5. Ghi nhật ký kiểm toán (Audit Trail)
+      const auditDetailsText = surcharge > 0
+        ? `Phụ thu phát sinh: ${formatVND(surcharge)} (Mã HĐ: ${invoiceCode})`
+        : surplus > 0 && surplusHandling === 'issue_credit_note'
+        ? `Cấp phiếu bảo lưu thặng dư ${creditCode}: ${formatVND(surplus)}`
+        : surplus > 0 && surplusHandling === 'convert_sessions'
+        ? `Quy đổi thặng dư thành +${extraSessions} buổi học tại lớp mới`
+        : 'Chuyển ngang theo quy chế (Không hoàn tiền chênh lệch)';
 
       const transferLog = createAuditRecord(
         'CLASS_TRANSFER',
         'ACADEMIC',
-        'Biến động Chuyển lớp',
-        `Thực hiện chuyển lớp cho học sinh ${student.name} từ ${fromClass.name} sang ${toClass.name} (Phụ thu: ${formatVND(surcharge)})`,
-        null,
+        `Biên bản chuyển lớp ${transferCode}`,
+        `Chuyển lớp cho học sinh ${student.name} (${student.code}) từ "${fromClass.name}" sang "${toClass.name}". ${auditDetailsText}. Định mức bánh sữa chuyển sang lớp mới.`,
+        currentUser,
         {
-          target_id: student.code || student.id,
+          target_id: transferCode,
           details: {
             status: 'success',
-            before: { class_id: fromClass.id, class_name: fromClass.name },
+            before: { class_id: fromClass.id, class_name: fromClass.name, rate: oldRate },
             after: {
               class_id: toClass.id,
               class_name: toClass.name,
+              rate: newRate,
               remaining_sessions: transferState.remaining_sessions,
-              surcharge
+              surcharge,
+              surplus,
+              surplus_handling: surplusHandling,
+              converted_sessions: extraSessions,
+              transfer_code: transferCode,
             }
           }
         }
       );
 
-      const newTransferRecord = {
-        id: `tr_${Date.now()}`,
-        student_id: student.id,
-        from_class_id: fromClass.id,
-        to_class_id: toClass.id,
-        transfer_date: new Date().toISOString().split('T')[0],
-        remaining_sessions: transferState.remaining_sessions,
-        old_session_rate: oldRate,
-        new_session_rate: newRate,
-        surcharge_amount: surcharge,
-        created_by: currentUser?.full_name || 'Phòng Học vụ - Kế toán',
-      };
-
       return {
         ...prev,
         enrollments: updatedEnrollments,
         invoices: updatedInvoices,
+        makeupCredits: updatedCredits,
         transfers: [newTransferRecord, ...(prev.transfers || [])],
         auditLogs: [transferLog, ...(prev.auditLogs || [])],
       };
     });
 
     showToast(
-      `Chuyển lớp thành công cho ${student.name} sang lớp ${toClass.name}! ${
-        surcharge > 0 ? `Đã phát hành hóa đơn phụ thu: ${formatVND(surcharge)}.` : 'Không phát sinh phụ thu (Chuyển ngang).'
+      `✓ Đã lập biên bản ${transferCode} chuyển học sinh ${student.name} sang lớp ${toClass.name} thành công! ${
+        surcharge > 0
+          ? `Hóa đơn phụ thu: ${formatVND(surcharge)}.`
+          : surplus > 0 && surplusHandling === 'issue_credit_note'
+          ? `Đã cấp phiếu bảo lưu thặng dư ${creditCode} (${formatVND(surplus)}).`
+          : surplus > 0 && surplusHandling === 'convert_sessions'
+          ? `Đã quy đổi thêm +${extraSessions} buổi học lớp mới.`
+          : 'Không phát sinh phụ thu (Chuyển ngang).'
       }`,
       'success',
-      { title: 'Xác nhận chuyển lớp thành công' }
+      { title: 'Chuyển môn & Lớp học thành công' }
     );
+
+    // Mở ngay mẫu in biên bản song ngữ nếu có handler
+    if (onPrintTransferAgreement) {
+      onPrintTransferAgreement(newTransferRecord);
+    }
   };
 
   return (
@@ -1329,177 +1518,539 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
       {/* SECTION 3: CLASS TRANSFER */}
       {activeSection === 'transfer' && (
-        <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-6 backdrop-blur-md shadow-xl max-w-2xl mx-auto space-y-4">
-          <div className="flex items-center gap-2">
-            <ArrowRightLeft className="w-5 h-5 text-amber-400" />
-            <h3 className="text-base font-bold text-white">Biên Bản & Công Cụ Phụ Thu Chuyển Lớp</h3>
+        <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 p-6 backdrop-blur-md shadow-2xl max-w-4xl mx-auto space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                <ArrowRightLeft className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-white">Biên Bản & Công Cụ Phụ Thu Chuyển Lớp</h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Royal Protocol v2.6
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Điều chuyển học sinh giữa các môn học, ca học hoặc khác cơ sở đào tạo trong hệ thống Royal School
+                </p>
+              </div>
+            </div>
+            
+            <div className="text-xs text-slate-400 bg-slate-900/90 px-3 py-1.5 rounded-xl border border-slate-800">
+              Cơ sở hiện hành: <strong className="text-amber-400">{store.campuses.find(c => c.id === selectedCampusId)?.name || 'Toàn trường'}</strong>
+            </div>
           </div>
 
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Học sinh được chuyển khác lớp, khác cơ sở và khác bộ môn. Tính trên các buổi còn lại chưa học:<br />
-            &bull; <em>Đơn giá mới &gt; Đơn giá cũ:</em> Phụ huynh nộp thêm chênh lệch: <code>(Đơn giá mới - Đơn giá cũ) × Số buổi còn lại</code>.<br />
-            &bull; <em>Đơn giá mới ≤ Đơn giá cũ:</em> Chuyển ngang, không hoàn trả tiền chênh lệch thừa.
-          </p>
+          {/* Quy định chênh lệch học phí */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800/80">
+            <div className="flex items-start gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400 mt-1.5 shrink-0" />
+              <div className="text-slate-300">
+                <strong className="text-amber-300">Đơn giá mới &gt; Đơn giá cũ:</strong> Phụ thu chênh lệch = <code className="text-white bg-slate-900 px-1.5 py-0.5 rounded font-mono">(Đơn giá mới - Đơn giá cũ) × Số buổi</code>. Sinh mã VietQR phụ thu ngay.
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
+              <div className="text-slate-300">
+                <strong className="text-emerald-300">Đơn giá mới &le; Đơn giá cũ:</strong> Chuyển ngang, không hoàn tiền thừa theo quy chế. Hỗ trợ tùy chọn <em>Cấp phiếu bảo lưu phụ</em> hoặc <em>Quy đổi số buổi học bổ sung</em>.
+              </div>
+            </div>
+          </div>
 
-          <div className="space-y-3 text-xs">
+          <div className="space-y-4 text-xs">
+            {/* 1. CHỌN HỌC SINH */}
             <div>
-              <label className="block text-slate-400 font-medium mb-1">
-                Chọn Học sinh cần chuyển lớp
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-slate-300 font-bold flex items-center gap-1.5">
+                  <UserCheck className="w-3.5 h-3.5 text-amber-400" />
+                  <span>1. Chọn Học sinh cần điều chuyển môn / lớp</span>
+                </label>
+                {currentStudentClasses.length > 0 && (
+                  <span className="text-[11px] text-emerald-400 font-medium">
+                    Học sinh đang có {currentStudentClasses.length} lớp học hoạt động
+                  </span>
+                )}
+              </div>
               <StudentSearchCombobox
                 students={store.students}
                 enrollments={store.enrollments}
                 classes={store.classes}
                 selectedStudentId={transferState.student_id}
                 onSelectStudent={(studentId) =>
-                  setTransferState({ ...transferState, student_id: studentId })
+                  setTransferState(prev => ({ ...prev, student_id: studentId }))
                 }
-                placeholder="Gõ tên, mã học sinh (RY-...), SĐT phụ huynh để tìm nhanh..."
+                placeholder="Gõ tên, mã học sinh (RY-..., EXT-...), SĐT phụ huynh để tìm..."
                 prioritizeActiveEnrollments={true}
               />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* 2. LỚP HIỆN TẠI VÀ SỐ BUỔI CÒN LẠI (TỰ ĐỘNG TÍNH) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
               <div>
-                <label className="block text-slate-400 font-medium mb-1">
-                  Lớp học hiện tại {currentStudentClasses.length > 0 && (
-                    <span className="text-amber-400 font-normal">({currentStudentClasses.length} lớp đang học)</span>
-                  )}
+                <label className="block text-slate-300 font-semibold mb-1">
+                  2. Lớp học hiện tại đang theo học
                 </label>
                 <select
                   value={transferState.from_class_id}
-                  onChange={(e) => setTransferState({ ...transferState, from_class_id: e.target.value })}
+                  onChange={(e) => setTransferState(prev => ({ ...prev, from_class_id: e.target.value }))}
                   disabled={currentStudentClasses.length === 0}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-xs"
                 >
                   {currentStudentClasses.length === 0 ? (
-                    <option value="">[ Học sinh chưa có lớp đang học ]</option>
+                    <option value="">[ Học sinh chưa có lớp đang học hoạt động ]</option>
                   ) : (
-                    currentStudentClasses.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({formatVND(c.price_per_session)}/buổi)
-                      </option>
-                    ))
+                    currentStudentClasses.map(c => {
+                      const campus = store.campuses.find(cp => cp.id === c.campus_id);
+                      return (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({campus?.code || 'PMH'}) — {formatVND(c.price_per_session)}/buổi
+                        </option>
+                      );
+                    })
                   )}
                 </select>
-                {currentStudentClasses.length === 0 && (
-                  <p className="text-[11px] text-amber-400/90 mt-1 italic">
-                    * Học sinh này chưa tham gia lớp học nào đang hoạt động. Không thể chuyển lớp.
+                {currentStudentClasses.length === 0 ? (
+                  <p className="text-[11px] text-amber-400 mt-1.5 italic">
+                    * Học sinh này chưa có lớp ngoại khóa nào đang hoạt động. Không thể thực hiện chuyển lớp.
                   </p>
+                ) : fromClass && (
+                  <div className="mt-2 text-[11px] text-slate-400 flex items-center justify-between">
+                    <span>Đơn giá buổi cũ: <strong className="text-white font-mono">{formatVND(oldRate)}/buổi</strong></span>
+                    <span>Cơ sở: <strong className="text-slate-300">{store.campuses.find(cp => cp.id === fromClass.campus_id)?.name}</strong></span>
+                  </div>
                 )}
               </div>
 
               <div>
-                <label className="block text-slate-400 font-medium mb-1">Lớp học chuyển đến</label>
-                <select
-                  value={transferState.to_class_id}
-                  onChange={(e) => setTransferState({ ...transferState, to_class_id: e.target.value })}
+                <label className="block text-slate-300 font-semibold mb-1">
+                  3. Số buổi còn lại chưa học cần chuyển
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={40}
+                  value={transferState.remaining_sessions}
+                  onChange={(e) => setTransferState(prev => ({ ...prev, remaining_sessions: Math.max(1, Number(e.target.value)) }))}
                   disabled={currentStudentClasses.length === 0}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {store.classes
-                    .filter(c => c.id !== transferState.from_class_id)
-                    .map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({formatVND(c.price_per_session)}/buổi)
-                      </option>
-                    ))}
-                </select>
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                {fromClass && (
+                  <div className="mt-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                    <span>
+                      Đã học: <strong>{autoRemainingInfo.elapsed}/{autoRemainingInfo.total} buổi</strong> &bull; Còn lại: <strong>{autoRemainingInfo.remaining} buổi</strong> (Tự động tính từ sổ điểm danh)
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
+            {/* 3. BỘ LỌC 2 CẤP TRƯỚC KHI CHỌN LỚP ĐÍCH */}
+            <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-3">
+              <div className="text-slate-300 font-bold flex items-center gap-1.5 text-xs">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-cyan-400" />
+                <span>4. Bộ lọc chọn Lớp học đích (Target Class Filters)</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* CẤP 1: CƠ SỞ CHUYỂN ĐẾN */}
+                <div>
+                  <label className="block text-slate-400 text-[11px] font-medium mb-1 flex items-center gap-1">
+                    <Building2 className="w-3 h-3 text-cyan-400" />
+                    <span>Cơ sở chuyển đến (Target Campus)</span>
+                  </label>
+                  <select
+                    value={targetCampusId}
+                    onChange={(e) => setTargetCampusId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-cyan-500 text-xs"
+                  >
+                    {store.campuses.map(cp => (
+                      <option key={cp.id} value={cp.id}>
+                        {cp.name} ({cp.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* CẤP 2: BỘ MÔN CHUYỂN ĐẾN */}
+                <div>
+                  <label className="block text-slate-400 text-[11px] font-medium mb-1 flex items-center gap-1">
+                    <Layers className="w-3 h-3 text-amber-400" />
+                    <span>Bộ môn chuyển đến (Target Subject)</span>
+                  </label>
+                  <select
+                    value={targetSubjectId}
+                    onChange={(e) => setTargetSubjectId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 text-xs"
+                  >
+                    <option value="all">-- Tất cả các bộ môn ngoại khóa --</option>
+                    {store.subjects.map(sb => (
+                      <option key={sb.id} value={sb.id}>
+                        {sb.name} ({sb.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* CHỌN LỚP ĐÍCH TỪ KẾT QUẢ ĐÃ LỌC */}
+              <div className="pt-2">
+                <label className="block text-slate-300 font-semibold mb-1">
+                  Lớp học chuyển đến ({filteredTargetClasses.length} lớp phù hợp)
+                </label>
+                <select
+                  value={transferState.to_class_id}
+                  onChange={(e) => setTransferState(prev => ({ ...prev, to_class_id: e.target.value }))}
+                  disabled={currentStudentClasses.length === 0 || filteredTargetClasses.length === 0}
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-xs"
+                >
+                  {filteredTargetClasses.length === 0 ? (
+                    <option value="">[ Không có lớp nào phù hợp với bộ môn và cơ sở đã chọn ]</option>
+                  ) : (
+                    filteredTargetClasses.map(c => {
+                      const count = store.enrollments.filter(e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')).length;
+                      const emptySeats = c.max_students - count;
+                      const daysText = c.days_of_week?.join('-') || '';
+                      return (
+                        <option key={c.id} value={c.id}>
+                          {c.name} • {daysText} • Sĩ số: {count}/{c.max_students} ({emptySeats > 0 ? `Còn ${emptySeats} chỗ` : 'ĐÃ ĐẦY SĨ SỐ'}) • {formatVND(c.price_per_session)}/buổi
+                        </option>
+                      );
+                    })
+                  )}
+                </select>
+              </div>
+
+              {/* METADATA CHI TIẾT CỦA LỚP ĐÍCH */}
+              {toClass && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-[11px] bg-slate-950/70 p-3 rounded-xl border border-slate-800/80">
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Đơn giá buổi mới:</span>
+                    <strong className="text-amber-400 font-mono">{formatVND(newRate)}/b</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Lịch học & Ca:</span>
+                    <strong className="text-white">{toClass.days_of_week?.join(' & ') || 'Lịch mở rộng'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Sĩ số hiện tại:</span>
+                    <span className={`font-bold ${isTargetClassFull ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {targetEnrollmentCount} / {toClass.max_students} ({toClass.max_students - targetEnrollmentCount > 0 ? `Còn ${toClass.max_students - targetEnrollmentCount} chỗ` : 'Hết chỗ'})
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Giáo viên phụ trách:</span>
+                    <strong className="text-slate-300">
+                      {store.teachers.find(t => t.id === toClass.primary_teacher_id)?.name || 'Học vụ phân công'}
+                    </strong>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* CẢNH BÁO RÀNG BUỘC: TRÙNG LỊCH HỌC */}
+            {conflictingClasses.length > 0 && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 space-y-1">
+                <div className="flex items-center gap-2 font-bold text-xs text-rose-200">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Cảnh Báo Trùng Lịch Học Thực Tế!</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-rose-200/90 pl-6">
+                  Lớp đích <strong>{toClass?.name}</strong> ({toClass?.days_of_week?.join('-')}) bị trùng khung giờ ca học với lớp{' '}
+                  <strong>{conflictingClasses[0].name}</strong> ({conflictingClasses[0].days_of_week?.join('-')}) mà học sinh đang theo học song song!
+                </p>
+              </div>
+            )}
+
+            {/* CẢNH BÁO RÀNG BUỘC: QUÁ SĨ SỐ (OVER QUOTA) & MANAGER OVERRIDE */}
+            {isTargetClassFull && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-amber-200 space-y-2">
+                <div className="flex items-center gap-2 font-bold text-xs text-amber-300">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Lớp đích đã đạt sĩ số tối đa ({targetEnrollmentCount}/{toClass?.max_students} học sinh)</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-amber-200/90">
+                  Theo quy định chuẩn Royal School, lớp đã hết chỗ trống. Nếu cần thêm học sinh, phải được sự phê duyệt của Cấp Quản lý / BGH.
+                </p>
+                <label className="flex items-center gap-2 pt-1 text-xs text-white font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={managerOverrideQuota}
+                    onChange={(e) => setManagerOverrideQuota(e.target.checked)}
+                    className="w-4 h-4 rounded border-amber-500 text-amber-500 focus:ring-amber-500"
+                  />
+                  <span>Xác nhận Phê duyệt Ngoại lệ Sĩ số (Manager Override - Ban Giám Hiệu đã ký duyệt tiếp nhận)</span>
+                </label>
+              </div>
+            )}
+
+            {/* 4. ĐỐI SOÁT TÀI CHÍNH 2 CHIỀU & TÙY CHỌN THẶNG DƯ */}
+            <div className="p-5 rounded-2xl bg-slate-900 border border-amber-500/30 space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <span className="font-bold text-white text-xs flex items-center gap-1.5">
+                  <Coins className="w-4 h-4 text-amber-400" />
+                  <span>Quyết toán chênh lệch tài chính</span>
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {fromClass?.name || 'Lớp cũ'} &rarr; {toClass?.name || 'Lớp mới'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-slate-400 block text-[10px]">Đơn giá lớp cũ:</span>
+                  <span className="font-mono text-white font-bold">{formatVND(oldRate)}/b</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-slate-400 block text-[10px]">Đơn giá lớp mới:</span>
+                  <span className="font-mono text-amber-400 font-bold">{formatVND(newRate)}/b</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-slate-400 block text-[10px]">Số buổi chuyển:</span>
+                  <span className="font-mono text-white font-bold">{transferState.remaining_sessions} buổi</span>
+                </div>
+              </div>
+
+              {/* KẾT QUẢ TÍNH TOÁN */}
+              {isHigherRate ? (
+                /* TRƯỜNG HỢP 1: LỚP MỚI GIÁ CAO HƠN -> PHỤ THU CHÊNH LỆCH */
+                <div className="pt-2 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <span className="font-bold text-amber-400 text-sm block">Tiền phụ thu chênh lệch phát sinh:</span>
+                    <span className="text-[11px] text-slate-400">
+                      = ({formatVND(newRate)} - {formatVND(oldRate)}) × {transferState.remaining_sessions} buổi
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg font-extrabold font-mono text-amber-400">
+                      +{formatVND(surcharge)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setViewingTransferQr(true)}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <QrCode className="w-3.5 h-3.5" />
+                      <span>Xem mã VietQR</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* TRƯỜNG HỢP 2: LỚP MỚI GIÁ THẤP HƠN HOẶC BẰNG -> CHUYỂN NGANG + TÙY CHỌN THẶNG DƯ */
+                <div className="pt-2 border-t border-slate-800/80 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-emerald-400 text-sm block">Quyết toán chuyển ngang:</span>
+                      <span className="text-[11px] text-slate-400">
+                        {surplus > 0
+                          ? `Đơn giá lớp mới thấp hơn (${formatVND(oldRate)} > ${formatVND(newRate)}). Thặng dư: ${formatVND(surplus)}.`
+                          : 'Đơn giá 2 lớp bằng nhau. Không phát sinh phụ thu.'}
+                      </span>
+                    </div>
+                    <span className="px-3 py-1 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold text-xs font-mono">
+                      0 đ (Chuyển ngang)
+                    </span>
+                  </div>
+
+                  {/* TÙY CHỌN THẶNG DƯ NÂNG CAO (NẾU SURPLUS > 0) */}
+                  {surplus > 0 && (
+                    <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                          <BookmarkCheck className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Tùy chọn xử lý thặng dư tài chính ({formatVND(surplus)}):</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">Chính sách linh hoạt</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2">
+                        {/* Option 1: Chuyển ngang tiêu chuẩn */}
+                        <label className={`p-2.5 rounded-xl border text-xs flex items-center gap-2.5 cursor-pointer transition-all ${
+                          surplusHandling === 'standard_no_refund'
+                            ? 'bg-slate-900 border-emerald-500/60 text-white'
+                            : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-slate-300'
+                        }`}>
+                          <input
+                            type="radio"
+                            name="surplusHandling"
+                            value="standard_no_refund"
+                            checked={surplusHandling === 'standard_no_refund'}
+                            onChange={() => setSurplusHandling('standard_no_refund')}
+                            className="text-emerald-500 focus:ring-emerald-500"
+                          />
+                          <div className="flex-1 flex justify-between items-center">
+                            <span><strong>Chuyển ngang tiêu chuẩn:</strong> Không hoàn trả tiền chênh lệch theo quy chế trường</span>
+                            <span className="font-mono text-emerald-400 font-bold">0 đ</span>
+                          </div>
+                        </label>
+
+                        {/* Option 2: Cấp phiếu bảo lưu phụ */}
+                        <label className={`p-2.5 rounded-xl border text-xs flex items-center gap-2.5 cursor-pointer transition-all ${
+                          surplusHandling === 'issue_credit_note'
+                            ? 'bg-slate-900 border-cyan-500/60 text-white'
+                            : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-slate-300'
+                        }`}>
+                          <input
+                            type="radio"
+                            name="surplusHandling"
+                            value="issue_credit_note"
+                            checked={surplusHandling === 'issue_credit_note'}
+                            onChange={() => setSurplusHandling('issue_credit_note')}
+                            className="text-cyan-500 focus:ring-cyan-500"
+                          />
+                          <div className="flex-1 flex justify-between items-center">
+                            <span><strong>Cấp Phiếu bảo lưu học phí phụ:</strong> Lưu vào tài khoản học sinh, hạn sử dụng 365 ngày</span>
+                            <span className="font-mono text-cyan-400 font-bold">+{formatVND(surplus)}</span>
+                          </div>
+                        </label>
+
+                        {/* Option 3: Quy đổi số buổi */}
+                        <label className={`p-2.5 rounded-xl border text-xs flex items-center gap-2.5 cursor-pointer transition-all ${
+                          surplusHandling === 'convert_sessions'
+                            ? 'bg-slate-900 border-amber-500/60 text-white'
+                            : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-slate-300'
+                        }`}>
+                          <input
+                            type="radio"
+                            name="surplusHandling"
+                            value="convert_sessions"
+                            checked={surplusHandling === 'convert_sessions'}
+                            onChange={() => setSurplusHandling('convert_sessions')}
+                            className="text-amber-500 focus:ring-amber-500"
+                          />
+                          <div className="flex-1 flex justify-between items-center">
+                            <span>
+                              <strong>Quy đổi thêm số buổi học:</strong> Thêm <strong>+{convertedSessions} buổi</strong> ở lớp mới (Tổng {transferState.remaining_sessions + convertedSessions}b)
+                            </span>
+                            <span className="font-mono text-amber-400 font-bold">+{convertedSessions} buổi</span>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 5. LÝ DO CHUYỂN LỚP */}
             <div>
-              <label className="block text-slate-400 font-medium mb-1">Số buổi còn lại chưa học cần chuyển</label>
+              <label className="block text-slate-300 font-semibold mb-1">
+                Lý do chuyển môn / lớp (Ghi vào Biên bản chính thức)
+              </label>
               <input
-                type="number"
-                min={1}
-                max={30}
-                value={transferState.remaining_sessions}
-                onChange={(e) => setTransferState({ ...transferState, remaining_sessions: Number(e.target.value) })}
-                disabled={currentStudentClasses.length === 0}
-                className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
+                type="text"
+                value={transferReason}
+                onChange={(e) => setTransferReason(e.target.value)}
+                placeholder="VD: Phụ huynh xin chuyển sang môn Bơi lội để rèn luyện thể lực, đổi giờ học ca chiều..."
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 text-xs"
               />
             </div>
 
-            {/* Live Calculation Preview */}
-            <div className="p-4 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-2">
-              <div className="flex justify-between text-slate-400">
-                <span>Đơn giá lớp cũ:</span>
-                <span className="font-mono text-white">
-                  {fromClass ? `${formatVND(oldRate)} / buổi` : (currentStudentClasses.length === 0 ? 'Không có lớp' : 'Chưa chọn')}
-                </span>
+            {/* BUTTON XÁC NHẬN */}
+            <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="text-[11px] text-slate-500">
+                * Khi xác nhận, hệ thống sẽ tự động cập nhật ghi danh, định mức bánh sữa, và lập biên bản song ngữ A4.
               </div>
-              <div className="flex justify-between text-slate-400">
-                <span>Đơn giá lớp mới:</span>
-                <span className="font-mono text-white">
-                  {toClass ? `${formatVND(newRate)} / buổi` : 'Chưa chọn'}
-                </span>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                {surcharge > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setViewingTransferQr(true)}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer border border-slate-700"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    <span>Mã VietQR</span>
+                  </button>
+                )}
+                <button
+                  onClick={handleExecuteTransfer}
+                  disabled={
+                    currentStudentClasses.length === 0 || 
+                    !transferState.from_class_id || 
+                    !transferState.to_class_id || 
+                    transferState.from_class_id === transferState.to_class_id ||
+                    (isTargetClassFull && !managerOverrideQuota)
+                  }
+                  className="flex-1 sm:flex-none px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <ArrowRightLeft className="w-4 h-4" />
+                  <span>Xác Nhận Biên Bản Chuyển Lớp</span>
+                </button>
               </div>
-              <div className="flex justify-between text-slate-400">
-                <span>Số buổi chuyển:</span>
-                <span className="font-mono text-white">{transferState.remaining_sessions} buổi</span>
-              </div>
-
-              <div className="pt-2 border-t border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-white text-sm">Tiền phụ thu chênh lệch:</span>
-                <span className={`text-base font-extrabold font-mono ${surcharge > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                  {currentStudentClasses.length === 0 
-                    ? '0 đ (Không khả dụng)' 
-                    : surcharge > 0 
-                    ? formatVND(surcharge) 
-                    : '0 đ (Chuyển ngang)'}
-                </span>
-              </div>
-            </div>
-
-            <div className="pt-2 flex justify-end">
-              <button
-                onClick={handleExecuteTransfer}
-                disabled={currentStudentClasses.length === 0 || !transferState.from_class_id || !transferState.to_class_id || transferState.from_class_id === transferState.to_class_id}
-                className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
-              >
-                Xác Nhận Biên Bản Chuyển Lớp
-              </button>
             </div>
           </div>
 
-          {/* TRANSFER HISTORY LIST WITH VIEW TOGGLE */}
+          {/* TRANSFER HISTORY LIST WITH VIEW TOGGLE & PRINT ACTION */}
           <div className="pt-6 border-t border-slate-800 space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="text-xs font-bold text-white flex items-center gap-2">
-                <ArrowRightLeft className="w-4 h-4 text-cyan-400" />
-                <span>Lịch Sử Biên Bản Chuyển Lớp ({store.transfers.length} biên bản)</span>
+                <History className="w-4 h-4 text-cyan-400" />
+                <span>Lịch Sử Biên Bản Chuyển Lớp ({store.transfers.length} biên bản đã lập)</span>
               </div>
               <ViewToggle viewMode={transferViewMode} onViewModeChange={setTransferViewMode} />
             </div>
 
             {store.transfers.length === 0 ? (
-              <div className="py-6 text-center text-xs text-slate-500 rounded-2xl bg-slate-900/60 border border-slate-800">
+              <div className="py-8 text-center text-xs text-slate-500 rounded-2xl bg-slate-900/60 border border-slate-800">
                 Chưa có biên bản chuyển lớp nào được tạo trong kỳ học này.
               </div>
             ) : transferViewMode === 'cards' ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {store.transfers.map(tr => {
                   const student = store.students.find(s => s.id === tr.student_id);
-                  const fromClass = store.classes.find(c => c.id === tr.from_class_id);
-                  const toClass = store.classes.find(c => c.id === tr.to_class_id);
+                  const fClass = store.classes.find(c => c.id === tr.from_class_id);
+                  const tClass = store.classes.find(c => c.id === tr.to_class_id);
 
                   return (
-                    <div key={tr.id} className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-xs space-y-2">
+                    <div key={tr.id} className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 text-xs space-y-2.5 hover:border-slate-700 transition-colors">
                       <div className="flex justify-between items-center">
-                        <span className="font-bold text-white">{student?.name}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">{tr.transfer_date}</span>
-                      </div>
-                      <div className="text-[11px] text-slate-300 flex items-center gap-1.5">
-                        <span className="text-slate-400">Từ:</span> <strong>{fromClass?.name}</strong>
-                        <span>&rarr;</span>
-                        <span className="text-slate-400">Sang:</span> <strong className="text-amber-400">{toClass?.name}</strong>
-                      </div>
-                      <div className="flex justify-between items-center text-[11px] pt-1 border-t border-slate-800/80">
-                        <span className="text-slate-400">Buổi chuyển: {tr.remaining_sessions}b</span>
-                        <span className="font-mono font-bold text-emerald-400">
-                          {tr.surcharge_amount > 0 ? `+${formatVND(tr.surcharge_amount)}` : 'Chuyển ngang'}
+                        <div>
+                          <span className="font-bold text-white text-sm block">{student?.name}</span>
+                          <span className="text-[10px] text-amber-500/90 font-mono">{tr.transfer_code || tr.id}</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono bg-slate-950 px-2 py-0.5 rounded-lg border border-slate-800">
+                          {tr.transfer_date}
                         </span>
+                      </div>
+
+                      <div className="text-[11px] text-slate-300 space-y-1 bg-slate-950 p-2.5 rounded-xl border border-slate-800/80">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Từ lớp:</span>
+                          <span className="text-slate-200 font-medium">{fClass?.name}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">Sang lớp:</span>
+                          <span className="text-amber-400 font-bold">{tClass?.name}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between items-center text-[11px] pt-1">
+                        <div>
+                          <span className="text-slate-400 block text-[10px]">Quyết toán:</span>
+                          <span className="font-mono font-bold text-emerald-400">
+                            {tr.surcharge_amount > 0 
+                              ? `Phụ thu: +${formatVND(tr.surcharge_amount)}`
+                              : tr.surplus_handling === 'issue_credit_note'
+                              ? `Bảo lưu: ${formatVND(tr.surplus_amount || 0)}`
+                              : tr.surplus_handling === 'convert_sessions'
+                              ? `Quy đổi: +${tr.converted_sessions}b`
+                              : 'Chuyển ngang (0 đ)'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          {onPrintTransferAgreement && (
+                            <button
+                              onClick={() => onPrintTransferAgreement(tr)}
+                              className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                              title="In biên bản chuyển lớp A4 song ngữ"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>In Biên Bản</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -1510,29 +2061,60 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-900 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                     <tr>
+                      <th className="py-2.5 px-3">Mã Biên Bản</th>
                       <th className="py-2.5 px-3">Ngày Lập</th>
                       <th className="py-2.5 px-3">Học Sinh</th>
                       <th className="py-2.5 px-3">Lớp Cũ</th>
                       <th className="py-2.5 px-3">Lớp Mới</th>
                       <th className="py-2.5 px-3 text-center">Số Buổi</th>
-                      <th className="py-2.5 px-3 text-right">Phụ Thu</th>
+                      <th className="py-2.5 px-3 text-right">Quyết Toán</th>
+                      <th className="py-2.5 px-3 text-center">Thao Tác</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
                     {store.transfers.map(tr => {
                       const student = store.students.find(s => s.id === tr.student_id);
-                      const fromClass = store.classes.find(c => c.id === tr.from_class_id);
-                      const toClass = store.classes.find(c => c.id === tr.to_class_id);
+                      const fClass = store.classes.find(c => c.id === tr.from_class_id);
+                      const tClass = store.classes.find(c => c.id === tr.to_class_id);
 
                       return (
-                        <tr key={tr.id} className="hover:bg-slate-800/30">
+                        <tr key={tr.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-2.5 px-3 font-mono font-bold text-amber-400">
+                            {tr.transfer_code || tr.id}
+                          </td>
                           <td className="py-2.5 px-3 font-mono text-slate-400">{tr.transfer_date}</td>
-                          <td className="py-2.5 px-3 font-bold text-white">{student?.name}</td>
-                          <td className="py-2.5 px-3 text-slate-300">{fromClass?.name}</td>
-                          <td className="py-2.5 px-3 text-amber-400 font-semibold">{toClass?.name}</td>
-                          <td className="py-2.5 px-3 text-center font-mono font-bold">{tr.remaining_sessions}</td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-400">
-                            {tr.surcharge_amount > 0 ? formatVND(tr.surcharge_amount) : '0 đ'}
+                          <td className="py-2.5 px-3 font-bold text-white">
+                            <div>{student?.name}</div>
+                            <div className="text-[10px] text-slate-500 font-mono">{student?.code}</div>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-300">{fClass?.name}</td>
+                          <td className="py-2.5 px-3 text-amber-400 font-semibold">{tClass?.name}</td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold">
+                            {tr.remaining_sessions}b
+                            {tr.converted_sessions ? <span className="text-cyan-400 text-[10px]"> (+{tr.converted_sessions}b)</span> : null}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold">
+                            {tr.surcharge_amount > 0 ? (
+                              <span className="text-amber-400">+{formatVND(tr.surcharge_amount)}</span>
+                            ) : tr.surplus_handling === 'issue_credit_note' ? (
+                              <span className="text-cyan-400">BL: {formatVND(tr.surplus_amount || 0)}</span>
+                            ) : tr.surplus_handling === 'convert_sessions' ? (
+                              <span className="text-amber-300">Quy đổi</span>
+                            ) : (
+                              <span className="text-emerald-400">0 đ</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            {onPrintTransferAgreement && (
+                              <button
+                                onClick={() => onPrintTransferAgreement(tr)}
+                                className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                title="In biên bản chuyển lớp A4 song ngữ"
+                              >
+                                <Printer className="w-3 h-3" />
+                                <span>In</span>
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -2108,6 +2690,80 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 </div>
               </div>
 
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Transfer VietQR Modal */}
+      {viewingTransferQr && toClass && surcharge > 0 && (() => {
+        const student = store.students.find(s => s.id === transferState.student_id);
+        const targetCampus = store.campuses.find(c => c.id === toClass.campus_id) || store.campuses[0];
+        const studentCode = student?.code || 'STUDENT';
+        const transferQrUrl = generateVietQRUrl({
+          bankName: targetCampus.bank_name,
+          bankAccount: targetCampus.bank_account,
+          bankOwner: targetCampus.bank_owner,
+          amount: surcharge,
+          studentCode: studentCode,
+          className: toClass.name,
+          invoiceCode: `PHU-THU-CHUYEN-LOP`,
+        });
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl text-center space-y-4">
+              <div className="flex items-center justify-between text-xs text-amber-400 font-bold uppercase tracking-wider">
+                <span className="flex items-center gap-1.5">
+                  <QrCode className="w-4 h-4" />
+                  <span>VietQR Phụ Thu Chuyển Lớp</span>
+                </span>
+                <button
+                  onClick={() => setViewingTransferQr(false)}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs py-2 px-3 rounded-xl text-left">
+                Chênh lệch học phí khi chuyển sang lớp <strong>{toClass.name}</strong> ({transferState.remaining_sessions} buổi × chênh lệch {formatVND(newRate - oldRate)}/b).
+              </div>
+
+              <div className="bg-white p-3 rounded-2xl inline-block shadow-md">
+                <img
+                  src={transferQrUrl}
+                  alt="VietQR Phụ Thu"
+                  className="w-64 h-64 mx-auto object-contain"
+                />
+              </div>
+
+              <div className="text-left bg-slate-900 p-3.5 rounded-2xl text-xs space-y-1.5 border border-slate-800">
+                <div className="text-slate-400 flex justify-between">
+                  <span>Học sinh:</span>
+                  <strong className="text-white">{student?.name} ({student?.code})</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between">
+                  <span>Tài khoản tiếp nhận:</span>
+                  <strong className="text-amber-400 font-mono">{targetCampus.bank_account}</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between">
+                  <span>Ngân hàng:</span>
+                  <strong className="text-white">{targetCampus.bank_name} ({targetCampus.bank_owner})</strong>
+                </div>
+                <div className="text-slate-400 flex justify-between pt-1 border-t border-slate-800">
+                  <span>Số tiền phụ thu cần quét:</span>
+                  <strong className="text-amber-400 font-mono text-base font-extrabold">{formatVND(surcharge)}</strong>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setViewingTransferQr(false)}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors cursor-pointer"
+              >
+                Đóng Mã VietQR
+              </button>
             </div>
           </div>
         );

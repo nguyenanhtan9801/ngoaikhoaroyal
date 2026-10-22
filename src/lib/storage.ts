@@ -51,6 +51,7 @@ import {
   initialNotifications,
   initialUsers,
   initialAuditLogs,
+  initialTransfers,
 } from '../data/seedData';
 
 export interface AppStore {
@@ -116,7 +117,7 @@ export function getInitialStore(): AppStore {
     sessions: initialSessions,
     attendance: initialAttendance,
     makeupCredits: initialMakeupCredits,
-    transfers: [],
+    transfers: initialTransfers,
     payrollSettlements: [],
     parentRegistrations: initialParentRegistrations,
     notifications: initialNotifications,
@@ -248,15 +249,27 @@ export function loadStore(): AppStore {
         ? parsed.subjectCategories
         : initial.subjectCategories;
 
-    const termSubjects: TermSubjectConfig[] = 
+    const termSubjects: TermSubjectConfig[] = (
       parsed.termSubjects && parsed.termSubjects.length > 0
         ? parsed.termSubjects
-        : initial.termSubjects;
+        : initial.termSubjects
+    ).map((ts: TermSubjectConfig) => ({
+      ...ts,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_reason: undefined,
+    }));
 
-    const campusPricings: CampusTermPricing[] = 
+    const campusPricings: CampusTermPricing[] = (
       parsed.campusPricings && parsed.campusPricings.length > 0
         ? parsed.campusPricings
-        : initial.campusPricings;
+        : initial.campusPricings
+    ).map((cp: CampusTermPricing) => ({
+      ...cp,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_reason: undefined,
+    }));
 
     // Ensure users array exists and admin user is populated with requested password '123456'
     let users = parsed.users && parsed.users.length > 0 ? parsed.users : initialUsers;
@@ -313,6 +326,122 @@ export function loadStore(): AppStore {
       },
     };
 
+    const rawRegistrations: ParentRegistration[] =
+      parsed.parentRegistrations && parsed.parentRegistrations.length > 0
+        ? [...parsed.parentRegistrations]
+        : [...initial.parentRegistrations];
+
+    // Ensure new demonstration leads (preg_05, preg_06, preg_07) exist in store
+    initial.parentRegistrations.forEach(seedReg => {
+      if (!rawRegistrations.some(r => r.id === seedReg.id)) {
+        rawRegistrations.unshift(seedReg);
+      }
+    });
+
+    const parentRegistrations: ParentRegistration[] = rawRegistrations.map((reg: ParentRegistration) => {
+      const fixFee = (val?: number) => {
+        if (val === 3790500) return 3990000;
+        if (val === 4275000) return 4500000;
+        if (val === 2945000) return 3100000;
+        if (val === 3078000) return 3240000;
+        if (val === 3610000) return 3800000;
+        return val;
+      };
+      // Sync preg_01 and preg_02 parent phone with Royal DB if still on old placeholder phone
+      const syncedParentPhone =
+        reg.id === 'preg_01' && reg.parent_phone === '0903 888 777'
+          ? '0935 443 322'
+          : reg.id === 'preg_02' && reg.parent_phone === '0918 222 333'
+          ? '0904 556 688'
+          : reg.parent_phone;
+      const syncedParentName =
+        reg.id === 'preg_01' && reg.parent_name === 'Nguyễn Thị Bích Ngọc'
+          ? 'Lương Minh Trí'
+          : reg.id === 'preg_02' && reg.parent_name === 'Trần Văn Mạnh'
+          ? 'Trương Quốc Hùng'
+          : reg.parent_name;
+
+      return {
+        ...reg,
+        parent_phone: syncedParentPhone,
+        parent_name: syncedParentName,
+        estimated_fee: fixFee(reg.estimated_fee),
+        discount_policy:
+          reg.discount_policy && reg.discount_policy.includes('5%')
+            ? 'Áp dụng đơn giá chuẩn của Cơ sở'
+            : reg.discount_policy,
+        registered_subjects: reg.registered_subjects?.map(sub => ({
+          ...sub,
+          estimated_fee: fixFee(sub.estimated_fee) || sub.estimated_fee,
+        })),
+      };
+    });
+
+    // Ensure Next-Term classes exist in store.classes
+    const rawClasses: ExtracurricularClass[] =
+      parsed.classes && parsed.classes.length > 0 ? [...parsed.classes] : [...initial.classes];
+    initial.classes.forEach(seedCls => {
+      if (!rawClasses.some(c => c.id === seedCls.id)) {
+        rawClasses.push(seedCls);
+      }
+    });
+
+    // Ensure seeded sessions & attendance records for 3-consecutive excused absences exist
+    const rawSessions: ClassSession[] =
+      parsed.sessions && parsed.sessions.length > 0 ? [...parsed.sessions] : [...initial.sessions];
+    initial.sessions.forEach(seedSes => {
+      const existingIdx = rawSessions.findIndex(s => s.id === seedSes.id);
+      if (existingIdx === -1) {
+        rawSessions.push(seedSes);
+      } else if (seedSes.id === 'ses_swim_pmh_03' && rawSessions[existingIdx].status === 'scheduled') {
+        rawSessions[existingIdx] = seedSes;
+      }
+    });
+
+    const rawAttendance: AttendanceRecord[] =
+      parsed.attendance && parsed.attendance.length > 0 ? [...parsed.attendance] : [...initial.attendance];
+    initial.attendance.forEach(seedAtt => {
+      if (!rawAttendance.some(a => a.id === seedAtt.id)) {
+        rawAttendance.push(seedAtt);
+      }
+    });
+
+    // Sanitize makeupCredits so CRE-2026-0001 (and any legacy credit) strictly conforms to >= 3 consecutive sessions rule
+    const rawMakeupCredits: MakeupCredit[] =
+      parsed.makeupCredits && parsed.makeupCredits.length > 0
+        ? [...parsed.makeupCredits]
+        : [...initial.makeupCredits];
+    const makeupCredits: MakeupCredit[] = rawMakeupCredits.map(cred => {
+      const count = Math.max(3, cred.consecutive_absent_sessions || cred.consecutive_absent_count || 3);
+      const dates =
+        (cred.absent_dates && cred.absent_dates.length >= 3)
+          ? cred.absent_dates
+          : (cred.consecutive_dates && cred.consecutive_dates.length >= 3)
+          ? cred.consecutive_dates
+          : ['2026-09-07', '2026-09-09', '2026-09-14'];
+      const rateOld = cred.unit_price_old || cred.source_rate || 166250;
+      const totalAmount = count * rateOld;
+      const studentObj = (parsed.students || initial.students).find((s: Student) => s.id === cred.student_id);
+      return {
+        ...cred,
+        student_name: cred.student_name || studentObj?.name || '',
+        source_term_id: cred.source_term_id || cred.term_id || 'term_fall_2026',
+        consecutive_absent_sessions: count,
+        consecutive_absent_count: count,
+        absent_dates: dates,
+        consecutive_dates: dates,
+        unit_price_old: rateOld,
+        source_rate: rateOld,
+        total_credit_amount: totalAmount,
+        transferred_sessions: count,
+        expires_at: cred.expires_at || cred.expiry_date,
+        note:
+          cred.id === 'cred_01' && (!cred.note || cred.note.includes('2 buổi'))
+            ? 'Bảo lưu 3 buổi nghỉ sốt siêu vi liên tiếp có giấy khám & toa thuốc BV Nhi Đồng'
+            : cred.note,
+      };
+    });
+
     return {
       ...initial,
       ...parsed,
@@ -321,7 +450,13 @@ export function loadStore(): AppStore {
       subjectCategories,
       termSubjects,
       campusPricings,
+      classes: rawClasses,
+      sessions: rawSessions,
+      attendance: rawAttendance,
+      makeupCredits,
       enrollments,
+      transfers: parsed.transfers && parsed.transfers.length > 0 ? parsed.transfers : initialTransfers,
+      parentRegistrations,
       auditLogs,
       cloudStorageConfig,
     };
@@ -370,7 +505,7 @@ export function computeDiscountedFee(
   return { netFee: baseFee, discountAmount: 0 };
 }
 
-// Hierarchical Pricing Calculator: Campus Override > Term Standard > Default
+// Hierarchical Pricing Calculator: Campus Override > Term Standard > Default (No automatic discount)
 export function getEffectivePrice(
   termId: string,
   campusId: string,
@@ -384,10 +519,9 @@ export function getEffectivePrice(
 
   const termActive = termConfig ? termConfig.is_active : true;
   const termSessions = termConfig ? termConfig.standard_sessions : 24;
-  const termBaseCourseFee = termConfig ? termConfig.standard_course_fee : 3600000;
-  const termDiscountType = termConfig?.discount_type || 'none';
-  const termDiscountValue = termConfig?.discount_value || 0;
-  const termDiscountReason = termConfig?.discount_reason || termConfig?.notes;
+  const termBaseCourseFee = termConfig ? termConfig.standard_course_fee : 3990000;
+  const termSessionRate =
+    termConfig?.standard_session_rate || Math.ceil(termBaseCourseFee / Math.max(1, termSessions));
 
   // 2. Kiểm tra biểu phí ở cấp Cơ Sở (CampusTermPricing)
   const campusPricing = store.campusPricings?.find(
@@ -398,76 +532,59 @@ export function getEffectivePrice(
   if (campusPricing && campusPricing.is_offered_at_campus === false) {
     const baseFee = campusPricing.custom_course_fee || termBaseCourseFee;
     const sessions = campusPricing.custom_sessions || termSessions;
-    const { netFee, discountAmount } = computeDiscountedFee(
-      baseFee,
-      campusPricing.discount_type || 'none',
-      campusPricing.discount_value || 0
-    );
+    const rate =
+      campusPricing.custom_session_rate || Math.ceil(baseFee / Math.max(1, sessions));
     return {
       source: 'campus_override',
       is_offered: false,
       total_sessions: sessions,
       base_course_fee: baseFee,
-      course_fee: netFee,
-      session_rate: calculateCeilSessionRate(netFee, sessions),
+      course_fee: baseFee,
+      session_rate: rate,
       override_pricing: !!campusPricing.override_pricing,
-      discount_type: campusPricing.discount_type || 'none',
-      discount_value: campusPricing.discount_value || 0,
-      discount_amount: discountAmount,
-      discount_reason: campusPricing.discount_reason,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
       notes: 'Cơ sở hiện không mở môn học này trong khóa',
     };
   }
 
-  // Nếu cơ sở có cấu hình Ghi Đè (Override)
-  if (campusPricing && campusPricing.override_pricing && campusPricing.custom_course_fee) {
-    const baseFee = campusPricing.custom_course_fee;
+  // Nếu cơ sở có cấu hình giá (CampusTermPricing)
+  if (campusPricing && (campusPricing.override_pricing || campusPricing.custom_course_fee)) {
+    const baseFee = campusPricing.custom_course_fee || termBaseCourseFee;
     const sessions = campusPricing.custom_sessions || termSessions;
-    const discType = campusPricing.discount_type || 'none';
-    const discVal = campusPricing.discount_value || 0;
-    const discReason = campusPricing.discount_reason || campusPricing.notes;
-
-    const { netFee, discountAmount } = computeDiscountedFee(baseFee, discType, discVal);
-    const rate = calculateCeilSessionRate(netFee, sessions);
+    const rate =
+      campusPricing.custom_session_rate || Math.ceil(baseFee / Math.max(1, sessions));
 
     return {
-      source: 'campus_override',
+      source: campusPricing.override_pricing ? 'campus_override' : 'term_standard',
       is_offered: termActive && campusPricing.is_offered_at_campus !== false,
       total_sessions: sessions,
       base_course_fee: baseFee,
-      course_fee: netFee,
+      course_fee: baseFee,
       session_rate: rate,
-      override_pricing: true,
-      discount_type: discType,
-      discount_value: discVal,
-      discount_amount: discountAmount,
-      discount_reason: discReason,
-      notes: discReason || 'Áp dụng biểu phí riêng của cơ sở',
+      override_pricing: !!campusPricing.override_pricing,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      notes: campusPricing.notes || 'Áp dụng biểu phí chuẩn của cơ sở',
     };
   }
 
   // 3. Nếu không override, kế thừa chuẩn từ Cấp Khóa Học (TermSubjectConfig)
   if (termConfig) {
-    const { netFee, discountAmount } = computeDiscountedFee(
-      termBaseCourseFee,
-      termDiscountType,
-      termDiscountValue
-    );
-    const rate = calculateCeilSessionRate(netFee, termSessions);
-
     return {
       source: 'term_standard',
       is_offered: termConfig.is_active,
       total_sessions: termSessions,
       base_course_fee: termBaseCourseFee,
-      course_fee: netFee,
-      session_rate: rate,
+      course_fee: termBaseCourseFee,
+      session_rate: termSessionRate,
       override_pricing: false,
-      discount_type: termDiscountType,
-      discount_value: termDiscountValue,
-      discount_amount: discountAmount,
-      discount_reason: termDiscountReason,
-      notes: termDiscountReason || termConfig.notes || 'Kế thừa biểu phí chuẩn của khóa học',
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      notes: termConfig.notes || 'Kế thừa biểu phí chuẩn của khóa học',
     };
   }
 
@@ -476,18 +593,21 @@ export function getEffectivePrice(
     p => p.term_id === termId && p.campus_id === campusId && p.subject_id === subjectId
   );
   if (legacyPricing) {
+    const baseFee = legacyPricing.final_price || legacyPricing.base_price || 3990000;
+    const sessions = legacyPricing.total_sessions || 24;
+    const rate = legacyPricing.session_rate || Math.ceil(baseFee / Math.max(1, sessions));
     return {
       source: 'campus_override',
       is_offered: true,
-      total_sessions: legacyPricing.total_sessions,
-      base_course_fee: legacyPricing.base_price || legacyPricing.final_price,
-      course_fee: legacyPricing.final_price,
-      session_rate: legacyPricing.session_rate,
+      total_sessions: sessions,
+      base_course_fee: baseFee,
+      course_fee: baseFee,
+      session_rate: rate,
       override_pricing: true,
-      discount_type: legacyPricing.discount_type || 'none',
-      discount_value: legacyPricing.discount_value || 0,
-      discount_amount: (legacyPricing.base_price || legacyPricing.final_price) - legacyPricing.final_price,
-      notes: 'Biểu phí kế thừa hệ thống',
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      notes: 'Biểu phí chuẩn của cơ sở',
     };
   }
 
@@ -496,14 +616,68 @@ export function getEffectivePrice(
     source: 'subject_default',
     is_offered: true,
     total_sessions: 24,
-    base_course_fee: 3600000,
-    course_fee: 3600000,
-    session_rate: 150000,
+    base_course_fee: 3990000,
+    course_fee: 3990000,
+    session_rate: 166250,
     override_pricing: false,
     discount_type: 'none',
     discount_value: 0,
     discount_amount: 0,
     notes: 'Biểu phí mặc định toàn hệ thống',
+  };
+}
+
+/**
+ * Truy xuất đơn giá chuẩn theo Cơ sở (Campus-specific Rate) cho một lớp học ngoại khóa
+ */
+export function getCampusPricingForClass(
+  classItem: ExtracurricularClass,
+  store: AppStore
+): {
+  totalSessions: number;
+  fullCourseFee: number;
+  sessionRate: number;
+  campusName: string;
+  campusCode: string;
+} {
+  const campus = store.campuses?.find(cp => cp.id === classItem.campus_id);
+  const campusPricing = store.campusPricings?.find(
+    cp =>
+      cp.term_id === classItem.term_id &&
+      cp.campus_id === classItem.campus_id &&
+      cp.subject_id === classItem.subject_id
+  );
+  const legacyPricing = store.pricings?.find(
+    p =>
+      p.term_id === classItem.term_id &&
+      p.campus_id === classItem.campus_id &&
+      p.subject_id === classItem.subject_id
+  );
+
+  const totalSessions =
+    classItem.total_sessions ||
+    campusPricing?.custom_sessions ||
+    legacyPricing?.total_sessions ||
+    24;
+
+  const fullCourseFee =
+    classItem.full_course_fee ||
+    campusPricing?.custom_course_fee ||
+    legacyPricing?.final_price ||
+    3990000;
+
+  const sessionRate =
+    classItem.price_per_session ||
+    campusPricing?.custom_session_rate ||
+    legacyPricing?.session_rate ||
+    Math.ceil(fullCourseFee / Math.max(1, totalSessions));
+
+  return {
+    totalSessions,
+    fullCourseFee,
+    sessionRate,
+    campusName: campus?.name || 'Royal School',
+    campusCode: campus?.code || 'PMH',
   };
 }
 
@@ -749,10 +923,7 @@ export function calculateRemainingSessions(
   const term = store.terms?.find(t => t.id === classItem.term_id);
   const termStartDate = term?.start_date || '2026-09-01';
   const termEndDate = term?.end_date || '2026-12-25';
-  const totalSessions = classItem.total_sessions || 24;
-  const fullCourseFee = classItem.full_course_fee || 3600000;
-  const sessionRate =
-    classItem.price_per_session || calculateCeilSessionRate(fullCourseFee, totalSessions);
+  const { totalSessions, fullCourseFee, sessionRate } = getCampusPricingForClass(classItem, store);
   const daysOfWeek = getClassDaysOfWeek(classItem, store);
 
   const validEnrolledDays =
@@ -771,7 +942,7 @@ export function calculateRemainingSessions(
 
   // Nếu chọn ngày bắt đầu từ đầu khóa trở về trước
   if (effectiveStartStr <= termStartDate) {
-    const proratedFee = isPartialSchedule ? maxStudentSessionsInCourse * sessionRate : fullCourseFee;
+    const proratedFee = maxStudentSessionsInCourse * sessionRate;
     return {
       totalSessions,
       maxStudentSessionsInCourse,
@@ -809,8 +980,7 @@ export function calculateRemainingSessions(
   const clampedRemaining = Math.min(maxStudentSessionsInCourse, Math.max(0, remainingCount));
   const elapsedSessions = Math.max(0, maxStudentSessionsInCourse - clampedRemaining);
   const isMidCourse = clampedRemaining < maxStudentSessionsInCourse;
-  const proratedFee =
-    isMidCourse || isPartialSchedule ? clampedRemaining * sessionRate : fullCourseFee;
+  const proratedFee = clampedRemaining * sessionRate;
 
   return {
     totalSessions,
@@ -841,65 +1011,28 @@ export interface ProratedPricingBreakdown {
   discountLabel: string;
   netPayable: number;
   isMidCourse: boolean;
+  campusName: string;
+  campusCode: string;
 }
 
 /**
- * Tính biểu phí chi tiết theo số buổi thực tế (hỗ trợ lịch bán phần theo thứ, vào giữa khóa & ưu đãi học sinh Royal / chính sách cơ sở)
+ * Tính biểu phí chuẩn theo số buổi thực học & đơn giá Cơ sở (KHÔNG tự động trừ % ưu đãi)
+ * Công thức: Học phí thực đóng = Số buổi thực học × Đơn giá 1 buổi (Ceil) của Cơ sở
  */
 export function calculateClassProratedPricing(
   classItem: ExtracurricularClass,
   effectiveSessions: number,
-  isRoyalStudent: boolean,
+  _isRoyalStudent: boolean,
   store: AppStore
 ): ProratedPricingBreakdown {
-  const totalSessions = classItem.total_sessions || 24;
+  const { totalSessions, fullCourseFee, sessionRate, campusName, campusCode } =
+    getCampusPricingForClass(classItem, store);
+
   const validSessions = Math.min(totalSessions, Math.max(0, Math.round(effectiveSessions)));
   const elapsedSessions = Math.max(0, totalSessions - validSessions);
-  const fullCourseFee = classItem.full_course_fee || 3600000;
-  const sessionRate =
-    classItem.price_per_session || calculateCeilSessionRate(fullCourseFee, totalSessions);
 
   const isMidCourse = validSessions < totalSessions;
-  const proratedGrossFee = isMidCourse ? validSessions * sessionRate : fullCourseFee;
-
-  // Kiểm tra chính sách ưu đãi
-  const effectivePrice = getEffectivePrice(
-    classItem.term_id,
-    classItem.campus_id,
-    classItem.subject_id,
-    store
-  );
-
-  let discountPercent = 0;
-  let discountAmount = 0;
-  let discountLabel = 'Không áp dụng';
-
-  if (isRoyalStudent) {
-    discountPercent =
-      effectivePrice.discount_type === 'percentage' && effectivePrice.discount_value > 5
-        ? effectivePrice.discount_value
-        : 5;
-    discountAmount = Math.round((proratedGrossFee * discountPercent) / 100);
-    discountLabel = `Ưu đãi HS Royal (${discountPercent}%)`;
-  } else if (
-    effectivePrice.discount_type === 'percentage' &&
-    effectivePrice.discount_value > 0 &&
-    !effectivePrice.discount_reason?.toLowerCase().includes('royal')
-  ) {
-    discountPercent = effectivePrice.discount_value;
-    discountAmount = Math.round((proratedGrossFee * discountPercent) / 100);
-    discountLabel = effectivePrice.discount_reason || `Ưu đãi khóa học (${discountPercent}%)`;
-  } else if (
-    effectivePrice.discount_type === 'fixed_amount' &&
-    effectivePrice.discount_value > 0 &&
-    !effectivePrice.discount_reason?.toLowerCase().includes('royal')
-  ) {
-    const ratio = totalSessions > 0 ? validSessions / totalSessions : 1;
-    discountAmount = Math.min(proratedGrossFee, Math.round(effectivePrice.discount_value * ratio));
-    discountLabel = effectivePrice.discount_reason || 'Ưu đãi giảm trực tiếp';
-  }
-
-  const netPayable = Math.max(0, proratedGrossFee - discountAmount);
+  const subjectFee = validSessions * sessionRate;
 
   return {
     totalSessions,
@@ -907,12 +1040,14 @@ export function calculateClassProratedPricing(
     elapsedSessions,
     sessionRate,
     fullCourseFee,
-    proratedGrossFee,
-    discountPercent,
-    discountAmount,
-    discountLabel,
-    netPayable,
+    proratedGrossFee: subjectFee,
+    discountPercent: 0,
+    discountAmount: 0,
+    discountLabel: 'Không áp dụng',
+    netPayable: subjectFee,
     isMidCourse,
+    campusName,
+    campusCode,
   };
 }
 
@@ -1075,4 +1210,527 @@ export async function uploadToSupabaseBucket(
     url: res.base64,
   };
 }
+
+// ============================================================================
+// THUẬT TOÁN NHẬN DIỆN HỌC SINH ĐÃ TỒN TẠI & CHỐNG TRÙNG LẶP HỒ SƠ
+// (STUDENT MATCHING & DUPLICATE REGISTRATION RESOLUTION ENGINE)
+// ============================================================================
+
+/**
+ * Chuẩn hóa tên học sinh: bỏ khoảng trắng thừa ở 2 đầu và giữa các từ, chuyển chữ thường, chuẩn Unicode NFC
+ * VD: "  lương   bảo trâm  " -> "lương bảo trâm"
+ */
+export function normalizeStudentName(name?: string): string {
+  if (!name) return '';
+  return name
+    .normalize('NFC')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+/**
+ * Chuẩn hóa số điện thoại: chỉ giữ lại các chữ số để so khớp chính xác
+ * VD: "0908 112 233" -> "0908112233"
+ */
+export function normalizePhoneDigits(phone?: string): string {
+  if (!phone) return '';
+  return phone.replace(/\D/g, '');
+}
+
+/**
+ * Hợp nhất thông tin lưu ý y tế cũ trong hồ sơ và lưu ý y tế mới trong đơn tuyển sinh
+ */
+export function mergeMedicalNotes(existingNotes?: string, newNotes?: string): string {
+  const cleanOld = (existingNotes || '').trim();
+  const cleanNew = (newNotes || '').trim();
+  if (!cleanOld) return cleanNew;
+  if (!cleanNew) return cleanOld;
+  if (cleanOld.toLowerCase().includes(cleanNew.toLowerCase())) return cleanOld;
+  if (cleanNew.toLowerCase().includes(cleanOld.toLowerCase())) return cleanNew;
+  return `${cleanOld} | Cập nhật mới: ${cleanNew}`;
+}
+
+export interface LeadResolutionResult {
+  matchType: 'existing_student' | 'sibling' | 'new_student';
+  confidence: number; // 100 | 95 | 90 | 80 | 0
+  matchCriteriaLabel: string;
+  matchedStudent: Student | null;
+  siblingStudents: Student[];
+  activeEnrollments: Enrollment[];
+  enrolledClasses: ExtracurricularClass[];
+  enrolledSubjectIds: string[];
+  isDuplicateSpam: boolean;
+  duplicateReferenceLead: ParentRegistration | null;
+  duplicateReason: string | null;
+}
+
+/**
+ * So khớp đơn đăng ký từ Cổng Phụ Huynh với Cơ sở dữ liệu Học viên & phát hiện đơn gửi trùng lặp 100%
+ */
+export function matchLeadWithDatabase(
+  lead: ParentRegistration,
+  store: AppStore
+): LeadResolutionResult {
+  const leadName = normalizeStudentName(lead.student_name);
+  const leadPhone = normalizePhoneDigits(lead.parent_phone);
+  const leadDob = (lead.student_dob || lead.dob || '').trim();
+  const explicitStudentId = lead.linked_student_id || lead.student_id || lead.assigned_student_id;
+
+  let matchedStudent: Student | null = null;
+  let confidence = 0;
+  let matchCriteriaLabel = '';
+  const siblingStudents: Student[] = [];
+
+  for (const s of store.students) {
+    const sName = normalizeStudentName(s.name);
+    const sPhone = normalizePhoneDigits(s.parent_phone);
+    const sDob = (s.dob || '').trim();
+
+    const isExplicitLink = Boolean(
+      (explicitStudentId && s.id === explicitStudentId) ||
+        (lead.assigned_student_code && s.code === lead.assigned_student_code)
+    );
+    // Tiêu chí 1: Trùng SĐT phụ huynh + Tên học sinh
+    const isPhoneAndNameMatch = Boolean(
+      leadPhone && sPhone && leadPhone === sPhone && leadName && sName && leadName === sName
+    );
+    // Tiêu chí 2: Trùng Họ tên học sinh + Ngày tháng năm sinh
+    const isNameAndDobMatch = Boolean(
+      leadName && sName && leadName === sName && leadDob && sDob && leadDob === sDob
+    );
+
+    if (isPhoneAndNameMatch && isNameAndDobMatch) {
+      matchedStudent = s;
+      confidence = 100;
+      matchCriteriaLabel = 'Khớp 100% (SĐT Phụ huynh + Họ tên + Ngày sinh)';
+      break;
+    } else if (isPhoneAndNameMatch) {
+      matchedStudent = s;
+      confidence = 95;
+      matchCriteriaLabel = 'Khớp SĐT Phụ huynh + Họ tên học sinh';
+      break;
+    } else if (isNameAndDobMatch) {
+      matchedStudent = s;
+      confidence = 90;
+      matchCriteriaLabel = 'Khớp Họ tên học sinh + Ngày tháng năm sinh';
+      break;
+    } else if (isExplicitLink) {
+      matchedStudent = s;
+      confidence = 100;
+      matchCriteriaLabel = 'Đã liên kết Mã Học Viên trong hệ thống';
+      break;
+    } else if (leadPhone && sPhone && leadPhone === sPhone && leadName !== sName) {
+      siblingStudents.push(s);
+    }
+  }
+
+  // Lấy danh sách các lớp & môn học mà học sinh cũ đang theo học (active hoặc trial)
+  const activeEnrollments: Enrollment[] = matchedStudent
+    ? store.enrollments.filter(
+        e => e.student_id === matchedStudent!.id && (e.status === 'active' || e.status === 'trial')
+      )
+    : [];
+
+  const enrolledClasses: ExtracurricularClass[] = activeEnrollments
+    .map(e => store.classes.find(c => c.id === e.class_id))
+    .filter((c): c is ExtracurricularClass => Boolean(c));
+
+  const enrolledSubjectIds: string[] = Array.from(
+    new Set(enrolledClasses.map(c => c.subject_id))
+  );
+
+  // Phát hiện trường hợp Phụ huynh gửi đơn trùng lặp 100% (Spam click / Gửi 2 lần cùng 1 môn & cùng khung giờ)
+  const extractSubjectSlotSignature = (reg: ParentRegistration): string => {
+    if (reg.registered_subjects && reg.registered_subjects.length > 0) {
+      return reg.registered_subjects
+        .map(item => `${item.subject_id}:${item.time_slot || 'after_school'}`)
+        .sort()
+        .join('|');
+    }
+    return `${reg.desired_subject_id}:${reg.desired_time_slot_type || 'after_school'}`;
+  };
+
+  let isDuplicateSpam = false;
+  let duplicateReferenceLead: ParentRegistration | null = null;
+  let duplicateReason: string | null = null;
+
+  if (lead.status === 'pending' || lead.status === 'contacted') {
+    const leadSig = extractSubjectSlotSignature(lead);
+    const leadTime = new Date(lead.created_at).getTime() || 0;
+    const leadIndex = store.parentRegistrations.findIndex(r => r.id === lead.id);
+
+    for (let i = 0; i < store.parentRegistrations.length; i++) {
+      const other = store.parentRegistrations[i];
+      if (other.id === lead.id || other.status === 'canceled') continue;
+
+      const otherName = normalizeStudentName(other.student_name);
+      const otherPhone = normalizePhoneDigits(other.parent_phone);
+      const otherDob = (other.student_dob || other.dob || '').trim();
+
+      const isSameStudent =
+        leadName === otherName &&
+        ((leadPhone && leadPhone === otherPhone) || (leadDob && leadDob === otherDob));
+
+      if (!isSameStudent) continue;
+
+      const otherSig = extractSubjectSlotSignature(other);
+      if (otherSig !== leadSig) continue;
+
+      const otherTime = new Date(other.created_at).getTime() || 0;
+      const isOtherOriginal =
+        other.status === 'enrolled' ||
+        other.status === 'partially_enrolled' ||
+        (otherTime > 0 && leadTime > 0 && otherTime < leadTime) ||
+        (otherTime === leadTime && i > leadIndex);
+
+      if (isOtherOriginal) {
+        isDuplicateSpam = true;
+        duplicateReferenceLead = other;
+        duplicateReason = `Trùng 100% học sinh, môn học và khung giờ với đơn ${
+          other.registration_code || other.id
+        } (${other.status === 'enrolled' ? 'Đã xếp lớp' : 'Đang chờ xử lý'})`;
+        break;
+      }
+    }
+  }
+
+  if (matchedStudent) {
+    return {
+      matchType: 'existing_student',
+      confidence,
+      matchCriteriaLabel,
+      matchedStudent,
+      siblingStudents,
+      activeEnrollments,
+      enrolledClasses,
+      enrolledSubjectIds,
+      isDuplicateSpam,
+      duplicateReferenceLead,
+      duplicateReason,
+    };
+  }
+
+  if (siblingStudents.length > 0) {
+    return {
+      matchType: 'sibling',
+      confidence: 80,
+      matchCriteriaLabel: 'Học sinh mới cùng gia đình (Chung SĐT Phụ huynh)',
+      matchedStudent: null,
+      siblingStudents,
+      activeEnrollments: [],
+      enrolledClasses: [],
+      enrolledSubjectIds: [],
+      isDuplicateSpam,
+      duplicateReferenceLead,
+      duplicateReason,
+    };
+  }
+
+  return {
+    matchType: 'new_student',
+    confidence: 0,
+    matchCriteriaLabel: 'Học sinh mới (Chưa có hồ sơ trong hệ thống)',
+    matchedStudent: null,
+    siblingStudents: [],
+    activeEnrollments: [],
+    enrolledClasses: [],
+    enrolledSubjectIds: [],
+    isDuplicateSpam,
+    duplicateReferenceLead,
+    duplicateReason,
+  };
+}
+
+// ============================================================================
+// QUY TRÌNH & ĐIỀU KIỆN BẢO LƯU HỌC PHÍ (CHẶN NGHỈ LIÊN TỤC >= 3 NGÀY CÓ PHÉP & CẤN TRỪ KHÓA SAU)
+// ============================================================================
+
+export interface CreditCreationValidationResult {
+  isEligible: boolean;
+  maxConsecutiveExcused: number;
+  validSessionDates: string[];
+  validAttendanceRecords: AttendanceRecord[];
+  allStudentAttendanceRecords: AttendanceRecord[];
+  totalExcusedCount: number;
+  isInterruptedStreak: boolean;
+  hasExistingCredit: boolean;
+  existingCreditNote: MakeupCredit | null;
+  quotaErrorMessage: string | null;
+  streakErrorMessage: string | null;
+}
+
+/**
+ * Kiểm tra điều kiện lập phiếu bảo lưu học phí:
+ * 1) Học sinh phải có chuỗi nghỉ có phép liên tục (status === 'absent_excused') >= 3 buổi thực tế không ngắt quãng.
+ * 2) Định mức: Tối đa 1 lần / 1 môn / 1 khóa học (status !== 'cancelled').
+ */
+export function validateCreditNoteCreation(
+  studentId: string,
+  classId: string,
+  store: AppStore
+): CreditCreationValidationResult {
+  const selectedClass = store.classes.find(c => c.id === classId);
+
+  // 1. Lấy toàn bộ lịch sử điểm danh của học sinh trong lớp, sắp xếp theo session_date ASC
+  const studentAttendanceRecords = store.attendance
+    .filter(a => a.student_id === studentId && a.class_id === classId)
+    .sort((a, b) => a.session_date.localeCompare(b.session_date));
+
+  let currentStreak = 0;
+  let maxConsecutiveExcused = 0;
+  let validSessionDates: string[] = [];
+  let validAttendanceRecords: AttendanceRecord[] = [];
+  let currentStreakDates: string[] = [];
+  let currentStreakRecords: AttendanceRecord[] = [];
+  let totalExcusedCount = 0;
+
+  for (const record of studentAttendanceRecords) {
+    if (record.status === 'absent_excused') {
+      totalExcusedCount++;
+      currentStreak++;
+      currentStreakDates.push(record.session_date);
+      currentStreakRecords.push(record);
+      if (currentStreak >= maxConsecutiveExcused) {
+        maxConsecutiveExcused = currentStreak;
+        validSessionDates = [...currentStreakDates];
+        validAttendanceRecords = [...currentStreakRecords];
+      }
+    } else {
+      // Có mặt hoặc vắng không phép -> chuỗi bị ngắt quãng
+      currentStreak = 0;
+      currentStreakDates = [];
+      currentStreakRecords = [];
+    }
+  }
+
+  const isInterruptedStreak = totalExcusedCount > maxConsecutiveExcused;
+
+  // 2. Kiểm tra định mức 1 lần / 1 môn / 1 khóa
+  const existingCreditNote =
+    store.makeupCredits.find(note => {
+      if (note.student_id !== studentId || note.status === 'cancelled') return false;
+      if (note.source_class_id === classId) return true;
+      if (selectedClass) {
+        const noteTermId = note.source_term_id || note.term_id;
+        if (note.subject_id === selectedClass.subject_id && noteTermId === selectedClass.term_id) {
+          return true;
+        }
+      }
+      return false;
+    }) || null;
+
+  const hasExistingCredit = Boolean(existingCreditNote);
+
+  const quotaErrorMessage = hasExistingCredit
+    ? `🔒 Định mức vượt giới hạn: Môn học này đã được cấp 1 phiếu bảo lưu (${existingCreditNote?.credit_code}) trong khóa học hiện tại (Tối đa 1 lần / 1 môn / 1 khóa).`
+    : null;
+
+  const streakErrorMessage =
+    maxConsecutiveExcused < 3
+      ? `⚠️ Không đủ điều kiện: Học sinh cần có ít nhất 3 buổi vắng có phép liên tục không ngắt quãng (Hiện tại chuỗi nghỉ dài nhất: ${maxConsecutiveExcused} buổi${
+          isInterruptedStreak ? ` — Tổng nghỉ có phép ${totalExcusedCount} buổi nhưng bị ngắt quãng do có buổi đi học xen kẽ` : ''
+        }).`
+      : null;
+
+  return {
+    isEligible: !hasExistingCredit && maxConsecutiveExcused >= 3,
+    maxConsecutiveExcused,
+    validSessionDates,
+    validAttendanceRecords,
+    allStudentAttendanceRecords: studentAttendanceRecords,
+    totalExcusedCount,
+    isInterruptedStreak,
+    hasExistingCredit,
+    existingCreditNote,
+    quotaErrorMessage,
+    streakErrorMessage,
+  };
+}
+
+export interface NextTermClassRedemptionOption {
+  cls: ExtracurricularClass;
+  term: AcademicTerm | undefined;
+  campusName: string;
+  subjectName: string;
+  reservedSessionsCount: number; // N (buổi)
+  rateOld: number;               // rate_old (đ/buổi)
+  rateNew: number;               // rate_new (đ/buổi)
+  creditTotal: number;           // CreditTotal = N * rate_old
+  redemptionType: 'by_sessions' | 'by_amount'; // 'by_sessions' nếu rate_old >= rate_new, 'by_amount' nếu rate_old < rate_new
+  badgeLabel: string;            // '✓ Bảo lưu nguyên số buổi' | '⚡ Cấn trừ theo số tiền'
+  appliedSessions?: number;      // N buổi nếu rate_old >= rate_new
+  deductedAmount: number;        // N * rate_new (nếu rate_old >= rate_new) hoặc CreditTotal (nếu rate_old < rate_new)
+  remainingBalanceDue: number;   // 0 đ cho N buổi bảo lưu (nếu rate_old >= rate_new) hoặc (Học phí lớp khóa sau - CreditTotal)
+  fullCourseRemainingBalance: number; // Công nợ nếu học trọn khóa mới (Học phí khóa sau - deductedAmount)
+}
+
+/**
+ * Tìm khóa học kế tiếp (Next Term) của phiếu bảo lưu và tính toán phương án cấn trừ (Buổi vs Tiền)
+ */
+export function getNextTermAndRedemptionOptions(
+  credit: MakeupCredit,
+  store: AppStore
+): {
+  sourceTerm: AcademicTerm | undefined;
+  nextTerm: AcademicTerm | undefined;
+  options: NextTermClassRedemptionOption[];
+} {
+  const sourceTermId = credit.source_term_id || credit.term_id;
+  const sourceTerm = store.terms.find(t => t.id === sourceTermId);
+
+  const sortedTerms = [...store.terms].sort((a, b) => a.start_date.localeCompare(b.start_date));
+  const nextTerm =
+    sortedTerms.find(t => sourceTerm && t.start_date > sourceTerm.start_date && t.status !== 'closed') ||
+    sortedTerms.find(t => t.id !== sourceTermId && t.status !== 'closed') ||
+    sortedTerms[sortedTerms.length - 1];
+
+  const nextTermClasses = nextTerm
+    ? store.classes.filter(cls => cls.term_id === nextTerm.id && cls.status === 'active')
+    : [];
+
+  const N = credit.consecutive_absent_sessions || credit.consecutive_absent_count || 3;
+  const rateOld = credit.unit_price_old || credit.source_rate || 0;
+  const creditTotal = credit.total_credit_amount || N * rateOld;
+
+  const options: NextTermClassRedemptionOption[] = nextTermClasses.map(cls => {
+    const rateNew = cls.price_per_session;
+    const isBySessions = rateOld >= rateNew;
+    const campusName = store.campuses.find(cp => cp.id === cls.campus_id)?.name || cls.campus_id;
+    const subjectName = store.subjects.find(sb => sb.id === cls.subject_id)?.name || cls.subject_id;
+
+    if (isBySessions) {
+      // Nhánh A: rate_old >= rate_new -> Bảo lưu nguyên số buổi
+      const deductedAmount = N * rateNew;
+      const fullCourseRemaining = Math.max(0, cls.full_course_fee - deductedAmount);
+      return {
+        cls,
+        term: nextTerm,
+        campusName,
+        subjectName,
+        reservedSessionsCount: N,
+        rateOld,
+        rateNew,
+        creditTotal,
+        redemptionType: 'by_sessions',
+        badgeLabel: 'Bảo lưu nguyên số buổi',
+        appliedSessions: N,
+        deductedAmount,
+        remainingBalanceDue: 0, // Phụ huynh không phải nộp thêm tiền cho N buổi được bảo lưu
+        fullCourseRemainingBalance: fullCourseRemaining,
+      };
+    } else {
+      // Nhánh B: rate_old < rate_new -> Cấn trừ theo số tiền
+      const deductedAmount = creditTotal;
+      const remainingBalanceDue = Math.max(0, cls.full_course_fee - creditTotal);
+      return {
+        cls,
+        term: nextTerm,
+        campusName,
+        subjectName,
+        reservedSessionsCount: N,
+        rateOld,
+        rateNew,
+        creditTotal,
+        redemptionType: 'by_amount',
+        badgeLabel: 'Cấn trừ theo số tiền',
+        appliedSessions: undefined,
+        deductedAmount,
+        remainingBalanceDue,
+        fullCourseRemainingBalance: remainingBalanceDue,
+      };
+    }
+  });
+
+  return {
+    sourceTerm,
+    nextTerm,
+    options,
+  };
+}
+
+export interface CreditRedemptionModificationCheck {
+  canModify: boolean;
+  reason: string;
+  targetTerm?: AcademicTerm;
+  targetClass?: ExtracurricularClass;
+  hasAttendance: boolean;
+  isTermNotStarted: boolean;
+}
+
+/**
+ * Kiểm tra quyền chỉnh sửa / hủy cấn trừ phiếu bảo lưu:
+ * 1. Khóa học đích chưa chính thức bắt đầu (today <= targetTerm.start_date)
+ * 2. Lớp học khóa sau chưa phát sinh buổi điểm danh nào trong store.attendance
+ */
+export function canModifyRedeemedCredit(
+  credit: MakeupCredit,
+  store: AppStore
+): CreditRedemptionModificationCheck {
+  const isRedeemed = credit.status === 'applied' || credit.status === 'used';
+  if (!isRedeemed) {
+    return {
+      canModify: false,
+      reason: 'Phiếu chưa được cấn trừ khóa sau',
+      hasAttendance: false,
+      isTermNotStarted: false,
+    };
+  }
+
+  const targetTermId = credit.redeemed_info?.target_term_id;
+  const targetClassId = credit.redeemed_info?.target_class_id || credit.applied_class_id;
+  const targetTerm = store.terms.find(t => t.id === targetTermId);
+  const targetClass = store.classes.find(c => c.id === targetClassId);
+
+  const today = new Date().toISOString().split('T')[0];
+  const isTermNotStarted = targetTerm ? today <= targetTerm.start_date : false;
+
+  const hasAttendance = targetClassId
+    ? store.attendance.some(a => a.class_id === targetClassId)
+    : false;
+
+  if (!targetTerm) {
+    return {
+      canModify: false,
+      reason: 'Không tìm thấy thông tin khóa học đích',
+      targetTerm,
+      targetClass,
+      hasAttendance,
+      isTermNotStarted: false,
+    };
+  }
+
+  if (!isTermNotStarted) {
+    return {
+      canModify: false,
+      reason: `Khóa học đích (${targetTerm.name}) đã diễn ra từ ngày ${targetTerm.start_date} - Không thể chỉnh sửa phiếu bảo lưu`,
+      targetTerm,
+      targetClass,
+      hasAttendance,
+      isTermNotStarted: false,
+    };
+  }
+
+  if (hasAttendance) {
+    return {
+      canModify: false,
+      reason: `Lớp học khóa sau (${targetClass?.name || targetClassId}) đã phát sinh điểm danh thực tế - Không thể chỉnh sửa`,
+      targetTerm,
+      targetClass,
+      hasAttendance: true,
+      isTermNotStarted: true,
+    };
+  }
+
+  return {
+    canModify: true,
+    reason: 'Khóa học chưa bắt đầu - Cho phép thay đổi lớp cấn trừ hoặc hủy bảo lưu',
+    targetTerm,
+    targetClass,
+    hasAttendance: false,
+    isTermNotStarted: true,
+  };
+}
+
+
 

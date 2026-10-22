@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Calendar, 
   Plus, 
@@ -16,7 +16,11 @@ import {
   Building2,
   BookOpen,
   Sparkles,
-  Info
+  Info,
+  Search,
+  X,
+  RotateCcw,
+  Filter
 } from 'lucide-react';
 import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog } from '../../lib/storage';
 import { ExtracurricularClass, UserRole } from '../../types';
@@ -55,8 +59,11 @@ const getClassDays = (cls: ExtracurricularClass, store: AppStore): string[] => {
 interface ClassesTabProps {
   store: AppStore;
   currentRole: UserRole;
-  selectedCampusId: string;
-  selectedTermId: string;
+  selectedCampusId?: string;
+  selectedTermId?: string;
+  searchQuery?: string;
+  onSelectCampusId?: (id: string) => void;
+  onSelectTermId?: (id: string) => void;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSelectClassForAttendance: (cls: ExtracurricularClass) => void;
 }
@@ -64,8 +71,11 @@ interface ClassesTabProps {
 export const ClassesTab: React.FC<ClassesTabProps> = ({
   store,
   currentRole,
-  selectedCampusId,
-  selectedTermId,
+  selectedCampusId = 'all',
+  selectedTermId = 'all',
+  searchQuery = '',
+  onSelectCampusId,
+  onSelectTermId,
   onUpdateStore,
   onSelectClassForAttendance,
 }) => {
@@ -74,13 +84,57 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
   const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
 
+  // Local Filter States (bộ lọc nội bộ đồng bộ với props toàn cục)
+  const [localCampusId, setLocalCampusId] = useState<string>(selectedCampusId);
+  const [localTermId, setLocalTermId] = useState<string>(selectedTermId);
+  const [localSubjectId, setLocalSubjectId] = useState<string>('all');
+  const [localSearchQuery, setLocalSearchQuery] = useState<string>(searchQuery);
+
+  // Đồng bộ khi props từ Navbar/App thay đổi
+  useEffect(() => {
+    if (selectedCampusId !== undefined) {
+      setLocalCampusId(selectedCampusId);
+    }
+  }, [selectedCampusId]);
+
+  useEffect(() => {
+    if (selectedTermId !== undefined) {
+      setLocalTermId(selectedTermId);
+    }
+  }, [selectedTermId]);
+
+  useEffect(() => {
+    if (searchQuery !== undefined) {
+      setLocalSearchQuery(searchQuery);
+    }
+  }, [searchQuery]);
+
+  const handleCampusChange = (newCampusId: string) => {
+    setLocalCampusId(newCampusId);
+    onSelectCampusId?.(newCampusId);
+  };
+
+  const handleTermChange = (newTermId: string) => {
+    setLocalTermId(newTermId);
+    onSelectTermId?.(newTermId);
+  };
+
+  const handleResetFilters = () => {
+    setLocalCampusId('all');
+    setLocalTermId('all');
+    setLocalSubjectId('all');
+    setLocalSearchQuery('');
+    onSelectCampusId?.('all');
+    onSelectTermId?.('all');
+  };
+
   // Check if active selected term is closed (read-only mode)
-  const currentSelectedTerm = store.terms.find(t => t.id === selectedTermId);
+  const currentSelectedTerm = store.terms.find(t => t.id === localTermId);
   const isSelectedTermClosed = currentSelectedTerm?.status === 'closed';
 
-  // Initial campus and term selection
-  const defaultCampusId = selectedCampusId !== 'all' ? selectedCampusId : (store.campuses[0]?.id || '');
-  const defaultTermId = selectedTermId;
+  // Initial campus and term selection for Add modal
+  const defaultCampusId = localCampusId !== 'all' ? localCampusId : (store.campuses[0]?.id || '');
+  const defaultTermId = localTermId !== 'all' ? localTermId : (store.terms[0]?.id || '');
 
   // New Class Form State with Term, Campus, Subject hierarchy
   const [formData, setFormData] = useState({
@@ -101,12 +155,52 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   // Calculate live session rate
   const computedSessionRate = calculateCeilSessionRate(formData.full_course_fee, formData.total_sessions);
 
-  // Filter classes by campus & term
-  const filteredClasses = store.classes.filter(c => {
-    const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
-    const matchTerm = c.term_id === selectedTermId;
-    return matchCampus && matchTerm;
-  });
+  // Filter classes by campus, term, subject & search query
+  const filteredClasses = useMemo(() => {
+    return store.classes.filter(cls => {
+      // 1. Lọc theo Khóa học
+      const matchTerm = localTermId === 'all' || cls.term_id === localTermId;
+
+      // 2. Lọc theo Cơ sở trường
+      const matchCampus = localCampusId === 'all' || cls.campus_id === localCampusId;
+
+      // 3. Lọc theo Bộ môn
+      const matchSubject = localSubjectId === 'all' || cls.subject_id === localSubjectId;
+
+      // 4. Lọc theo từ khóa tìm kiếm (tên lớp, môn học, giáo viên, phòng, cơ sở)
+      const query = (localSearchQuery || '').trim().toLowerCase();
+      if (!query) {
+        return matchTerm && matchCampus && matchSubject;
+      }
+
+      const campus = store.campuses.find(c => c.id === cls.campus_id);
+      const subject = store.subjects.find(s => s.id === cls.subject_id);
+      const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
+      const facility = store.facilities.find(f => f.id === cls.facility_id);
+
+      const matchQuery =
+        cls.name.toLowerCase().includes(query) ||
+        (subject?.name || '').toLowerCase().includes(query) ||
+        (teacher?.name || '').toLowerCase().includes(query) ||
+        (facility?.name || '').toLowerCase().includes(query) ||
+        (campus?.name || '').toLowerCase().includes(query) ||
+        (campus?.code || '').toLowerCase().includes(query);
+
+      return matchTerm && matchCampus && matchSubject && matchQuery;
+    });
+  }, [store.classes, store.campuses, store.subjects, store.teachers, store.facilities, localTermId, localCampusId, localSubjectId, localSearchQuery]);
+
+  // Active filter readable names for statistics label
+  const activeCampusName = localCampusId === 'all' 
+    ? 'Tất cả cơ sở' 
+    : store.campuses.find(c => c.id === localCampusId)?.name || 'Cơ sở đã chọn';
+  const activeTermName = localTermId === 'all'
+    ? 'Tất cả khóa học'
+    : store.terms.find(t => t.id === localTermId)?.name || 'Khóa đã chọn';
+  const activeSubjectName = localSubjectId === 'all'
+    ? 'Tất cả bộ môn'
+    : store.subjects.find(s => s.id === localSubjectId)?.name || 'Bộ môn đã chọn';
+  const hasActiveFilters = localCampusId !== 'all' || localTermId !== 'all' || localSubjectId !== 'all' || localSearchQuery.trim() !== '';
 
   // Toggle Day Selection (Strict constraint: Exactly 2 days per class)
   const handleToggleDay = (dayCode: string) => {
@@ -407,8 +501,163 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         </div>
       </div>
 
-      {/* VIEW MODE 1: DẠNG LƯỚI (TABLE VIEW) */}
-      {viewMode === 'table' ? (
+      {/* FILTER TOOLBAR: KHÓA HỌC, CƠ SỞ, BỘ MÔN & TÌM KIẾM NHANH */}
+      <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 p-4 backdrop-blur-md shadow-xl space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Dropdown 1: Khóa học (Academic Term) */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-amber-400" />
+              <span>Khóa học (Academic Term)</span>
+            </label>
+            <select
+              value={localTermId}
+              onChange={(e) => handleTermChange(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white focus:outline-none focus:border-amber-500 text-xs font-medium cursor-pointer transition-colors"
+            >
+              <option value="all">Tất cả khóa học ({store.terms.length} khóa)</option>
+              {store.terms.map(t => (
+                <option key={t.id} value={t.id}>
+                  {t.name} {t.status === 'closed' ? '🔒 (Đã đóng)' : t.is_active ? '⭐ (Hiện hành)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Dropdown 2: Cơ sở trường (Campus) */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Cơ sở trường (Campus)</span>
+            </label>
+            <select
+              value={localCampusId}
+              onChange={(e) => handleCampusChange(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white focus:outline-none focus:border-cyan-500 text-xs font-medium cursor-pointer transition-colors"
+            >
+              <option value="all">Tất cả cơ sở ({store.campuses.length} cơ sở)</option>
+              {store.campuses.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.code})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Dropdown 3: Bộ môn ngoại khóa (Subject) */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+              <BookOpen className="w-3.5 h-3.5 text-purple-400" />
+              <span>Bộ môn ngoại khóa (Subject)</span>
+            </label>
+            <select
+              value={localSubjectId}
+              onChange={(e) => setLocalSubjectId(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white focus:outline-none focus:border-purple-500 text-xs font-medium cursor-pointer transition-colors"
+            >
+              <option value="all">Tất cả bộ môn ({store.subjects.length} môn)</option>
+              {store.subjects.map(s => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.code})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Ô tìm kiếm nhanh */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+              <Search className="w-3.5 h-3.5 text-slate-400" />
+              <span>Tìm kiếm nhanh</span>
+            </label>
+            <div className="relative">
+              <input
+                type="text"
+                value={localSearchQuery}
+                onChange={(e) => setLocalSearchQuery(e.target.value)}
+                placeholder="Tìm theo tên lớp, GV, phòng..."
+                className="w-full pl-3 pr-8 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 text-xs"
+              />
+              {localSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setLocalSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5 rounded-full"
+                  title="Xóa tìm kiếm"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* THỐNG KÊ KẾT QUẢ & CÁC TAG ĐANG LỌC */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs text-slate-400">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span>
+              Hiển thị: <strong className="text-white font-mono">{filteredClasses.length}</strong> lớp học
+            </span>
+            <span className="text-slate-600">&bull;</span>
+            <span className="text-slate-300">
+              Đang lọc theo: <strong className="text-amber-400">{activeCampusName}</strong> &bull; <strong className="text-cyan-400">{activeTermName}</strong>
+              {localSubjectId !== 'all' && (
+                <> &bull; <strong className="text-purple-400">{activeSubjectName}</strong></>
+              )}
+              {localSearchQuery.trim() && (
+                <> &bull; Từ khóa: <strong className="text-white">"{localSearchQuery.trim()}"</strong></>
+              )}
+            </span>
+          </div>
+
+          {hasActiveFilters && (
+            <button
+              onClick={handleResetFilters}
+              className="text-slate-400 hover:text-amber-400 flex items-center gap-1 font-semibold text-[11px] transition-colors self-start sm:self-auto cursor-pointer"
+              title="Đặt lại tất cả bộ lọc về mặc định"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Xóa bộ lọc</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* EMPTY STATE KHI KHÔNG TÌM THẤY LỚP NÀO */}
+      {filteredClasses.length === 0 ? (
+        <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-8 sm:p-12 text-center backdrop-blur-md shadow-xl space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500 mx-auto">
+            <Calendar className="w-7 h-7 text-amber-500/60" />
+          </div>
+          <div className="space-y-1">
+            <h4 className="text-base font-bold text-white">
+              Không tìm thấy lớp học nào thuộc cơ sở và khóa học đã chọn
+            </h4>
+            <p className="text-xs text-slate-400 max-w-md mx-auto">
+              Không có lớp ngoại khóa nào phù hợp với bộ lọc ({activeCampusName} &bull; {activeTermName}
+              {localSubjectId !== 'all' ? ` &bull; ${activeSubjectName}` : ''}). Vui lòng chọn tiêu chí khác hoặc đặt lại bộ lọc.
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={handleResetFilters}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 text-xs font-bold border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Xóa bộ lọc</span>
+            </button>
+            <button
+              onClick={handleOpenAddModal}
+              disabled={isSelectedTermClosed}
+              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Mở lớp mới</span>
+            </button>
+          </div>
+        </div>
+      ) : viewMode === 'table' ? (
+        /* VIEW MODE 1: DẠNG LƯỚI (TABLE VIEW) */
         <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -433,6 +682,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   const facility = store.facilities.find(f => f.id === cls.facility_id);
                   const timeSlot = store.timeSlots.find(t => t.id === cls.time_slot_id);
                   const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
+                  const term = store.terms.find(t => t.id === cls.term_id);
                   const enrollments = store.enrollments.filter(e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'));
                   const trialCount = enrollments.filter(e => e.status === 'trial').length;
                   const isOverQuota = enrollments.length > cls.max_students;
@@ -443,6 +693,11 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                     <tr key={cls.id} className="hover:bg-slate-800/30 transition-colors">
                       <td className="py-3 px-4">
                         <div className="font-bold text-white text-sm">{cls.name}</div>
+                        {localTermId === 'all' && term && (
+                          <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                            [{term.name}]
+                          </div>
+                        )}
                         {conflicts.length > 0 && (
                           <div className="text-[10px] text-amber-400 flex items-center gap-1 mt-0.5">
                             <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
@@ -452,7 +707,15 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        <span className="font-mono text-xs text-amber-400 font-bold">{campus?.code}</span>
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono border ${
+                          campus?.code === 'PMH'
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm shadow-amber-500/10'
+                            : campus?.code === 'PL'
+                            ? 'bg-lime-500/20 text-lime-300 border-lime-500/40 shadow-sm shadow-lime-500/10'
+                            : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                        }`}>
+                          {campus?.code || 'PMH'}
+                        </span>
                       </td>
 
                       <td className="py-3 px-4 text-slate-300 font-medium">{subject?.name}</td>
@@ -549,6 +812,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             const facility = store.facilities.find(f => f.id === cls.facility_id);
             const timeSlot = store.timeSlots.find(t => t.id === cls.time_slot_id);
             const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
+            const term = store.terms.find(t => t.id === cls.term_id);
             
             const enrollments = store.enrollments.filter(e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'));
             const trialCount = enrollments.filter(e => e.status === 'trial').length;
@@ -564,10 +828,25 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               >
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-3">
-                    <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold">
-                      {subject?.name || 'Môn Ngoại Khóa'}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold">
+                        {subject?.name || 'Môn Ngoại Khóa'}
+                      </span>
+                      {localTermId === 'all' && term && (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          [{term.name}]
+                        </span>
+                      )}
+                    </div>
+                    <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-bold font-mono border ${
+                      campus?.code === 'PMH'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm shadow-amber-500/10'
+                        : campus?.code === 'PL'
+                        ? 'bg-lime-500/20 text-lime-300 border-lime-500/40 shadow-sm shadow-lime-500/10'
+                        : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                    }`}>
+                      {campus?.code || 'PMH'}
                     </span>
-                    <span className="text-xs text-slate-400 font-mono">{campus?.code}</span>
                   </div>
 
                   <h3 className="text-base font-bold text-white mb-2">{cls.name}</h3>

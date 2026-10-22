@@ -223,7 +223,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const [compressionStats, setCompressionStats] = useState<{
     originalSize: string;
     compressedSize: string;
-    ratio: string;
+    ratio: number | string;
   } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
 

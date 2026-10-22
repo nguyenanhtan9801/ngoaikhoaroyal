@@ -27,7 +27,7 @@ import {
   LogIn,
   LogOut
 } from 'lucide-react';
-import { AppStore, formatVND, getEffectivePrice } from '../lib/storage';
+import { AppStore, formatVND, getEffectivePrice, matchLeadWithDatabase } from '../lib/storage';
 import { formatCapitalizedName } from '../lib/formatters';
 import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
@@ -340,10 +340,10 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     const subjectNamesList = registeredSubjectItems.map(s => s.subject_name).join(', ');
 
     const discountPolicy = regForm.is_royal_student
-      ? `Học sinh chính khóa ROYAL SCHOOL`
-      : `Học sinh ngoài trường`;
+      ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
+      : `Học sinh Ngoài trường / Vãng lai (${detailedSelectedSubjects.length} môn - Không áp dụng suất bánh sữa)`;
 
-    const newLead: ParentRegistration = {
+    const draftLead: ParentRegistration = {
       id: `preg_${Date.now()}`,
       registration_code: leadCode,
       parent_name: regForm.parent_name.trim(),
@@ -363,7 +363,13 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       estimated_fee: finalTotalAmount,
       discount_policy: discountPolicy,
       status: 'pending',
-      created_at: new Date().toISOString().split('T')[0],
+      created_at: new Date().toISOString(),
+    };
+
+    const matchRes = matchLeadWithDatabase(draftLead, store);
+    const newLead: ParentRegistration = {
+      ...draftLead,
+      linked_student_id: matchRes.matchedStudent?.id,
     };
 
     // Live sync to store
@@ -374,8 +380,12 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
         {
           id: `notif_lead_${Date.now()}`,
           type: 'new_lead_registration',
-          title: 'Đơn đăng ký mới từ Cổng Phụ Huynh',
-          message: `Phụ huynh ${regForm.parent_name} vừa đăng ký ${detailedSelectedSubjects.length} môn (${subjectNamesList}) cho bé ${regForm.student_name} tại cơ sở ${campus?.name || 'Royal School'}.`,
+          title: matchRes.matchedStudent
+            ? `Đơn đăng ký thêm môn từ Học viên hiện tại (${matchRes.matchedStudent.code})`
+            : 'Đơn đăng ký mới từ Cổng Phụ Huynh',
+          message: matchRes.matchedStudent
+            ? `Phụ huynh ${regForm.parent_name} vừa đăng ký thêm ${detailedSelectedSubjects.length} môn (${subjectNamesList}) cho học sinh ${matchRes.matchedStudent.name} (${matchRes.matchedStudent.code}).`
+            : `Phụ huynh ${regForm.parent_name} vừa đăng ký ${detailedSelectedSubjects.length} môn (${subjectNamesList}) cho bé ${regForm.student_name} tại cơ sở ${campus?.name || 'Royal School'}.`,
           date: new Date().toISOString().split('T')[0],
           severity: 'medium',
           read: false,
@@ -687,7 +697,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                     <div className="flex justify-between items-center">
                       <span className="text-slate-400 font-medium">Phân loại học sinh:</span>
                       <span className={submittedRegistration.isRoyal ? "text-amber-400 font-bold" : "text-slate-200 font-medium"}>
-                        {submittedRegistration.isRoyal ? "Học sinh chính khóa ROYAL SCHOOL" : "Học sinh ngoài trường"}
+                        {submittedRegistration.isRoyal ? "HS chính khóa Royal (Có suất bánh sữa)" : "Học sinh ngoài trường"}
                       </span>
                     </div>
                   </div>
@@ -871,7 +881,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                       }`}>
                         <Check className="w-3.5 h-3.5 stroke-[3]" />
                       </div>
-                      <div className="font-bold text-white">Học sinh chính khóa ROYAL SCHOOL</div>
+                      <div className="font-bold text-white">Học sinh ROYAL SCHOOL</div>
                     </button>
 
                     <button
