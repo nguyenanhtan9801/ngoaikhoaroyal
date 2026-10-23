@@ -20,12 +20,14 @@ import {
   Search,
   X,
   RotateCcw,
-  Filter
+  Filter,
+  Globe
 } from 'lucide-react';
 import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN } from '../../lib/storage';
 import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
+import { CreateClassModal } from '../modals/CreateClassModal';
 
 export interface ScheduleCalculationResult {
   actualSessions: number;      // Số buổi thực tế diễn ra trong khóa
@@ -200,93 +202,36 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const currentSelectedTerm = store.terms.find(t => t.id === localTermId);
   const isSelectedTermClosed = currentSelectedTerm?.status === 'closed';
 
-  // Initial campus and term selection for Add modal
-  const defaultCampusId = localCampusId !== 'all' ? localCampusId : (store.campuses[0]?.id || '');
-  const defaultTermId = localTermId !== 'all' ? localTermId : (store.terms.find(t => t.is_active)?.id || store.terms[0]?.id || '');
-  const initialDefaultTerm = store.terms.find(t => t.id === defaultTermId) || store.terms[0];
-
-  // New Class Form State with Term, Campus, Subject hierarchy & Start Date
-  const [formData, setFormData] = useState({
-    name: '',
-    term_id: defaultTermId,
-    campus_id: defaultCampusId,
-    subject_id: store.subjects[0]?.id || '',
-    facility_id: store.facilities[0]?.id || '',
-    time_slot_id: store.timeSlots[0]?.id || '',
-    days_of_week: ['T2', 'T4'] as string[],
-    start_date: initialDefaultTerm?.start_date || '2026-09-01',
-    primary_teacher_id: store.teachers[0]?.id || '',
-    max_students: 15,
-    total_sessions: 24,
-    full_course_fee: 3600000,
-    allow_over_quota: false,
-  });
-
-  // Active term and effective pricing for the currently selected values in the Modal
-  const activeFormTerm = useMemo(
-    () => store.terms.find(t => t.id === formData.term_id) || store.terms[0],
-    [store.terms, formData.term_id]
-  );
-
-  const activeEffectivePricing = useMemo(
-    () => getEffectivePrice(formData.term_id, formData.campus_id, formData.subject_id, store),
-    [formData.term_id, formData.campus_id, formData.subject_id, store]
-  );
-
-  // Live calculation of class timeline (End Date, Actual Sessions, Truncation & Adjusted Tuition Fee)
-  const scheduleCalcResult = useMemo(() => {
-    const standardSessions = activeEffectivePricing.total_sessions || 24;
-    const pricePerSession = activeEffectivePricing.session_rate || calculateCeilSessionRate(activeEffectivePricing.course_fee, standardSessions);
-    const termEndDate = activeFormTerm?.end_date || '2026-12-20';
-    return calculateClassTimeline(
-      formData.start_date,
-      standardSessions,
-      formData.days_of_week,
-      termEndDate,
-      pricePerSession
-    );
-  }, [
-    formData.start_date,
-    formData.days_of_week,
-    activeEffectivePricing.total_sessions,
-    activeEffectivePricing.session_rate,
-    activeEffectivePricing.course_fee,
-    activeFormTerm?.end_date,
-  ]);
-
-  // Synchronize formData.total_sessions and formData.full_course_fee reactively when scheduleCalcResult updates
-  useEffect(() => {
-    if (scheduleCalcResult.actualSessions > 0) {
-      setFormData(prev => {
-        if (
-          prev.total_sessions === scheduleCalcResult.actualSessions &&
-          prev.full_course_fee === scheduleCalcResult.calculatedFee
-        ) {
-          return prev;
-        }
-        return {
-          ...prev,
-          total_sessions: scheduleCalcResult.actualSessions,
-          full_course_fee: scheduleCalcResult.calculatedFee,
-        };
+  const handleOpenAddModal = () => {
+    if (isSelectedTermClosed) {
+      showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.', 'error', {
+        title: 'Khóa học đã đóng',
       });
+      return;
     }
-  }, [scheduleCalcResult.actualSessions, scheduleCalcResult.calculatedFee]);
+    setEditingClass(null);
+    setShowAddModal(true);
+  };
 
-  // Check if start_date is within the selected term bounds
-  const isStartDateOutOfBounds = useMemo(() => {
-    if (!formData.start_date || !activeFormTerm) return true;
-    return formData.start_date < activeFormTerm.start_date || formData.start_date > activeFormTerm.end_date;
-  }, [formData.start_date, activeFormTerm]);
-
-  // Calculate live session rate
-  const computedSessionRate = activeEffectivePricing.session_rate || calculateCeilSessionRate(formData.full_course_fee, formData.total_sessions);
+  const handleOpenEditModal = (cls: ExtracurricularClass) => {
+    if (isTermClosed(cls.term_id, store)) {
+      showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.', 'error', {
+        title: 'Khóa học đã đóng',
+      });
+      return;
+    }
+    setEditingClass(cls);
+    setShowAddModal(true);
+  };
 
   // Filter classes by campus, term, subject & search query
   const filteredClasses = useMemo(() => {
     return store.classes.filter(cls => {
-      // 1. Lọc theo Khóa học
-      const matchTerm = localTermId === 'all' || cls.term_id === localTermId;
+      // 1. Lọc theo Khóa học (Hỗ trợ lớp liên khóa vắt sang khóa sau)
+      const matchTerm =
+        localTermId === 'all' ||
+        cls.term_id === localTermId ||
+        (cls.is_cross_term && cls.spanning_term_id === localTermId);
 
       // 2. Lọc theo Cơ sở trường
       const matchCampus = localCampusId === 'all' || cls.campus_id === localCampusId;
@@ -329,28 +274,6 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     : store.subjects.find(s => s.id === localSubjectId)?.name || 'Bộ môn đã chọn';
   const hasActiveFilters = localCampusId !== 'all' || localTermId !== 'all' || localSubjectId !== 'all' || localSearchQuery.trim() !== '';
 
-  // Toggle Day Selection (Strict constraint: Exactly 2 days per class)
-  const handleToggleDay = (dayCode: string) => {
-    const current = formData.days_of_week || [];
-    if (current.includes(dayCode)) {
-      // Unselect
-      const updated = current.filter(d => d !== dayCode);
-      setFormData(prev => ({ ...prev, days_of_week: updated }));
-      setDayPickerNotice(null);
-    } else {
-      // Select
-      if (current.length < 2) {
-        const order = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
-        const updated = [...current, dayCode].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-        setFormData(prev => ({ ...prev, days_of_week: updated }));
-        setDayPickerNotice(null);
-      } else {
-        setDayPickerNotice('Mỗi môn chỉ học tối đa 2 ngày trong tuần. Hãy bỏ chọn 1 ngày trước nếu muốn thay đổi.');
-        setTimeout(() => setDayPickerNotice(null), 3500);
-      }
-    }
-  };
-
   // Schedule Conflict Soft Warning Check with Weekdays and Time Slot
   const checkConflicts = (
     facilityId: string, 
@@ -359,14 +282,14 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     daysOfWeek: string[],
     campusId: string,
     excludeClassId?: string,
-    targetTermId: string = formData.term_id
+    targetTermId?: string
   ) => {
     const conflicts: string[] = [];
 
     // Find classes in the same campus & term with the same timeSlot
     const existingClassesInSlot = store.classes.filter(
       c => c.id !== excludeClassId && 
-           c.term_id === targetTermId && 
+           (!targetTermId || c.term_id === targetTermId || (c.is_cross_term && c.spanning_term_id === targetTermId)) && 
            c.campus_id === campusId && 
            c.time_slot_id === timeSlotId
     );
@@ -393,303 +316,6 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     }
 
     return conflicts;
-  };
-
-  const formConflicts = checkConflicts(
-    formData.facility_id,
-    formData.primary_teacher_id,
-    formData.time_slot_id,
-    formData.days_of_week,
-    formData.campus_id,
-    editingClass?.id,
-    formData.term_id
-  );
-
-  // Cascading Selection Handler: Term -> Campus -> Subject
-  const handleCascadingChange = (
-    newTermId: string, 
-    newCampusId: string, 
-    newSubjectId: string,
-    keepCustomName = false
-  ) => {
-    // 1. Calculate effective pricing (Campus Override > Term Standard > Default)
-    const effectivePricing = getEffectivePrice(newTermId, newCampusId, newSubjectId, store);
-
-    // 2. Filter facilities for this campus
-    const campusFacilities = store.facilities.filter(f => f.campus_id === newCampusId && f.is_active);
-    const nextFacilityId = campusFacilities.find(f => f.id === formData.facility_id)?.id || campusFacilities[0]?.id || formData.facility_id;
-
-    const subj = store.subjects.find(s => s.id === newSubjectId);
-    const camp = store.campuses.find(c => c.id === newCampusId);
-    const targetTerm = store.terms.find(t => t.id === newTermId);
-
-    setFormData(prev => {
-      // If term changed or start_date is outside new term, reset start_date to new term's start_date
-      const nextStartDate =
-        newTermId !== prev.term_id ||
-        !prev.start_date ||
-        (targetTerm && (prev.start_date < targetTerm.start_date || prev.start_date > targetTerm.end_date))
-          ? (targetTerm?.start_date || prev.start_date)
-          : prev.start_date;
-
-      const calc = calculateClassTimeline(
-        nextStartDate,
-        effectivePricing.total_sessions,
-        prev.days_of_week,
-        targetTerm?.end_date || '2026-12-20',
-        effectivePricing.session_rate
-      );
-
-      return {
-        ...prev,
-        term_id: newTermId,
-        campus_id: newCampusId,
-        subject_id: newSubjectId,
-        facility_id: nextFacilityId,
-        start_date: nextStartDate,
-        total_sessions: calc.actualSessions > 0 ? calc.actualSessions : effectivePricing.total_sessions,
-        full_course_fee: calc.actualSessions > 0 ? calc.calculatedFee : effectivePricing.course_fee,
-        name: keepCustomName && prev.name !== '' ? prev.name : `${subj?.name || 'Lớp'} - ${camp?.code || ''}`,
-      };
-    });
-  };
-
-  const handleOpenAddModal = () => {
-    if (isSelectedTermClosed) {
-      showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.', 'error', {
-        title: 'Khóa học đã đóng',
-      });
-      return;
-    }
-
-    const initialTermId =
-      localTermId !== 'all'
-        ? localTermId
-        : (store.terms.find(t => t.is_active)?.id || store.terms[0]?.id || 'term_fall_2026');
-    const initialCampusId = localCampusId !== 'all' ? localCampusId : (store.campuses[0]?.id || 'camp_pmh');
-    const targetTerm = store.terms.find(t => t.id === initialTermId) || store.terms[0];
-
-    // Get active subjects in this term
-    const activeTermSubjects = store.termSubjects.filter(ts => ts.term_id === initialTermId && ts.is_active);
-    const initialSubjectId = activeTermSubjects[0]?.subject_id || store.subjects[0]?.id || '';
-
-    const effectivePricing = getEffectivePrice(initialTermId, initialCampusId, initialSubjectId, store);
-    const campusFacilities = store.facilities.filter(f => f.campus_id === initialCampusId && f.is_active);
-    const subj = store.subjects.find(s => s.id === initialSubjectId);
-    const camp = store.campuses.find(c => c.id === initialCampusId);
-
-    const initialDays = (store.timeSlots[0]?.days_of_week && store.timeSlots[0].days_of_week.length === 2)
-      ? store.timeSlots[0].days_of_week
-      : ['T2', 'T4'];
-
-    const initialStartDate = targetTerm?.start_date || '2026-09-01';
-    const initialCalc = calculateClassTimeline(
-      initialStartDate,
-      effectivePricing.total_sessions,
-      initialDays,
-      targetTerm?.end_date || '2026-12-20',
-      effectivePricing.session_rate
-    );
-
-    setEditingClass(null);
-    setFormData({
-      name: `${subj?.name || 'Lớp ngoại khóa'} - ${camp?.code || ''}`,
-      term_id: initialTermId,
-      campus_id: initialCampusId,
-      subject_id: initialSubjectId,
-      facility_id: campusFacilities[0]?.id || store.facilities[0]?.id || '',
-      time_slot_id: store.timeSlots[0]?.id || '',
-      days_of_week: initialDays,
-      start_date: initialStartDate,
-      primary_teacher_id: store.teachers[0]?.id || '',
-      max_students: 15,
-      total_sessions: initialCalc.actualSessions > 0 ? initialCalc.actualSessions : effectivePricing.total_sessions,
-      full_course_fee: initialCalc.actualSessions > 0 ? initialCalc.calculatedFee : effectivePricing.course_fee,
-      allow_over_quota: false,
-    });
-    setDayPickerNotice(null);
-    setShowAddModal(true);
-  };
-
-  const handleSaveClass = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.name) return;
-
-    // 1. Kiểm tra đã chọn đúng 2 ngày trong tuần
-    if (!formData.days_of_week || formData.days_of_week.length !== 2) {
-      showToast('Vui lòng chọn đúng 2 ngày học trong tuần trước khi lưu lớp!', 'warning', {
-        title: 'Thiếu cấu hình ngày học',
-      });
-      return;
-    }
-
-    // 2. Kiểm tra khóa học
-    const targetTerm = store.terms.find(t => t.id === formData.term_id);
-    if (!targetTerm || isTermClosed(formData.term_id, store)) {
-      showToast('Không thể lưu lớp học vào Khóa học đã ĐÓNG.', 'error', {
-        title: 'Khóa học đã đóng',
-      });
-      return;
-    }
-
-    // 3. Kiểm tra ràng buộc startDate >= term.start_date && startDate <= term.end_date
-    if (
-      !formData.start_date ||
-      formData.start_date < targetTerm.start_date ||
-      formData.start_date > targetTerm.end_date
-    ) {
-      showToast(
-        `Ngày bắt đầu mở lớp phải nằm trong khung thời gian của ${targetTerm.name} (${formatDateVN(targetTerm.start_date)} → ${formatDateVN(targetTerm.end_date)})!`,
-        'error',
-        { title: 'Ngày mở lớp nằm ngoài khóa học' }
-      );
-      return;
-    }
-
-    const effectivePricing = getEffectivePrice(formData.term_id, formData.campus_id, formData.subject_id, store);
-    const standardSessions = effectivePricing.total_sessions || 24;
-    const sessionRate = effectivePricing.session_rate || calculateCeilSessionRate(effectivePricing.course_fee, standardSessions);
-
-    const calc = calculateClassTimeline(
-      formData.start_date,
-      standardSessions,
-      formData.days_of_week,
-      targetTerm.end_date,
-      sessionRate
-    );
-
-    if (calc.actualSessions <= 0) {
-      showToast('Không có buổi học hợp lệ nào từ ngày bắt đầu đến ngày kết thúc khóa học. Vui lòng chọn ngày bắt đầu sớm hơn!', 'error', {
-        title: 'Không đủ thời gian mở lớp',
-      });
-      return;
-    }
-
-    if (editingClass) {
-      onUpdateStore(prev => {
-        const updatedClass: ExtracurricularClass = {
-          ...editingClass,
-          ...formData,
-          start_date: formData.start_date,
-          end_date: calc.endDate,
-          standard_sessions: standardSessions,
-          total_sessions: calc.actualSessions,
-          price_per_session: sessionRate,
-          tuition_fee: calc.calculatedFee,
-          full_course_fee: calc.calculatedFee,
-          days_of_week: formData.days_of_week,
-        };
-
-        // Sinh lại danh sách ClassSession nằm trong khoảng [start_date, end_date], giữ nguyên các buổi đã điểm danh (completed)
-        const otherClassSessions = prev.sessions.filter(s => s.class_id !== editingClass.id);
-        const completedSessionsForClass = prev.sessions.filter(
-          s => s.class_id === editingClass.id && s.status === 'completed'
-        );
-        const completedDates = new Set(completedSessionsForClass.map(s => s.session_date));
-
-        const generatedScheduledSessions: ClassSession[] = calc.sessionDates
-          .map((dateStr, idx) => {
-            if (completedDates.has(dateStr)) return null;
-            return {
-              id: `ses_${editingClass.id}_${idx + 1}`,
-              class_id: editingClass.id,
-              session_date: dateStr,
-              session_number: idx + 1,
-              actual_teacher_id: formData.primary_teacher_id,
-              is_substitute: false,
-              snacks_allocated: 0,
-              snacks_consumed: 0,
-              snacks_returned: 0,
-              status: 'scheduled' as const,
-            };
-          })
-          .filter(Boolean) as ClassSession[];
-
-        return {
-          ...prev,
-          classes: prev.classes.map(c => (c.id === editingClass.id ? updatedClass : c)),
-          sessions: [...otherClassSessions, ...completedSessionsForClass, ...generatedScheduledSessions],
-        };
-      });
-    } else {
-      const newClassId = `cls_${Date.now()}`;
-      const newClass: ExtracurricularClass = {
-        id: newClassId,
-        name: formData.name,
-        term_id: formData.term_id,
-        campus_id: formData.campus_id,
-        subject_id: formData.subject_id,
-        facility_id: formData.facility_id,
-        time_slot_id: formData.time_slot_id,
-        days_of_week: formData.days_of_week,
-        start_date: formData.start_date,
-        end_date: calc.endDate,
-        standard_sessions: standardSessions,
-        primary_teacher_id: formData.primary_teacher_id,
-        max_students: formData.max_students,
-        total_sessions: calc.actualSessions,
-        full_course_fee: calc.calculatedFee,
-        tuition_fee: calc.calculatedFee,
-        price_per_session: sessionRate,
-        status: 'active',
-        allow_over_quota: formData.allow_over_quota,
-      };
-
-      // Sinh đúng số buổi thực tế (ClassSession) nằm trong khoảng [start_date, end_date]
-      const generatedSessions: ClassSession[] = calc.sessionDates.map((dateStr, idx) => ({
-        id: `ses_${newClassId}_${idx + 1}`,
-        class_id: newClassId,
-        session_date: dateStr,
-        session_number: idx + 1,
-        actual_teacher_id: formData.primary_teacher_id,
-        is_substitute: false,
-        snacks_allocated: 0,
-        snacks_consumed: 0,
-        snacks_returned: 0,
-        status: 'scheduled',
-      }));
-
-      const createClassLog = createAuditRecord(
-        'CLASS_CREATE',
-        'ACADEMIC',
-        'Lớp Ngoại Khóa',
-        `Tạo mới lớp học: ${newClass.name} (${formatDateVN(newClass.start_date)} → ${formatDateVN(newClass.end_date)}, Số buổi: ${newClass.total_sessions}/${standardSessions}, Học phí: ${formatVND(newClass.full_course_fee)})`,
-        null,
-        {
-          target_id: newClass.id,
-          details: {
-            status: 'success',
-            after: {
-              class_id: newClass.id,
-              name: newClass.name,
-              start_date: newClass.start_date,
-              end_date: newClass.end_date,
-              standard_sessions: standardSessions,
-              total_sessions: newClass.total_sessions,
-              full_course_fee: newClass.full_course_fee,
-              days: newClass.days_of_week
-            }
-          }
-        }
-      );
-
-      onUpdateStore(prev => ({
-        ...prev,
-        classes: [newClass, ...prev.classes],
-        sessions: [...prev.sessions, ...generatedSessions],
-        auditLogs: [createClassLog, ...(prev.auditLogs || [])],
-      }));
-    }
-
-    showToast(
-      editingClass
-        ? `Đã cập nhật lớp "${formData.name}" (${calc.actualSessions}/${standardSessions} buổi • Kết thúc ${formatDateVN(calc.endDate)})!`
-        : `Đã mở lớp "${formData.name}" (${calc.actualSessions}/${standardSessions} buổi • Học phí ${formatVND(calc.calculatedFee)})!`,
-      'success',
-      { title: editingClass ? 'Cập nhật lớp học' : 'Mở lớp học mới' }
-    );
-    setShowAddModal(false);
-    setEditingClass(null);
   };
 
   return (
@@ -947,6 +573,15 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                             [{term.name}]
                           </div>
                         )}
+                        {cls.is_cross_term && (
+                          <div className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md bg-purple-500/20 border border-purple-500/40 text-[10px] text-purple-300 font-semibold">
+                            <Globe className="w-3 h-3 text-purple-400 shrink-0" />
+                            <span>Liên khóa ({cls.term_distribution ? `${cls.term_distribution.primary_term_sessions}b + ${cls.term_distribution.spanning_term_sessions}b` : 'Vắt 2 khóa'})</span>
+                            {localTermId !== 'all' && cls.spanning_term_id === localTermId && (
+                              <span className="text-amber-400 font-bold ml-1">• Vắt từ khóa trước</span>
+                            )}
+                          </div>
+                        )}
                         {conflicts.length > 0 && (
                           <div className="text-[10px] text-amber-400 flex items-center gap-1 mt-0.5">
                             <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
@@ -1020,33 +655,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
                           <button
-                            onClick={() => {
-                              if (isTermClosed(cls.term_id, store)) {
-                                showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.', 'error', {
-                                  title: 'Khóa học đã đóng',
-                                });
-                                return;
-                              }
-                              const editDays = getClassDays(cls, store).slice(0, 2);
-                              setEditingClass(cls);
-                              setFormData({
-                                name: cls.name,
-                                term_id: cls.term_id,
-                                campus_id: cls.campus_id,
-                                subject_id: cls.subject_id,
-                                facility_id: cls.facility_id,
-                                time_slot_id: cls.time_slot_id,
-                                days_of_week: editDays.length === 2 ? editDays : ['T2', 'T4'],
-                                start_date: cls.start_date || term?.start_date || '2026-09-01',
-                                primary_teacher_id: cls.primary_teacher_id,
-                                max_students: cls.max_students,
-                                total_sessions: cls.total_sessions,
-                                full_course_fee: cls.full_course_fee,
-                                allow_over_quota: !!cls.allow_over_quota,
-                              });
-                              setDayPickerNotice(null);
-                              setShowAddModal(true);
-                            }}
+                            onClick={() => handleOpenEditModal(cls)}
                             className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
                               isTermClosed(cls.term_id, store)
                                 ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed'
@@ -1118,6 +727,16 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   </div>
 
                   <h3 className="text-base font-bold text-white mb-2">{cls.name}</h3>
+
+                  {cls.is_cross_term && (
+                    <div className="mb-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-purple-500/20 border border-purple-500/40 text-xs text-purple-300 font-medium">
+                      <Globe className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                      <span>Liên khóa ({cls.term_distribution ? `${cls.term_distribution.primary_term_sessions}b Khóa 1 + ${cls.term_distribution.spanning_term_sessions}b Khóa 2` : 'Vắt 2 khóa'})</span>
+                      {localTermId !== 'all' && cls.spanning_term_id === localTermId && (
+                        <span className="text-amber-400 font-bold ml-1">• Vắt từ khóa trước</span>
+                      )}
+                    </div>
+                  )}
 
                   {conflicts.length > 0 && (
                     <div className="mb-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/40 text-[11px] text-amber-300 space-y-1">
@@ -1196,33 +815,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
                 <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
                   <button
-                    onClick={() => {
-                      if (isTermClosed(cls.term_id, store)) {
-                        showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể sửa lớp.', 'error', {
-                          title: 'Khóa học đã đóng',
-                        });
-                        return;
-                      }
-                      const editDays = getClassDays(cls, store).slice(0, 2);
-                      setEditingClass(cls);
-                      setFormData({
-                        name: cls.name,
-                        term_id: cls.term_id,
-                        campus_id: cls.campus_id,
-                        subject_id: cls.subject_id,
-                        facility_id: cls.facility_id,
-                        time_slot_id: cls.time_slot_id,
-                        days_of_week: editDays.length === 2 ? editDays : ['T2', 'T4'],
-                        start_date: cls.start_date || term?.start_date || '2026-09-01',
-                        primary_teacher_id: cls.primary_teacher_id,
-                        max_students: cls.max_students,
-                        total_sessions: cls.total_sessions,
-                        full_course_fee: cls.full_course_fee,
-                        allow_over_quota: !!cls.allow_over_quota,
-                      });
-                      setDayPickerNotice(null);
-                      setShowAddModal(true);
-                    }}
+                    onClick={() => handleOpenEditModal(cls)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                       isTermClosed(cls.term_id, store)
                         ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed'
@@ -1248,27 +841,20 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         </div>
       )}
 
-      {/* Add / Edit Class Modal */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-amber-400" />
-              <span>{editingClass ? 'Cập Nhật Lớp Ngoại Khóa' : 'Tạo Lớp Ngoại Khóa Mới'}</span>
-            </h3>
-
-            {/* Live Conflict Alert in Modal */}
-            {formConflicts.length > 0 && (
-              <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-xs text-amber-300 space-y-1">
-                <div className="flex items-center gap-2 font-bold text-amber-400">
-                  <ShieldAlert className="w-4 h-4 shrink-0" />
-                  <span>CẢNH BÁO TRÙNG LỊCH (Có thể lưu đè nếu được phê duyệt):</span>
-                </div>
-                {formConflicts.map((c, i) => (
-                  <p key={i} className="pl-6 text-[11px] text-amber-200">&bull; {c}</p>
-                ))}
-              </div>
-            )}
+      {/* Create / Edit Class Modal with Full Cross-Term Support */}
+      <CreateClassModal
+        isOpen={showAddModal}
+        onClose={() => {
+          setShowAddModal(false);
+          setEditingClass(null);
+        }}
+        editingClass={editingClass}
+        store={store}
+        onUpdateStore={onUpdateStore}
+        initialTermId={localTermId !== 'all' ? localTermId : undefined}
+        initialCampusId={localCampusId !== 'all' ? localCampusId : undefined}
+        initialSubjectId={localSubjectId !== 'all' ? localSubjectId : undefined}
+      />
 
             {/* Active Pricing Result computation */}
             {(() => {

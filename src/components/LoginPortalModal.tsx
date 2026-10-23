@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
 import { 
   X, 
-  Crown, 
   LogIn, 
   LogOut, 
   User, 
   Phone, 
   ShieldCheck, 
   Lock, 
-  Sparkles, 
+  Eye, 
+  EyeOff, 
   CheckCircle2, 
-  UserCheck, 
-  ArrowRight,
-  School,
-  HeartHandshake
+  AlertTriangle,
+  HeartHandshake,
+  HelpCircle,
+  KeyRound,
+  Loader2,
+  Sparkles
 } from 'lucide-react';
 import { UserRole, Student, AppUser } from '../types';
 import { AppStore, createAuditRecord, appendAuditLog } from '../lib/storage';
@@ -48,225 +50,219 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'staff' | 'parent'>('staff');
   
-  // Staff Form
-  const [staffEmail, setStaffEmail] = useState('admin');
+  // Staff Credentials Form State
+  const [staffUsername, setStaffUsername] = useState('admin');
   const [staffPassword, setStaffPassword] = useState('123456');
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
+  const [isStaffSubmitting, setIsStaffSubmitting] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
-  const [loginSuccess, setLoginSuccess] = useState<string | null>(null);
+  const [staffHelpVisible, setStaffHelpVisible] = useState(false);
 
-  // Parent Form
-  const [parentPhone, setParentPhone] = useState('0903 889 911');
+  // Parent Form State
+  const [parentPhone, setParentPhone] = useState('');
+  const [parentOtp, setParentOtp] = useState('');
+  const [isParentSubmitting, setIsParentSubmitting] = useState(false);
   const [parentError, setParentError] = useState<string | null>(null);
+  const [parentWarning, setParentWarning] = useState<string | null>(null);
+
+  // Common Feedback State
+  const [loginSuccess, setLoginSuccess] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const staffAccounts: { role: UserRole; name: string; title: string; email: string; avatarBg: string }[] = [
-    {
-      role: 'super_admin',
-      name: 'ThS. Nguyễn Hoàng Long',
-      title: 'Quản trị viên Cấp cao',
-      email: 'admin@royalschool.edu.vn',
-      avatarBg: 'from-amber-500 to-amber-700',
-    },
-    {
-      role: 'academic_accountant',
-      name: 'Cô Lê Thị Kim Cúc',
-      title: 'Học vụ kiêm Kế toán',
-      email: 'ketoan@royalschool.edu.vn',
-      avatarBg: 'from-emerald-500 to-teal-700',
-    },
-    {
-      role: 'academic_admissions',
-      name: 'Thầy Trần Quốc Bảo',
-      title: 'Học vụ kiêm Tuyển sinh',
-      email: 'hocvu@royalschool.edu.vn',
-      avatarBg: 'from-blue-500 to-indigo-700',
-    },
-    {
-      role: 'admissions',
-      name: 'Cô Phạm Thùy Linh',
-      title: 'Chuyên viên Tuyển sinh',
-      email: 'tuyensinh@royalschool.edu.vn',
-      avatarBg: 'from-cyan-500 to-blue-600',
-    },
-    {
-      role: 'teacher',
-      name: 'Thầy David Huỳnh (Bóng rổ)',
-      title: 'Giáo viên Giảng dạy',
-      email: 'teacher.david@royalschool.edu.vn',
-      avatarBg: 'from-purple-500 to-pink-600',
-    },
-  ];
-
-  const handleSelectStaffRole = (role: UserRole, accountName: string) => {
-    // Find matching user from store
-    let user = store.users.find(u => u.role === role);
-    if (!user) {
-      user = {
-        id: `usr_${role}`,
-        username: role === 'super_admin' ? 'admin' : role,
-        password: '123',
-        full_name: accountName,
-        phone: '0908 112 233',
-        email: `${role}@royalschool.edu.vn`,
-        role,
-        department: 'Ban Giám Hiệu & Quản Trị Hệ Thống',
-        status: 'active',
-        created_at: '2026-08-01',
-      };
+  // Format phone number with spaces (e.g., 0908 112 233)
+  const handlePhoneInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 11);
+    let formatted = raw;
+    if (raw.length > 7) {
+      formatted = `${raw.slice(0, 4)} ${raw.slice(4, 7)} ${raw.slice(7)}`;
+    } else if (raw.length > 4) {
+      formatted = `${raw.slice(0, 4)} ${raw.slice(4)}`;
     }
-
-    // Record Audit Log: AUTH_LOGIN_SUCCESS
-    if (onUpdateStore) {
-      const log = createAuditRecord(
-        'AUTH_LOGIN_SUCCESS',
-        'AUTH',
-        'Hệ thống Xác thực',
-        `Cán bộ ${user.full_name} (@${user.username}) đã đăng nhập thành công với vai trò ${role}`,
-        user,
-        {
-          target_id: user.username,
-          details: {
-            ip_address: '192.168.1.45',
-            status: 'success',
-            after: { role, full_name: user.full_name, login_mode: '1-click quick login' }
-          }
-        }
-      );
-      onUpdateStore(prev => appendAuditLog(prev, log));
-    }
-
-    if (onLoginSuccess) {
-      onLoginSuccess(user);
-    } else {
-      onChangeRole(role);
-    }
-
-    if (onSetParentStudent) onSetParentStudent(null);
-    setLoginSuccess(`Đã đăng nhập thành công với vai trò: ${accountName}`);
-    setTimeout(() => {
-      setLoginSuccess(null);
-      onClose();
-    }, 600);
+    setParentPhone(formatted);
+    setParentError(null);
+    setParentWarning(null);
   };
 
-  const handleStandardStaffLogin = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const cleanUname = staffEmail.trim().toLowerCase();
-    const cleanPass = staffPassword.trim();
+  const handleStandardStaffLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    setStaffError(null);
+    setIsStaffSubmitting(true);
 
-    const matchedUser = store.users.find(
-      u => u.username.toLowerCase() === cleanUname || u.email.toLowerCase() === cleanUname
-    );
+    setTimeout(() => {
+      const cleanUname = staffUsername.trim().toLowerCase();
+      const cleanPass = staffPassword.trim();
 
-    if (!matchedUser) {
-      // Record Audit Log: AUTH_LOGIN_FAILED
-      if (onUpdateStore) {
-        const failLog = createAuditRecord(
-          'AUTH_LOGIN_FAILED',
-          'AUTH',
-          'Hệ thống Xác thực',
-          `Đăng nhập thất bại: Tài khoản "${cleanUname}" không tồn tại trên hệ thống`,
-          null,
-          {
-            target_id: cleanUname,
-            details: {
-              ip_address: '192.168.1.45',
-              status: 'failed',
-              after: { reason: 'Tài khoản không tồn tại', attempted_username: cleanUname }
-            }
-          }
-        );
-        onUpdateStore(prev => appendAuditLog(prev, failLog));
+      if (!cleanUname) {
+        setStaffError('Vui lòng nhập Tên đăng nhập hoặc Email công vụ.');
+        setIsStaffSubmitting(false);
+        return;
       }
-      setStaffError('Tài khoản không tồn tại trong hệ thống. Vui lòng kiểm tra lại.');
-      return;
-    }
 
-    if (matchedUser.password && matchedUser.password !== cleanPass) {
-      // Record Audit Log: AUTH_LOGIN_FAILED
+      if (!cleanPass) {
+        setStaffError('Vui lòng nhập Mật khẩu bảo mật.');
+        setIsStaffSubmitting(false);
+        return;
+      }
+
+      const matchedUser = store.users.find(
+        u => u.username.toLowerCase() === cleanUname || u.email.toLowerCase() === cleanUname
+      );
+
+      if (!matchedUser) {
+        if (onUpdateStore) {
+          const failLog = createAuditRecord(
+            'AUTH_LOGIN_FAILED',
+            'AUTH',
+            'Hệ thống Xác thực',
+            `Đăng nhập thất bại: Tài khoản "${cleanUname}" không tồn tại trên hệ thống`,
+            null,
+            {
+              target_id: cleanUname,
+              details: {
+                ip_address: '192.168.1.45',
+                status: 'failed',
+                after: { reason: 'Tài khoản không tồn tại', attempted_username: cleanUname }
+              }
+            }
+          );
+          onUpdateStore(prev => appendAuditLog(prev, failLog));
+        }
+        setStaffError(`Tài khoản "${cleanUname}" không tồn tại trong hệ thống Royal School.`);
+        setIsStaffSubmitting(false);
+        return;
+      }
+
+      if (matchedUser.password && matchedUser.password !== cleanPass) {
+        if (onUpdateStore) {
+          const failLog = createAuditRecord(
+            'AUTH_LOGIN_FAILED',
+            'AUTH',
+            'Hệ thống Xác thực',
+            `Đăng nhập thất bại: Sai mật khẩu truy cập cho tài khoản "${matchedUser.username}"`,
+            matchedUser,
+            {
+              target_id: matchedUser.username,
+              details: {
+                ip_address: '192.168.1.45',
+                status: 'failed',
+                after: { reason: 'Mật khẩu không chính xác', username: matchedUser.username }
+              }
+            }
+          );
+          onUpdateStore(prev => appendAuditLog(prev, failLog));
+        }
+        setStaffError('Mật khẩu không chính xác. Mật khẩu mẫu mặc định là: 123456');
+        setIsStaffSubmitting(false);
+        return;
+      }
+
+      // Login Successful
       if (onUpdateStore) {
-        const failLog = createAuditRecord(
-          'AUTH_LOGIN_FAILED',
+        const log = createAuditRecord(
+          'AUTH_LOGIN_SUCCESS',
           'AUTH',
           'Hệ thống Xác thực',
-          `Đăng nhập thất bại: Sai mật khẩu truy cập cho tài khoản "${matchedUser.username}"`,
+          `Nhân sự ${matchedUser.full_name} (@${matchedUser.username}) đăng nhập thành công với vai trò ${matchedUser.role}`,
           matchedUser,
           {
             target_id: matchedUser.username,
             details: {
               ip_address: '192.168.1.45',
-              status: 'failed',
-              after: { reason: 'Mật khẩu không chính xác', username: matchedUser.username }
+              status: 'success',
+              after: { role: matchedUser.role, full_name: matchedUser.full_name, login_mode: 'form_credentials' }
             }
           }
         );
-        onUpdateStore(prev => appendAuditLog(prev, failLog));
+        onUpdateStore(prev => appendAuditLog(prev, log));
       }
-      setStaffError('Mật khẩu không chính xác. Mật khẩu mẫu mặc định là: 123456');
-      return;
-    }
 
-    // Success
-    setStaffError(null);
-    if (onUpdateStore) {
-      const log = createAuditRecord(
-        'AUTH_LOGIN_SUCCESS',
-        'AUTH',
-        'Hệ thống Xác thực',
-        `Nhân sự ${matchedUser.full_name} (@${matchedUser.username}) đăng nhập thành công`,
-        matchedUser,
-        {
-          target_id: matchedUser.username,
-          details: {
-            ip_address: '192.168.1.45',
-            status: 'success',
-            after: { role: matchedUser.role, full_name: matchedUser.full_name, login_mode: 'form_credentials' }
-          }
-        }
-      );
-      onUpdateStore(prev => appendAuditLog(prev, log));
-    }
+      if (onLoginSuccess) {
+        onLoginSuccess(matchedUser);
+      } else {
+        onChangeRole(matchedUser.role);
+      }
 
-    if (onLoginSuccess) {
-      onLoginSuccess(matchedUser);
-    } else {
-      onChangeRole(matchedUser.role);
-    }
+      if (onSetParentStudent) onSetParentStudent(null);
+      setLoginSuccess(`Đăng nhập thành công: ${matchedUser.full_name} (${matchedUser.role})`);
+      setIsStaffSubmitting(false);
 
-    if (onSetParentStudent) onSetParentStudent(null);
-    setLoginSuccess(`Đã đăng nhập thành công: ${matchedUser.full_name}`);
-    setTimeout(() => {
-      setLoginSuccess(null);
-      onClose();
-    }, 600);
+      setTimeout(() => {
+        setLoginSuccess(null);
+        onClose();
+      }, 700);
+    }, 300);
   };
 
-  const handleParentPhoneLogin = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const clean = parentPhone.replace(/\s+/g, '');
-    const found = store.students.find(s => s.parent_phone.replace(/\s+/g, '') === clean);
-
-    if (found) {
-      if (onSetParentStudent) onSetParentStudent(found);
-      if (onOpenParentPortalWithStudent) {
-        onOpenParentPortalWithStudent(found);
-      }
-      setParentError(null);
-      onClose();
-    } else {
-      setParentError('Không tìm thấy phụ huynh với số điện thoại này trong hệ thống. Vui lòng thử số mẫu bên dưới.');
-    }
-  };
-
-  const handleSelectDemoParent = (student: Student) => {
-    setParentPhone(student.parent_phone);
-    if (onSetParentStudent) onSetParentStudent(student);
-    if (onOpenParentPortalWithStudent) {
-      onOpenParentPortalWithStudent(student);
-    }
+  const handleParentPhoneLogin = (e: React.FormEvent) => {
+    e.preventDefault();
     setParentError(null);
-    onClose();
+    setParentWarning(null);
+    setIsParentSubmitting(true);
+
+    setTimeout(() => {
+      const cleanDigits = parentPhone.replace(/\D/g, '');
+
+      if (!cleanDigits || cleanDigits.length < 9) {
+        setParentError('Vui lòng nhập số điện thoại hợp lệ (từ 10 đến 11 chữ số).');
+        setIsParentSubmitting(false);
+        return;
+      }
+
+      // Check students registered with parent phone
+      const foundStudent = store.students.find(s => {
+        const sPhoneClean = (s.parent_phone || '').replace(/\D/g, '');
+        return sPhoneClean === cleanDigits;
+      });
+
+      if (foundStudent) {
+        if (onSetParentStudent) onSetParentStudent(foundStudent);
+        if (onOpenParentPortalWithStudent) {
+          onOpenParentPortalWithStudent(foundStudent);
+        }
+
+        if (onUpdateStore) {
+          const log = createAuditRecord(
+            'AUTH_LOGIN_SUCCESS',
+            'AUTH',
+            'Cổng Phụ Huynh',
+            `Phụ huynh học sinh ${foundStudent.name} (${foundStudent.code}) đã xác thực thành công qua SĐT ${parentPhone}`,
+            null,
+            {
+              target_id: foundStudent.id,
+              details: {
+                student_name: foundStudent.name,
+                parent_phone: parentPhone,
+                status: 'success'
+              }
+            }
+          );
+          onUpdateStore(prev => appendAuditLog(prev, log));
+        }
+
+        setLoginSuccess(`Chào mừng Phụ huynh bé ${foundStudent.name}! Đang mở Cổng Tra Cứu...`);
+        setIsParentSubmitting(false);
+
+        setTimeout(() => {
+          setLoginSuccess(null);
+          onClose();
+        }, 700);
+      } else {
+        // Check in prospective parent registrations as secondary check
+        const foundReg = store.parentRegistrations?.find(r => (r.parent_phone || '').replace(/\D/g, '') === cleanDigits);
+        if (foundReg) {
+          setParentWarning(
+            `Tìm thấy đơn ghi danh của Phụ huynh "${foundReg.parent_name}" cho học sinh "${foundReg.student_name}". Hồ sơ đang trong quy trình tuyển sinh và chưa hoàn tất ghi danh vào lớp.`
+          );
+        } else {
+          setParentWarning(
+            `Không tìm thấy hồ sơ học sinh nào liên kết với Số điện thoại "${parentPhone}". Vui lòng kiểm tra lại hoặc liên hệ Văn phòng Học vụ: (028) 7101 6669 để cập nhật.`
+          );
+        }
+        setIsParentSubmitting(false);
+      }
+    }, 350);
   };
 
   const handleLogout = () => {
@@ -276,27 +272,31 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
+      {/* Background radial glow */}
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_40%,rgba(245,158,11,0.08),transparent_65%)]" />
+
       <div 
-        className="w-full max-w-xl rounded-3xl bg-[#0B0F19] border border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+        className="w-full max-w-lg rounded-3xl bg-[#111827]/95 border border-slate-800/90 shadow-2xl overflow-hidden flex flex-col relative z-10 backdrop-blur-xl animate-scaleUp"
         onClick={e => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="p-4 sm:p-5 border-b border-slate-800/80 bg-gradient-to-r from-slate-900 via-[#111827] to-slate-900 flex items-center justify-between">
+        <div className="p-5 border-b border-slate-800/80 bg-gradient-to-r from-slate-900 via-[#131b2e] to-slate-900 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <RoyalLogo size="md" />
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-extrabold text-base text-white tracking-wide">CỔNG XÁC THỰC & ĐĂNG NHẬP</h3>
-                <span className="text-[10px] px-2 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold uppercase">
+                <h3 className="font-extrabold text-base text-white tracking-wide">CỔNG XÁC THỰC &amp; ĐĂNG NHẬP</h3>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-extrabold tracking-wider uppercase">
                   Royal Auth
                 </span>
               </div>
-              <p className="text-xs text-slate-400">Trường Song Ngữ Quốc Tế Hoàng Gia</p>
+              <p className="text-xs text-slate-400">Trường Song Ngữ Quốc Tế Hoàng Gia (Royal School)</p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
             className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
           >
@@ -305,27 +305,27 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
         </div>
 
         {/* Tab Selection */}
-        <div className="grid grid-cols-2 p-2 bg-slate-950/70 border-b border-slate-800/80 gap-2">
+        <div className="grid grid-cols-2 p-2 bg-slate-950/80 border-b border-slate-800/80 gap-2">
           <button
             type="button"
-            onClick={() => setActiveTab('staff')}
+            onClick={() => { setActiveTab('staff'); setStaffError(null); }}
             className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold transition-all ${
               activeTab === 'staff'
-                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20 font-extrabold'
+                : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
             <ShieldCheck className="w-4 h-4" />
-            <span>Cán Bộ & Giáo Viên</span>
+            <span>Cán Bộ &amp; Giáo Viên</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab('parent')}
+            onClick={() => { setActiveTab('parent'); setParentError(null); setParentWarning(null); }}
             className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold transition-all ${
               activeTab === 'parent'
-                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                : 'text-slate-400 hover:text-white'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20 font-extrabold'
+                : 'text-slate-400 hover:text-white hover:bg-slate-900'
             }`}
           >
             <HeartHandshake className="w-4 h-4" />
@@ -334,189 +334,236 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-5">
+        <div className="p-6 overflow-y-auto space-y-4">
           {loginSuccess && (
-            <div className="p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center gap-2 animate-fadeIn">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <div className="p-3.5 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center gap-2.5 animate-fadeIn">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
               <span>{loginSuccess}</span>
             </div>
           )}
 
-          {/* TAB 1: STAFF & TEACHERS */}
+          {/* TAB 1: CÁN BỘ & GIÁO VIÊN */}
           {activeTab === 'staff' && (
-            <div className="space-y-4">
-              <div>
-                <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                  1-Click Đăng Nhập Nhanh Theo Vai Trò (Tài Khoản Mẫu)
-                </h4>
-                <div className="space-y-2">
-                  {staffAccounts.map(acc => {
-                    const isActive = currentRole === acc.role && !currentParentStudent;
-                    return (
-                      <button
-                        key={acc.role}
-                        type="button"
-                        onClick={() => handleSelectStaffRole(acc.role, acc.name)}
-                        className={`w-full p-3 rounded-2xl border text-left flex items-center justify-between transition-all ${
-                          isActive
-                            ? 'bg-amber-500/15 border-amber-500/50 shadow-md shadow-amber-500/10'
-                            : 'bg-slate-900/80 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={`w-9 h-9 rounded-xl bg-gradient-to-tr ${acc.avatarBg} flex items-center justify-center text-white font-extrabold text-xs shadow-md`}>
-                            {acc.name.charAt(0)}
-                          </div>
-                          <div>
-                            <div className="text-sm font-bold text-white flex items-center gap-2">
-                              <span>{acc.name}</span>
-                              {isActive && (
-                                <span className="px-1.5 py-0.2 rounded bg-amber-500 text-slate-950 text-[9px] font-extrabold uppercase">
-                                  Đang chọn
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-slate-400">{acc.title}</div>
-                          </div>
-                        </div>
+            <form onSubmit={handleStandardStaffLogin} className="space-y-4">
+              <div className="p-3 rounded-2xl bg-slate-900/80 border border-slate-800 text-xs text-slate-400 leading-relaxed">
+                Khu vực dành riêng cho <strong>Cán bộ Quản trị, Học vụ, Kế toán và Giáo viên</strong> ngoại khóa Royal School. Đăng nhập để truy cập quyền hạn theo phân công.
+              </div>
 
-                        <ArrowRight className="w-4 h-4 text-slate-500" />
-                      </button>
-                    );
-                  })}
+              {staffError && (
+                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{staffError}</span>
+                </div>
+              )}
+
+              {staffHelpVisible && (
+                <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs leading-relaxed space-y-1 animate-fadeIn">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                    <HelpCircle className="w-4 h-4" />
+                    <span>Hỗ Trợ Tài Khoản &amp; Khôi Phục Mật Khẩu</span>
+                  </div>
+                  <p>
+                    Vui lòng liên hệ <strong>Phòng CNTT &amp; Quản Trị Hệ Thống</strong> hoặc Hotline: <strong>(028) 7101 6669</strong> (Nhánh 104) để được cấp lại mật khẩu truy cập nội bộ.
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1.5">
+                    Tên đăng nhập hoặc Email công vụ:
+                  </label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
+                    <input
+                      type="text"
+                      value={staffUsername}
+                      onChange={e => { setStaffUsername(e.target.value); setStaffError(null); }}
+                      placeholder="VD: admin, ketoan, tuyensinh..."
+                      className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1.5">
+                    Mật khẩu truy cập:
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={staffPassword}
+                      onChange={e => { setStaffPassword(e.target.value); setStaffError(null); }}
+                      placeholder="Mật khẩu tài khoản (Mặc định: 123456)"
+                      className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-2.5 p-0.5 text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-xs pt-1">
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-400 hover:text-slate-300 select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={e => setRememberMe(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-0 focus:outline-none"
+                    />
+                    <span>Ghi nhớ phiên đăng nhập</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={() => setStaffHelpVisible(!staffHelpVisible)}
+                    className="text-amber-400 hover:text-amber-300 font-semibold transition-colors"
+                  >
+                    Quên mật khẩu?
+                  </button>
                 </div>
               </div>
 
-              {/* Standard Credentials Form Simulation */}
-              <form onSubmit={handleStandardStaffLogin} className="pt-3 border-t border-slate-800/80 space-y-3">
-                <div className="text-xs font-semibold text-slate-400">Hoặc đăng nhập bằng tài khoản nội bộ:</div>
-                
-                {staffError && (
-                  <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold">
-                    {staffError}
-                  </div>
+              <button
+                type="submit"
+                disabled={isStaffSubmitting}
+                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold text-xs transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+              >
+                {isStaffSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                    <span>Đang Xác Thực...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="w-4 h-4 text-slate-950" />
+                    <span>Đăng Nhập Cổng Nội Bộ</span>
+                  </>
                 )}
-
-                <div className="space-y-2 text-xs">
-                  <div>
-                    <label className="block text-slate-400 mb-1">Tên đăng nhập hoặc Email</label>
-                    <input
-                      type="text"
-                      value={staffEmail}
-                      onChange={e => { setStaffEmail(e.target.value); setStaffError(null); }}
-                      placeholder="VD: admin, ketoan, tuyensinh..."
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500 font-mono text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-400 mb-1">Mật khẩu</label>
-                    <input
-                      type="password"
-                      value={staffPassword}
-                      onChange={e => { setStaffPassword(e.target.value); setStaffError(null); }}
-                      placeholder="Mặc định: 123456"
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500 text-xs font-mono"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-colors shadow-md shadow-amber-500/20"
-                >
-                  Xác Thực & Đăng Nhập Hệ Thống
-                </button>
-              </form>
-            </div>
+              </button>
+            </form>
           )}
 
-          {/* TAB 2: PARENT LOGIN */}
+          {/* TAB 2: PHỤ HUYNH HỌC SINH */}
           {activeTab === 'parent' && (
-            <div className="space-y-4">
-              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-slate-300">
+            <form onSubmit={handleParentPhoneLogin} className="space-y-4">
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-xs text-slate-300 leading-relaxed">
                 Phụ huynh sử dụng <strong>Số điện thoại</strong> đã đăng ký với trường để đăng nhập tra cứu tiến độ học tập, điểm danh, suất bánh sữa và quét mã VietQR học phí.
               </div>
 
               {parentError && (
-                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold">
-                  {parentError}
+                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{parentError}</span>
                 </div>
               )}
 
-              <form onSubmit={handleParentPhoneLogin} className="space-y-3">
+              {parentWarning && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs leading-relaxed space-y-1 animate-fadeIn">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Thông Báo Tra Cứu</span>
+                  </div>
+                  <p>{parentWarning}</p>
+                </div>
+              )}
+
+              <div className="space-y-3.5">
                 <div>
-                  <label className="block text-xs font-bold text-slate-300 mb-1">
+                  <label className="block text-xs font-bold text-slate-300 mb-1.5">
                     Số điện thoại phụ huynh:
                   </label>
                   <div className="relative">
-                    <Phone className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                    <Phone className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
                     <input
-                      type="text"
-                      placeholder="VD: 0903 889 911"
+                      type="tel"
+                      placeholder="VD: 0908 112 233"
                       value={parentPhone}
-                      onChange={e => setParentPhone(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-sm focus:outline-none focus:border-amber-500"
+                      onChange={handlePhoneInputChange}
+                      className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-sm focus:outline-none focus:border-amber-500 transition-colors"
+                      autoFocus
                     />
                   </div>
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    Định dạng: 10 chữ số (VD: 0908 112 233)
+                  </span>
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-colors shadow-md shadow-amber-500/20 flex items-center justify-center gap-2"
-                >
-                  <LogIn className="w-4 h-4 text-slate-950" />
-                  <span>Đăng Nhập Cổng Phụ Huynh</span>
-                </button>
-              </form>
-
-              {/* Demo 1-Click Parents */}
-              <div className="pt-3 border-t border-slate-800/80">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-                  Hoặc chọn nhanh hồ sơ phụ huynh mẫu:
-                </span>
-                <div className="space-y-2">
-                  {store.students.slice(0, 3).map(st => (
-                    <button
-                      key={st.id}
-                      type="button"
-                      onClick={() => handleSelectDemoParent(st)}
-                      className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-left flex items-center justify-between text-xs transition-all"
-                    >
-                      <div>
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          <span>PH Bé: {st.name}</span>
-                          <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
-                            st.is_royal_student ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-800 text-slate-400'
-                          }`}>
-                            {st.code}
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-amber-400 font-mono mt-0.5">SĐT: {st.parent_phone}</div>
-                      </div>
-                      <ArrowRight className="w-4 h-4 text-slate-500" />
-                    </button>
-                  ))}
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1.5">
+                    Mã bảo mật OTP (Tùy chọn - Nhận qua Zalo ZNS / SMS):
+                  </label>
+                  <div className="relative">
+                    <KeyRound className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
+                    <input
+                      type="text"
+                      placeholder="Nhập 6 chữ số OTP nếu đã nhận"
+                      value={parentOtp}
+                      onChange={e => setParentOtp(e.target.value.slice(0, 6))}
+                      className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors"
+                    />
+                  </div>
+                  <span className="text-[10px] text-slate-500 mt-1 block">
+                    Nếu chưa có mã OTP, phụ huynh có thể đăng nhập trực tiếp qua Số điện thoại đã đăng ký.
+                  </span>
                 </div>
               </div>
-            </div>
+
+              <button
+                type="submit"
+                disabled={isParentSubmitting}
+                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold text-xs transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+              >
+                {isParentSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                    <span>Đang Tra Cứu Hồ Sơ...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="w-4 h-4 text-slate-950" />
+                    <span>Tra Cứu &amp; Đăng Nhập Cổng Phụ Huynh</span>
+                  </>
+                )}
+              </button>
+            </form>
           )}
         </div>
 
         {/* Modal Footer */}
-        <div className="p-4 border-t border-slate-800/80 bg-slate-950/60 flex items-center justify-between text-xs">
-          <div className="text-slate-400">
-            Hiện tại: <strong className="text-amber-400">{currentRole}</strong>
+        <div className="p-4 border-t border-slate-800/80 bg-slate-950/80 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+          <div className="text-slate-400 flex items-center gap-2">
+            <span>Phiên làm việc:</span>
+            <strong className="text-amber-400 font-mono">
+              {currentParentStudent ? `PH Bé ${currentParentStudent.name}` : currentRole}
+            </strong>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={handleLogout}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-semibold transition-colors flex items-center gap-1.5"
+              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold transition-colors flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>Đăng Xuất</span>
             </button>
+          </div>
+        </div>
+
+        {/* Security & Support Info */}
+        <div className="px-5 py-2.5 bg-black/60 border-t border-slate-900/80 text-[10px] text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-1">
+          <div>
+            🔒 Hệ thống bảo mật nội bộ Royal School &bull; SSL 256-bit &bull; Supabase Engine
+          </div>
+          <div>
+            Hotline Học Vụ &amp; CNTT: <strong className="text-amber-400/90 font-mono">(028) 7101 6669</strong>
           </div>
         </div>
       </div>

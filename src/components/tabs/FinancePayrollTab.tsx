@@ -1376,8 +1376,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               const cls = store.classes.find(c => c.id === ses.class_id);
               if (!cls) return;
               const actualTeacher = store.teachers.find(t => t.id === (ses.actual_teacher_id || cls.primary_teacher_id));
-              const periods = actualTeacher?.periods_per_session || 2;
-              const rate = getTeacherEffectivePeriodRate(actualTeacher, cls.subject_id, false);
+              const periods = actualTeacher?.periods_per_session || store.payrollRateConfig?.periods_per_session || 2;
+              const rate = getTeacherEffectivePeriodRate(actualTeacher, cls.subject_id, false, store.payrollRateConfig);
               baseList.push({
                 id: `synth_${ses.id}`,
                 class_id: cls.id,
@@ -1419,10 +1419,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             return teacherPrimaryCampus === payrollCampusFilter || hasSessionInCampus || hasClassInCampus;
           })
           .map((teacher, idx) => {
-            const periodsPerSession = teacher.periods_per_session || 2;
-            const defaultRatePerPeriod =
-              teacher.default_rate_per_period ||
-              Math.round((teacher.fixed_rate_per_session || 300000) / periodsPerSession);
+            const isPermanent = (teacher.type || teacher.teacher_type) === 'permanent';
+            const periodsPerSession = teacher.periods_per_session || store.payrollRateConfig?.periods_per_session || 2;
+            const defaultRatePerPeriod = isPermanent
+              ? (store.payrollRateConfig?.permanent_rate_per_period ?? 150000)
+              : (store.payrollRateConfig?.visiting_rate_per_period ?? 135000);
             const defaultSessionRate = defaultRatePerPeriod * periodsPerSession;
 
             // Sessions actually taught by this teacher (main + substitute) where status is present or late
@@ -1456,7 +1457,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               (sum, r) => sum + (r.periods_count > 0 ? r.periods_count : periodsPerSession),
               0
             );
-            const totalPayout = taughtRecords.reduce((sum, r) => sum + (r.total_payout || 0), 0);
+            // Calculate total payout strictly per the required formula: (Total periods taught) * applied uniform rate
+            const totalPayout = totalPeriodsTaught * defaultRatePerPeriod;
 
             const settlementRecord = (store.payrollSettlements || []).find(
               ps =>
@@ -1466,7 +1468,6 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             );
 
             const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
-            const isPermanent = (teacher.type || teacher.teacher_type) === 'permanent';
 
             return {
               teacher,

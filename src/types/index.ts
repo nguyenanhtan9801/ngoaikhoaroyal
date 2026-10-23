@@ -243,7 +243,13 @@ export interface ExtracurricularClass {
   id: string;
   name: string;
   code?: string;
-  term_id: string;
+  term_id: string; // Khóa học gốc mở lớp (VD: Thu 2026)
+  spanning_term_id?: string; // Khóa học vắt tiếp theo (VD: Xuân 2027)
+  is_cross_term?: boolean; // Đánh dấu lớp vắt qua 2 khóa
+  term_distribution?: {
+    primary_term_sessions: number; // Số buổi ở khóa 1 (VD: 14)
+    spanning_term_sessions: number; // Số buổi ở khóa 2 (VD: 10)
+  };
   campus_id: string;
   subject_id: string;
   facility_id: string;
@@ -357,6 +363,7 @@ export interface TuitionInvoice {
 export interface ClassSession {
   id: string;
   class_id: string;
+  term_id?: string; // Ghi nhận chính xác buổi này thuộc Khóa nào (VD: Thu 2026 hoặc Xuân 2027)
   session_date: string;
   session_number: number;
   actual_teacher_id: string;
@@ -602,6 +609,14 @@ export interface AuditLogRecord {
   };
 }
 
+export interface PayrollRateConfig {
+  permanent_rate_per_period: number; // Đơn giá / tiết cho GV Cơ Hữu (VD: 150.000 đ)
+  visiting_rate_per_period: number;  // Đơn giá / tiết cho GV Thỉnh Giảng (VD: 135.000 đ)
+  periods_per_session: number;       // Số tiết chuẩn 1 buổi (Mặc định: 2 tiết)
+  updated_at?: string;
+  updated_by?: string;
+}
+
 export interface AppStore {
   users: AppUser[];
   campuses: Campus[];
@@ -624,6 +639,7 @@ export interface AppStore {
   makeupCredits: MakeupCredit[];
   transfers: ClassTransfer[];
   payrollSettlements: TeacherPayrollSettlement[];
+  payrollRateConfig?: PayrollRateConfig;
   parentRegistrations: ParentRegistration[];
   notifications: SystemNotification[];
   auditLogs: AuditLogRecord[];

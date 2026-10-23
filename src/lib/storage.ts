@@ -28,10 +28,19 @@ import {
   AuditLogRecord,
   LogActionType,
   CloudStorageConfig,
+  PayrollRateConfig,
   AppStore,
 } from '../types';
 
-export type { AppStore };
+export type { AppStore, PayrollRateConfig };
+
+export const initialPayrollRateConfig: PayrollRateConfig = {
+  permanent_rate_per_period: 150000,
+  visiting_rate_per_period: 135000,
+  periods_per_session: 2,
+  updated_at: '2026-10-20',
+  updated_by: 'Phòng Tài Chính & Kế Toán Royal School',
+};
 
 import {
   initialCampuses,
@@ -87,6 +96,7 @@ export function getInitialStore(): AppStore {
     makeupCredits: initialMakeupCredits,
     transfers: initialTransfers,
     payrollSettlements: [],
+    payrollRateConfig: initialPayrollRateConfig,
     parentRegistrations: initialParentRegistrations,
     notifications: initialNotifications,
     auditLogs: initialAuditLogs,
@@ -345,18 +355,33 @@ export function loadStore(): AppStore {
       };
     });
 
-    // Ensure Next-Term classes exist in store.classes
+    // Ensure Next-Term and Cross-Term classes exist in store.classes
     const rawClasses: ExtracurricularClass[] =
       parsed.classes && parsed.classes.length > 0 ? [...parsed.classes] : [...initial.classes];
     initial.classes.forEach(seedCls => {
-      if (!rawClasses.some(c => c.id === seedCls.id)) {
+      const existingIdx = rawClasses.findIndex(c => c.id === seedCls.id);
+      if (existingIdx === -1) {
         rawClasses.push(seedCls);
+      } else if (seedCls.is_cross_term && !rawClasses[existingIdx].is_cross_term) {
+        rawClasses[existingIdx] = { ...rawClasses[existingIdx], ...seedCls };
       }
     });
 
-    // Ensure seeded sessions & attendance records for 3-consecutive excused absences exist
+    // Ensure seeded sessions & attendance records exist and term_id is backfilled
     const rawSessions: ClassSession[] =
-      parsed.sessions && parsed.sessions.length > 0 ? [...parsed.sessions] : [...initial.sessions];
+      (parsed.sessions && parsed.sessions.length > 0 ? [...parsed.sessions] : [...initial.sessions]).map(ses => {
+        if (!ses.term_id) {
+          const cls = rawClasses.find(c => c.id === ses.class_id);
+          if (cls) {
+            if (cls.is_cross_term && cls.spanning_term_id && cls.term_distribution) {
+              const termId = ses.session_number > cls.term_distribution.primary_term_sessions ? cls.spanning_term_id : cls.term_id;
+              return { ...ses, term_id: termId };
+            }
+            return { ...ses, term_id: cls.term_id };
+          }
+        }
+        return ses;
+      });
     initial.sessions.forEach(seedSes => {
       const existingIdx = rawSessions.findIndex(s => s.id === seedSes.id);
       if (existingIdx === -1) {
@@ -451,6 +476,14 @@ export function loadStore(): AppStore {
       }
     });
 
+    const rawInvoices: TuitionInvoice[] =
+      parsed.invoices && parsed.invoices.length > 0 ? [...parsed.invoices] : [...initial.invoices];
+    initial.invoices.forEach(seedInv => {
+      if (!rawInvoices.some(i => i.id === seedInv.id)) {
+        rawInvoices.push(seedInv);
+      }
+    });
+
     return {
       ...initial,
       ...parsed,
@@ -462,11 +495,13 @@ export function loadStore(): AppStore {
       teachers,
       classes: rawClasses,
       sessions: rawSessions,
+      invoices: rawInvoices,
       teacherAttendance: rawTeacherAttendance,
       attendance: rawAttendance,
       makeupCredits,
       enrollments,
       transfers: parsed.transfers && parsed.transfers.length > 0 ? parsed.transfers : initialTransfers,
+      payrollRateConfig: parsed.payrollRateConfig || initialPayrollRateConfig,
       parentRegistrations,
       auditLogs,
       cloudStorageConfig,
@@ -1858,19 +1893,28 @@ export function canModifyRedeemedCredit(
 }
 
 /**
- * Tính toán đơn giá tiết thực tế (rate_per_period) của giáo viên cho một bộ môn / lớp học
- * Ưu tiên: Đơn giá riêng theo môn (custom_subject_rates) -> Đơn giá tiết mặc định (default_rate_per_period) -> fixed_rate_per_session / periods_per_session
+ * Tính toán đơn giá tiết thực tế (rate_per_period) của giáo viên theo chuẩn thù lao toàn trường
+ * Giáo viên Cơ Hữu (Permanent): 150.000 VNĐ / tiết (300.000 VNĐ / buổi 2 tiết)
+ * Giáo viên Thỉnh Giảng (Visiting): 135.000 VNĐ / tiết (270.000 VNĐ / buổi 2 tiết)
  */
 export function getTeacherEffectivePeriodRate(
   teacher: Teacher | undefined,
   subjectId?: string,
-  isWeekend: boolean = false
+  isWeekend: boolean = false,
+  payrollConfig?: PayrollRateConfig
 ): number {
   if (!teacher) return 150000;
-  const periodsPerSession = teacher.periods_per_session || 2;
-  let basePeriodRate =
-    teacher.default_rate_per_period ||
-    Math.round((teacher.fixed_rate_per_session || 300000) / Math.max(1, periodsPerSession));
+  
+  const isVisiting = teacher.type === 'visiting' || teacher.teacher_type === 'visiting';
+  const permanentRate = payrollConfig?.permanent_rate_per_period ?? 150000;
+  const visitingRate = payrollConfig?.visiting_rate_per_period ?? 135000;
+
+  let basePeriodRate = isVisiting ? visitingRate : permanentRate;
+
+  // Nếu giáo viên có cấu hình thù lao cụ thể và chưa có payrollConfig ghi đè
+  if (!payrollConfig && teacher.default_rate_per_period) {
+    basePeriodRate = teacher.default_rate_per_period;
+  }
 
   if (subjectId && teacher.custom_subject_rates && teacher.custom_subject_rates.length > 0) {
     const customMatch = teacher.custom_subject_rates.find(cr => cr.subject_id === subjectId);

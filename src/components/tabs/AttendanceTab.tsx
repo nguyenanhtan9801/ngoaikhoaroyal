@@ -52,6 +52,8 @@ import {
   formatDateVN,
   getTeacherEffectivePeriodRate
 } from '../../lib/storage';
+import { uploadAttendanceProofToSupabase } from '../../lib/supabase';
+import { pushAttendanceRecordAsync, pushTeacherWorkSessionAsync } from '../../lib/supabaseSync';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
@@ -459,7 +461,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const liveTeacherPeriodRate = getTeacherEffectivePeriodRate(
     actualTeacherObj,
     currentClass?.subject_id,
-    isWeekendSlot
+    isWeekendSlot,
+    store.payrollRateConfig
   );
   const liveTeacherEffectivePeriods = teacherMode === 'absent' ? 0 : teacherPeriodsCount;
   const liveTeacherTotalPayout = liveTeacherEffectivePeriods * liveTeacherPeriodRate;
@@ -562,14 +565,38 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         ratio: result.compressionRatio,
       });
 
-      // 2. Upload file directly to backend server (/api/upload)
-      const serverRes = await uploadFileToServer(result.base64, result.fileName, 'proofs');
-      if (serverRes.success && serverRes.url) {
-        setProofUrlInput(serverRes.url);
-        if (serverRes.fileName) setProofFileNameInput(serverRes.fileName);
+      // 2. Upload file to Supabase Storage Bucket 'attendance-proofs' with structured path:
+      // proofs/{term_id}/{campus_id}/{class_id}/{session_date}_{student_code}_{file_name}
+      let uploadedUrl: string | undefined = undefined;
+      if (proofModalStudent && currentClass) {
+        const sbRes = await uploadAttendanceProofToSupabase(
+          result.base64,
+          {
+            termId: currentClass.term_id,
+            campusId: currentClass.campus_id,
+            classId: currentClass.id,
+            sessionDate: selectedDate,
+            studentCode: proofModalStudent.code,
+            fileName: result.fileName,
+          }
+        );
+        if (sbRes.success && sbRes.publicUrl) {
+          uploadedUrl = sbRes.publicUrl;
+        }
+      }
+
+      if (uploadedUrl) {
+        setProofUrlInput(uploadedUrl);
       } else {
-        // Fallback to local Base64/Google Drive link if server offline
-        setProofUrlInput(result.base64);
+        // Fallback to local server route /api/upload
+        const serverRes = await uploadFileToServer(result.base64, result.fileName, 'proofs');
+        if (serverRes.success && serverRes.url) {
+          setProofUrlInput(serverRes.url);
+          if (serverRes.fileName) setProofFileNameInput(serverRes.fileName);
+        } else {
+          // Fallback to local Base64/link if server offline
+          setProofUrlInput(result.base64);
+        }
       }
     } catch (err: any) {
       setProofError(err?.message || 'Lỗi khi xử lý và lưu tệp lên server!');
@@ -873,6 +900,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       };
 
       const finalTeacherAttendance = [...remainingTeacherAttendance, newTeacherAttendanceRecord];
+
+      // Optimistic background sync to Supabase PostgreSQL (non-blocking)
+      newRecords.forEach(rec => pushAttendanceRecordAsync(rec, prev));
+      pushTeacherWorkSessionAsync(newTeacherAttendanceRecord, prev);
 
       return {
         ...prev,
@@ -1405,7 +1436,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none"
                     >
                       {store.teachers.map(t => {
-                        const subRate = getTeacherEffectivePeriodRate(t, currentClass.subject_id, isWeekendSlot);
+                        const subRate = getTeacherEffectivePeriodRate(t, currentClass.subject_id, isWeekendSlot, store.payrollRateConfig);
                         return (
                           <option key={t.id} value={t.id} className="bg-slate-900">
                             {t.name} ({t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — {formatVND(subRate)}/tiết

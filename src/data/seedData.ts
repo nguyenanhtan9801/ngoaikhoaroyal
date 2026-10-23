@@ -575,6 +575,34 @@ export const initialClasses: ExtracurricularClass[] = [
     status: 'active',
     allow_over_quota: false,
   },
+  // --- LỚP HỌC VẮT QUA 2 KHÓA (CROSS-TERM / MULTI-TERM CLASS) ---
+  {
+    id: 'cls_robotics_cross_01',
+    name: 'Robotics Sáng Tạo Khám Phá (Liên Khóa PMH)',
+    term_id: 'term_fall_2026',
+    spanning_term_id: 'term_spring_2027',
+    is_cross_term: true,
+    term_distribution: {
+      primary_term_sessions: 14,
+      spanning_term_sessions: 10,
+    },
+    campus_id: 'camp_pmh',
+    subject_id: 'sub_stem',
+    facility_id: 'fac_stem_lab_pmh',
+    time_slot_id: 'slot_mon_wed_afterschool',
+    days_of_week: ['T2', 'T4'],
+    start_date: '2026-11-09',
+    end_date: '2027-02-10',
+    standard_sessions: 24,
+    total_sessions: 24,
+    price_per_session: 166250,
+    tuition_fee: 3990000,
+    full_course_fee: 3990000,
+    primary_teacher_id: 'tch_david',
+    max_students: 15,
+    status: 'active',
+    allow_over_quota: false,
+  },
   // --- KHÓA HỌC KẾ TIẾP: KHÓA MÙA XUÂN 2027 (HK2 - term_spring_2027) ---
   {
     id: 'cls_swim_pmh_spring_01',
@@ -1491,6 +1519,9 @@ export const initialEnrollments: Enrollment[] = [
   { id: 'enr_40', student_id: 'std_48', class_id: 'cls_bask_pl_01', registered_sessions: 24, joined_date: '2026-09-01', status: 'active' },
   { id: 'enr_41', student_id: 'std_49', class_id: 'cls_bask_pl_01', registered_sessions: 24, joined_date: '2026-09-01', status: 'active' },
   { id: 'enr_42', student_id: 'std_50', class_id: 'cls_bask_pl_01', registered_sessions: 24, joined_date: '2026-09-01', status: 'trial', trial_session_date: '2026-09-08', trial_notes: 'Thử vận động bóng rổ sơ khởi' },
+
+  // Ghi danh Lớp Liên Khóa (cls_robotics_cross_01)
+  { id: 'enr_cross_01', student_id: 'std_05', class_id: 'cls_robotics_cross_01', registered_sessions: 24, joined_date: '2026-11-09', status: 'active' },
 ];
 
 // ==========================================
@@ -1867,6 +1898,35 @@ export const initialInvoices: TuitionInvoice[] = [
       },
     ],
   },
+  // Hóa đơn Lớp Liên Khóa: Robotics Sáng Tạo Khám Phá (cls_robotics_cross_01)
+  {
+    id: 'inv_cross_01',
+    invoice_code: 'INV-2026-0099',
+    student_id: 'std_05',
+    class_id: 'cls_robotics_cross_01',
+    gross_amount: 3990000,
+    credit_deducted: 0,
+    net_payable: 3790500, // 5% Royal
+    paid_amount: 3790500,
+    outstanding_amount: 0,
+    payment_status: 'paid',
+    due_date: '2026-11-20',
+    created_at: '2026-11-05',
+    payment_reference: 'VCB-CROSS-9988',
+    verified_by: 'Kế toán Lê Minh Thư',
+    verified_at: '2026-11-06',
+    payment_history: [
+      {
+        id: 'pay_cross_01_1',
+        payment_date: '2026-11-06',
+        amount: 3790500,
+        payment_method: 'bank_transfer',
+        payment_reference: 'VCB-CROSS-9988',
+        verified_by: 'Kế toán Lê Minh Thư',
+        notes: 'Thanh toán trọn khóa Lớp Liên Khóa Robotics PMH (24 buổi: 14b Khóa Thu + 10b Khóa Xuân)',
+      },
+    ],
+  },
 ];
 
 // ==========================================
@@ -1990,6 +2050,34 @@ export const initialSessions: ClassSession[] = [
     snacks_returned: 0,
     status: 'completed',
   },
+
+  // Lớp Liên Khóa: Robotics Sáng Tạo Khám Phá (Giai đoạn 1: 14 buổi Khóa Thu, Giai đoạn 2: 10 buổi Khóa Xuân)
+  // Giai đoạn 1 (Khóa Thu 2026 - term_fall_2026): 14 buổi
+  { id: 'ses_robotics_cross_01', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-09', session_number: 1, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 1, snacks_consumed: 1, snacks_returned: 0, status: 'completed' },
+  { id: 'ses_robotics_cross_02', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-11', session_number: 2, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 1, snacks_consumed: 1, snacks_returned: 0, status: 'completed' },
+  { id: 'ses_robotics_cross_03', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-16', session_number: 3, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 1, snacks_consumed: 1, snacks_returned: 0, status: 'completed' },
+  { id: 'ses_robotics_cross_04', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-18', session_number: 4, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 1, snacks_consumed: 1, snacks_returned: 0, status: 'completed' },
+  { id: 'ses_robotics_cross_05', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-23', session_number: 5, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 1, snacks_consumed: 1, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_06', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-25', session_number: 6, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_07', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-11-30', session_number: 7, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_08', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-02', session_number: 8, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_09', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-07', session_number: 9, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_10', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-09', session_number: 10, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_11', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-14', session_number: 11, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_12', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-16', session_number: 12, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_13', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-21', session_number: 13, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_14', class_id: 'cls_robotics_cross_01', term_id: 'term_fall_2026', session_date: '2026-12-23', session_number: 14, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  // Giai đoạn 2 (Khóa Xuân 2027 - term_spring_2027): 10 buổi vắt tiếp theo
+  { id: 'ses_robotics_cross_15', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-01-11', session_number: 15, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_16', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-01-13', session_number: 16, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_17', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-01-18', session_number: 17, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_18', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-01-20', session_number: 18, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_19', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-01-25', session_number: 19, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_20', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-01-27', session_number: 20, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_21', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-02-01', session_number: 21, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_22', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-02-03', session_number: 22, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_23', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-02-08', session_number: 23, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
+  { id: 'ses_robotics_cross_24', class_id: 'cls_robotics_cross_01', term_id: 'term_spring_2027', session_date: '2027-02-10', session_number: 24, actual_teacher_id: 'tch_david', is_substitute: false, snacks_allocated: 0, snacks_consumed: 0, snacks_returned: 0, status: 'scheduled' },
 ];
 
 // ==========================================
