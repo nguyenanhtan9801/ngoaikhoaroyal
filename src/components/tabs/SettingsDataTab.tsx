@@ -936,8 +936,40 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     category_code: categoriesList[0]?.code || 'SPORTS',
     category: categoriesList[0]?.name || 'Thể thao',
     standard_duration: '90 phút',
+    standard_sessions: 24,
     description: '',
   });
+
+  const syncTermSubjectToSupabase = async (
+    termId: string,
+    subjectId: string,
+    sessions: number,
+    fee: number,
+    isActive: boolean,
+    notes?: string
+  ) => {
+    const client = getSupabaseClient() || supabase;
+    if (!client) return;
+    try {
+      const validSessions = Math.max(1, Number(sessions) || 24);
+      const validFee = Math.max(0, Number(fee) || 0);
+      const rate = Math.ceil(validFee / validSessions);
+      await client.from('term_subjects').upsert({
+        id: `ts_${termId}_${subjectId}`,
+        term_id: termId,
+        subject_id: subjectId,
+        standard_sessions: validSessions,
+        total_fee: validFee,
+        standard_course_fee: validFee,
+        standard_session_rate: rate,
+        is_active: isActive,
+        notes: notes || '',
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Lỗi Supabase khi upsert term_subjects:', err);
+    }
+  };
 
   const handleOpenAddSubject = (presetCategory?: string | React.MouseEvent) => {
     let defaultCatObj = categoriesList[0];
@@ -952,6 +984,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       category_code: defaultCatObj?.code || '',
       category: defaultCatObj?.name || 'Thể thao',
       standard_duration: '90 phút',
+      standard_sessions: 24,
       description: '',
     });
     setShowSubjectModal(true);
@@ -968,12 +1001,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       category_code: subject.category_code || catObj?.code || '',
       category: subject.category || catObj?.name || 'Thể thao',
       standard_duration: subject.standard_duration || '90 phút',
+      standard_sessions: subject.standard_sessions ? Number(subject.standard_sessions) : 24,
       description: subject.description || '',
     });
     setShowSubjectModal(true);
   };
 
-  const handleDeleteSubject = (subject: Subject) => {
+  const handleDeleteSubject = async (subject: Subject) => {
     const relatedClasses = store.classes.filter(c => c.subject_id === subject.id);
     if (relatedClasses.length > 0) {
       alert(`Không thể xóa môn học "${subject.name}" (${subject.code}) vì hiện có ${relatedClasses.length} lớp học ngoại khóa đang mở cho môn này. Vui lòng chuyển hoặc xóa các lớp học liên quan trước.`);
@@ -988,6 +1022,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const ok = window.confirm(msg);
     if (!ok) return;
 
+    // Xóa trên Supabase
+    const client = getSupabaseClient() || supabase;
+    if (client) {
+      try {
+        await client.from('subjects').delete().eq('id', subject.id);
+        await client.from('term_subjects').delete().eq('subject_id', subject.id);
+      } catch (err) {
+        console.warn('Lỗi Supabase khi xóa subject:', err);
+      }
+    }
+
     onUpdateStore(prev => ({
       ...prev,
       subjects: prev.subjects.filter(s => s.id !== subject.id),
@@ -995,9 +1040,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       campusPricings: prev.campusPricings.filter(cp => cp.subject_id !== subject.id),
       pricings: prev.pricings.filter(p => p.subject_id !== subject.id),
     }));
+
+    showToast(`Đã xóa môn học "${subject.name}" (${subject.code}) thành công!`, 'info');
   };
 
-  const handleSaveSubject = (e: React.FormEvent) => {
+  const handleSaveSubject = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = subjectFormData.code.trim().toUpperCase();
     const cleanName = subjectFormData.name.trim();
@@ -1020,8 +1067,31 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     );
     const finalCategoryName = matchedCategory ? matchedCategory.name : (subjectFormData.category || subjectFormData.category_code);
     const finalCategoryCode = matchedCategory ? matchedCategory.code : (subjectFormData.category_code || '');
+    const standardSessionsNum = Number(subjectFormData.standard_sessions) || 24;
+    const client = getSupabaseClient() || supabase;
 
     if (editingSubject) {
+      // 1. Cập nhật trực tiếp lên Supabase
+      if (client) {
+        try {
+          await client.from('subjects').upsert({
+            id: editingSubject.id,
+            code: cleanCode,
+            name: cleanName,
+            category: finalCategoryName,
+            category_code: finalCategoryCode,
+            standard_duration: subjectFormData.standard_duration || '90 phút',
+            standard_sessions: standardSessionsNum,
+            description: subjectFormData.description || '',
+            is_active: editingSubject.is_active !== false,
+            updated_at: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn('Lỗi Supabase khi lưu subjects:', err);
+        }
+      }
+
+      // 2. Cập nhật Store
       onUpdateStore(prev => ({
         ...prev,
         subjects: prev.subjects.map(s => 
@@ -1029,6 +1099,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             ? {
                 ...s,
                 ...subjectFormData,
+                standard_sessions: standardSessionsNum,
                 category: finalCategoryName,
                 category_code: finalCategoryCode,
                 category_id: matchedCategory?.id,
@@ -1038,27 +1109,52 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             : s
         ),
       }));
+
+      showToast(`Đã cập nhật môn học "${cleanName}" (${cleanCode}) thành công!`, 'success');
     } else {
       const newSubId = `sub_${cleanCode.toLowerCase()}_${Date.now()}`;
       const newSubject: Subject = {
         id: newSubId,
         ...subjectFormData,
+        standard_sessions: standardSessionsNum,
         category: finalCategoryName,
         category_code: finalCategoryCode,
         category_id: matchedCategory?.id,
         code: cleanCode,
         name: cleanName,
+        is_active: true,
       };
 
+      // 1. Thêm mới trực tiếp lên Supabase
+      if (client) {
+        try {
+          await client.from('subjects').upsert({
+            id: newSubId,
+            code: cleanCode,
+            name: cleanName,
+            category: finalCategoryName,
+            category_code: finalCategoryCode,
+            standard_duration: subjectFormData.standard_duration || '90 phút',
+            standard_sessions: standardSessionsNum,
+            description: subjectFormData.description || '',
+            is_active: true,
+            updated_at: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn('Lỗi Supabase khi thêm subjects:', err);
+        }
+      }
+
+      // 2. Cập nhật Store
       onUpdateStore(prev => {
         const newTermConfigs: TermSubjectConfig[] = prev.terms.map(t => ({
           id: `ts_${t.id}_${cleanCode.toLowerCase()}`,
           term_id: t.id,
           subject_id: newSubId,
           is_active: true,
-          standard_sessions: 24,
+          standard_sessions: standardSessionsNum,
           standard_course_fee: 3600000,
-          standard_session_rate: 150000,
+          standard_session_rate: Math.ceil(3600000 / standardSessionsNum),
           discount_type: 'none',
           discount_value: 0,
           notes: `${cleanName} - Khóa ${t.name}`,
@@ -1070,6 +1166,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           termSubjects: [...prev.termSubjects, ...newTermConfigs],
         };
       });
+
+      showToast(`Đã thêm môn học "${cleanName}" (${cleanCode}) thành công!`, 'success');
     }
 
     setShowSubjectModal(false);
@@ -2476,10 +2574,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <h4 className="text-base font-extrabold text-white group-hover:text-amber-300 transition-colors">
                               {subject.name}
                             </h4>
-                            <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
+                            <div className="flex items-center gap-2 text-xs text-slate-400 mt-1 flex-wrap">
                               <span className="flex items-center gap-1 text-slate-300 font-medium">
                                 <Clock className="w-3.5 h-3.5 text-cyan-400" />
                                 {subject.standard_duration || '90 phút'}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono font-bold text-[10px]">
+                                {subject.standard_sessions || 24} buổi
                               </span>
                             </div>
                             {subject.description ? (
@@ -2545,6 +2646,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                         <th className="py-3 px-4">Tên Môn Học & Nội Dung</th>
                         <th className="py-3 px-4">Phân Loại</th>
                         <th className="py-3 px-4">Thời Lượng Chuẩn</th>
+                        <th className="py-3 px-4 text-center">Số Buổi Chuẩn</th>
                         <th className="py-3 px-4 text-center">Khóa Đang Kích Hoạt</th>
                         <th className="py-3 px-4 text-center">Lớp Học Mở</th>
                         <th className="py-3 px-4 text-right">Thao Tác</th>
@@ -2581,6 +2683,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                 <Clock className="w-3.5 h-3.5 text-cyan-400" />
                                 {subject.standard_duration || '90 phút'}
                               </span>
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono">
+                              <span className="text-amber-400 font-semibold">{subject.standard_sessions || 24} buổi</span>
                             </td>
                             <td className="py-3 px-4 text-center font-mono">
                               <span className="text-amber-400 font-bold">{activeTermsCount}</span>
@@ -2923,9 +3028,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                         );
 
                         const isActive = termConfig ? termConfig.is_active : false;
-                        const standardSessions = termConfig ? termConfig.standard_sessions : 24;
+                        const standardSessions = termConfig?.standard_sessions ?? subject.standard_sessions ?? 24;
                         const standardFee = termConfig ? termConfig.standard_course_fee : 3600000;
-                        const ceilRate = calculateCeilSessionRate(standardFee, standardSessions);
+                        const ceilRate = Math.ceil(standardFee / Math.max(1, standardSessions));
                         const isClosed = isTermClosed(selectedConfigTermId, store);
 
                         return (
@@ -2934,8 +3039,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <td className="py-3 px-4">
                               <button
                                 disabled={isClosed}
-                                onClick={() => {
+                                onClick={async () => {
                                   if (isClosed) return;
+                                  const newActive = !isActive;
                                   onUpdateStore(prev => {
                                     const existing = prev.termSubjects.find(
                                       ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
@@ -2944,7 +3050,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                       return {
                                         ...prev,
                                         termSubjects: prev.termSubjects.map(ts => 
-                                          ts.id === existing.id ? { ...ts, is_active: !ts.is_active } : ts
+                                          ts.id === existing.id ? { ...ts, is_active: newActive } : ts
                                         ),
                                       };
                                     } else {
@@ -2952,10 +3058,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                         id: `ts_${selectedConfigTermId}_${subject.id}`,
                                         term_id: selectedConfigTermId,
                                         subject_id: subject.id,
-                                        is_active: true,
-                                        standard_sessions: 24,
-                                        standard_course_fee: 3600000,
-                                        standard_session_rate: 150000,
+                                        is_active: newActive,
+                                        standard_sessions: standardSessions,
+                                        standard_course_fee: standardFee,
+                                        standard_session_rate: ceilRate,
                                       };
                                       return {
                                         ...prev,
@@ -2963,6 +3069,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                       };
                                     }
                                   });
+
+                                  await syncTermSubjectToSupabase(
+                                    selectedConfigTermId,
+                                    subject.id,
+                                    standardSessions,
+                                    standardFee,
+                                    newActive,
+                                    termConfig?.notes
+                                  );
                                 }}
                                 className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all flex items-center gap-1.5 ${
                                   isActive
@@ -2977,7 +3092,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
                             <td className="py-3 px-4 font-bold text-white">
                               <div>{subject.name}</div>
-                              <span className="font-mono text-[10px] text-slate-400">{subject.code} &bull; {subject.standard_duration}</span>
+                              <span className="font-mono text-[10px] text-slate-400">{subject.code} &bull; {subject.standard_duration || '90 phút'}</span>
                             </td>
 
                             <td className="py-3 px-4">
@@ -2990,26 +3105,59 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <td className="py-3 px-4 text-center">
                               <input
                                 type="number"
-                                min={4}
-                                max={60}
+                                min={1}
+                                max={100}
                                 disabled={isClosed}
                                 value={standardSessions}
                                 onChange={(e) => {
-                                  const val = Number(e.target.value);
-                                  onUpdateStore(prev => ({
-                                    ...prev,
-                                    termSubjects: prev.termSubjects.map(ts => 
-                                      ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
-                                        ? { 
-                                            ...ts, 
-                                            standard_sessions: val, 
-                                            standard_session_rate: calculateCeilSessionRate(ts.standard_course_fee, val) 
-                                          }
-                                        : ts
-                                    ),
-                                  }));
+                                  const val = Number(e.target.value) || 1;
+                                  const newRate = Math.ceil(standardFee / Math.max(1, val));
+                                  onUpdateStore(prev => {
+                                    const existing = prev.termSubjects.find(
+                                      ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
+                                    );
+                                    if (existing) {
+                                      return {
+                                        ...prev,
+                                        termSubjects: prev.termSubjects.map(ts => 
+                                          ts.id === existing.id
+                                            ? { 
+                                                ...ts, 
+                                                standard_sessions: val, 
+                                                standard_session_rate: newRate 
+                                              }
+                                            : ts
+                                        ),
+                                      };
+                                    } else {
+                                      const newConfig: TermSubjectConfig = {
+                                        id: `ts_${selectedConfigTermId}_${subject.id}`,
+                                        term_id: selectedConfigTermId,
+                                        subject_id: subject.id,
+                                        is_active: isActive,
+                                        standard_sessions: val,
+                                        standard_course_fee: standardFee,
+                                        standard_session_rate: newRate,
+                                      };
+                                      return {
+                                        ...prev,
+                                        termSubjects: [...prev.termSubjects, newConfig],
+                                      };
+                                    }
+                                  });
                                 }}
-                                className="w-16 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-center font-mono font-bold text-white text-xs disabled:opacity-60"
+                                onBlur={(e) => {
+                                  const val = Number(e.target.value) || standardSessions;
+                                  syncTermSubjectToSupabase(
+                                    selectedConfigTermId,
+                                    subject.id,
+                                    val,
+                                    standardFee,
+                                    isActive,
+                                    termConfig?.notes
+                                  );
+                                }}
+                                className="w-16 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-center font-mono font-bold text-amber-400 text-xs disabled:opacity-60 focus:border-amber-500 focus:outline-none"
                               />
                             </td>
 
@@ -3021,21 +3169,54 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                 disabled={isClosed}
                                 value={standardFee}
                                 onChange={(e) => {
-                                  const val = Number(e.target.value);
-                                  onUpdateStore(prev => ({
-                                    ...prev,
-                                    termSubjects: prev.termSubjects.map(ts => 
-                                      ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
-                                        ? { 
-                                            ...ts, 
-                                            standard_course_fee: val, 
-                                            standard_session_rate: calculateCeilSessionRate(val, ts.standard_sessions) 
-                                          }
-                                        : ts
-                                    ),
-                                  }));
+                                  const val = Number(e.target.value) || 0;
+                                  const newRate = Math.ceil(val / Math.max(1, standardSessions));
+                                  onUpdateStore(prev => {
+                                    const existing = prev.termSubjects.find(
+                                      ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
+                                    );
+                                    if (existing) {
+                                      return {
+                                        ...prev,
+                                        termSubjects: prev.termSubjects.map(ts => 
+                                          ts.id === existing.id
+                                            ? { 
+                                                ...ts, 
+                                                standard_course_fee: val, 
+                                                standard_session_rate: newRate 
+                                              }
+                                            : ts
+                                        ),
+                                      };
+                                    } else {
+                                      const newConfig: TermSubjectConfig = {
+                                        id: `ts_${selectedConfigTermId}_${subject.id}`,
+                                        term_id: selectedConfigTermId,
+                                        subject_id: subject.id,
+                                        is_active: isActive,
+                                        standard_sessions: standardSessions,
+                                        standard_course_fee: val,
+                                        standard_session_rate: newRate,
+                                      };
+                                      return {
+                                        ...prev,
+                                        termSubjects: [...prev.termSubjects, newConfig],
+                                      };
+                                    }
+                                  });
                                 }}
-                                className="w-28 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 font-mono font-bold text-amber-400 text-xs disabled:opacity-60"
+                                onBlur={(e) => {
+                                  const val = Number(e.target.value) || standardFee;
+                                  syncTermSubjectToSupabase(
+                                    selectedConfigTermId,
+                                    subject.id,
+                                    standardSessions,
+                                    val,
+                                    isActive,
+                                    termConfig?.notes
+                                  );
+                                }}
+                                className="w-28 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 font-mono font-bold text-amber-400 text-xs disabled:opacity-60 focus:border-amber-500 focus:outline-none"
                               />
                             </td>
 
@@ -3062,12 +3243,40 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                     ),
                                   }));
                                 }}
+                                onBlur={(e) => {
+                                  syncTermSubjectToSupabase(
+                                    selectedConfigTermId,
+                                    subject.id,
+                                    standardSessions,
+                                    standardFee,
+                                    isActive,
+                                    e.target.value
+                                  );
+                                }}
                                 className="w-full min-w-[120px] px-2 py-1 rounded-lg bg-slate-900/60 border border-slate-800 text-xs text-slate-300 placeholder-slate-600 focus:outline-none focus:border-amber-500"
                               />
                             </td>
 
                             <td className="py-3 px-4 text-right">
-                              <span className="text-[10px] text-slate-500">Tự động đồng bộ</span>
+                              <button
+                                disabled={isClosed}
+                                onClick={async () => {
+                                  await syncTermSubjectToSupabase(
+                                    selectedConfigTermId,
+                                    subject.id,
+                                    standardSessions,
+                                    standardFee,
+                                    isActive,
+                                    termConfig?.notes
+                                  );
+                                  showToast(`Đã đồng bộ môn ${subject.name} vào CSDL Supabase!`, 'success');
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold transition-all"
+                                title="Đồng bộ trực tiếp lên Supabase"
+                              >
+                                <Cloud className="w-3 h-3" />
+                                <span>Đồng bộ</span>
+                              </button>
                             </td>
                           </tr>
                         );
@@ -4372,31 +4581,48 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Thời lượng chuẩn mỗi buổi</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {['45 phút', '60 phút', '75 phút', '90 phút'].map(dur => (
-                    <button
-                      type="button"
-                      key={dur}
-                      onClick={() => setSubjectFormData({ ...subjectFormData, standard_duration: dur })}
-                      className={`py-1.5 px-2 rounded-xl text-center font-medium transition-all ${
-                        subjectFormData.standard_duration === dur
-                          ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
-                          : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {dur}
-                    </button>
-                  ))}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">Số buổi chuẩn *</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    required
+                    value={subjectFormData.standard_sessions}
+                    onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_sessions: Number(e.target.value) || 24 })}
+                    placeholder="VD: 24"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Số buổi chuẩn mặc định toàn trường (VD: 24 buổi)</span>
                 </div>
-                <input
-                  type="text"
-                  value={subjectFormData.standard_duration}
-                  onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_duration: e.target.value })}
-                  placeholder="Hoặc nhập thời lượng tùy ý (VD: 120 phút)"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 mt-2 focus:outline-none focus:border-amber-500"
-                />
+
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">Thời lượng chuẩn mỗi buổi</label>
+                  <input
+                    type="text"
+                    value={subjectFormData.standard_duration}
+                    onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_duration: e.target.value })}
+                    placeholder="VD: 90 phút"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-medium focus:outline-none focus:border-amber-500"
+                  />
+                  <div className="grid grid-cols-4 gap-1 mt-1">
+                    {['45 phút', '60 phút', '75 phút', '90 phút'].map(dur => (
+                      <button
+                        type="button"
+                        key={dur}
+                        onClick={() => setSubjectFormData({ ...subjectFormData, standard_duration: dur })}
+                        className={`py-0.5 px-1 rounded-lg text-center text-[10px] font-medium transition-all ${
+                          subjectFormData.standard_duration === dur
+                            ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
+                            : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {dur}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <div>

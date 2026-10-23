@@ -289,6 +289,7 @@ export function normalizeSubjectRecord(sub: Subject): Subject {
   return {
     ...sub,
     category_code,
+    standard_sessions: sub.standard_sessions ? Number(sub.standard_sessions) : 24,
   };
 }
 

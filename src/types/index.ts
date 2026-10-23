@@ -117,6 +117,8 @@ export interface Subject {
   category_code?: string;
   category_id?: string;
   standard_duration?: string;
+  standard_sessions?: number;
+  duration_minutes?: number;
   description?: string;
   required_room_type?: string;
   is_active?: boolean;

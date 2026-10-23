@@ -28,6 +28,7 @@ import {
   TuitionInvoice,
   MakeupCredit,
   AppUser,
+  TermSubjectConfig,
 } from '../types';
 import { resolveStudentCampusId, resolveSubjectCategoryCode } from './storage';
 
@@ -411,6 +412,24 @@ CREATE TABLE IF NOT EXISTS subjects (
 
 ALTER TABLE public.subjects 
 ADD COLUMN IF NOT EXISTS category_code TEXT;
+
+-- BẢNG CẤU HÌNH MÔN HỌC THEO KHÓA (TERM SUBJECTS)
+CREATE TABLE IF NOT EXISTS term_subjects (
+  id TEXT PRIMARY KEY,
+  term_id TEXT REFERENCES academic_terms(id) ON DELETE CASCADE,
+  subject_id TEXT REFERENCES subjects(id) ON DELETE CASCADE,
+  standard_sessions INTEGER DEFAULT 24,
+  standard_course_fee NUMERIC DEFAULT 3990000,
+  total_fee NUMERIC DEFAULT 3990000,
+  standard_session_rate NUMERIC DEFAULT 166250,
+  is_active BOOLEAN DEFAULT true,
+  discount_type TEXT DEFAULT 'none',
+  discount_value NUMERIC DEFAULT 0,
+  discount_reason TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(term_id, subject_id)
+);
 
 -- 04. BẢNG HỒ SƠ GIÁO VIÊN & ĐỊNH MỨC THÙ LAO (04_GIAO_VIEN)
 CREATE TABLE IF NOT EXISTS teachers (
@@ -1210,12 +1229,13 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         const pmh = (store.campusPricings || []).find(cp => cp.subject_id === s.id && cp.campus_id === 'camp_pmh');
         const pl = (store.campusPricings || []).find(cp => cp.subject_id === s.id && cp.campus_id === 'camp_pl');
         const stdFee = ts?.standard_course_fee || 3990000;
-        const stdSessions = ts?.standard_sessions || 24;
+        const stdSessions = s.standard_sessions || ts?.standard_sessions || 24;
         return {
           id: s.id,
           code: s.code,
           name: s.name,
           category: s.category || 'Thể thao',
+          category_code: s.category_code || resolveSubjectCategoryCode(s.category, s.name),
           standard_duration: s.standard_duration || '90 phút',
           standard_sessions: stdSessions,
           standard_course_fee: stdFee,
@@ -1564,6 +1584,7 @@ export async function pullAllTablesFromSupabase(
             category: r.category || 'Thể thao',
             category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
             standard_duration: r.standard_duration || '90 phút',
+            standard_sessions: r.standard_sessions ? Number(r.standard_sessions) : 24,
             description: r.description || '',
             is_active: r.is_active !== false,
           }));
@@ -1769,10 +1790,22 @@ export async function pullAllTablesFromSupabase(
   }
 
   try {
-    const { data: regsData } = await client.from('parent_registrations').select('*');
-    if (Array.isArray(regsData) && regsData.length > 0) {
-      nextStore.parentRegistrations = regsData.map((r: any) => mapSupabaseRowToStoreEntity('parent_registrations', r));
-      totalPulled += regsData.length;
+    const { data: termSubData } = await client.from('term_subjects').select('*');
+    if (Array.isArray(termSubData) && termSubData.length > 0) {
+      nextStore.termSubjects = termSubData.map((r: any): TermSubjectConfig => ({
+        id: r.id || `ts_${r.term_id}_${r.subject_id}`,
+        term_id: r.term_id,
+        subject_id: r.subject_id,
+        standard_sessions: r.standard_sessions ? Number(r.standard_sessions) : 24,
+        standard_course_fee: Number(r.standard_course_fee ?? r.total_fee ?? 3600000),
+        standard_session_rate: Number(r.standard_session_rate ?? Math.ceil(Number(r.standard_course_fee ?? r.total_fee ?? 3600000) / Math.max(1, Number(r.standard_sessions || 24)))),
+        is_active: r.is_active !== false,
+        discount_type: r.discount_type || 'none',
+        discount_value: Number(r.discount_value) || 0,
+        discount_reason: r.discount_reason || '',
+        notes: r.notes || '',
+      }));
+      totalPulled += termSubData.length;
     }
   } catch {
     // ignore
