@@ -34,7 +34,13 @@ import {
   PayrollRateConfig,
   AppStore,
 } from '../types';
-import { getSupabaseClient, sanitizeSupabaseBaseUrl, safeStorage } from '../supabaseClient';
+import {
+  getSupabaseClient,
+  sanitizeSupabaseBaseUrl,
+  safeStorage,
+  DEFAULT_SUPABASE_URL,
+  DEFAULT_SUPABASE_ANON_KEY,
+} from '../supabaseClient';
 
 export type { AppStore, PayrollRateConfig };
 
@@ -87,9 +93,9 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
       if (parsed.url && parsed.anonKey) {
         const cleanUrl = sanitizeSupabaseBaseUrl(String(parsed.url));
         return {
-          url: cleanUrl,
-          anonKey: String(parsed.anonKey).trim(),
-          isConnected: Boolean(parsed.isConnected),
+          url: cleanUrl || DEFAULT_SUPABASE_URL,
+          anonKey: String(parsed.anonKey).trim() || DEFAULT_SUPABASE_ANON_KEY,
+          isConnected: Boolean(parsed.isConnected ?? true),
         };
       }
     }
@@ -98,10 +104,15 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
   }
   const envUrl = sanitizeSupabaseBaseUrl((import.meta as any).env?.VITE_SUPABASE_URL || '');
   const envKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
-  if (envUrl && envKey && envUrl.startsWith('http') && !envUrl.includes('your-project-id')) {
-    return { url: envUrl, anonKey: envKey, isConnected: true };
-  }
-  return { url: '', anonKey: '', isConnected: false };
+  const url =
+    envUrl && envUrl.startsWith('http') && !envUrl.includes('your-project-id')
+      ? envUrl
+      : DEFAULT_SUPABASE_URL;
+  const anonKey =
+    envKey && !envKey.includes('your-anon-public-key') && envKey !== '[DÁN_CHUỖI_EYJ..._CỦA_BẠN_VÀO_ĐÂY]'
+      ? envKey
+      : DEFAULT_SUPABASE_ANON_KEY;
+  return { url, anonKey, isConnected: true };
 }
 
 /**
@@ -356,9 +367,9 @@ export function loadStore(): AppStore {
 
     const storedSbConfig = getStoredSupabaseConfig();
     const supabaseConfig = {
-      url: sanitizeSupabaseBaseUrl(parsed.supabaseConfig?.url || storedSbConfig.url || ''),
-      anonKey: String(parsed.supabaseConfig?.anonKey || storedSbConfig.anonKey || '').trim(),
-      isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? storedSbConfig.isConnected),
+      url: sanitizeSupabaseBaseUrl(parsed.supabaseConfig?.url || storedSbConfig.url || DEFAULT_SUPABASE_URL),
+      anonKey: String(parsed.supabaseConfig?.anonKey || storedSbConfig.anonKey || DEFAULT_SUPABASE_ANON_KEY).trim(),
+      isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? true),
     };
 
     const loadedStore: AppStore = {

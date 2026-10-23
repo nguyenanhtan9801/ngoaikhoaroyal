@@ -1,6 +1,8 @@
 import { createClient, SupabaseClient, SupportedStorage } from '@supabase/supabase-js';
 
 export const DEFAULT_SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mzg1Mzg0MDAsImV4cCI6MjA1NDExNDQwMH0.wobszxqzlalzcjcfbzhq_anon_key';
 
 export interface SafeSyncStorage extends SupportedStorage {
   getItem: (key: string) => string | null;
@@ -113,7 +115,11 @@ export function sanitizeSupabaseTableName(tableName?: string | null): string {
 
 const rawEnvUrl = String((import.meta as any).env?.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL);
 export const SUPABASE_URL = sanitizeSupabaseBaseUrl(rawEnvUrl) || DEFAULT_SUPABASE_URL;
-export const SUPABASE_ANON_KEY = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+const rawEnvKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+export const SUPABASE_ANON_KEY =
+  rawEnvKey && !rawEnvKey.includes('your-anon-public-key') && rawEnvKey !== '[DÁN_CHUỖI_EYJ..._CỦA_BẠN_VÀO_ĐÂY]'
+    ? rawEnvKey
+    : DEFAULT_SUPABASE_ANON_KEY;
 
 /**
  * Custom Fetch Interceptor cho Supabase Client & WebKit iOS/macOS:
@@ -206,12 +212,16 @@ export function getResolvedSupabaseConfig(
   const envKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
 
   const resolvedUrl =
-    envUrl && envUrl.startsWith('http') && !envUrl.includes('your-project-id')
+    cleanCustomUrl ||
+    (envUrl && envUrl.startsWith('http') && !envUrl.includes('your-project-id')
       ? envUrl
-      : cleanCustomUrl || DEFAULT_SUPABASE_URL;
+      : DEFAULT_SUPABASE_URL);
 
   const resolvedKey =
-    envKey && !envKey.includes('your-anon-public-key') ? envKey : cleanCustomKey;
+    cleanCustomKey ||
+    (envKey && !envKey.includes('your-anon-public-key') && envKey !== '[DÁN_CHUỖI_EYJ..._CỦA_BẠN_VÀO_ĐÂY]'
+      ? envKey
+      : DEFAULT_SUPABASE_ANON_KEY);
 
   return {
     url: resolvedUrl,

@@ -82,7 +82,9 @@ import {
   pullAllTablesFromSupabase,
   sanitizeSupabaseBaseUrl,
   TableHealthStatus,
-  SupabaseConnectionCheckResult
+  SupabaseConnectionCheckResult,
+  DEFAULT_SUPABASE_URL,
+  DEFAULT_SUPABASE_ANON_KEY
 } from '../../lib/supabase';
 import { 
   UserRole, 
@@ -1166,8 +1168,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   }>({ loading: false });
 
   // Supabase Config & 10-Table Diagnostics State
-  const [sbUrl, setSbUrl] = useState(() => sanitizeSupabaseBaseUrl(store.supabaseConfig.url || ''));
-  const [sbKey, setSbKey] = useState(store.supabaseConfig.anonKey || '');
+  const [sbUrl, setSbUrl] = useState(() => sanitizeSupabaseBaseUrl(store.supabaseConfig.url || DEFAULT_SUPABASE_URL));
+  const [sbKey, setSbKey] = useState(store.supabaseConfig.anonKey || DEFAULT_SUPABASE_ANON_KEY);
   const [sbConnected, setSbConnected] = useState(store.supabaseConfig.isConnected);
   const [sbLatency, setSbLatency] = useState<number | null>(null);
   const [sbHasBucket, setSbHasBucket] = useState<boolean>(false);
