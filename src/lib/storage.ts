@@ -34,7 +34,7 @@ import {
   PayrollRateConfig,
   AppStore,
 } from '../types';
-import { getSupabaseClient, sanitizeSupabaseBaseUrl } from '../supabaseClient';
+import { getSupabaseClient, sanitizeSupabaseBaseUrl, safeStorage } from '../supabaseClient';
 
 export type { AppStore, PayrollRateConfig };
 
@@ -81,7 +81,7 @@ export const GOOGLE_DRIVE_ROOT_URL = 'https://drive.google.com/drive/folders/1KV
 
 function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected: boolean } {
   try {
-    const raw = localStorage.getItem('royal_supabase_config');
+    const raw = safeStorage.getItem('royal_supabase_config');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed.url && parsed.anonKey) {
@@ -297,7 +297,7 @@ export function loadStore(): AppStore {
       // noop
     }
 
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = safeStorage.getItem(STORAGE_KEY);
     if (!raw) {
       const initial = getInitialStore();
       saveStore(initial);
@@ -498,7 +498,7 @@ export function saveStore(store: AppStore): void {
   // Level 0: Standard sanitized write
   try {
     const cleanStore = prepareStoreForStorage(store, 0);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanStore));
+    safeStorage.setItem(STORAGE_KEY, JSON.stringify(cleanStore));
     window.dispatchEvent(new Event('royal_store_updated'));
     return;
   } catch (err: any) {
@@ -508,7 +508,7 @@ export function saveStore(store: AppStore): void {
   // Level 1: Aggressive compaction
   try {
     const compactStoreL1 = prepareStoreForStorage(store, 1);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL1));
+    safeStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL1));
     window.dispatchEvent(new Event('royal_store_updated'));
     return;
   } catch (err2: any) {
@@ -518,7 +518,7 @@ export function saveStore(store: AppStore): void {
   // Level 2: Emergency compaction
   try {
     const compactStoreL2 = prepareStoreForStorage(store, 2);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL2));
+    safeStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL2));
     window.dispatchEvent(new Event('royal_store_updated'));
   } catch (finalErr: any) {
     console.error('CRITICAL: Unable to save to localStorage after all progressive compactions', finalErr);
@@ -2197,9 +2197,11 @@ export async function handleLoginProcess(
     };
 
     try {
-      localStorage.setItem('royal_auth_session', JSON.stringify(overAdminSession));
-      localStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
-      sessionStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
+      safeStorage.setItem('royal_auth_session', JSON.stringify(overAdminSession));
+      safeStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
+      }
     } catch {
       // ignore
     }
@@ -2309,9 +2311,11 @@ export async function handleLoginProcess(
   }
 
   try {
-    localStorage.setItem('royal_auth_session', JSON.stringify(authenticatedUser));
-    localStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
-    sessionStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
+    safeStorage.setItem('royal_auth_session', JSON.stringify(authenticatedUser));
+    safeStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
+    }
   } catch {
     // ignore
   }

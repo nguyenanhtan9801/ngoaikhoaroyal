@@ -575,8 +575,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       if (proofModalStudent && currentClass) {
         const sbRes = await uploadToSupabaseBucket(
           file,
-          `${selectedDate}_${proofModalStudent.code}_${result.fileName}`,
-          store.supabaseConfig
+          'attendance-proofs'
         );
         if (sbRes.success && sbRes.url) {
           uploadedUrl = sbRes.url;

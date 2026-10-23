@@ -2110,6 +2110,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                 const isSubIn = isTaughtByThisTeacher && (rec.is_substitute || rec.assigned_teacher_id !== detailLogTeacher.id);
                                 const appliedSessionRate = rec.rate_applied || targetRow?.defaultSessionRate || 300000;
                                 const sessionEarned = isTaughtByThisTeacher ? (rec.earned_amount || rec.total_payout || appliedSessionRate) : 0;
+                                const actualTeacher = store.teachers.find(t => t.id === rec.actual_teacher_id);
 
                                 return (
                                   <tr

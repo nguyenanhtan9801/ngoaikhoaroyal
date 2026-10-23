@@ -1425,7 +1425,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         loading: false,
         message: result.message,
         isError: false,
-        sheetStats: result.sheetStats,
+        sheetStats: result.sheetStats?.map(s => ({
+          sheetName: s.sheetName,
+          rowCount: s.rowsCount,
+          status: 'Thành công',
+        })),
       });
       showToast(result.message || `Import đồng bộ 10 bảng từ "${file.name}" thành công!`, 'success', {
         title: 'Nhập Bảng Tính Tổng Thể (10 Bảng)',

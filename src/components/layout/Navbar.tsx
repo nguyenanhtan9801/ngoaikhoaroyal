@@ -37,6 +37,9 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const roleLabels: Record<UserRole, { title: string; color: string }> = {
     super_admin: { title: 'Super Admin', color: 'bg-amber-500/20 text-amber-400 border-amber-500/40' },
+    campus_manager: { title: 'Quản lý Cơ sở', color: 'bg-amber-500/20 text-amber-400 border-amber-500/40' },
+    academic: { title: 'Học vụ / Giáo vụ', color: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },
+    accountant: { title: 'Kế toán Trường', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' },
     academic_accountant: { title: 'Học vụ kiêm Kế toán', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' },
     academic_admissions: { title: 'Học vụ & Tuyển sinh', color: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/40' },
     academic_staff: { title: 'Nhân viên Học vụ', color: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },

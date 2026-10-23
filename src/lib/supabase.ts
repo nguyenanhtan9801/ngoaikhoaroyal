@@ -8,7 +8,9 @@ import {
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
   supabase,
+  isSupabaseConfigured,
 } from '../supabaseClient';
+
 import {
   AppStore,
   Campus,
@@ -711,6 +713,7 @@ export function createSupabaseClientInstance(urlInput?: string, anonKeyInput?: s
 
 export {
   getSupabaseClient,
+  isSupabaseConfigured,
   isValidSupabaseAnonJwt,
   sanitizeSupabaseBaseUrl,
   sanitizeSupabaseTableName,
@@ -2097,21 +2100,21 @@ export async function syncStoreDeltaToSupabase(
         const serializedAll = serializeTableRowsForSupabase(table, nextStore);
         const rowsToUpsert = serializedAll.filter(r => toUpsertIds.has(String(r.id)));
         if (rowsToUpsert.length > 0) {
-          client
-            .from(table)
-            .upsert(rowsToUpsert, { onConflict: 'id' })
-            .then(() => {})
-            .catch(() => {});
+          Promise.resolve(
+            client
+              .from(table)
+              .upsert(rowsToUpsert, { onConflict: 'id' })
+          ).catch(() => {});
         }
       }
 
       if (toDeleteIds.length > 0) {
-        client
-          .from(table)
-          .delete()
-          .in('id', toDeleteIds)
-          .then(() => {})
-          .catch(() => {});
+        Promise.resolve(
+          client
+            .from(table)
+            .delete()
+            .in('id', toDeleteIds)
+        ).catch(() => {});
       }
     }
   }

@@ -23,14 +23,15 @@ import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, vali
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
+import { safeStorage } from './supabaseClient';
 
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
 
-  // User Authentication State (Persists across F5 via localStorage)
+  // User Authentication State (Persists across F5 via safeStorage)
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
     try {
-      const stored = localStorage.getItem('royal_current_user');
+      const stored = safeStorage.getItem('royal_current_user');
       if (stored) {
         return JSON.parse(stored);
       }
@@ -56,7 +57,7 @@ export default function App() {
   // Set currentRole based on currentUser if logged in
   const [currentRole, setCurrentRole] = useState<UserRole>(() => {
     try {
-      const stored = localStorage.getItem('royal_current_user');
+      const stored = safeStorage.getItem('royal_current_user');
       if (stored) {
         const u = JSON.parse(stored);
         if (u && u.role) return u.role;
@@ -71,8 +72,8 @@ export default function App() {
     setCurrentUser(user);
     setCurrentRole(user.role);
     try {
-      localStorage.setItem('royal_current_user', JSON.stringify(user));
-      localStorage.setItem('royal_auth_session', JSON.stringify(user));
+      safeStorage.setItem('royal_current_user', JSON.stringify(user));
+      safeStorage.setItem('royal_auth_session', JSON.stringify(user));
     } catch {
       // noop
     }
@@ -85,7 +86,7 @@ export default function App() {
     // Điều hướng thông minh sau đăng nhập theo vai trò (Role-based Routing)
     if (user.role === 'teacher') {
       if (user.linked_teacher_id) {
-        const teacherClass = store.classes.find(c => c.teacher_id === user.linked_teacher_id);
+        const teacherClass = store.classes.find(c => c.primary_teacher_id === user.linked_teacher_id);
         if (teacherClass) {
           setFocusedClass(teacherClass);
         }
@@ -114,9 +115,11 @@ export default function App() {
     }
     setCurrentUser(null);
     try {
-      localStorage.removeItem('royal_current_user');
-      localStorage.removeItem('royal_auth_session');
-      sessionStorage.removeItem('royal_current_user');
+      safeStorage.removeItem('royal_current_user');
+      safeStorage.removeItem('royal_auth_session');
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem('royal_current_user');
+      }
     } catch {
       // noop
     }

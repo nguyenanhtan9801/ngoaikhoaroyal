@@ -691,7 +691,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-medium"
               >
                 {campusFacilities.map(f => (
-                  <option key={f.id} value={f.id}>{f.name} ({f.room_code || f.type})</option>
+                  <option key={f.id} value={f.id}>{f.name} ({(f as any).room_code || f.type})</option>
                 ))}
               </select>
             </div>

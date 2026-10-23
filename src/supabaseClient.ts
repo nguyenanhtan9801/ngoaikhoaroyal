@@ -1,6 +1,69 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient, SupportedStorage } from '@supabase/supabase-js';
 
 export const DEFAULT_SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
+
+export interface SafeSyncStorage extends SupportedStorage {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+}
+
+/**
+ * Khởi tạo bộ lưu trữ an toàn tránh lỗi Storage trên iOS/WebKit (SecurityError, ITP, Private Browsing)
+ */
+export const createSafeStorage = (): SafeSyncStorage => {
+  const memoryStore: Record<string, string> = {};
+
+  const isLocalStorageAvailable = () => {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return false;
+      const testKey = '__test_ios_storage__';
+      window.localStorage.setItem(testKey, '1');
+      window.localStorage.removeItem(testKey);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const useLocal = isLocalStorageAvailable();
+
+  return {
+    getItem: (key: string): string | null => {
+      if (useLocal) {
+        try {
+          return window.localStorage.getItem(key);
+        } catch {
+          return memoryStore[key] || null;
+        }
+      }
+      return memoryStore[key] || null;
+    },
+    setItem: (key: string, value: string): void => {
+      if (useLocal) {
+        try {
+          window.localStorage.setItem(key, value);
+          return;
+        } catch {
+          // Bị chặn quota hoặc incognito/ITP trên iOS WebKit
+        }
+      }
+      memoryStore[key] = value;
+    },
+    removeItem: (key: string): void => {
+      if (useLocal) {
+        try {
+          window.localStorage.removeItem(key);
+        } catch {
+          // Bỏ qua lỗi
+        }
+      }
+      delete memoryStore[key];
+    },
+  };
+};
+
+export const safeStorage = createSafeStorage();
 
 /**
  * Làm sạch Base URL của Supabase:
@@ -53,11 +116,13 @@ export const SUPABASE_URL = sanitizeSupabaseBaseUrl(rawEnvUrl) || DEFAULT_SUPABA
 export const SUPABASE_ANON_KEY = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
 
 /**
- * Custom Fetch Interceptor cho Supabase Client:
+ * Custom Fetch Interceptor cho Supabase Client & WebKit iOS/macOS:
+ * - Tự động thêm 'cache: no-store' để WebKit/Safari luôn nạp dữ liệu mới nhất (chống cache cứng)
+ * - Gửi header nhận diện 'x-client-info': 'royal-school-hub-ios'
  * - Tự động khử trùng lặp '/rest/v1/rest/v1/' thành '/rest/v1/' trong mọi tình huống
  * - Tự động sửa tên bảng bị mã hóa khoảng trắng '%20' thành '_' (VD: '/rest/v1/academic%20terms' -> '/rest/v1/academic_terms')
  */
-const safeSupabaseFetch: typeof fetch = async (input, init) => {
+export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   let targetUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
   // Khử trùng lặp '/rest/v1/rest/v1' (kể cả lặp nhiều lần)
@@ -69,11 +134,20 @@ const safeSupabaseFetch: typeof fetch = async (input, init) => {
     return `/rest/v1/${cleanTable}`;
   });
 
+  const mergedInit: RequestInit = {
+    ...init,
+    cache: 'no-store', // WebKit/Safari cache fix
+    headers: {
+      'x-client-info': 'royal-school-hub-ios',
+      ...(init?.headers || {}),
+    },
+  };
+
   if (typeof input === 'string' || input instanceof URL) {
-    return fetch(targetUrl, init);
+    return fetch(targetUrl, mergedInit);
   }
-  const clonedRequest = new Request(targetUrl, input);
-  return fetch(clonedRequest, init);
+  const clonedRequest = new Request(targetUrl, mergedInit);
+  return fetch(clonedRequest, mergedInit);
 };
 
 /**
@@ -91,8 +165,8 @@ export function isValidSupabaseAnonJwt(key?: string | null): boolean {
 }
 
 /**
- * Đọc thông tin kết nối Supabase từ tham số truyền vào, cấu hình đã lưu trong localStorage hoặc biến môi trường (.env)
- * Đồng thời tự động làm sạch URL bị dính '/rest/v1' đã lưu trước đó trong localStorage.
+ * Đọc thông tin kết nối Supabase từ tham số truyền vào, cấu hình đã lưu trong safeStorage hoặc biến môi trường (.env)
+ * Đồng thời tự động làm sạch URL bị dính '/rest/v1' đã lưu trước đó.
  */
 export function getResolvedSupabaseConfig(
   customUrl?: string,
@@ -105,29 +179,27 @@ export function getResolvedSupabaseConfig(
   }
 
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const savedRaw = window.localStorage.getItem('royal_supabase_config');
-      if (savedRaw) {
-        const parsed = JSON.parse(savedRaw);
-        const rawSavedUrl = String(parsed?.url || '').trim();
-        const savedUrl = sanitizeSupabaseBaseUrl(rawSavedUrl);
-        const savedKey = String(parsed?.anonKey || '').trim();
+    const savedRaw = safeStorage.getItem('royal_supabase_config');
+    if (savedRaw) {
+      const parsed = JSON.parse(savedRaw);
+      const rawSavedUrl = String(parsed?.url || '').trim();
+      const savedUrl = sanitizeSupabaseBaseUrl(rawSavedUrl);
+      const savedKey = String(parsed?.anonKey || '').trim();
 
-        // Tự động sửa lại localStorage nếu trước đó người dùng lưu URL có chứa '/rest/v1'
-        if (savedUrl && rawSavedUrl !== savedUrl) {
-          window.localStorage.setItem(
-            'royal_supabase_config',
-            JSON.stringify({ ...parsed, url: savedUrl })
-          );
-        }
+      // Tự động sửa lại storage nếu trước đó người dùng lưu URL có chứa '/rest/v1'
+      if (savedUrl && rawSavedUrl !== savedUrl) {
+        safeStorage.setItem(
+          'royal_supabase_config',
+          JSON.stringify({ ...parsed, url: savedUrl })
+        );
+      }
 
-        if (savedUrl && savedKey && savedUrl.startsWith('http')) {
-          return { url: savedUrl, anonKey: savedKey };
-        }
+      if (savedUrl && savedKey && savedUrl.startsWith('http')) {
+        return { url: savedUrl, anonKey: savedKey };
       }
     }
   } catch {
-    // Bỏ qua lỗi đọc localStorage
+    // Bỏ qua lỗi đọc safeStorage
   }
 
   const envUrl = sanitizeSupabaseBaseUrl((import.meta as any).env?.VITE_SUPABASE_URL);
@@ -147,12 +219,28 @@ export function getResolvedSupabaseConfig(
   };
 }
 
+/**
+ * Kiểm tra xem Supabase đã được cấu hình với URL và Anon Key hợp lệ chưa
+ */
+export function isSupabaseConfigured(url?: string, anonKey?: string): boolean {
+  const resolved = getResolvedSupabaseConfig(url, anonKey);
+  return Boolean(
+    resolved.url &&
+    resolved.anonKey &&
+    resolved.url.startsWith('http') &&
+    !resolved.url.includes('your-project-id') &&
+    !resolved.anonKey.includes('your-anon-public-key')
+  );
+}
+
 // Biến singleton giữ instance duy nhất trong toàn bộ vòng đời trình duyệt
 let supabaseInstance: SupabaseClient | null = null;
 let currentInstanceSignature = '';
 
 /**
- * Khởi tạo hoặc trả về Singleton SupabaseClient duy nhất.
+ * Khởi tạo hoặc trả về Singleton SupabaseClient an toàn với WebKit iOS & macOS.
+ * - Sử dụng SafeStorage tránh SecurityError trên iOS Safari/Chrome Incognito & ITP.
+ * - Tự động thêm 'cache: no-store' vào fetch để tránh WebKit cache REST API requests.
  * - Ngăn chặn triệt để cảnh báo "Multiple GoTrueClient instances detected in the same browser context".
  * - Đảm bảo Base URL luôn sạch (không bị lặp '/rest/v1/rest/v1/').
  */
@@ -178,12 +266,16 @@ export const getSupabaseClient = (
   try {
     supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
+        storage: safeStorage,
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: false,
         storageKey: 'royal_school_supabase_auth',
       },
       global: {
+        headers: {
+          'x-client-info': 'royal-school-hub-ios',
+        },
         fetch: safeSupabaseFetch,
       },
       realtime: {
