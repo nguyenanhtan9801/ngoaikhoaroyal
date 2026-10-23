@@ -18,8 +18,9 @@ import {
   Sparkles
 } from 'lucide-react';
 import { UserRole, Student, AppUser } from '../types';
-import { AppStore, createAuditRecord, appendAuditLog } from '../lib/storage';
+import { AppStore, createAuditRecord, appendAuditLog, handleLoginProcess, getRoleLabelVN } from '../lib/storage';
 import { RoyalLogo } from './RoyalLogo';
+import { showToast } from '../lib/toast';
 
 interface LoginPortalModalProps {
   isOpen: boolean;
@@ -85,114 +86,114 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
     setParentWarning(null);
   };
 
-  const handleStandardStaffLogin = (e: React.FormEvent) => {
+  const handleStandardStaffLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setStaffError(null);
     setIsStaffSubmitting(true);
 
-    setTimeout(() => {
-      const cleanUname = staffUsername.trim().toLowerCase();
-      const cleanPass = staffPassword.trim();
+    const cleanUname = staffUsername.trim().toLowerCase();
+    const cleanPass = staffPassword.trim();
 
-      if (!cleanUname) {
-        setStaffError('Vui lòng nhập Tên đăng nhập hoặc Email công vụ.');
-        setIsStaffSubmitting(false);
-        return;
+    if (!cleanUname) {
+      setStaffError('Vui lòng nhập Tên đăng nhập hoặc Email công vụ.');
+      setIsStaffSubmitting(false);
+      return;
+    }
+
+    if (!cleanPass) {
+      setStaffError('Vui lòng nhập Mật khẩu bảo mật.');
+      setIsStaffSubmitting(false);
+      return;
+    }
+
+    const result = await handleLoginProcess(cleanUname, cleanPass, store);
+
+    if (!result.success || !result.user) {
+      if (result.errorToast) {
+        showToast(result.errorToast, result.reason === 'locked' ? 'warning' : 'error');
+        setStaffError(result.errorToast);
       }
 
-      if (!cleanPass) {
-        setStaffError('Vui lòng nhập Mật khẩu bảo mật.');
-        setIsStaffSubmitting(false);
-        return;
-      }
-
-      const matchedUser = store.users.find(
-        u => u.username.toLowerCase() === cleanUname || u.email.toLowerCase() === cleanUname
-      );
-
-      if (!matchedUser) {
-        if (onUpdateStore) {
-          const failLog = createAuditRecord(
-            'AUTH_LOGIN_FAILED',
-            'AUTH',
-            'Hệ thống Xác thực',
-            `Đăng nhập thất bại: Tài khoản "${cleanUname}" không tồn tại trên hệ thống`,
-            null,
-            {
-              target_id: cleanUname,
-              details: {
-                ip_address: '192.168.1.45',
-                status: 'failed',
-                after: { reason: 'Tài khoản không tồn tại', attempted_username: cleanUname }
-              }
-            }
-          );
-          onUpdateStore(prev => appendAuditLog(prev, failLog));
-        }
-        setStaffError(`Tài khoản "${cleanUname}" không tồn tại trong hệ thống Royal School.`);
-        setIsStaffSubmitting(false);
-        return;
-      }
-
-      if (matchedUser.password && matchedUser.password !== cleanPass) {
-        if (onUpdateStore) {
-          const failLog = createAuditRecord(
-            'AUTH_LOGIN_FAILED',
-            'AUTH',
-            'Hệ thống Xác thực',
-            `Đăng nhập thất bại: Sai mật khẩu truy cập cho tài khoản "${matchedUser.username}"`,
-            matchedUser,
-            {
-              target_id: matchedUser.username,
-              details: {
-                ip_address: '192.168.1.45',
-                status: 'failed',
-                after: { reason: 'Mật khẩu không chính xác', username: matchedUser.username }
-              }
-            }
-          );
-          onUpdateStore(prev => appendAuditLog(prev, failLog));
-        }
-        setStaffError('Mật khẩu không chính xác. Mật khẩu mẫu mặc định là: 123456');
-        setIsStaffSubmitting(false);
-        return;
-      }
-
-      // Login Successful
       if (onUpdateStore) {
-        const log = createAuditRecord(
-          'AUTH_LOGIN_SUCCESS',
+        const failLog = createAuditRecord(
+          'AUTH_LOGIN_FAILED',
           'AUTH',
           'Hệ thống Xác thực',
-          `Nhân sự ${matchedUser.full_name} (@${matchedUser.username}) đăng nhập thành công với vai trò ${matchedUser.role}`,
-          matchedUser,
+          result.reason === 'locked'
+            ? `Chặn đăng nhập: Tài khoản "${cleanUname}" đang bị khóa (status = locked)`
+            : result.reason === 'wrong_password'
+            ? `Đăng nhập thất bại: Sai mật khẩu truy cập cho tài khoản "${cleanUname}"`
+            : `Đăng nhập thất bại: Tài khoản "${cleanUname}" không tồn tại trên hệ thống`,
+          result.user || null,
           {
-            target_id: matchedUser.username,
+            target_id: cleanUname,
             details: {
               ip_address: '192.168.1.45',
-              status: 'success',
-              after: { role: matchedUser.role, full_name: matchedUser.full_name, login_mode: 'form_credentials' }
-            }
+              status: 'failed',
+              after: { reason: result.reason || 'failed', attempted_username: cleanUname },
+            },
           }
         );
-        onUpdateStore(prev => appendAuditLog(prev, log));
+        onUpdateStore(prev => appendAuditLog(prev, failLog));
       }
 
-      if (onLoginSuccess) {
-        onLoginSuccess(matchedUser);
-      } else {
-        onChangeRole(matchedUser.role);
-      }
-
-      if (onSetParentStudent) onSetParentStudent(null);
-      setLoginSuccess(`Đăng nhập thành công: ${matchedUser.full_name} (${matchedUser.role})`);
       setIsStaffSubmitting(false);
+      return;
+    }
 
-      setTimeout(() => {
-        setLoginSuccess(null);
-        onClose();
-      }, 700);
-    }, 300);
+    const authenticatedUser = result.user;
+
+    if (onUpdateStore) {
+      const log = createAuditRecord(
+        'AUTH_LOGIN_SUCCESS',
+        'AUTH',
+        authenticatedUser.is_root ? 'Hệ thống Xác thực (Root Emergency Bypass)' : 'Hệ thống Xác thực',
+        authenticatedUser.is_root
+          ? `Quản trị tối cao ${authenticatedUser.full_name} (@overadmin) đăng nhập khẩn cấp với toàn quyền hệ thống (*)`
+          : `Nhân sự ${authenticatedUser.full_name} (@${authenticatedUser.username}) đăng nhập thành công với vai trò ${getRoleLabelVN(authenticatedUser.role, authenticatedUser)}`,
+        authenticatedUser,
+        {
+          target_id: authenticatedUser.username,
+          details: {
+            ip_address: '192.168.1.45',
+            status: 'success',
+            after: {
+              role: authenticatedUser.role,
+              full_name: authenticatedUser.full_name,
+              campus_id: authenticatedUser.campus_id,
+              last_login: authenticatedUser.last_login,
+            },
+          },
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...appendAuditLog(prev, log),
+        users: prev.users.map(u =>
+          u.id === authenticatedUser.id || u.username === authenticatedUser.username
+            ? { ...u, last_login: authenticatedUser.last_login }
+            : u
+        ),
+      }));
+    }
+
+    if (onLoginSuccess) {
+      onLoginSuccess(authenticatedUser);
+    } else {
+      onChangeRole(authenticatedUser.role);
+    }
+
+    if (onSetParentStudent) onSetParentStudent(null);
+    if (result.successToast) {
+      showToast(result.successToast, 'success');
+      setLoginSuccess(result.successToast);
+    }
+    setIsStaffSubmitting(false);
+
+    setTimeout(() => {
+      setLoginSuccess(null);
+      onClose();
+    }, 600);
   };
 
   const handleParentPhoneLogin = (e: React.FormEvent) => {

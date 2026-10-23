@@ -55,7 +55,9 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     sub_finance_transfer: { parent: 'Tài Chính & Kế Toán', title: 'Biến Động Chuyển Lớp & Phụ Thu', icon: ArrowRightLeft, badge: 'Bù Trừ Chênh Lệch' },
     
     // Nhóm 5: Hệ Thống & Danh Mục
+    sub_users: { parent: 'Hệ Thống & Danh Mục', title: 'Quản Lý Người Dùng & Phân Quyền', icon: UserCheck, badge: 'RBAC & Bảo Mật' },
     sub_settings: { parent: 'Hệ Thống & Danh Mục', title: 'Quản Trị Dữ Liệu & Bảng Tính Tổng Thể', icon: Settings, badge: 'Quản Trị Viên' },
+    sub_audit_logs: { parent: 'Hệ Thống & Danh Mục', title: 'Nhật Ký Hoạt Động & Kiểm Toán', icon: Award, badge: 'Audit Trail' },
     
     // Fallback legacy routes
     sub_finance: { parent: 'Tài Chính & Kế Toán', title: 'Doanh Thu & Quyết Toán Thù Lao', icon: Receipt, badge: 'Kế Toán' },

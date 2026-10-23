@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
+import { getUserPermissions, getRoleLabelVN, getCampusLabelVN } from '../lib/storage';
 
 interface SubMenuItem {
   id: string;
@@ -83,17 +84,20 @@ export const Navbar: React.FC<NavbarProps> = ({
   const consecutiveAlertCount = notifications.filter(n => n.type === 'consecutive_absence' && !n.read).length;
 
   const rolesList: { id: UserRole; label: string; desc: string }[] = [
-    { id: 'super_admin', label: 'Quản trị viên Cấp cao', desc: 'Toàn quyền cấu hình, đặt lại dữ liệu & xuất bảng tính tổng thể' },
+    { id: 'super_admin', label: 'Quản trị viên Cấp cao', desc: 'Toàn quyền cấu hình, phân quyền RBAC, đặt lại dữ liệu & xuất bảng tính tổng thể' },
+    { id: 'campus_manager', label: 'Quản lý cơ sở (PMH / PL)', desc: 'Quản lý toàn diện đào tạo, tuyển sinh & tài chính tại cơ sở phụ trách' },
     { id: 'academic_accountant', label: 'Học vụ kiêm Kế toán', desc: 'Quản lý lớp, chuyên cần, bảo lưu & duyệt thu học phí' },
     { id: 'academic_admissions', label: 'Học vụ kiêm Tuyển sinh', desc: 'Xếp lớp, bánh sữa, chuyển lớp, ghi danh' },
-    { id: 'admissions', label: 'Nhân viên Tuyển sinh', desc: 'Tiếp nhận đơn cổng phụ huynh, phân loại học sinh Royal' },
+    { id: 'admissions', label: 'Chuyên viên Tuyển sinh', desc: 'Tiếp nhận đơn cổng phụ huynh, xếp lớp nhanh 1-Click' },
+    { id: 'accountant', label: 'Kế toán Học phí & Thù lao', desc: 'Quản lý hóa đơn VietQR, bảo lưu & quyết toán thù lao giáo viên' },
     { id: 'teacher', label: 'Giáo viên bộ môn', desc: 'Chỉ điểm danh & y tế, khóa hoàn toàn tài chính' },
   ];
 
   const currentRoleInfo = rolesList.find(r => r.id === currentRole) || rolesList[0];
+  const perms = getUserPermissions(currentUser, currentRole);
 
   // Danh mục phân hệ điều hướng hệ thống
-  const menuGroups: MenuGroup[] = [
+  const allMenuGroups: MenuGroup[] = [
     {
       id: 'group_bi',
       title: 'TỔNG QUAN & BÁO CÁO',
@@ -186,7 +190,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           id: 'sub_finance_payroll', 
           label: 'Quyết Toán Thù Lao Giáo Viên', 
           icon: UserCheck, 
-          desc: 'Thù lao theo buổi cố định cơ hữu và tỷ lệ phần trăm thỉnh giảng' 
+          desc: 'Thù lao theo buổi cố định cơ hữu (300k) và thỉnh giảng (270k)' 
         },
         { 
           id: 'sub_finance_transfer', 
@@ -201,6 +205,14 @@ export const Navbar: React.FC<NavbarProps> = ({
       title: 'HỆ THỐNG & DANH MỤC',
       icon: Settings,
       items: [
+        { 
+          id: 'sub_users', 
+          label: 'Quản Lý Người Dùng & Phân Quyền', 
+          icon: ShieldCheck, 
+          desc: 'Thêm tài khoản, khóa/mở khóa đăng nhập và cấu hình ma trận quyền hạn RBAC',
+          badge: 'RBAC',
+          badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+        },
         { 
           id: 'sub_settings', 
           label: 'Quản Trị Dữ Liệu & Bảng Tính Tổng Thể', 
@@ -218,6 +230,47 @@ export const Navbar: React.FC<NavbarProps> = ({
       ],
     },
   ];
+
+  const isRouteAllowed = (routeId: string): boolean => {
+    if (currentRole === 'super_admin' || currentUser?.role === 'super_admin' || currentUser?.is_root) {
+      return true;
+    }
+    switch (routeId) {
+      case 'sub_kpi':
+        return true;
+      case 'sub_parents':
+      case 'sub_students':
+        return !!(perms.can_manage_enrollment || perms.can_view_registrations || perms.can_manage_classes);
+      case 'sub_credits':
+        return !!(perms.can_manage_credits || perms.can_manage_finance);
+      case 'sub_term_subjects':
+      case 'sub_pricing':
+      case 'sub_settings':
+        return !!perms.can_config_system;
+      case 'sub_classes':
+        return !!(perms.can_manage_classes || perms.can_view_classes || perms.can_take_attendance);
+      case 'sub_attendance':
+      case 'sub_snacks':
+        return !!perms.can_take_attendance;
+      case 'sub_finance_invoices':
+      case 'sub_finance_transfer':
+        return !!perms.can_manage_finance;
+      case 'sub_finance_payroll':
+        return !!(perms.can_settle_payroll || perms.can_manage_finance);
+      case 'sub_users':
+      case 'sub_audit_logs':
+        return !!perms.can_manage_users;
+      default:
+        return true;
+    }
+  };
+
+  const menuGroups: MenuGroup[] = allMenuGroups
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => isRouteAllowed(item.id)),
+    }))
+    .filter(group => group.items.length > 0);
 
   const handleItemClick = (routeId: string) => {
     onNavigate(routeId);

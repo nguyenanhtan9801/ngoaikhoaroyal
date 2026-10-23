@@ -1,11 +1,32 @@
-export type UserRole = 
-  | 'super_admin' 
-  | 'academic_accountant' 
-  | 'academic_admissions' 
+export type SystemRole =
+  | 'super_admin'         // Quản trị viên cấp cao (Toàn quyền)
+  | 'campus_manager'      // Quản lý cơ sở (PMH hoặc Phú Lâm)
+  | 'academic'            // Giáo vụ / Học vụ (Lớp học, Điểm danh, Lịch giảng dạy)
+  | 'admissions'          // Tuyển sinh (Tiếp nhận đơn, Ghi danh, Xếp lớp)
+  | 'accountant'          // Kế toán (Học phí, VietQR, Phiếu bảo lưu, Quyết toán thù lao)
+  | 'teacher'             // Giáo viên (Chỉ xem lịch dạy và điểm danh lớp của mình)
+  | 'academic_accountant' // Học vụ kiêm Kế toán
+  | 'academic_admissions' // Học vụ kiêm Tuyển sinh
   | 'academic_staff'
-  | 'admissions_staff'
-  | 'admissions' 
-  | 'teacher';
+  | 'admissions_staff';
+
+export type UserRole = SystemRole;
+
+export interface UserPermissionMatrix {
+  can_manage_classes: boolean;        // Quản lý tạo/sửa lớp học
+  can_take_attendance: boolean;       // Điểm danh & tải minh chứng
+  can_manage_enrollment: boolean;     // Tiếp nhận & xếp lớp học sinh
+  can_manage_finance: boolean;        // Xem và duyệt thanh toán hóa đơn
+  can_manage_credits: boolean;        // Lập & cấn trừ phiếu bảo lưu
+  can_settle_payroll: boolean;        // Quyết toán thù lao giáo viên
+  can_config_system: boolean;         // Cấu hình học phí, định mức thù lao, cơ sở
+  can_manage_users: boolean;          // Thêm, sửa, xóa, phân quyền tài khoản
+  // Các quyền chi tiết bổ trợ trong Modal Ma Trận Quyền Hạn 4 nhóm:
+  can_view_classes?: boolean;         // Xem lớp học
+  can_view_registrations?: boolean;   // Xem danh sách đăng ký
+  can_manage_trial?: boolean;         // Học thử 1 buổi
+  can_config_payroll_rates?: boolean; // Cài đặt mức thù lao cơ hữu/thỉnh giảng
+}
 
 export type AttendanceStatus = 'present' | 'absent_excused' | 'absent_unexcused';
 export type ClassItem = ExtracurricularClass;
@@ -27,18 +48,26 @@ export interface PricingRule {
 }
 
 export interface AppUser {
-  id: string;
-  username: string;              // Tên đăng nhập duy nhất
-  password: string;              // Mật khẩu
-  full_name: string;             // Họ và tên nhân sự
-  phone: string;
-  email: string;
-  role: UserRole;
-  department: string;            // Phòng ban: Ban Giám Hiệu, Kế Toán, Tuyển Sinh, Tổ Bộ Môn...
-  campus_id?: string;            // Thuộc cơ sở nào (hoặc 'all' cho Super Admin)
-  teacher_id?: string;           // Nếu là giáo viên: liên kết với mã giáo viên trong danh sách GV
-  status: 'active' | 'locked';   // Trạng thái tài khoản
+  id: string;                                         // UUID
+  code?: string;                                      // Mã nhân sự (VD: OVER-ROOT-9999)
+  username: string;                                   // Tên đăng nhập duy nhất
+  password: string;                                   // Mật khẩu
+  password_hash?: string;                             // Chuỗi mật khẩu mã hóa trên Supabase
+  name?: string;                                      // Tên hiển thị ngắn gọn
+  full_name: string;                                  // ThS. Nguyễn Hoàng Long, Cô Lê Thị Kim Cúc...
+  phone: string;                                      // Số điện thoại liên hệ
+  email: string;                                      // Email công vụ (@royal.edu.vn)
+  avatar_url?: string;
+  role: SystemRole;                                   // Vai trò chính
+  department: string;                                 // Phòng ban: Ban Giám Hiệu, Kế Toán, Tuyển Sinh, Tổ Bộ Môn...
+  campus_id: 'all' | 'pmh' | 'pl' | 'camp_pmh' | 'camp_pl' | string; // Phạm vi cơ sở được phép truy cập
+  status: 'active' | 'locked';                        // Trạng thái tài khoản (Đang hoạt động / Bị khóa)
+  permissions?: UserPermissionMatrix | string[];      // Bộ quyền chi tiết RBAC hoặc ['*']
+  linked_teacher_id?: string;                         // FK liên kết bảng Teacher (nếu là giáo viên)
+  teacher_id?: string;                                // Tương thích ngược với linked_teacher_id
   created_at: string;
+  last_login?: string;
+  is_root?: boolean;                                  // Đánh dấu tài khoản Quản trị tối cao (OverAdmin)
 }
 
 export interface Campus {
@@ -234,9 +263,12 @@ export interface TeacherAttendanceRecord {
   late_minutes?: number; // Số phút đi muộn (nếu status === 'late')
   check_in_time?: string; // Giờ vào lớp thực tế (VD: '16:55')
   rate_per_period: number; // Đơn giá tiết áp dụng tại thời điểm chấm công
-  total_payout: number; // Thành tiền buổi dạy = periods_count * rate_per_period (hoặc trừ phạt nếu quy định)
+  rate_applied?: number; // Đơn giá 1 buổi áp dụng theo định mức chuẩn (Cơ hữu: 300.000đ, Thỉnh giảng: 270.000đ)
+  earned_amount?: number; // Thù lao ca dạy = 1 buổi * rate_applied
+  recalculated_at?: string; // Thời điểm đồng bộ hồi tố
+  total_payout: number; // Thành tiền buổi dạy
   verified_by?: string; // Học vụ xác nhận
-  notes?: string; // Ghi chú (VD: "Cô Hương nghỉ ốm, Thầy Tuấn dạy thay 2 tiết")
+  notes?: string; // Ghi chú (VD: "Cô Hương nghỉ ốm, Thầy Tuấn dạy thay 1 buổi")
 }
 
 export interface ExtracurricularClass {
@@ -467,7 +499,7 @@ export interface TeacherPayrollSettlement {
   substitute_periods_added?: number;
   absent_periods_deducted?: number;
   class_revenue: number;
-  calculation_type: 'fixed' | 'percentage' | 'period_rate';
+  calculation_type: 'fixed' | 'percentage' | 'period_rate' | 'session_rate';
   total_payroll: number;
   settled_date: string;
   is_settled: boolean;
@@ -576,6 +608,7 @@ export type LogActionType =
   | 'STUDENT_DELETE'          // Xóa học sinh
   | 'CLASS_ASSIGN'            // Xếp lớp / ghi danh
   | 'CLASS_CREATE'            // Tạo lớp mới
+  | 'CLASS_UPDATE'            // Cập nhật lớp học
   | 'ATTENDANCE_SAVE'         // Lưu điểm danh buổi
   | 'INVOICE_PAYMENT_COLLECT' // Gạch nợ / Thu học phí
   | 'CREDIT_ISSUE'            // Lập phiếu bảo lưu
@@ -583,6 +616,11 @@ export type LogActionType =
   | 'DATABASE_RESET'          // Dọn sạch / Reset database
   | 'EXCEL_IMPORT'            // Import Master Excel
   | 'USER_CREATE'             // Tạo tài khoản nhân sự
+  | 'USER_UPDATE'             // Cập nhật thông tin tài khoản
+  | 'USER_LOCK'               // Khóa tài khoản nhân sự
+  | 'USER_UNLOCK'             // Mở khóa tài khoản nhân sự
+  | 'USER_DELETE'             // Xóa tài khoản nhân sự
+  | 'USER_PERMISSION_UPDATE'  // Phân quyền RBAC tài khoản
   | 'USER_PASSWORD_CHANGE'    // Đổi mật khẩu
   | 'STORAGE_CONFIG_UPDATE'   // Cập nhật cấu hình lưu trữ Cloud
   | 'TEACHER_RATE_UPDATE'     // Cập nhật định mức thù lao tiết dạy giáo viên
@@ -610,8 +648,10 @@ export interface AuditLogRecord {
 }
 
 export interface PayrollRateConfig {
-  permanent_rate_per_period: number; // Đơn giá / tiết cho GV Cơ Hữu (VD: 150.000 đ)
-  visiting_rate_per_period: number;  // Đơn giá / tiết cho GV Thỉnh Giảng (VD: 135.000 đ)
+  permanent_session_rate?: number;   // Đơn giá chuẩn / buổi cho GV Cơ Hữu (Mặc định: 300.000 đ/buổi)
+  visiting_session_rate?: number;    // Đơn giá chuẩn / buổi cho GV Thỉnh Giảng (Mặc định: 270.000 đ/buổi)
+  permanent_rate_per_period: number; // Đơn giá / tiết quy đổi cho GV Cơ Hữu (VD: 150.000 đ)
+  visiting_rate_per_period: number;  // Đơn giá / tiết quy đổi cho GV Thỉnh Giảng (VD: 135.000 đ)
   periods_per_session: number;       // Số tiết chuẩn 1 buổi (Mặc định: 2 tiết)
   updated_at?: string;
   updated_by?: string;

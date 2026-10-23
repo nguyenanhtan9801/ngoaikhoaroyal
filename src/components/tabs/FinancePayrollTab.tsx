@@ -1099,6 +1099,26 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           )}
                         </div>
 
+                        {cls?.is_cross_term && cls.term_distribution && (
+                          <div className="pt-2 mt-1 border-t border-indigo-500/30 space-y-1 text-[11px]">
+                            <div className="font-bold text-indigo-300 flex items-center gap-1">
+                              <span>🌐 Phân bổ doanh thu liên khóa ({cls.total_sessions} buổi):</span>
+                            </div>
+                            <div className="flex justify-between text-slate-300">
+                              <span>• Doanh thu thực hiện kỳ này ({cls.term_distribution.primary_term_sessions}b):</span>
+                              <span className="font-mono font-bold text-emerald-300">
+                                {formatVND(cls.term_distribution.primary_term_sessions * cls.price_per_session)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-slate-400">
+                              <span>• Doanh thu chưa thực hiện kết chuyển kỳ sau ({cls.term_distribution.spanning_term_sessions}b):</span>
+                              <span className="font-mono font-bold text-indigo-300">
+                                {formatVND(cls.term_distribution.spanning_term_sessions * cls.price_per_session)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
                         {invoice.payment_history && invoice.payment_history.length > 0 && (
                           <div className="pt-1.5 flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-800/50">
                             <span className="flex items-center gap-1 text-cyan-400">
@@ -1251,6 +1271,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           {(invoice.discount_amount ?? 0) > 0 && (
                             <div className="text-[10px] text-amber-400">-ƯĐ: {formatVND(invoice.discount_amount || 0)}</div>
                           )}
+                          {cls?.is_cross_term && cls.term_distribution && (
+                            <div className="mt-1 space-y-0.5 text-[10px] font-sans">
+                              <div className="text-emerald-300">
+                                Thực hiện: <strong className="font-mono">{formatVND(cls.term_distribution.primary_term_sessions * cls.price_per_session)}</strong> ({cls.term_distribution.primary_term_sessions}b)
+                              </div>
+                              <div className="text-indigo-300">
+                                Chưa TH (kỳ sau): <strong className="font-mono">{formatVND(cls.term_distribution.spanning_term_sessions * cls.price_per_session)}</strong> ({cls.term_distribution.spanning_term_sessions}b)
+                              </div>
+                            </div>
+                          )}
                         </td>
 
                         <td className="py-3 px-4 font-mono text-cyan-400">
@@ -1376,12 +1406,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               const cls = store.classes.find(c => c.id === ses.class_id);
               if (!cls) return;
               const actualTeacher = store.teachers.find(t => t.id === (ses.actual_teacher_id || cls.primary_teacher_id));
+              const isPerm = (actualTeacher?.type || actualTeacher?.teacher_type) === 'permanent';
+              const sessionRate = isPerm
+                ? (store.payrollRateConfig?.permanent_session_rate ?? 300000)
+                : (store.payrollRateConfig?.visiting_session_rate ?? 270000);
               const periods = actualTeacher?.periods_per_session || store.payrollRateConfig?.periods_per_session || 2;
-              const rate = getTeacherEffectivePeriodRate(actualTeacher, cls.subject_id, false, store.payrollRateConfig);
               baseList.push({
                 id: `synth_${ses.id}`,
                 class_id: cls.id,
-                term_id: cls.term_id,
+                term_id: ses.term_id || cls.term_id,
                 campus_id: cls.campus_id,
                 session_date: ses.session_date,
                 session_number: ses.session_number,
@@ -1391,8 +1424,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 is_substitute: Boolean(ses.is_substitute || (ses.actual_teacher_id && ses.actual_teacher_id !== cls.primary_teacher_id)),
                 status: 'present',
                 check_in_time: '16:40',
-                rate_per_period: rate,
-                total_payout: periods * rate,
+                rate_per_period: Math.round(sessionRate / periods),
+                rate_applied: sessionRate,
+                earned_amount: sessionRate,
+                total_payout: sessionRate,
                 verified_by: 'Hệ thống đồng bộ Sổ điểm danh',
                 notes: 'Đồng bộ tự động từ ca học hoàn thành',
               });
@@ -1405,7 +1440,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           });
         })();
 
-        // Compute per-teacher workload & payroll summary rows
+        // Compute per-teacher workload & payroll summary rows (Per-Session Model: 300K Cơ hữu / 270K Thỉnh giảng)
         const teacherPayrollRows = store.teachers
           .filter(teacher => {
             if (payrollCampusFilter === 'all') return true;
@@ -1421,10 +1456,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           .map((teacher, idx) => {
             const isPermanent = (teacher.type || teacher.teacher_type) === 'permanent';
             const periodsPerSession = teacher.periods_per_session || store.payrollRateConfig?.periods_per_session || 2;
-            const defaultRatePerPeriod = isPermanent
-              ? (store.payrollRateConfig?.permanent_rate_per_period ?? 150000)
-              : (store.payrollRateConfig?.visiting_rate_per_period ?? 135000);
-            const defaultSessionRate = defaultRatePerPeriod * periodsPerSession;
+            const defaultSessionRate = isPermanent
+              ? (store.payrollRateConfig?.permanent_session_rate ?? 300000)
+              : (store.payrollRateConfig?.visiting_session_rate ?? 270000);
+            const defaultRatePerPeriod = Math.round(defaultSessionRate / periodsPerSession);
 
             // Sessions actually taught by this teacher (main + substitute) where status is present or late
             const taughtRecords = effectiveTeacherRecords.filter(
@@ -1452,13 +1487,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
             const taughtSessionsCount = taughtRecords.length;
             const totalPeriodsTaught = taughtRecords.reduce((sum, r) => sum + (r.periods_count || 0), 0);
+            const substituteSessionsAdded = substituteAddedRecords.length;
+            const absentSessionsDeducted = absentOrTransferredRecords.length;
             const substitutePeriodsAdded = substituteAddedRecords.reduce((sum, r) => sum + (r.periods_count || 0), 0);
             const absentPeriodsDeducted = absentOrTransferredRecords.reduce(
               (sum, r) => sum + (r.periods_count > 0 ? r.periods_count : periodsPerSession),
               0
             );
-            // Calculate total payout strictly per the required formula: (Total periods taught) * applied uniform rate
-            const totalPayout = totalPeriodsTaught * defaultRatePerPeriod;
+            // Calculate total payout strictly per the required per-session formula: taughtSessionsCount * defaultSessionRate
+            const totalPayout = taughtSessionsCount * defaultSessionRate;
 
             const settlementRecord = (store.payrollSettlements || []).find(
               ps =>
@@ -1481,6 +1518,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               periodsPerSession,
               taughtSessionsCount,
               totalPeriodsTaught,
+              substituteSessionsAdded,
+              absentSessionsDeducted,
               substitutePeriodsAdded,
               absentPeriodsDeducted,
               totalPayout,
@@ -1493,7 +1532,6 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
         // 4 Top KPI Metrics
         const totalTermPayout = teacherPayrollRows.reduce((sum, r) => sum + r.totalPayout, 0);
-        const totalTermPeriods = teacherPayrollRows.reduce((sum, r) => sum + r.totalPeriodsTaught, 0);
         const totalTermSessions = teacherPayrollRows.reduce((sum, r) => sum + r.taughtSessionsCount, 0);
         const totalSubstituteSessions = effectiveTeacherRecords.filter(r => r.is_substitute).length;
         const settledTeachersCount = teacherPayrollRows.filter(r => r.isSettled).length;
@@ -1501,7 +1539,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
         const handleConfirmTeacherTermSettlement = (row: typeof teacherPayrollRows[number]) => {
           if (row.totalPayout <= 0) {
-            showToast(`Giáo viên ${row.teacher.name} chưa phát sinh tiết dạy thực tế nào trong phạm vi lọc!`, 'info');
+            showToast(`Giáo viên ${row.teacher.name} chưa phát sinh buổi dạy thực tế nào trong phạm vi lọc!`, 'info');
             return;
           }
 
@@ -1520,25 +1558,25 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               term_id: payrollTermFilter,
               campus_id: payrollCampusFilter,
               taught_sessions: row.taughtSessionsCount,
-              substitute_sessions: row.taughtRecords.filter(r => r.is_substitute).length,
+              substitute_sessions: row.substituteSessionsAdded,
               total_periods: row.totalPeriodsTaught,
               substitute_periods_added: row.substitutePeriodsAdded,
               absent_periods_deducted: row.absentPeriodsDeducted,
               class_revenue: 0,
-              calculation_type: 'period_rate' as const,
+              calculation_type: 'session_rate' as const,
               total_payroll: row.totalPayout,
               settled_date: settledDate,
               is_settled: true,
               verified_by: currentUser?.full_name || 'Kế Toán Trưởng',
               bank_reference: bankRef,
-              notes: `Quyết toán ${row.totalPeriodsTaught} tiết (${row.taughtSessionsCount} buổi) khóa ${payrollTermFilter}`,
+              notes: `Quyết toán ${row.taughtSessionsCount} buổi dạy thực tế khóa ${payrollTermFilter}`,
             };
 
             const log = createAuditRecord(
               'TEACHER_PAYROLL_SETTLE',
               'FINANCE',
               `Quyết toán thù lao ${row.teacher.name} (${row.code})`,
-              `Xác nhận chi trả thù lao giảng dạy cho ${row.teacher.name}: ${row.totalPeriodsTaught} tiết (${row.taughtSessionsCount} buổi, Dạy thay +${row.substitutePeriodsAdded} tiết) = ${formatVND(row.totalPayout)} (Mã UNC: ${bankRef})`,
+              `Xác nhận chi trả thù lao giảng dạy cho ${row.teacher.name}: ${row.taughtSessionsCount} buổi (Dạy thay +${row.substituteSessionsAdded} buổi) = ${formatVND(row.totalPayout)} (Mã UNC: ${bankRef})`,
               currentUser,
               {
                 target_id: row.code,
@@ -1548,9 +1586,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     teacher_name: row.teacher.name,
                     term_id: payrollTermFilter,
                     taught_sessions: row.taughtSessionsCount,
-                    total_periods: row.totalPeriodsTaught,
-                    substitute_periods_added: row.substitutePeriodsAdded,
-                    absent_periods_deducted: row.absentPeriodsDeducted,
+                    substitute_sessions: row.substituteSessionsAdded,
+                    absent_sessions: row.absentSessionsDeducted,
                     total_payroll: row.totalPayout,
                     bank_reference: bankRef,
                   },
@@ -1566,7 +1603,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           });
 
           showToast(
-            `Đã xác nhận tất toán thù lao khóa học cho ${row.teacher.name}: ${formatVND(row.totalPayout)} (${row.totalPeriodsTaught} tiết)!`,
+            `Đã xác nhận tất toán thù lao khóa học cho ${row.teacher.name}: ${formatVND(row.totalPayout)} (${row.taughtSessionsCount} buổi)!`,
             'success',
             { title: 'Quyết toán thù lao giáo viên' }
           );
@@ -1651,7 +1688,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               </div>
             </div>
 
-            {/* 2. 4 THẺ CHỈ SỐ TỔNG QUAN (TEACHER PAYROLL KPIs) */}
+            {/* 2. 4 THẺ CHỈ SỐ TỔNG QUAN (TEACHER PAYROLL KPIs - PER SESSION) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {/* KPI 1: Tổng Thù Lao Khóa Học */}
               <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-950/50 via-slate-900 to-slate-900 border border-emerald-500/30 shadow-lg">
@@ -1669,16 +1706,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 </div>
               </div>
 
-              {/* KPI 2: Tổng Số Tiết Đã Giảng Dạy */}
+              {/* KPI 2: Tổng Số Buổi Đã Giảng Dạy */}
               <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-950/40 via-slate-900 to-slate-900 border border-amber-500/30 shadow-lg">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                    2. Tổng Số Tiết Đã Giảng Dạy
+                    2. Tổng Số Buổi Đã Giảng Dạy
                   </span>
                   <Clock className="w-4 h-4 text-amber-400" />
                 </div>
                 <div className="text-xl font-extrabold font-mono text-white mt-1.5">
-                  {totalTermPeriods} Tiết <span className="text-xs font-normal text-amber-300">({totalTermSessions} buổi)</span>
+                  {totalTermSessions} Buổi
                 </div>
                 <div className="text-[11px] text-slate-400 mt-1">
                   Đã qua chấm công &amp; đối soát sổ điểm danh
@@ -1694,11 +1731,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   <RefreshCw className="w-4 h-4 text-purple-400" />
                 </div>
                 <div className="text-xl font-extrabold font-mono text-purple-300 mt-1.5">
-                  {totalSubstituteSessions} Ca <span className="text-xs font-normal text-purple-400">({totalSubstituteSessions * 2} tiết)</span>
+                  {totalSubstituteSessions} Buổi
                 </div>
                 <div className="text-[11px] text-purple-300/80 mt-1">
                   {totalSubstituteSessions > 0
-                    ? '⚡ Đã tự động khấu trừ GV vắng & cộng cho GV dạy thay'
+                    ? `Tự động khấu trừ ${totalSubstituteSessions} buổi của GV vắng và cộng ${totalSubstituteSessions} buổi cho GV dạy thay`
                     : 'Không có ca dạy thay phát sinh'}
                 </div>
               </div>
@@ -1728,10 +1765,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 <div>
                   <h3 className="text-base font-extrabold text-white flex items-center gap-2">
                     <UserCheck className="w-5 h-5 text-amber-400" />
-                    <span>Bảng Tổng Hợp Chấm Công &amp; Quyết Toán Thù Lao Theo Tiết ({teacherPayrollRows.length} giáo viên)</span>
+                    <span>Bảng Tổng Hợp Chấm Công &amp; Quyết Toán Thù Lao Theo Buổi ({teacherPayrollRows.length} giáo viên)</span>
                   </h3>
                   <p className="text-xs text-slate-400 mt-1">
-                    Công thức chuẩn: <strong>Tổng Thù Lao Thực Nhận = ∑ (Số tiết thực dạy từng buổi × Đơn giá tiết áp dụng của GV đứng lớp)</strong>. Tự động cộng tiết dạy thay (+) và trừ tiết vắng chuyển giao (-).
+                    Công thức chuẩn: <strong>Tổng Thù Lao Thực Nhận = Tổng Số Buổi Thực Dạy × Đơn Giá / Buổi (Cơ hữu: 300.000 đ/buổi • Thỉnh giảng: 270.000 đ/buổi)</strong>. Tự động cộng buổi dạy thay (+) và trừ buổi vắng chuyển giao (-).
                   </p>
                 </div>
               </div>
@@ -1758,19 +1795,23 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
                         <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-xs">
                           <div className="flex justify-between text-slate-400">
-                            <span>Đơn giá chuẩn:</span>
-                            <strong className="font-mono text-amber-300">{formatVND(row.defaultRatePerPeriod)}/tiết ({formatVND(row.defaultSessionRate)}/b)</strong>
+                            <span>Đơn giá / buổi:</span>
+                            <strong className="font-mono text-amber-300">{formatVND(row.defaultSessionRate)}/buổi</strong>
                           </div>
                           <div className="flex justify-between text-slate-400">
-                            <span>Tổng buổi / tiết đã dạy:</span>
-                            <strong className="font-mono text-white">{row.taughtSessionsCount} buổi ({row.totalPeriodsTaught} tiết)</strong>
+                            <span>Số buổi đã dạy:</span>
+                            <strong className="font-mono text-white">{row.taughtSessionsCount} buổi</strong>
                           </div>
                           <div className="flex justify-between text-slate-400">
-                            <span>Tiết dạy thay (+) / Vắng (-):</span>
+                            <span>Buổi dạy thay (+) / Vắng (-):</span>
                             <span className="font-mono">
-                              <strong className="text-purple-300">+{row.substitutePeriodsAdded}t</strong>
+                              <strong className="text-purple-300">
+                                {row.substituteSessionsAdded > 0 ? `+${row.substituteSessionsAdded} buổi` : '0 buổi'}
+                              </strong>
                               {' / '}
-                              <strong className="text-rose-400">-{row.absentPeriodsDeducted}t</strong>
+                              <strong className="text-rose-400">
+                                {row.absentSessionsDeducted > 0 ? `-${row.absentSessionsDeducted} buổi` : '0 buổi'}
+                              </strong>
                             </span>
                           </div>
                           <div className="flex justify-between pt-1.5 border-t border-slate-800 text-sm">
@@ -1826,13 +1867,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         <th className="py-3.5 px-4">1. Mã GV &amp; Họ Tên</th>
                         <th className="py-3.5 px-3">2. Phân Loại</th>
                         <th className="py-3.5 px-3">3. Cơ Sở</th>
-                        <th className="py-3.5 px-3">4. Đơn Giá / Tiết</th>
+                        <th className="py-3.5 px-3">4. Đơn Giá / Buổi</th>
                         <th className="py-3.5 px-3 text-center">5. Số Buổi Đã Dạy</th>
-                        <th className="py-3.5 px-3 text-center">6. Tổng Tiết Quy Đổi</th>
-                        <th className="py-3.5 px-3 text-center">7. Tiết Dạy Thay (+)</th>
-                        <th className="py-3.5 px-3 text-center">8. Tiết Vắng / Chuyển (-)</th>
-                        <th className="py-3.5 px-4 text-right">9. Tổng Thù Lao Thực Nhận</th>
-                        <th className="py-3.5 px-4 text-right">10. Thao Tác Quyết Toán</th>
+                        <th className="py-3.5 px-3 text-center">6. Buổi Dạy Thay (+)</th>
+                        <th className="py-3.5 px-3 text-center">7. Buổi Vắng / Chuyển (-)</th>
+                        <th className="py-3.5 px-4 text-right">8. Tổng Thù Lao Thực Nhận</th>
+                        <th className="py-3.5 px-4 text-right">9. Thao Tác Quyết Toán</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/70">
@@ -1863,49 +1903,41 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             </span>
                           </td>
 
-                          {/* 4. Đơn giá / Tiết (và quy đổi /buổi) */}
+                          {/* 4. Đơn giá / Buổi */}
                           <td className="py-3.5 px-3 font-mono">
-                            <div className="font-bold text-amber-300">{formatVND(row.defaultRatePerPeriod)}/tiết</div>
-                            <div className="text-[10px] text-slate-400">({formatVND(row.defaultSessionRate)}/buổi)</div>
+                            <div className="font-bold text-amber-300">{formatVND(row.defaultSessionRate)}/buổi</div>
                           </td>
 
-                          {/* 5. Tổng số buổi đã dạy */}
+                          {/* 5. Số buổi đã dạy */}
                           <td className="py-3.5 px-3 text-center font-mono">
                             <span className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 font-bold text-white">
                               {row.taughtSessionsCount} buổi
                             </span>
                           </td>
 
-                          {/* 6. Tổng số tiết quy đổi */}
+                          {/* 6. Buổi dạy thay nhận thêm (+) */}
                           <td className="py-3.5 px-3 text-center font-mono">
-                            <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 font-extrabold text-amber-300">
-                              {row.totalPeriodsTaught} tiết
-                            </span>
-                          </td>
-
-                          {/* 7. Tiết dạy thay nhận thêm (+) */}
-                          <td className="py-3.5 px-3 text-center font-mono">
-                            {row.substitutePeriodsAdded > 0 ? (
+                            {row.substituteSessionsAdded > 0 ? (
                               <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 border border-purple-500/40 text-purple-300 font-extrabold">
-                                +{row.substitutePeriodsAdded} tiết
+                                +{row.substituteSessionsAdded} buổi
                               </span>
                             ) : (
-                              <span className="text-slate-500">0 tiết</span>
+                              <span className="text-slate-500">0 buổi</span>
                             )}
                           </td>
 
-                          {/* 8. Tiết vắng / chuyển giao (-) */}
+                          {/* 7. Buổi vắng / chuyển giao (-) */}
                           <td className="py-3.5 px-3 text-center font-mono">
-                            {row.absentPeriodsDeducted > 0 ? (
+                            {row.absentSessionsDeducted > 0 ? (
                               <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-400 font-extrabold">
-                                -{row.absentPeriodsDeducted} tiết
+                                -{row.absentSessionsDeducted} buổi
                               </span>
                             ) : (
-                              <span className="text-slate-500">0 tiết</span>
+                              <span className="text-slate-500">0 buổi</span>
                             )}
                           </td>
 
-                          {/* 9. Tổng thù lao thực nhận */}
+                          {/* 8. Tổng thù lao thực nhận */}
                           <td className="py-3.5 px-4 text-right font-mono">
                             <div className="text-sm font-extrabold text-emerald-400">
                               {formatVND(row.totalPayout)}
@@ -1920,14 +1952,14 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             )}
                           </td>
 
-                          {/* 10. Thao tác */}
+                          {/* 9. Thao tác */}
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => setDetailLogTeacher(row.teacher)}
                                 className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 font-bold text-[11px] flex items-center gap-1 transition-colors"
-                                title="Xem Bảng Kê Chi Tiết từng ca dạy & số tiết"
+                                title="Xem Bảng Kê Chi Tiết từng ca dạy & thù lao buổi"
                               >
                                 <Eye className="w-3.5 h-3.5" />
                                 <span>Bảng kê</span>
@@ -1972,7 +2004,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               )}
             </div>
 
-            {/* MODAL 1: BẢNG KÊ CHI TIẾT CA DẠY & SỐ TIẾT THEO GIÁO VIÊN */}
+            {/* MODAL 1: BẢNG KÊ CHI TIẾT CA DẠY & THÙ LAO THEO BUỔI */}
             {detailLogTeacher && (() => {
               const targetRow = teacherPayrollRows.find(r => r.teacher.id === detailLogTeacher.id);
               const allRelatedRecords = effectiveTeacherRecords
@@ -1994,7 +2026,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             {targetRow?.code || detailLogTeacher.code || detailLogTeacher.id}
                           </span>
                           <h3 className="text-base font-extrabold text-white">
-                            Bảng Kê Chi Tiết Ca Dạy &amp; Thù Lao Theo Tiết — {detailLogTeacher.name}
+                            Bảng Kê Chi Tiết Ca Dạy &amp; Thù Lao Theo Buổi — {detailLogTeacher.name}
                           </h3>
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
@@ -2002,7 +2034,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           {' • '}
                           Cơ sở: <strong className="text-cyan-300">{payrollCampusFilter === 'all' ? 'Tất cả cơ sở' : store.campuses.find(c => c.id === payrollCampusFilter)?.name}</strong>
                           {' • '}
-                          Đơn giá chuẩn: <strong className="text-emerald-400 font-mono">{formatVND(targetRow?.defaultRatePerPeriod || 175000)}/tiết</strong>
+                          Đơn giá chuẩn: <strong className="text-emerald-400 font-mono">{formatVND(targetRow?.defaultSessionRate || 300000)}/buổi</strong>
                         </p>
                       </div>
                       <button
@@ -2018,21 +2050,21 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     {targetRow && (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-950/60 border-b border-slate-800">
                         <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
-                          <div className="text-[10px] font-bold uppercase text-slate-400">Tổng Ca Đã Dạy</div>
+                          <div className="text-[10px] font-bold uppercase text-slate-400">Tổng Buổi Đã Dạy</div>
                           <div className="text-sm font-extrabold font-mono text-white mt-0.5">
-                            {targetRow.taughtSessionsCount} buổi ({targetRow.totalPeriodsTaught} tiết)
+                            {targetRow.taughtSessionsCount} buổi
                           </div>
                         </div>
                         <div className="p-3 rounded-xl bg-purple-950/25 border border-purple-500/30">
-                          <div className="text-[10px] font-bold uppercase text-purple-300">Tiết Dạy Thay (+)</div>
+                          <div className="text-[10px] font-bold uppercase text-purple-300">Buổi Dạy Thay (+)</div>
                           <div className="text-sm font-extrabold font-mono text-purple-300 mt-0.5">
-                            +{targetRow.substitutePeriodsAdded} tiết
+                            {targetRow.substituteSessionsAdded > 0 ? `+${targetRow.substituteSessionsAdded} buổi` : '0 buổi'}
                           </div>
                         </div>
                         <div className="p-3 rounded-xl bg-rose-950/25 border border-rose-500/30">
-                          <div className="text-[10px] font-bold uppercase text-rose-300">Tiết Nghỉ / Nhờ Thay (-)</div>
+                          <div className="text-[10px] font-bold uppercase text-rose-300">Buổi Nghỉ / Nhờ Thay (-)</div>
                           <div className="text-sm font-extrabold font-mono text-rose-400 mt-0.5">
-                            -{targetRow.absentPeriodsDeducted} tiết
+                            {targetRow.absentSessionsDeducted > 0 ? `-${targetRow.absentSessionsDeducted} buổi` : '0 buổi'}
                           </div>
                         </div>
                         <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
@@ -2059,8 +2091,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                 <th className="py-2.5 px-3">Lớp &amp; Môn Ngoại Khóa</th>
                                 <th className="py-2.5 px-3">Vai trò ca dạy</th>
                                 <th className="py-2.5 px-3 text-center">Trạng thái chấm công</th>
-                                <th className="py-2.5 px-3 text-center">Số tiết tính lương</th>
-                                <th className="py-2.5 px-3 text-right">Đơn giá / tiết</th>
+                                <th className="py-2.5 px-3 text-center">Số buổi tính lương</th>
+                                <th className="py-2.5 px-3 text-right">Đơn giá / buổi</th>
                                 <th className="py-2.5 px-3 text-right">Thành tiền ca dạy</th>
                                 <th className="py-2.5 px-3">Ghi chú / Đối ứng</th>
                               </tr>
@@ -2070,13 +2102,14 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                 const cls = store.classes.find(c => c.id === rec.class_id);
                                 const subject = store.subjects.find(s => s.id === cls?.subject_id);
                                 const assignedTeacher = store.teachers.find(t => t.id === rec.assigned_teacher_id);
-                                const actualTeacher = store.teachers.find(t => t.id === rec.actual_teacher_id);
                                 const isTaughtByThisTeacher =
                                   rec.actual_teacher_id === detailLogTeacher.id &&
                                   rec.status !== 'absent_excused' &&
                                   rec.status !== 'absent_unexcused' &&
                                   rec.periods_count > 0;
                                 const isSubIn = isTaughtByThisTeacher && (rec.is_substitute || rec.assigned_teacher_id !== detailLogTeacher.id);
+                                const appliedSessionRate = rec.rate_applied || targetRow?.defaultSessionRate || 300000;
+                                const sessionEarned = isTaughtByThisTeacher ? (rec.earned_amount || rec.total_payout || appliedSessionRate) : 0;
 
                                 return (
                                   <tr
@@ -2130,23 +2163,23 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                       )}
                                       {!isTaughtByThisTeacher && (
                                         <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 text-[10px] font-bold">
-                                          Không tính tiết
+                                          Không tính buổi
                                         </span>
                                       )}
                                     </td>
                                     <td className="py-2.5 px-3 text-center font-mono font-bold">
                                       {isTaughtByThisTeacher ? (
-                                        <span className="text-emerald-400">+{rec.periods_count} tiết</span>
+                                        <span className="text-emerald-400">+1 buổi</span>
                                       ) : (
-                                        <span className="text-rose-400">0 tiết (-{rec.periods_count || 2})</span>
+                                        <span className="text-rose-400">0 buổi (-1)</span>
                                       )}
                                     </td>
                                     <td className="py-2.5 px-3 text-right font-mono text-slate-300">
-                                      {formatVND(rec.rate_per_period)}
+                                      {formatVND(appliedSessionRate)}/buổi
                                     </td>
                                     <td className="py-2.5 px-3 text-right font-mono font-extrabold">
                                       {isTaughtByThisTeacher ? (
-                                        <span className="text-emerald-400">{formatVND(rec.total_payout)}</span>
+                                        <span className="text-emerald-400">{formatVND(sessionEarned)}</span>
                                       ) : (
                                         <span className="text-slate-500">0 ₫</span>
                                       )}

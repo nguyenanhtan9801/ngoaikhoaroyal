@@ -11,6 +11,7 @@ import { FinancePayrollTab } from './components/tabs/FinancePayrollTab';
 import { ParentPortalTab } from './components/tabs/ParentPortalTab';
 import { SettingsDataTab } from './components/tabs/SettingsDataTab';
 import { AuditLogsTab } from './components/tabs/AuditLogsTab';
+import { UserManagementTab } from './components/tabs/UserManagementTab';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
@@ -18,7 +19,7 @@ import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
 import { ToastContainer } from './components/ToastContainer';
 import { showToast } from './lib/toast';
-import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, validateCreditNoteCreation, formatVND } from './lib/storage';
+import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, validateCreditNoteCreation, formatVND, normalizeCampusScope } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 
@@ -70,11 +71,32 @@ export default function App() {
     setCurrentRole(user.role);
     try {
       localStorage.setItem('royal_current_user', JSON.stringify(user));
+      localStorage.setItem('royal_auth_session', JSON.stringify(user));
     } catch {
       // noop
     }
     setIsLoginModalOpen(false);
-    setCurrentRoute('sub_kpi');
+
+    // Enforce campus scope if user is restricted to PMH or Phú Lâm
+    const scopedCampus = normalizeCampusScope(user.campus_id);
+    setSelectedCampusId(scopedCampus);
+
+    // Điều hướng thông minh sau đăng nhập theo vai trò (Role-based Routing)
+    if (user.role === 'teacher') {
+      if (user.linked_teacher_id) {
+        const teacherClass = store.classes.find(c => c.teacher_id === user.linked_teacher_id);
+        if (teacherClass) {
+          setFocusedClass(teacherClass);
+        }
+      }
+      setCurrentRoute('sub_attendance');
+    } else if (user.role === 'admissions') {
+      setCurrentRoute('sub_parents');
+    } else if (user.role === 'accountant') {
+      setCurrentRoute('sub_finance_invoices');
+    } else {
+      setCurrentRoute('sub_kpi');
+    }
   };
 
   const handleLogout = () => {
@@ -92,6 +114,8 @@ export default function App() {
     setCurrentUser(null);
     try {
       localStorage.removeItem('royal_current_user');
+      localStorage.removeItem('royal_auth_session');
+      sessionStorage.removeItem('royal_current_user');
     } catch {
       // noop
     }
@@ -100,8 +124,10 @@ export default function App() {
   // Current active navigation route (handled via top navbar dropdowns and direct links)
   const [currentRoute, setCurrentRoute] = useState<string>('sub_kpi');
 
-  // Filter states
-  const [selectedCampusId, setSelectedCampusId] = useState<string>('all');
+  // Filter states (respect campus scope if user is restricted to PMH or PL)
+  const [selectedCampusId, setSelectedCampusId] = useState<string>(() =>
+    normalizeCampusScope(currentUser?.campus_id)
+  );
   const [selectedTermId, setSelectedTermId] = useState<string>(store.terms[0]?.id || 'term_fall_2026');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [studentSearchFilter, setStudentSearchFilter] = useState<string>('');
@@ -163,6 +189,37 @@ export default function App() {
     window.addEventListener('royal_store_updated', handleStorageUpdate);
     return () => window.removeEventListener('royal_store_updated', handleStorageUpdate);
   }, []);
+
+  // Cơ chế thu hồi phiên tức thì (Instant Session Invalidation) nếu tài khoản bị khóa & đồng bộ quyền hạn
+  useEffect(() => {
+    if (!currentUser || currentUser.is_root || currentUser.username === 'overadmin') return;
+    const latestInStore = store.users.find(
+      u => u.id === currentUser.id || u.username.toLowerCase() === currentUser.username.toLowerCase()
+    );
+    if (!latestInStore) return;
+
+    if (latestInStore.status === 'locked') {
+      showToast(
+        '🔒 Tài khoản của bạn đã bị khóa bởi Quản trị viên. Vui lòng liên hệ ban quản trị để được hỗ trợ.',
+        'warning'
+      );
+      setCurrentUser(null);
+      try {
+        localStorage.removeItem('royal_current_user');
+        localStorage.removeItem('royal_auth_session');
+        sessionStorage.removeItem('royal_current_user');
+      } catch {
+        // noop
+      }
+      return;
+    }
+
+    // Đồng bộ campus_id nếu người dùng bị giới hạn cơ sở
+    const scoped = normalizeCampusScope(latestInStore.campus_id);
+    if (scoped !== 'all' && selectedCampusId !== scoped) {
+      setSelectedCampusId(scoped);
+    }
+  }, [store.users, currentUser, selectedCampusId]);
 
   const updateStore = (updater: (prev: AppStore) => AppStore) => {
     setStore(prev => {
@@ -682,11 +739,11 @@ export default function App() {
           )}
 
           {currentRoute === 'sub_users' && (
-            <SettingsDataTab
+            <UserManagementTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               onUpdateStore={updateStore}
-              initialSection="pricing"
             />
           )}
 

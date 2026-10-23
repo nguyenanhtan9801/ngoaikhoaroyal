@@ -56,14 +56,28 @@ import {
   formatVND, 
   calculateCeilSessionRate, 
   getInitialStore, 
+  getSampleDemoStore,
+  deduplicateEnrollments,
   getEffectivePrice, 
   cloneTermConfiguration, 
   isTermClosed,
   createAuditRecord,
-  appendAuditLog
+  appendAuditLog,
+  recalculatePastSessions
 } from '../../lib/storage';
 import { AuditLogsTab } from './AuditLogsTab';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
+import {
+  ROYAL_STANDARDIZED_10_TABLES,
+  SUPABASE_FULL_DDL_SQL,
+  verifySupabaseConnection,
+  inspectAllDatabaseTables,
+  pushSingleTableToSupabase,
+  pushAllTablesToSupabase,
+  pullAllTablesFromSupabase,
+  TableHealthStatus,
+  SupabaseConnectionCheckResult
+} from '../../lib/supabase';
 import { 
   UserRole, 
   TermCampusSubjectPricing, 
@@ -81,9 +95,7 @@ import {
 } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
-import { checkSupabaseConnection, isSupabaseConfigured } from '../../lib/supabase';
-import { syncStoreToSupabase } from '../../lib/supabaseSync';
-import { SUPABASE_DDL_SQL } from '../../lib/supabaseDdlContent';
+
 
 interface SettingsDataTabProps {
   store: AppStore;
@@ -104,7 +116,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
-  // State for Uniform Teacher Rate Configuration (Cấu hình Định mức Thù Lao Chuẩn Toàn Trường)
+  // State for Uniform Teacher Rate Configuration (Cấu hình Định mức Thù Lao Chuẩn Theo Buổi Toàn Trường)
+  const [permanentSessionRateInput, setPermanentSessionRateInput] = useState<number>(
+    store.payrollRateConfig?.permanent_session_rate ?? 300000
+  );
+  const [visitingSessionRateInput, setVisitingSessionRateInput] = useState<number>(
+    store.payrollRateConfig?.visiting_session_rate ?? 270000
+  );
   const [permanentPeriodRateInput, setPermanentPeriodRateInput] = useState<number>(
     store.payrollRateConfig?.permanent_rate_per_period ?? 150000
   );
@@ -114,14 +132,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [periodsPerSessionInput, setPeriodsPerSessionInput] = useState<number>(
     store.payrollRateConfig?.periods_per_session ?? 2
   );
+  const [showRetroactiveConfirmModal, setShowRetroactiveConfirmModal] = useState<boolean>(false);
   const [rateSaveSuccessToast, setRateSaveSuccessToast] = useState<string | null>(null);
   const [teacherSearchQuery, setTeacherSearchQuery] = useState<string>('');
 
   useEffect(() => {
     if (store.payrollRateConfig) {
-      setPermanentPeriodRateInput(store.payrollRateConfig.permanent_rate_per_period);
-      setVisitingPeriodRateInput(store.payrollRateConfig.visiting_rate_per_period);
-      setPeriodsPerSessionInput(store.payrollRateConfig.periods_per_session);
+      const periods = store.payrollRateConfig.periods_per_session || 2;
+      const permSess = store.payrollRateConfig.permanent_session_rate ?? (store.payrollRateConfig.permanent_rate_per_period * periods);
+      const visSess = store.payrollRateConfig.visiting_session_rate ?? (store.payrollRateConfig.visiting_rate_per_period * periods);
+      setPermanentSessionRateInput(permSess);
+      setVisitingSessionRateInput(visSess);
+      setPermanentPeriodRateInput(Math.round(permSess / periods));
+      setVisitingPeriodRateInput(Math.round(visSess / periods));
+      setPeriodsPerSessionInput(periods);
     }
   }, [store.payrollRateConfig]);
 
@@ -270,63 +294,66 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   };
 
   const handleSaveUniformPayrollRates = () => {
-    const permRate = Math.max(50000, Number(permanentPeriodRateInput) || 150000);
-    const visRate = Math.max(50000, Number(visitingPeriodRateInput) || 135000);
+    setShowRetroactiveConfirmModal(true);
+  };
+
+  const handleConfirmRetroactivePayrollRates = () => {
+    const permSessionRate = Math.max(100000, Number(permanentSessionRateInput) || 300000);
+    const visSessionRate = Math.max(100000, Number(visitingSessionRateInput) || 270000);
     const periods = Math.max(1, Math.min(6, Number(periodsPerSessionInput) || 2));
+    const permPeriodRate = Math.round(permSessionRate / periods);
+    const visPeriodRate = Math.round(visSessionRate / periods);
+
+    setPermanentPeriodRateInput(permPeriodRate);
+    setVisitingPeriodRateInput(visPeriodRate);
 
     onUpdateStore(prev => {
+      const recalculatedStore = recalculatePastSessions(prev, permSessionRate, visSessionRate);
+      const totalSessionsSynced = (recalculatedStore.teacherAttendance || []).length;
+
       const updatedConfig: PayrollRateConfig = {
-        permanent_rate_per_period: permRate,
-        visiting_rate_per_period: visRate,
+        permanent_session_rate: permSessionRate,
+        visiting_session_rate: visSessionRate,
+        permanent_rate_per_period: permPeriodRate,
+        visiting_rate_per_period: visPeriodRate,
         periods_per_session: periods,
         updated_at: new Date().toISOString().split('T')[0],
         updated_by: 'Phòng Tài Chính & Kế Toán Royal School',
       };
 
-      const updatedTeachers = prev.teachers.map(t => {
-        const isVisiting = (t.type || t.teacher_type) === 'visiting';
-        const appliedRate = isVisiting ? visRate : permRate;
-        return {
-          ...t,
-          default_rate_per_period: appliedRate,
-          periods_per_session: periods,
-          fixed_rate_per_session: appliedRate * periods,
-        };
-      });
-
       const auditLog = createAuditRecord(
         'TEACHER_RATE_UPDATE',
         'FINANCE',
-        'Quy chuẩn Định Mức Thù Lao Toàn Trường',
-        `Cập nhật định mức chuẩn: Cơ hữu = ${formatVND(permRate)}/tiết (${formatVND(permRate * periods)}/buổi), Thỉnh giảng = ${formatVND(visRate)}/tiết (${formatVND(visRate * periods)}/buổi). Đã đồng bộ ${updatedTeachers.length} giáo viên.`,
+        'Quy chuẩn Định Mức Thù Lao Toàn Trường (Hồi tố)',
+        `Cập nhật & Áp dụng hồi tố định mức thù lao theo buổi: Cơ hữu = ${formatVND(permSessionRate)}/buổi, Thỉnh giảng = ${formatVND(visSessionRate)}/buổi. Đã đồng bộ lại ${totalSessionsSynced} ca dạy lịch sử và ${recalculatedStore.teachers.length} giáo viên.`,
         null,
         {
-          target_id: 'uniform_rates_config',
+          target_id: 'uniform_rates_retroactive_sync',
           details: {
-            permanent_rate_per_period: permRate,
-            visiting_rate_per_period: visRate,
-            periods_per_session: periods,
-            total_teachers_synced: updatedTeachers.length,
+            permanent_session_rate: permSessionRate,
+            visiting_session_rate: visSessionRate,
+            total_sessions_recalculated: totalSessionsSynced,
+            total_teachers_synced: recalculatedStore.teachers.length,
           }
         }
       );
 
       return appendAuditLog({
-        ...prev,
+        ...recalculatedStore,
         payrollRateConfig: updatedConfig,
-        teachers: updatedTeachers,
       }, auditLog);
     });
 
+    setShowRetroactiveConfirmModal(false);
     setRateSaveSuccessToast(
-      `Đã lưu thành công định mức thù lao toàn trường: Cơ hữu ${formatVND(permRate)}/tiết, Thỉnh giảng ${formatVND(visRate)}/tiết!`
+      `✓ Đã cập nhật định mức và đồng bộ lại thù lao cho toàn bộ ca dạy đã điểm danh thành công!`
     );
-    setTimeout(() => setRateSaveSuccessToast(null), 4500);
+    setTimeout(() => setRateSaveSuccessToast(null), 5000);
 
     showToast(
-      `Đã cập nhật định mức thù lao toàn trường & đồng bộ tất cả giáo viên!`,
+      `✓ Đã cập nhật định mức và đồng bộ lại thù lao cho toàn bộ ca dạy đã điểm danh thành công!`,
       'success',
-      { title: 'Lưu Định Mức Thù Lao Toàn Trường' }
+      { title: 'Đồng Bộ Hồi Tố Thù Lao Thành Công' }
     );
   };
 
@@ -1122,20 +1149,78 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
 
   // Excel Import Status
-  const [importStatus, setImportStatus] = useState<{ loading: boolean; message?: string; isError?: boolean }>({ loading: false });
+  const [importStatus, setImportStatus] = useState<{
+    loading: boolean;
+    message?: string;
+    isError?: boolean;
+    sheetStats?: { sheetName: string; rowCount: number; status: string }[];
+  }>({ loading: false });
 
-  // Supabase Config State
+  // Supabase Config & 10-Table Diagnostics State
   const [sbUrl, setSbUrl] = useState(store.supabaseConfig.url || '');
   const [sbKey, setSbKey] = useState(store.supabaseConfig.anonKey || '');
   const [sbConnected, setSbConnected] = useState(store.supabaseConfig.isConnected);
   const [sbLatency, setSbLatency] = useState<number | null>(null);
   const [sbHasBucket, setSbHasBucket] = useState<boolean>(false);
+  const [sbCheckDetails, setSbCheckDetails] = useState<SupabaseConnectionCheckResult | null>(null);
+  const [tableHealthList, setTableHealthList] = useState<TableHealthStatus[]>(() =>
+    ROYAL_STANDARDIZED_10_TABLES.map((spec) => ({
+      order: spec.order,
+      sheetName: spec.sheetName,
+      sqlTable: spec.sqlTable,
+      storeKey: spec.storeKey,
+      displayName: spec.displayName,
+      category: spec.category,
+      primaryKey: spec.primaryKey,
+      foreignKeys: spec.foreignKeys,
+      localCount: Array.isArray((store as any)[spec.storeKey]) ? (store as any)[spec.storeKey].length : 0,
+      remoteCount: null,
+      status: 'local_only',
+      message: 'Đang lưu trữ chuẩn hóa tại Local Store (3NF OK).',
+      lastCheckedAt: new Date().toISOString(),
+      integrityPassed: true,
+      integrityIssues: [],
+    }))
+  );
   const [sbTesting, setSbTesting] = useState<boolean>(false);
+  const [sbInspectingTables, setSbInspectingTables] = useState<boolean>(false);
   const [sbSyncing, setSbSyncing] = useState<boolean>(false);
+  const [sbPushingTable, setSbPushingTable] = useState<string | null>(null);
   const [sbSyncProgress, setSbSyncProgress] = useState<number>(0);
   const [sbSyncTable, setSbSyncTable] = useState<string>('');
   const [showSqlModal, setShowSqlModal] = useState<boolean>(false);
   const [sqlCopied, setSqlCopied] = useState<boolean>(false);
+
+  // Refresh local table health whenever store changes or when entering supabase/excel_master section
+  useEffect(() => {
+    let cancelled = false;
+    const runCheck = async () => {
+      const results = await inspectAllDatabaseTables(
+        store,
+        sbConnected ? sbUrl : '',
+        sbConnected ? sbKey : ''
+      );
+      if (!cancelled) {
+        setTableHealthList(results);
+      }
+    };
+    runCheck();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    store.campuses.length,
+    store.terms.length,
+    store.subjects.length,
+    store.teachers.length,
+    store.classes.length,
+    store.students.length,
+    store.enrollments.length,
+    store.attendance.length,
+    store.teacherAttendance?.length,
+    store.invoices.length,
+    sbConnected,
+  ]);
 
   // Cloud Storage Config State
   const initialCloudConfig = store.cloudStorageConfig || {
@@ -1160,6 +1245,21 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // Check if current user is Super Admin
   const isSuperAdmin = currentRole === 'super_admin';
 
+  // Instant 1-Click Clean All Sample Operational Data
+  const handleCleanSampleDataNow = () => {
+    const cleanStore = getInitialStore();
+    onUpdateStore(prev => ({
+      ...cleanStore,
+      supabaseConfig: prev.supabaseConfig,
+      telecomConfig: prev.telecomConfig,
+      cloudStorageConfig: prev.cloudStorageConfig,
+    }));
+    const msg = 'Đã xóa toàn bộ dữ liệu mẫu vận hành (Giáo viên, Lớp học, Học sinh, Ghi danh, Điểm danh, Hóa đơn) và chuẩn hóa 10 bảng CSDL!';
+    setResetSuccessMessage(msg);
+    showToast(msg, 'success', { title: 'Đã xóa dữ liệu mẫu & Chuẩn hóa CSDL' });
+    setTimeout(() => setResetSuccessMessage(null), 5000);
+  };
+
   // Handle Clean Seed Data / Reset
   const handleExecuteReset = () => {
     if (!isSuperAdmin) {
@@ -1178,6 +1278,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       if (selectedResetOption === 'ops') {
         // Option 1: Xóa dữ liệu vận hành & giao dịch
         updated.attendance = [];
+        updated.teacherAttendance = [];
         updated.sessions = [];
         updated.invoices = [];
         updated.makeupCredits = [];
@@ -1191,23 +1292,26 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         updated.attendance = [];
         updated.makeupCredits = [];
       } else if (selectedResetOption === 'classes') {
-        // Option 3: Xóa lớp học & môn học
+        // Option 3: Xóa lớp học & phân công
         updated.classes = [];
         updated.enrollments = [];
         updated.sessions = [];
         updated.attendance = [];
+        updated.teacherAttendance = [];
       } else if (selectedResetOption === 'factory') {
-        // Option 4: Full Factory Reset (Xóa trắng)
+        // Option 4: Full Factory Reset (Xóa trắng toàn bộ dữ liệu mẫu vận hành)
+        updated.teachers = [];
+        updated.classes = [];
+        updated.students = [];
+        updated.enrollments = [];
         updated.attendance = [];
+        updated.teacherAttendance = [];
         updated.sessions = [];
         updated.invoices = [];
         updated.makeupCredits = [];
         updated.transfers = [];
         updated.payrollSettlements = [];
-        updated.students = [];
-        updated.enrollments = [];
         updated.parentRegistrations = [];
-        updated.classes = [];
       }
 
       // Record Audit Log: DATABASE_RESET
@@ -1239,29 +1343,32 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     setTimeout(() => setResetSuccessMessage(null), 5000);
   };
 
-  // Restore Initial Sample Seed Data
+  // Optional: Load Sample Demo Data for Testing
   const handleRestoreInitialSeed = () => {
-    const initial = getInitialStore();
-    onUpdateStore(() => initial);
-    showToast('Đã khôi phục toàn bộ Dữ Liệu Mẫu Chuẩn Hoàng Gia ban đầu!', 'success', {
-      title: 'Khôi phục dữ liệu mẫu',
+    const demoStore = getSampleDemoStore();
+    onUpdateStore(prev => ({
+      ...demoStore,
+      supabaseConfig: prev.supabaseConfig,
+    }));
+    showToast('Đã nạp bộ dữ liệu mẫu thử nghiệm (Demo) vào hệ thống!', 'success', {
+      title: 'Nạp dữ liệu thử nghiệm',
     });
   };
 
-  // Handle Excel File Upload
+  // Handle Excel File Upload (All 10 Standardized Sheets)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setImportStatus({ loading: true, message: 'Đang đọc và phân tích tệp bảng tính...' });
-    const result = await parseMasterExcelFile(file);
+    setImportStatus({ loading: true, message: 'Đang đọc và chuẩn hóa 10 bảng dữ liệu từ tệp Excel...' });
+    const result = await parseMasterExcelFile(file, store);
 
     if (result.success && result.data) {
       onUpdateStore(prev => {
         const importLog = createAuditRecord(
           'EXCEL_IMPORT',
           'SYSTEM',
-          'Bảng Tính Master Excel',
+          'Bảng Tính Master Excel (10 Bảng)',
           `Import đồng bộ tệp Excel "${file.name}" thành công`,
           null,
           {
@@ -1271,21 +1378,46 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               after: {
                 fileName: file.name,
                 fileSize: file.size,
-                message: result.message
+                message: result.message,
+                sheetStats: result.sheetStats,
               }
             }
           }
         );
 
+        const mergeById = <T extends { id: string }>(incoming: T[] | undefined, existing: T[]): T[] => {
+          if (!incoming || incoming.length === 0) return existing;
+          const map = new Map<string, T>();
+          existing.forEach(item => map.set(item.id, item));
+          incoming.forEach(item => map.set(item.id, item));
+          return Array.from(map.values());
+        };
+
         return {
           ...prev,
-          students: result.data?.students ? [...result.data.students, ...prev.students] : prev.students,
+          campuses: mergeById(result.data?.campuses, prev.campuses),
+          terms: mergeById(result.data?.terms, prev.terms),
+          subjects: mergeById(result.data?.subjects, prev.subjects),
+          termSubjects: mergeById(result.data?.termSubjects, prev.termSubjects),
+          campusPricings: mergeById(result.data?.campusPricings, prev.campusPricings),
+          teachers: mergeById(result.data?.teachers, prev.teachers),
+          classes: mergeById(result.data?.classes, prev.classes),
+          students: mergeById(result.data?.students, prev.students),
+          enrollments: deduplicateEnrollments(mergeById(result.data?.enrollments, prev.enrollments)),
+          attendance: mergeById(result.data?.attendance, prev.attendance),
+          teacherAttendance: mergeById(result.data?.teacherAttendance, prev.teacherAttendance || []),
+          invoices: mergeById(result.data?.invoices, prev.invoices),
           auditLogs: [importLog, ...(prev.auditLogs || [])],
         };
       });
-      setImportStatus({ loading: false, message: result.message, isError: false });
-      showToast(result.message || `Import đồng bộ tệp "${file.name}" thành công!`, 'success', {
-        title: 'Nhập dữ liệu Excel thành công',
+      setImportStatus({
+        loading: false,
+        message: result.message,
+        isError: false,
+        sheetStats: result.sheetStats,
+      });
+      showToast(result.message || `Import đồng bộ 10 bảng từ "${file.name}" thành công!`, 'success', {
+        title: 'Nhập Bảng Tính Tổng Thể (10 Bảng)',
       });
     } else {
       setImportStatus({ loading: false, message: result.message, isError: true });
@@ -1293,13 +1425,60 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     }
   };
 
-  // Save Supabase Config & Verify
+  // Run Full Connection & 10-Table Health Check
+  const handleInspectDatabaseHealth = async (customUrl?: string, customKey?: string) => {
+    const targetUrl = (customUrl ?? sbUrl).trim();
+    const targetKey = (customKey ?? sbKey).trim();
+    setSbInspectingTables(true);
+
+    if (targetUrl && targetKey) {
+      const connRes = await verifySupabaseConnection(targetUrl, targetKey);
+      setSbCheckDetails(connRes);
+      setSbLatency(connRes.latencyMs);
+      setSbHasBucket(connRes.hasBucket);
+      setSbConnected(connRes.connected);
+
+      const health = await inspectAllDatabaseTables(
+        store,
+        connRes.connected ? targetUrl : '',
+        connRes.connected ? targetKey : ''
+      );
+      setTableHealthList(health);
+      setSbInspectingTables(false);
+
+      const syncedCount = health.filter(h => h.status === 'synced').length;
+      const missingCount = health.filter(h => h.status === 'missing_table').length;
+
+      if (connRes.connected) {
+        showToast(
+          `Kiểm tra hoàn tất: Kết nối ${connRes.latencyMs}ms • ${syncedCount}/10 bảng đồng bộ${missingCount > 0 ? ` (${missingCount} bảng chưa khởi tạo SQL)` : ''}.`,
+          missingCount > 0 ? 'warning' : 'success',
+          { title: 'Kiểm Tra CSDL & 10 Bảng Dữ Liệu' }
+        );
+      } else {
+        showToast(connRes.message, 'error', { title: 'Lỗi Kết Nối Supabase' });
+      }
+    } else {
+      const health = await inspectAllDatabaseTables(store, '', '');
+      setTableHealthList(health);
+      setSbInspectingTables(false);
+      const validTables = health.filter(h => h.integrityPassed).length;
+      showToast(
+        `Đã kiểm tra trạng thái 10 bảng Local Store: ${validTables}/10 bảng đạt chuẩn toàn vẹn khóa ngoại 3NF.`,
+        'info',
+        { title: 'Kiểm Tra Trạng Thái 10 Bảng Dữ Liệu' }
+      );
+    }
+  };
+
+  // Save Supabase Config & Verify Connection + All 10 Tables
   const handleSaveSupabase = async () => {
     setSbTesting(true);
-    const result = await checkSupabaseConnection(sbUrl, sbKey);
-    setSbTesting(false);
+    const result = await verifySupabaseConnection(sbUrl, sbKey);
+    setSbCheckDetails(result);
     setSbLatency(result.latencyMs);
     setSbHasBucket(result.hasBucket);
+    setSbConnected(result.connected);
 
     onUpdateStore(prev => ({
       ...prev,
@@ -1309,10 +1488,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         isConnected: result.connected,
       },
     }));
-    setSbConnected(result.connected);
+
+    const health = await inspectAllDatabaseTables(
+      store,
+      result.connected ? sbUrl : '',
+      result.connected ? sbKey : ''
+    );
+    setTableHealthList(health);
+    setSbTesting(false);
 
     if (result.connected) {
-      showToast('✓ Đã kết nối Supabase Storage & Database thành công!', 'success', {
+      showToast('✓ Đã kết nối Supabase PostgreSQL & kiểm tra trạng thái 10 bảng dữ liệu!', 'success', {
         title: 'Supabase Cloud Connected',
       });
     } else {
@@ -1324,61 +1510,103 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
   const handleTestLiveSupabase = async () => {
     setSbTesting(true);
-    const result = await checkSupabaseConnection(sbUrl, sbKey);
+    await handleInspectDatabaseHealth(sbUrl, sbKey);
     setSbTesting(false);
-    setSbLatency(result.latencyMs);
-    setSbHasBucket(result.hasBucket);
-    setSbConnected(result.connected);
+  };
 
-    if (result.connected) {
-      showToast(`✓ Đã kết nối Supabase thành công! Độ trễ phản hồi: ${result.latencyMs}ms.`, 'success', {
-        title: 'Kiểm tra kết nối thành công',
-      });
+  // Push All 10 Standardized Tables to Supabase
+  const handleExecuteSupabaseSync = async () => {
+    if (!sbUrl.trim() || !sbKey.trim()) {
+      showToast('Vui lòng nhập Supabase Project URL và Anon Key trước khi đồng bộ.', 'error');
+      return;
+    }
+    setSbSyncing(true);
+    setSbSyncProgress(5);
+    setSbSyncTable('Khởi tạo tiến trình đồng bộ 10 bảng...');
+
+    const pushResult = await pushAllTablesToSupabase(store, sbUrl, sbKey, (progress, tableName) => {
+      setSbSyncProgress(progress);
+      setSbSyncTable(tableName);
+    });
+
+    const health = await inspectAllDatabaseTables(store, sbUrl, sbKey);
+    setTableHealthList(health);
+    setSbSyncing(false);
+
+    if (pushResult.success) {
+      showToast(pushResult.summary, 'success', { title: 'Đồng Bộ 10 Bảng Lên Supabase Thành Công' });
     } else {
-      showToast(result.message, 'error', {
-        title: 'Kiểm tra kết nối thất bại',
-      });
+      showToast(pushResult.summary, 'warning', { title: 'Đồng Bộ Hoàn Tất Có Cảnh Báo' });
     }
   };
 
-  const handleExecuteSupabaseSync = async () => {
+  // Pull All 10 Standardized Tables from Supabase into Local Store
+  const handlePullFromSupabase = async () => {
+    if (!sbUrl.trim() || !sbKey.trim()) {
+      showToast('Vui lòng cấu hình Supabase URL và Anon Key trước khi tải dữ liệu.', 'error');
+      return;
+    }
     setSbSyncing(true);
-    setSbSyncProgress(5);
-    setSbSyncTable('Khởi tạo đồng bộ...');
+    setSbSyncProgress(30);
+    setSbSyncTable('Đang tải 10 bảng dữ liệu từ Supabase Cloud...');
 
-    const res = await syncStoreToSupabase(store, ({ currentTable, progressPercent }) => {
-      setSbSyncTable(currentTable);
-      setSbSyncProgress(progressPercent);
-    });
-
-    setSbSyncing(false);
-    if (res.success) {
-      showToast(res.message, 'success', { title: 'Đồng bộ Supabase hoàn tất' });
+    const pullRes = await pullAllTablesFromSupabase(store, sbUrl, sbKey);
+    if (pullRes.success && pullRes.updatedStore) {
+      onUpdateStore(prev => ({
+        ...prev,
+        ...pullRes.updatedStore,
+      }));
+      const mergedStore = { ...store, ...pullRes.updatedStore };
+      const health = await inspectAllDatabaseTables(mergedStore, sbUrl, sbKey);
+      setTableHealthList(health);
+      setSbSyncProgress(100);
+      setSbSyncing(false);
+      showToast(pullRes.message, 'success', { title: 'Tải Dữ Liệu Từ Supabase Thành Công' });
     } else {
-      showToast(res.message, 'error', { title: 'Lỗi đồng bộ Supabase' });
+      setSbSyncing(false);
+      showToast(pullRes.message, 'error', { title: 'Không Thể Tải Dữ Liệu Từ Supabase' });
+    }
+  };
+
+  // Push Single Table to Supabase
+  const handlePushSingleTable = async (spec: typeof ROYAL_STANDARDIZED_10_TABLES[number]) => {
+    if (!sbUrl.trim() || !sbKey.trim()) {
+      showToast('Vui lòng nhập Supabase Project URL và Anon Key để đẩy bảng lên Cloud.', 'error');
+      return;
+    }
+    setSbPushingTable(spec.sqlTable);
+    const res = await pushSingleTableToSupabase(store, spec, sbUrl, sbKey);
+    const health = await inspectAllDatabaseTables(store, sbUrl, sbKey);
+    setTableHealthList(health);
+    setSbPushingTable(null);
+
+    if (res.success) {
+      showToast(res.message, 'success', { title: `Đồng bộ bảng ${spec.sqlTable}` });
+    } else {
+      showToast(res.message, 'error', { title: `Lỗi đồng bộ bảng ${spec.sqlTable}` });
     }
   };
 
   const handleCopySqlDdl = () => {
-    navigator.clipboard.writeText(SUPABASE_DDL_SQL);
+    navigator.clipboard.writeText(SUPABASE_FULL_DDL_SQL);
     setSqlCopied(true);
-    showToast('Đã sao chép toàn bộ mã lệnh PostgreSQL DDL vào bộ nhớ tạm!', 'success', {
+    showToast('Đã sao chép toàn bộ mã lệnh PostgreSQL DDL (10 Bảng Chuẩn Hóa) vào bộ nhớ tạm!', 'success', {
       title: 'Sao chép SQL DDL',
     });
     setTimeout(() => setSqlCopied(false), 3000);
   };
 
   const handleDownloadSqlDdl = () => {
-    const blob = new Blob([SUPABASE_DDL_SQL], { type: 'text/sql;charset=utf-8;' });
+    const blob = new Blob([SUPABASE_FULL_DDL_SQL], { type: 'text/sql;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'royal_school_supabase_schema.sql';
+    link.download = 'royal_school_10_tables_schema.sql';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    showToast('Đã tải xuống file royal_school_supabase_schema.sql!', 'success', {
+    showToast('Đã tải xuống file royal_school_10_tables_schema.sql!', 'success', {
       title: 'Tải xuống thành công',
     });
   };
@@ -4340,17 +4568,28 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
       {/* SECTION 3: CLEAN SEED DATA / RESET DB (MODULE 5.1) */}
       {activeSection === 'clean_reset' && (
-        <div className="rounded-3xl bg-[#111827]/90 border border-rose-500/40 p-6 md:p-8 backdrop-blur-md shadow-2xl max-w-3xl mx-auto space-y-6">
-          <div className="flex items-center gap-3 text-rose-400">
-            <div className="p-2.5 rounded-2xl bg-rose-500/20 border border-rose-500/30">
-              <ShieldAlert className="w-6 h-6" />
+        <div className="rounded-3xl bg-[#111827]/90 border border-rose-500/40 p-6 md:p-8 backdrop-blur-md shadow-2xl max-w-4xl mx-auto space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-2.5 rounded-2xl bg-rose-500/20 border border-rose-500/30">
+                <ShieldAlert className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Xóa Dữ Liệu Mẫu &amp; Chuẩn Hóa Cơ Sở Dữ Liệu (Database Clean &amp; Reset)</h3>
+                <p className="text-xs text-slate-400">
+                  Mặc định hệ thống đã được làm sạch toàn bộ dữ liệu mẫu vận hành &bull; Giữ cấu trúc 10 bảng CSDL chuẩn hóa 3NF
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-lg font-bold text-white">Module Dọn Sạch Dữ Liệu & Khôi Phục Hệ Thống (Database Reset)</h3>
-              <p className="text-xs text-slate-400">
-                Quyền hạn: <strong className="text-amber-400">Super Admin duy nhất</strong> &bull; Bắt buộc xác thực mật mã để bảo đảm an toàn dữ liệu
-              </p>
-            </div>
+
+            <button
+              type="button"
+              onClick={handleCleanSampleDataNow}
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold shadow-lg shadow-emerald-600/25 flex items-center gap-2 transition-all shrink-0 cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Xóa Sạch Dữ Liệu Mẫu &amp; Chuẩn Hóa Ngay</span>
+            </button>
           </div>
 
           {resetSuccessMessage && (
@@ -4360,10 +4599,39 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </div>
           )}
 
+          {/* Current 10-Table Record Summary */}
+          <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <Database className="w-4 h-4 text-cyan-400" />
+                <span>Trạng Thái Hiện Tại Của 10 Bảng Dữ Liệu Chuẩn Hóa</span>
+              </span>
+              <span className="text-[11px] text-emerald-400 font-semibold">
+                {store.students.length === 0 && store.classes.length === 0 && store.teachers.length === 0
+                  ? '✓ Hệ thống sạch dữ liệu mẫu vận hành'
+                  : `Đang có ${store.teachers.length} GV, ${store.classes.length} lớp, ${store.students.length} học sinh`}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+              {ROYAL_STANDARDIZED_10_TABLES.map((spec) => {
+                const count = Array.isArray((store as any)[spec.storeKey]) ? (store as any)[spec.storeKey].length : 0;
+                return (
+                  <div key={spec.sheetName} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 flex flex-col justify-between">
+                    <span className="text-[10px] font-mono text-amber-400 font-bold truncate">{spec.sheetName}</span>
+                    <span className="text-[11px] text-slate-300 truncate mt-0.5">{spec.displayName}</span>
+                    <span className={`text-xs font-mono font-extrabold mt-1 ${count === 0 ? 'text-slate-500' : 'text-emerald-400'}`}>
+                      {count} bản ghi
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* 4 Reset Options Selection */}
           <div className="space-y-3">
             <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Chọn 1 trong 4 cấp độ Reset dữ liệu:
+              Chọn 1 trong 4 cấp độ Reset dữ liệu chuyên sâu:
             </label>
 
             <div className="space-y-2 text-xs">
@@ -4378,9 +4646,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   className="mt-0.5 text-rose-500 focus:ring-0"
                 />
                 <div>
-                  <div className="font-bold text-rose-300">Option 1 - Xóa Dữ Liệu Vận Hành & Giao Dịch</div>
+                  <div className="font-bold text-rose-300">Option 1 - Xóa Dữ Liệu Vận Hành &amp; Giao Dịch</div>
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    Xóa sạch: Điểm danh, Buổi học, Hóa đơn học phí, Phiếu bảo lưu, Quyết toán thù lao. <strong>Giữ nguyên danh mục Lớp học, Học sinh, Giáo viên và Cơ sở.</strong>
+                    Xóa sạch: Điểm danh học sinh, Chấm công giáo viên, Hóa đơn học phí, Phiếu bảo lưu, Quyết toán thù lao. <strong>Giữ nguyên danh mục Lớp học, Học sinh, Giáo viên và Cơ sở.</strong>
                   </div>
                 </div>
               </label>
@@ -4396,9 +4664,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   className="mt-0.5 text-rose-500 focus:ring-0"
                 />
                 <div>
-                  <div className="font-bold text-rose-300">Option 2 - Xóa Dữ Liệu Học Sinh & Ghi Danh</div>
+                  <div className="font-bold text-rose-300">Option 2 - Xóa Dữ Liệu Học Sinh &amp; Ghi Danh</div>
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    Xóa sạch toàn bộ hồ sơ Học sinh (Royal & Ngoài trường) và các liên kết lớp học.
+                    Xóa sạch toàn bộ hồ sơ Học sinh (Royal &amp; Ngoài trường), Ghi danh, Điểm danh và Hóa đơn.
                   </div>
                 </div>
               </label>
@@ -4414,9 +4682,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   className="mt-0.5 text-rose-500 focus:ring-0"
                 />
                 <div>
-                  <div className="font-bold text-rose-300">Option 3 - Xóa Lớp Học & Phân Công</div>
+                  <div className="font-bold text-rose-300">Option 3 - Xóa Lớp Học &amp; Phân Công</div>
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    Xóa danh sách lớp mở trong kỳ và lịch học phân công giáo viên.
+                    Xóa danh sách lớp mở trong kỳ, ghi danh và lịch sử điểm danh/chấm công.
                   </div>
                 </div>
               </label>
@@ -4432,9 +4700,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   className="mt-0.5 text-rose-500 focus:ring-0"
                 />
                 <div>
-                  <div className="font-bold text-rose-300">Option 4 - Full Factory Reset (TRUNCATE ... CASCADE)</div>
+                  <div className="font-bold text-rose-300">Option 4 - Full Factory Reset (Xóa Toàn Bộ Dữ Liệu Mẫu Vận Hành)</div>
                   <div className="text-[11px] text-slate-400 mt-0.5">
-                    Xóa toàn bộ mọi bảng dữ liệu vận hành. Chỉ giữ lại tài khoản cấu hình hệ thống.
+                    Xóa sạch Giáo viên, Lớp học, Học sinh, Ghi danh, Điểm danh, Chấm công, Hóa đơn. Chỉ giữ lại danh mục Cơ sở, Khóa học, Môn học và Tài khoản Admin.
                   </div>
                 </div>
               </label>
@@ -4445,7 +4713,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
             <div className="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
               <Lock className="w-3.5 h-3.5 text-amber-400" />
-              <span>Xác thực an toàn (Bắt buộc nhập đúng mật mã):</span>
+              <span>Xác thực an toàn (Khi thực hiện theo 4 Option trên):</span>
             </div>
             <div className="text-[11px] text-slate-400">
               Vui lòng nhập chính xác chữ: <strong className="text-rose-400 font-mono">DELETE_CONFIRM</strong> vào ô dưới đây để mở khóa:
@@ -4466,7 +4734,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 text-xs font-bold transition-all flex items-center justify-center gap-2 border border-slate-700"
             >
               <RefreshCw className="w-4 h-4 text-amber-400" />
-              <span>Khôi Phục Dữ Liệu Mẫu Chuẩn Hoàng Gia</span>
+              <span>Nạp Dữ Liệu Mẫu Thử Nghiệm (Tùy Chọn Demo)</span>
             </button>
 
             <button
@@ -4485,74 +4753,104 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         </div>
       )}
 
-      {/* SECTION 4: EXCEL MASTER IMPORTER (MODULE 5.2 - 10 SHEETS) */}
+      {/* SECTION 4: EXCEL MASTER IMPORTER (MODULE 5.2 - 10 STANDARDIZED TABLES) */}
       {activeSection === 'excel_master' && (
         <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-6 md:p-8 backdrop-blur-md shadow-xl space-y-6">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
             <div>
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2.5 mb-2">
                 <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                   <FileSpreadsheet className="w-5 h-5" />
                 </div>
-                <h3 className="text-base font-bold text-white">Module Nhập & Xuất Bảng Tính Đồng Bộ 10 Bảng Dữ Liệu</h3>
+                <div>
+                  <h3 className="text-base font-bold text-white">Bảng Tính Tổng Thể (10 Bảng Chuẩn Hóa CSDL PostgreSQL / Supabase)</h3>
+                  <span className="text-[11px] text-emerald-400 font-semibold">
+                    Ánh xạ 1-1 giữa 10 Sheet Excel và 10 Bảng Cơ Sở Dữ Liệu Quan Hệ Chuẩn 3NF
+                  </span>
+                </div>
               </div>
               <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-                Đọc và nạp dữ liệu hàng loạt từ tệp Excel đa bảng tính. Tự động kiểm tra khóa ngoại, bỏ dòng trống, trim khoảng trắng, chuẩn hóa định dạng ngày tháng YYYY-MM-DD và cơ chế Upsert thông minh.
+                Tất cả 10 sheet được chuẩn hóa đúng cấu trúc khóa chính (PK), khóa ngoại (FK) và cột dữ liệu của hệ thống. Hỗ trợ xuất toàn bộ 10 bảng (kể cả khi bảng trống vẫn giữ nguyên dòng tiêu đề cột chuẩn) và nhập đồng bộ hàng loạt.
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={downloadSampleTemplate}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-colors"
+                className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-colors cursor-pointer"
               >
-                <Download className="w-4 h-4 text-slate-300" />
-                <span>Tải Tệp Mẫu 10 Sheets</span>
+                <Download className="w-4 h-4 text-amber-400" />
+                <span>Tải Tệp Mẫu Chuẩn 10 Bảng (.xlsx)</span>
               </button>
 
               <button
                 onClick={() => exportMasterWorkbook(store)}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/25 transition-all"
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/25 transition-all cursor-pointer"
               >
                 <Download className="w-4 h-4 text-emerald-100" />
-                <span>Xuất Toàn Bộ Dữ Liệu</span>
+                <span>Xuất Bảng Tính Tổng Thể (10 Bảng)</span>
               </button>
             </div>
           </div>
 
-          {/* 10 Sheets Specification List */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
-            {[
-              { id: '01', name: '01_CO_SO', desc: 'Cơ sở & Ngân hàng' },
-              { id: '02', name: '02_SAN_BAI_PHONG_HOC', desc: 'Phòng học, sân bãi' },
-              { id: '03', name: '03_MON_HOC', desc: 'Môn học ngoại khóa' },
-              { id: '04', name: '04_KHUNG_GIO', desc: 'Ca học sau giờ & cuối tuần' },
-              { id: '05', name: '05_GIAO_VIEN', desc: 'GV cơ hữu & thỉnh giảng' },
-              { id: '06', name: '06_LOP_HOC', desc: 'Lớp học mở trong khóa' },
-              { id: '07', name: '07_HOC_VIEN', desc: 'Hồ sơ học sinh & Y tế' },
-              { id: '08', name: '08_GHI_DANH', desc: 'Học sinh vào từng lớp' },
-              { id: '09', name: '09_DIEM_DANH_BUOI', desc: 'Lịch sử chuyên cần' },
-              { id: '10', name: '10_BAO_LUU_TIEN_BUOI', desc: 'Phiếu bảo lưu hiệu lực' },
-            ].map(sheet => (
-              <div key={sheet.id} className="p-3 rounded-2xl bg-slate-900 border border-slate-800 space-y-1">
-                <span className="text-[10px] font-mono font-bold text-amber-400 block">{sheet.name}</span>
-                <span className="text-[11px] text-slate-300 block font-medium leading-tight">{sheet.desc}</span>
-              </div>
-            ))}
+          {/* 10 Standardized Database Sheets Specification Matrix */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <Layers className="w-4 h-4 text-amber-400" />
+                <span>Cấu Trúc 10 Bảng Trong Bảng Tính Tổng Thể &amp; Ánh Xạ CSDL</span>
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Tổng cộng: {ROYAL_STANDARDIZED_10_TABLES.reduce((sum, s) => sum + (Array.isArray((store as any)[s.storeKey]) ? (store as any)[s.storeKey].length : 0), 0)} bản ghi trên 10 bảng
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+              {ROYAL_STANDARDIZED_10_TABLES.map((spec) => {
+                const rowCount = Array.isArray((store as any)[spec.storeKey]) ? (store as any)[spec.storeKey].length : 0;
+                return (
+                  <div key={spec.sheetName} className="p-3.5 rounded-2xl bg-slate-900/90 border border-slate-800 hover:border-emerald-500/40 transition-all flex flex-col justify-between space-y-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] font-mono font-extrabold text-amber-400 truncate">{spec.sheetName}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[9px] font-mono text-cyan-300 border border-slate-700">
+                          {spec.sqlTable}
+                        </span>
+                      </div>
+                      <div className="text-xs text-white font-bold">{spec.displayName}</div>
+                      <div className="text-[10px] text-slate-400 leading-relaxed line-clamp-2">{spec.description}</div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="text-slate-500">Cột chuẩn:</span>
+                        <span className="text-slate-300 font-mono">{spec.columns.length} cột</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="text-slate-500">Số bản ghi:</span>
+                        <span className={`font-mono font-bold ${rowCount > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>
+                          {rowCount} dòng
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {/* Upload Dropzone */}
           <div className="p-8 rounded-3xl border-2 border-dashed border-slate-700 hover:border-emerald-500/50 bg-slate-900/50 text-center transition-colors">
             <Upload className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
             <div className="text-sm font-bold text-white mb-1">
-              Chọn hoặc kéo thả tệp Excel Master (.xlsx) vào đây
+              Nhập Bảng Tính Tổng Thể (.xlsx) Vào 10 Bảng Cơ Sở Dữ Liệu
             </div>
-            <div className="text-xs text-slate-400 mb-4">
-              Hệ thống sẽ tự động đối soát và nạp toàn bộ các sheet vào cơ sở dữ liệu
+            <div className="text-xs text-slate-400 mb-4 max-w-xl mx-auto">
+              Hệ thống tự động đọc tuần tự từ <code className="text-amber-400 font-mono">01_CO_SO</code> đến <code className="text-amber-400 font-mono">10_HOA_DON_BAO_LUU</code>, kiểm tra toàn vẹn khóa ngoại và chuẩn hóa dữ liệu.
             </div>
 
             <label className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer shadow-lg shadow-emerald-600/20 transition-all">
-              <span>Duyệt Chọn Tệp (.xlsx)</span>
+              <span>Duyệt Chọn Tệp Excel 10 Bảng (.xlsx)</span>
               <input
                 type="file"
                 accept=".xlsx, .xls"
@@ -4562,10 +4860,24 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </label>
 
             {importStatus.message && (
-              <div className={`mt-4 p-3 rounded-2xl text-xs max-w-md mx-auto ${
-                importStatus.isError ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+              <div className={`mt-4 p-4 rounded-2xl text-xs max-w-2xl mx-auto text-left space-y-2 ${
+                importStatus.isError ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
               }`}>
-                {importStatus.message}
+                <div className="font-bold flex items-center gap-2">
+                  {importStatus.isError ? <AlertTriangle className="w-4 h-4 text-rose-400" /> : <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                  <span>{importStatus.message}</span>
+                </div>
+                {importStatus.sheetStats && importStatus.sheetStats.length > 0 && (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2">
+                    {importStatus.sheetStats.map((st) => (
+                      <div key={st.sheetName} className="p-2 rounded-xl bg-slate-950/80 border border-slate-800 text-[10px]">
+                        <div className="font-mono font-bold text-amber-400 truncate">{st.sheetName}</div>
+                        <div className="text-white font-bold mt-0.5">{st.rowCount} dòng</div>
+                        <div className="text-slate-400 truncate">{st.status}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -4577,7 +4889,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-6 md:p-8 backdrop-blur-md shadow-xl max-w-2xl mx-auto space-y-5">
           <div className="flex items-center gap-2 mb-2">
             <MessageSquare className="w-5 h-5 text-amber-400" />
-            <h3 className="text-base font-bold text-white">Cấu Hình Kênh Viễn Thông & Thông Báo Phụ Huynh Tự Động</h3>
+            <h3 className="text-base font-bold text-white">Cấu Hình Kênh Viễn Thông &amp; Thông Báo Phụ Huynh Tự Động</h3>
           </div>
 
           <p className="text-xs text-slate-400 leading-relaxed">
@@ -4603,7 +4915,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
             <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
               <div>
-                <div className="font-bold text-white">SMS Brandname "ROYAL SCHOOL"</div>
+                <div className="font-bold text-white">SMS Brandname &quot;ROYAL SCHOOL&quot;</div>
                 <div className="text-[11px] text-slate-400">Tin nhắn SMS định danh viễn thông tiêu chuẩn</div>
               </div>
               <input
@@ -4636,9 +4948,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         </div>
       )}
 
-      {/* SECTION 6: SUPABASE POSTGRESQL & STORAGE CONFIG HUB */}
+      {/* SECTION 6: SUPABASE POSTGRESQL & 10-TABLE HEALTH DIAGNOSTICS HUB */}
       {activeSection === 'supabase' && (
-        <div className="space-y-6 max-w-5xl mx-auto">
+        <div className="space-y-6 max-w-6xl mx-auto">
           {/* Main Card */}
           <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 p-6 md:p-8 backdrop-blur-md shadow-2xl space-y-6">
             {/* Header */}
@@ -4649,13 +4961,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 </div>
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-lg font-extrabold text-white">Quản Trị Cơ Sở Dữ Liệu Supabase PostgreSQL &amp; Storage Hub</h3>
+                    <h3 className="text-lg font-extrabold text-white">Liên Kết CSDL Supabase, Kiểm Tra Kết Nối &amp; Trạng Thái 10 Bảng Dữ Liệu</h3>
                     <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      Chuẩn 3NF &bull; Zero-Auth Storage
+                      Chuẩn 3NF &bull; 10 Bảng Chuẩn Hóa
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-                    Tích hợp cơ sở dữ liệu quan hệ PostgreSQL 15+ trên Supabase Engine và Kho lưu trữ minh chứng phép <code className="text-amber-400 font-mono">attendance-proofs</code> không phụ thuộc đăng nhập Google Drive.
+                    Kiểm tra kết nối trực tiếp tới Supabase PostgreSQL REST API, kiểm định toàn vẹn khóa ngoại (PK/FK) và đối soát trạng thái đồng bộ thời gian thực của toàn bộ 10 bảng dữ liệu.
                   </p>
                 </div>
               </div>
@@ -4665,15 +4977,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowSqlModal(true)}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-1.5"
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <Code className="w-4 h-4 text-amber-400" />
-                  <span>Xem SQL DDL (11 Bảng)</span>
+                  <span>Xem SQL DDL (10 Bảng Chuẩn)</span>
                 </button>
                 <button
                   type="button"
                   onClick={handleDownloadSqlDdl}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-1.5"
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <Download className="w-4 h-4 text-cyan-400" />
                   <span>Tải .sql</span>
@@ -4681,68 +4993,122 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               </div>
             </div>
 
-            {/* Connection Status Banner */}
-            <div className={`p-4 rounded-2xl border transition-all ${
+            {/* Connection Status & Live Check Banner */}
+            <div className={`p-5 rounded-2xl border transition-all space-y-4 ${
               sbConnected
                 ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
-                : 'bg-amber-950/20 border-amber-500/30 text-amber-200'
+                : 'bg-slate-900/90 border-amber-500/30 text-amber-200'
             }`}>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <div className={`w-3.5 h-3.5 rounded-full animate-pulse ${
+                  <div className={`w-3.5 h-3.5 rounded-full animate-pulse shrink-0 ${
                     sbConnected ? 'bg-emerald-400 shadow-lg shadow-emerald-400/50' : 'bg-amber-400'
                   }`} />
                   <div>
-                    <div className="font-extrabold text-sm flex items-center gap-2">
+                    <div className="font-extrabold text-sm flex items-center gap-2 flex-wrap">
                       {sbConnected ? (
                         <>
-                          <span className="text-emerald-400">✓ Đã kết nối Supabase Storage &amp; Database thành công</span>
+                          <span className="text-emerald-400">✓ Đã Liên Kết Cơ Sở Dữ Liệu Supabase PostgreSQL</span>
                           {sbLatency !== null && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300">
-                              {sbLatency}ms
+                              Độ trễ: {sbLatency}ms
                             </span>
                           )}
                         </>
                       ) : (
-                        <span className="text-amber-300">⚠️ Chế độ Standalone Local Storage (Sẵn sàng kết nối Supabase Cloud)</span>
+                        <span className="text-amber-300">Chế Độ Local Chuẩn Hóa (Sẵn Sàng Liên Kết Supabase Cloud)</span>
                       )}
                     </div>
                     <div className="text-[11px] text-slate-400 mt-0.5">
-                      {sbConnected
-                        ? `Project Endpoint: ${sbUrl || 'Đã cấu hình qua biến môi trường'} &bull; Storage Bucket: attendance-proofs (Sẵn sàng nhận tệp)`
-                        : 'Hệ thống đang hoạt động độc lập bằng IndexedStore/LocalStorage. Khi điền URL và Anon Key, hệ thống sẽ tự động bật đồng bộ.'}
+                      {sbCheckDetails?.message ||
+                        (sbConnected
+                          ? `Endpoint: ${sbUrl} • Tất cả 10 bảng sẵn sàng đồng bộ 2 chiều.`
+                          : 'Nhập Supabase Project URL & Anon Key bên dưới hoặc bấm "Kiểm Tra Kết Nối & Trạng Thái 10 Bảng" để kiểm định toàn vẹn CSDL.')}
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={handleTestLiveSupabase}
-                    disabled={sbTesting || !sbUrl}
-                    className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-50"
+                    onClick={() => handleInspectDatabaseHealth(sbUrl, sbKey)}
+                    disabled={sbTesting || sbInspectingTables}
+                    className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-amber-300 text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${sbTesting ? 'animate-spin' : ''}`} />
-                    <span>{sbTesting ? 'Đang kiểm tra...' : 'Kiểm Tra Kết Nối'}</span>
+                    <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${sbTesting || sbInspectingTables ? 'animate-spin' : ''}`} />
+                    <span>{sbTesting || sbInspectingTables ? 'Đang kiểm tra...' : 'Kiểm Tra Kết Nối & 10 Bảng'}</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={handleExecuteSupabaseSync}
-                    disabled={sbSyncing || !sbConnected}
-                    className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md shadow-emerald-600/30 disabled:opacity-50"
+                    disabled={sbSyncing || !sbUrl.trim() || !sbKey.trim()}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md shadow-emerald-600/30 disabled:opacity-50 cursor-pointer"
                   >
                     <Upload className={`w-3.5 h-3.5 ${sbSyncing ? 'animate-bounce' : ''}`} />
-                    <span>{sbSyncing ? 'Đang đồng bộ...' : 'Đồng Bộ Hai Chiều Ngay'}</span>
+                    <span>{sbSyncing ? 'Đang đồng bộ...' : 'Đẩy 10 Bảng Lên Supabase'}</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={handlePullFromSupabase}
+                    disabled={sbSyncing || !sbUrl.trim() || !sbKey.trim()}
+                    className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md shadow-cyan-600/30 disabled:opacity-50 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Tải 10 Bảng Từ Supabase</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 4 Diagnostic Indicators */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-slate-800/80 text-xs">
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] text-slate-400">REST API Endpoint</div>
+                    <div className="font-bold text-white mt-0.5">
+                      {sbCheckDetails ? (sbCheckDetails.restApiReachable ? 'Hoạt động (200 OK)' : 'Chưa kết nối') : sbConnected ? 'Đã kết nối' : 'Chờ cấu hình'}
+                    </div>
+                  </div>
+                  <span className={`w-2.5 h-2.5 rounded-full ${sbCheckDetails?.restApiReachable || sbConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] text-slate-400">Xác Thực Anon Key</div>
+                    <div className="font-bold text-white mt-0.5">
+                      {sbCheckDetails ? (sbCheckDetails.authValid ? 'Hợp lệ (RLS Ready)' : 'Chưa xác thực') : sbConnected ? 'Hợp lệ' : 'Chờ kiểm tra'}
+                    </div>
+                  </div>
+                  <span className={`w-2.5 h-2.5 rounded-full ${sbCheckDetails?.authValid || sbConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] text-slate-400">Toàn Vẹn 3NF (PK/FK)</div>
+                    <div className="font-bold text-emerald-400 mt-0.5">
+                      {tableHealthList.filter(t => t.integrityPassed).length}/10 Bảng Đạt Chuẩn
+                    </div>
+                  </div>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] text-slate-400">Storage Minh Chứng</div>
+                    <div className="font-bold text-white mt-0.5">
+                      {sbHasBucket ? 'attendance-proofs OK' : 'Local / Chờ tạo bucket'}
+                    </div>
+                  </div>
+                  <span className={`w-2.5 h-2.5 rounded-full ${sbHasBucket ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                 </div>
               </div>
 
               {/* Progress bar when syncing */}
               {sbSyncing && (
-                <div className="mt-3 pt-3 border-t border-slate-800/60 space-y-1.5">
+                <div className="pt-2 border-t border-slate-800/60 space-y-1.5">
                   <div className="flex items-center justify-between text-[11px] text-slate-300">
-                    <span>Đang đẩy bảng: <strong className="text-emerald-400 font-mono">{sbSyncTable}</strong></span>
+                    <span>Tiến trình đồng bộ: <strong className="text-emerald-400 font-mono">{sbSyncTable}</strong></span>
                     <span className="font-mono font-bold text-emerald-400">{sbSyncProgress}%</span>
                   </div>
                   <div className="w-full h-2 rounded-full bg-slate-900 overflow-hidden">
@@ -4757,10 +5123,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
             {/* Configuration Form */}
             <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <span className="font-bold text-white text-xs uppercase tracking-wider flex items-center gap-2">
                   <Sliders className="w-4 h-4 text-cyan-400" />
-                  <span>Thông Tin Cấu Hình Kết Nối (Supabase API Credentials)</span>
+                  <span>Thông Tin Cấu Hình Liên Kết Supabase (API Credentials)</span>
                 </span>
                 <span className="text-[11px] text-slate-500">
                   Lấy từ Supabase Dashboard &rarr; Project Settings &rarr; API
@@ -4796,7 +5162,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-500 transition-colors"
                   />
                   <span className="text-[10px] text-slate-500 mt-1 block">
-                    Khóa công khai anon (cho phép quyền đọc/ghi theo RLS Policies)
+                    Khóa công khai anon (cho phép đọc/ghi 10 bảng theo RLS Policies)
                   </span>
                 </div>
               </div>
@@ -4806,127 +5172,144 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   type="button"
                   onClick={handleSaveSupabase}
                   disabled={sbTesting}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg shadow-emerald-600/20 flex items-center gap-2 transition-all disabled:opacity-50"
+                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg shadow-emerald-600/20 flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Lưu &amp; Xác Thực Kết Nối Supabase</span>
+                  <span>Lưu Cấu Hình &amp; Kiểm Tra 10 Bảng Dữ Liệu</span>
                 </button>
               </div>
             </div>
 
-            {/* 6-Step Operational Guide */}
-            <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
-                  <BookOpen className="w-4 h-4 text-amber-400" />
-                  <span>Hướng Dẫn 6 Bước Kích Hoạt Supabase Dành Cho Quản Trị Viên</span>
-                </h4>
-                <span className="text-[10px] text-slate-400">Theo chuẩn vận hành Royal School</span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
-                {/* Step 1 */}
-                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[11px] font-mono">1</span>
-                    <span>Tạo Supabase Project</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Truy cập <a href="https://supabase.com" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">supabase.com</a>, đăng nhập và tạo mới Project tên <strong className="text-white">royal-extracurricular-hub</strong>, chọn Region gần nhất (Singapore).
-                  </p>
-                </div>
-
-                {/* Step 2 */}
-                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[11px] font-mono">2</span>
-                    <span>Chạy SQL DDL Schema</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Mở tab <strong>SQL Editor</strong> trên Supabase, bấm <strong>New Query</strong>, dán toàn bộ mã nguồn SQL DDL (11 bảng 3NF &amp; Storage Bucket) và bấm <strong>Run</strong>.
-                  </p>
-                </div>
-
-                {/* Step 3 */}
-                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[11px] font-mono">3</span>
-                    <span>Tạo Storage Bucket</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Vào menu <strong>Storage</strong> &rarr; <strong>New Bucket</strong>, đặt tên là <code className="text-emerald-400 font-mono">attendance-proofs</code>, tích chọn <strong className="text-white">Public bucket</strong> (giới hạn 5MB/file).
-                  </p>
-                </div>
-
-                {/* Step 4 */}
-                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[11px] font-mono">4</span>
-                    <span>Lấy API Credentials</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Vào <strong>Project Settings &rarr; API</strong>, sao chép 2 giá trị <strong className="text-white">Project URL</strong> và <strong className="text-white">anon public key</strong>.
-                  </p>
-                </div>
-
-                {/* Step 5 */}
-                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[11px] font-mono">5</span>
-                    <span>Điền Vào Hệ Thống</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Dán 2 thông số vào form cấu hình ở trên (hoặc cấu hình file <code className="text-cyan-400 font-mono">.env</code> qua biến <code className="text-slate-300 font-mono">VITE_SUPABASE_URL</code> và <code className="text-slate-300 font-mono">VITE_SUPABASE_ANON_KEY</code>).
-                  </p>
-                </div>
-
-                {/* Step 6 */}
-                <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[11px] font-mono">6</span>
-                    <span>Kiểm Tra &amp; Đồng Bộ</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    Bấm nút <strong>"Lưu &amp; Xác Thực"</strong> và sau đó bấm <strong>"Đồng Bộ Hai Chiều Ngay"</strong> để nạp toàn bộ học sinh, lớp học và hóa đơn lên Cloud.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* 11 PostgreSQL Tables Overview */}
+            {/* 10-TABLE HEALTH & SYNC STATUS INSPECTOR */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-white text-xs uppercase tracking-wider flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-purple-400" />
-                  <span>Ma Trận 11 Bảng Dữ Liệu PostgreSQL Đã Chuẩn Hóa 3NF</span>
-                </span>
-                <span className="text-[11px] text-slate-400">Tự động bắt trùng lặp &amp; Ràng buộc toàn vẹn quan hệ</span>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="font-bold text-white text-xs uppercase tracking-wider flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-amber-400" />
+                    <span>Bảng Kiểm Tra Trạng Thái 10 Bảng Dữ Liệu Chuẩn Hóa (Database Table Health Inspector)</span>
+                  </span>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Kiểm tra số bản ghi Local, số bản ghi trên Supabase Cloud, ràng buộc khóa chính/khóa ngoại (3NF) và trạng thái đồng bộ từng bảng.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleInspectDatabaseHealth(sbUrl, sbKey)}
+                  disabled={sbInspectingTables}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-bold border border-slate-700 flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${sbInspectingTables ? 'animate-spin' : ''}`} />
+                  <span>Làm Mới Trạng Thái 10 Bảng</span>
+                </button>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 text-xs">
-                {[
-                  { name: 'campuses', desc: 'Cơ sở PMH & Phú Lâm', count: store.campuses.length, badge: 'Master' },
-                  { name: 'academic_terms', desc: 'Khóa học & Niên khóa', count: store.terms.length, badge: 'Master' },
-                  { name: 'subject_masters', desc: 'Môn học dùng chung', count: store.subjects.length, badge: 'Master' },
-                  { name: 'campus_subject_fees', desc: 'Biểu phí chuẩn cơ sở', count: store.campusPricings?.length || 8, badge: 'Pricing' },
-                  { name: 'teachers', desc: 'GV cơ hữu & thỉnh giảng', count: store.teachers.length, badge: 'Staff' },
-                  { name: 'extracurricular_classes', desc: 'Lớp học thực thể (2 ca/tuần)', count: store.classes.length, badge: 'Classes' },
-                  { name: 'students', desc: 'Hồ sơ học sinh (Unique SĐT+Tên)', count: store.students.length, badge: 'Students' },
-                  { name: 'enrollments', desc: 'Ghi danh & Học thử', count: store.enrollments.length, badge: 'Academic' },
-                  { name: 'attendance_records', desc: 'Sổ điểm danh & Minh chứng', count: store.attendance.length, badge: 'Attendance' },
-                  { name: 'tuition_invoices', desc: 'Hóa đơn học phí VietQR', count: store.invoices.length, badge: 'Finance' },
-                  { name: 'credit_notes', desc: 'Bảo lưu (≥3 buổi có phép)', count: store.makeupCredits.length, badge: 'Finance' },
-                  { name: 'transfer_records', desc: 'Biên bản phụ thu chuyển lớp', count: store.transfers?.length || 2, badge: 'Finance' },
-                ].map((tb) => (
-                  <div key={tb.name} className="p-3 rounded-2xl bg-slate-900/70 border border-slate-800 space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono font-bold text-amber-400 text-[11px] truncate">{tb.name}</span>
-                      <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-slate-800 text-slate-300">{tb.badge}</span>
-                    </div>
-                    <div className="text-[11px] text-slate-300 font-medium truncate">{tb.desc}</div>
-                    <div className="text-[10px] text-slate-500 font-mono">Dữ liệu local: {tb.count} bản ghi</div>
-                  </div>
-                ))}
+              <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/80">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900/90 text-slate-400 border-b border-slate-800 text-[10px] uppercase tracking-wider">
+                      <th className="py-3 px-3 font-bold">#</th>
+                      <th className="py-3 px-3 font-bold">Sheet Bảng Tính</th>
+                      <th className="py-3 px-3 font-bold">Bảng SQL (Supabase)</th>
+                      <th className="py-3 px-3 font-bold">Tên Bảng &amp; Khóa Quan Hệ (PK / FK)</th>
+                      <th className="py-3 px-3 font-bold text-right">Bản Ghi Local</th>
+                      <th className="py-3 px-3 font-bold text-right">Bản Ghi Cloud</th>
+                      <th className="py-3 px-3 font-bold text-center">Toàn Vẹn 3NF</th>
+                      <th className="py-3 px-3 font-bold">Trạng Thái Bảng Dữ Liệu</th>
+                      <th className="py-3 px-3 font-bold text-right">Thao Tác</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {tableHealthList.map((tb) => {
+                      const spec = ROYAL_STANDARDIZED_10_TABLES.find(s => s.sqlTable === tb.sqlTable)!;
+                      const isPushingThis = sbPushingTable === tb.sqlTable;
+
+                      let badgeStyle = 'bg-slate-800 text-slate-300 border-slate-700';
+                      let badgeLabel = 'Chuẩn hóa Local';
+                      if (tb.status === 'synced') {
+                        badgeStyle = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+                        badgeLabel = '✓ Đã đồng bộ Cloud';
+                      } else if (tb.status === 'out_of_sync') {
+                        badgeStyle = 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+                        badgeLabel = '⚡ Lệch số bản ghi';
+                      } else if (tb.status === 'missing_table') {
+                        badgeStyle = 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+                        badgeLabel = '✕ Chưa tạo bảng SQL';
+                      } else if (tb.status === 'rls_blocked' || tb.status === 'error') {
+                        badgeStyle = 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+                        badgeLabel = '⚠ Lỗi RLS / Kết nối';
+                      }
+
+                      return (
+                        <tr key={tb.sqlTable} className="hover:bg-slate-900/50 transition-colors">
+                          <td className="py-3 px-3 font-mono font-bold text-slate-500">
+                            {String(tb.order).padStart(2, '0')}
+                          </td>
+                          <td className="py-3 px-3 font-mono font-bold text-amber-400 whitespace-nowrap">
+                            {tb.sheetName}
+                          </td>
+                          <td className="py-3 px-3 font-mono text-cyan-300 whitespace-nowrap">
+                            {tb.sqlTable}
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="font-bold text-white">{tb.displayName}</div>
+                            <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                              PK: {tb.primaryKey}
+                              {tb.foreignKeys.length > 0 ? ` • FK: ${tb.foreignKeys.join(', ')}` : ' • Bảng danh mục gốc'}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono font-bold text-white">
+                            {tb.localCount}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono font-bold">
+                            {tb.remoteCount !== null ? (
+                              <span className="text-emerald-400">{tb.remoteCount}</span>
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            {tb.integrityPassed ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                <CheckCircle2 className="w-3 h-3" />
+                                3NF OK
+                              </span>
+                            ) : (
+                              <span
+                                title={tb.integrityIssues.join(' | ')}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                              >
+                                <AlertTriangle className="w-3 h-3" />
+                                {tb.integrityIssues.length} lưu ý
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${badgeStyle}`}>
+                              {badgeLabel}
+                            </span>
+                            <div className="text-[10px] text-slate-400 mt-0.5 max-w-xs truncate" title={tb.message}>
+                              {tb.message}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 text-right whitespace-nowrap">
+                            { spec && (
+                              <button
+                                type="button"
+                                onClick={() => handlePushSingleTable(spec)}
+                                disabled={isPushingThis || !sbUrl.trim() || !sbKey.trim()}
+                                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white text-[10px] font-bold border border-slate-700 transition-all disabled:opacity-40 cursor-pointer"
+                                title={`Đẩy bảng ${tb.sqlTable} lên Supabase`}
+                              >
+                                {isPushingThis ? 'Đang đẩy...' : 'Đẩy bảng ↑'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -4942,8 +5325,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       <Code className="w-4 h-4" />
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-white">Tập Lệnh SQL DDL Khởi Tạo Cơ Sở Dữ Liệu (Supabase PostgreSQL)</h4>
-                      <p className="text-[11px] text-slate-400">Bao gồm 11 bảng quan hệ, RLS Policies và Storage Bucket 'attendance-proofs'</p>
+                      <h4 className="text-sm font-bold text-white">Tập Lệnh SQL DDL Khởi Tạo 10 Bảng Chuẩn Hóa (Supabase PostgreSQL)</h4>
+                      <p className="text-[11px] text-slate-400">Bao gồm đầy đủ 10 bảng CSDL ánh xạ 1-1 với Bảng Tính Tổng Thể, RLS Policies &amp; Storage Bucket</p>
                     </div>
                   </div>
 
@@ -4976,12 +5359,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
                 {/* Code Preview */}
                 <div className="p-4 overflow-y-auto font-mono text-[11px] text-slate-300 bg-slate-950 space-y-1 select-all leading-relaxed">
-                  <pre className="whitespace-pre-wrap">{SUPABASE_DDL_SQL}</pre>
+                  <pre className="whitespace-pre-wrap">{SUPABASE_FULL_DDL_SQL}</pre>
                 </div>
 
                 {/* Modal Footer */}
                 <div className="p-3 border-t border-slate-800 bg-slate-900/90 flex items-center justify-between text-xs text-slate-400">
-                  <span>Mẹo: Sao chép đoạn mã trên và dán trực tiếp vào tab <strong>SQL Editor</strong> trong Supabase Dashboard để kích hoạt hệ thống trong 30 giây.</span>
+                  <span>Mẹo: Sao chép đoạn mã trên và dán trực tiếp vào tab <strong>SQL Editor</strong> trong Supabase Dashboard để tạo toàn bộ 10 bảng chuẩn hóa.</span>
                   <button
                     type="button"
                     onClick={() => setShowSqlModal(false)}
@@ -5042,15 +5425,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveUniformPayrollRates}
-                  className="px-5 py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition-all flex items-center gap-2 shadow-xl shadow-amber-500/25"
+                  className="px-5 py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition-all flex items-center gap-2 shadow-xl shadow-amber-500/25 cursor-pointer"
                 >
-                  <Save className="w-4 h-4" />
-                  <span>Lưu Định Mức Thù Lao Toàn Trường</span>
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Lưu Định Mức Thù Lao Toàn Trường (Áp Dụng Hồi Tố)</span>
                 </button>
               </div>
             </div>
 
-            {/* 2 Symmetric Standard Rate Configuration Cards */}
+            {/* 2 Symmetric Standard Session Rate Configuration Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* CARD 1: GIÁO VIÊN CƠ HỮU */}
               <div className="rounded-3xl bg-gradient-to-b from-slate-900/90 to-slate-950 border border-cyan-500/30 p-6 shadow-xl relative overflow-hidden flex flex-col justify-between space-y-5">
@@ -5075,44 +5458,51 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                        Đơn giá chuẩn / 1 tiết (45 phút):
+                        Đơn giá chuẩn / 1 buổi dạy (90 phút):
                       </label>
                       <div className="flex items-center gap-2">
                         <input
                           type="number"
-                          step={5000}
-                          min={50000}
-                          max={1000000}
-                          value={permanentPeriodRateInput}
-                          onChange={e => setPermanentPeriodRateInput(Number(e.target.value))}
+                          step={10000}
+                          min={100000}
+                          max={2000000}
+                          value={permanentSessionRateInput}
+                          onChange={e => {
+                            const val = Number(e.target.value);
+                            setPermanentSessionRateInput(val);
+                            setPermanentPeriodRateInput(Math.round(val / (periodsPerSessionInput || 2)));
+                          }}
                           className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-cyan-500/50 text-cyan-300 font-mono font-extrabold text-base focus:outline-none focus:border-cyan-400"
                         />
-                        <span className="text-xs font-bold text-slate-400 shrink-0">VNĐ / tiết</span>
+                        <span className="text-xs font-bold text-slate-400 shrink-0">VNĐ / buổi</span>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-wrap pt-1">
-                      <span className="text-[10px] text-slate-500">Mức gợi ý:</span>
-                      {[130000, 150000, 160000, 180000].map(val => (
+                      <span className="text-[10px] text-slate-500">Mức chuẩn gợi ý:</span>
+                      {[260000, 300000, 320000, 350000].map(val => (
                         <button
                           key={val}
                           type="button"
-                          onClick={() => setPermanentPeriodRateInput(val)}
-                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold transition-all ${
-                            permanentPeriodRateInput === val
+                          onClick={() => {
+                            setPermanentSessionRateInput(val);
+                            setPermanentPeriodRateInput(Math.round(val / (periodsPerSessionInput || 2)));
+                          }}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                            permanentSessionRateInput === val
                               ? 'bg-cyan-500 text-slate-950 font-extrabold'
                               : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
                           }`}
                         >
-                          {val / 1000}K
+                          {val / 1000}K/buổi
                         </button>
                       ))}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/80 text-xs">
                       <div>
-                        <span className="text-slate-400 block text-[11px]">Số tiết chuẩn 1 ca:</span>
-                        <strong className="text-white font-mono text-sm">{periodsPerSessionInput} tiết (90 phút)</strong>
+                        <span className="text-slate-400 block text-[11px]">Thời lượng chuẩn 1 buổi:</span>
+                        <strong className="text-white font-mono text-sm">1 buổi (90 phút)</strong>
                       </div>
                       <div className="text-right">
                         <span className="text-slate-400 block text-[11px]">Giáo viên đang áp dụng:</span>
@@ -5125,20 +5515,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <div className="p-4 rounded-2xl bg-cyan-950/30 border border-cyan-500/30 flex items-center justify-between">
                     <div>
                       <span className="text-[11px] text-cyan-300/80 block uppercase font-bold tracking-wider">
-                        Thành tiền quy đổi 1 buổi chuẩn (2 tiết):
+                        Thù lao chuẩn 1 buổi dạy (Cơ hữu):
                       </span>
                       <div className="text-xl font-extrabold font-mono text-emerald-400 mt-0.5">
-                        {formatVND(permanentPeriodRateInput * periodsPerSessionInput)} <span className="text-xs font-normal text-slate-400">/ buổi</span>
+                        {formatVND(permanentSessionRateInput)} <span className="text-xs font-normal text-slate-400">/ buổi</span>
                       </div>
                     </div>
                     <div className="text-right text-[10px] text-slate-400 font-mono">
-                      = {formatVND(permanentPeriodRateInput)} &times; {periodsPerSessionInput} tiết
+                      1 buổi &times; {formatVND(permanentSessionRateInput)}
                     </div>
                   </div>
                 </div>
 
                 <div className="pt-3 border-t border-slate-800/80 text-[11px] text-slate-400 leading-relaxed italic">
-                  🏛 <strong>Ghi chú chính sách:</strong> Áp dụng cho toàn bộ giáo viên thuộc biên chế Royal School giảng dạy ngoại khóa.
+                  🏛 <strong>Ghi chú chính sách:</strong> Áp dụng đồng bộ <strong>{formatVND(permanentSessionRateInput)}/buổi</strong> cho toàn bộ giáo viên thuộc biên chế Royal School giảng dạy ngoại khóa.
                 </div>
               </div>
 
@@ -5158,51 +5548,58 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       </div>
                     </div>
                     <span className="px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider">
-                      Hợp Đồng Giờ &bull; Thỉnh Giảng
+                      Hợp Đồng Buổi &bull; Thỉnh Giảng
                     </span>
                   </div>
 
                   <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                        Đơn giá chuẩn / 1 tiết (45 phút):
+                        Đơn giá chuẩn / 1 buổi dạy (90 phút):
                       </label>
                       <div className="flex items-center gap-2">
                         <input
                           type="number"
-                          step={5000}
-                          min={50000}
-                          max={1000000}
-                          value={visitingPeriodRateInput}
-                          onChange={e => setVisitingPeriodRateInput(Number(e.target.value))}
+                          step={10000}
+                          min={100000}
+                          max={2000000}
+                          value={visitingSessionRateInput}
+                          onChange={e => {
+                            const val = Number(e.target.value);
+                            setVisitingSessionRateInput(val);
+                            setVisitingPeriodRateInput(Math.round(val / (periodsPerSessionInput || 2)));
+                          }}
                           className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-amber-500/50 text-amber-300 font-mono font-extrabold text-base focus:outline-none focus:border-amber-400"
                         />
-                        <span className="text-xs font-bold text-slate-400 shrink-0">VNĐ / tiết</span>
+                        <span className="text-xs font-bold text-slate-400 shrink-0">VNĐ / buổi</span>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-wrap pt-1">
-                      <span className="text-[10px] text-slate-500">Mức gợi ý:</span>
-                      {[120000, 135000, 140000, 150000].map(val => (
+                      <span className="text-[10px] text-slate-500">Mức chuẩn gợi ý:</span>
+                      {[240000, 270000, 280000, 300000].map(val => (
                         <button
                           key={val}
                           type="button"
-                          onClick={() => setVisitingPeriodRateInput(val)}
-                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold transition-all ${
-                            visitingPeriodRateInput === val
+                          onClick={() => {
+                            setVisitingSessionRateInput(val);
+                            setVisitingPeriodRateInput(Math.round(val / (periodsPerSessionInput || 2)));
+                          }}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                            visitingSessionRateInput === val
                               ? 'bg-amber-500 text-slate-950 font-extrabold'
                               : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
                           }`}
                         >
-                          {val / 1000}K
+                          {val / 1000}K/buổi
                         </button>
                       ))}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/80 text-xs">
                       <div>
-                        <span className="text-slate-400 block text-[11px]">Số tiết chuẩn 1 ca:</span>
-                        <strong className="text-white font-mono text-sm">{periodsPerSessionInput} tiết (90 phút)</strong>
+                        <span className="text-slate-400 block text-[11px]">Thời lượng chuẩn 1 buổi:</span>
+                        <strong className="text-white font-mono text-sm">1 buổi (90 phút)</strong>
                       </div>
                       <div className="text-right">
                         <span className="text-slate-400 block text-[11px]">Giáo viên đang áp dụng:</span>
@@ -5215,20 +5612,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <div className="p-4 rounded-2xl bg-amber-950/30 border border-amber-500/30 flex items-center justify-between">
                     <div>
                       <span className="text-[11px] text-amber-300/80 block uppercase font-bold tracking-wider">
-                        Thành tiền quy đổi 1 buổi chuẩn (2 tiết):
+                        Thù lao chuẩn 1 buổi dạy (Thỉnh giảng):
                       </span>
                       <div className="text-xl font-extrabold font-mono text-emerald-400 mt-0.5">
-                        {formatVND(visitingPeriodRateInput * periodsPerSessionInput)} <span className="text-xs font-normal text-slate-400">/ buổi</span>
+                        {formatVND(visitingSessionRateInput)} <span className="text-xs font-normal text-slate-400">/ buổi</span>
                       </div>
                     </div>
                     <div className="text-right text-[10px] text-slate-400 font-mono">
-                      = {formatVND(visitingPeriodRateInput)} &times; {periodsPerSessionInput} tiết
+                      1 buổi &times; {formatVND(visitingSessionRateInput)}
                     </div>
                   </div>
                 </div>
 
                 <div className="pt-3 border-t border-slate-800/80 text-[11px] text-slate-400 leading-relaxed italic">
-                  ⚡ <strong>Ghi chú chính sách:</strong> Áp dụng cho huấn luyện viên, chuyên gia ngoài trường cộng tác theo số tiết thực tế.
+                  ⚡ <strong>Ghi chú chính sách:</strong> Áp dụng đồng bộ <strong>{formatVND(visitingSessionRateInput)}/buổi</strong> cho huấn luyện viên, chuyên gia ngoài trường cộng tác theo số buổi thực tế.
                 </div>
               </div>
             </div>
@@ -5239,18 +5636,76 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                 <span>
                   Lần cập nhật gần nhất: <strong className="text-white font-mono">{store.payrollRateConfig?.updated_at || '2026-10-20'}</strong> bởi <strong className="text-amber-400">{store.payrollRateConfig?.updated_by || 'Phòng Tài Chính & Kế Toán'}</strong>
+                  {' • '}
+                  <span className="text-emerald-400 font-semibold">Đã đồng bộ hồi tố {(store.teacherAttendance || []).length} ca dạy lịch sử</span>
                 </span>
               </div>
 
               <button
                 type="button"
                 onClick={handleSaveUniformPayrollRates}
-                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+                className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                <span>Lưu Định Mức Thù Lao Toàn Trường</span>
+                <span>Lưu &amp; Áp Dụng Hồi Tố Toàn Trường</span>
               </button>
             </div>
+
+            {/* Modal Xác Nhận Đồng Bộ Hồi Tố (Retroactive Recalculation Popover) */}
+            {showRetroactiveConfirmModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fadeIn">
+                <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-4">
+                  <div className="flex items-start gap-3.5">
+                    <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+                      <RefreshCw className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-extrabold text-white">
+                        Xác Nhận Đồng Bộ Hồi Tố Thù Lao Giáo Viên
+                      </h4>
+                      <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                        Hệ thống sẽ tính toán lại thù lao cho tất cả <strong className="text-amber-300 font-mono">{(store.teacherAttendance || []).length || 9} ca học</strong> đã điểm danh trước đó theo mức:{' '}
+                        <strong className="text-cyan-300 font-mono">Cơ hữu {Math.round(permanentSessionRateInput / 1000)}K/buổi</strong>,{' '}
+                        <strong className="text-amber-300 font-mono">Thỉnh giảng {Math.round(visitingSessionRateInput / 1000)}K/buổi</strong>. Bạn có chắc chắn muốn cập nhật?
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span>🏛 Giáo viên Cơ hữu (Permanent):</span>
+                      <strong className="font-mono text-cyan-300">{formatVND(permanentSessionRateInput)} / buổi</strong>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span>⚡ Giáo viên Thỉnh giảng (Visiting):</span>
+                      <strong className="font-mono text-amber-300">{formatVND(visitingSessionRateInput)} / buổi</strong>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-400 pt-1.5 border-t border-slate-800 text-[11px]">
+                      <span>Tổng số ca lịch sử được tính lại:</span>
+                      <strong className="font-mono text-emerald-400">{(store.teacherAttendance || []).length || 9} buổi học</strong>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2.5 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowRetroactiveConfirmModal(false)}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
+                    >
+                      Hủy Bỏ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmRetroactivePayrollRates}
+                      className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-lg shadow-amber-500/20 cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Xác Nhận &amp; Đồng Bộ Ngay</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Read-Only Summary Table of Teachers */}
             <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl space-y-0">
@@ -5258,10 +5713,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <div>
                   <h4 className="text-sm font-extrabold text-white flex items-center gap-2">
                     <DollarSign className="w-4 h-4 text-amber-400" />
-                    <span>Bảng Danh Sách Giáo Viên &amp; Định Mức Thù Lao Tự Động ({filteredTeachers.length}/{store.teachers.length})</span>
+                    <span>Bảng Danh Sách Giáo Viên &amp; Định Mức Thù Lao Theo Buổi ({filteredTeachers.length}/{store.teachers.length})</span>
                   </h4>
                   <p className="text-[11px] text-slate-400 mt-0.5">
-                    Chế độ xem đồng bộ: Đơn giá tiết và thù lao buổi được hệ thống tự động gán đồng bộ theo loại hình <strong>Cơ Hữu</strong> hoặc <strong>Thỉnh Giảng</strong>.
+                    Chế độ xem đồng bộ: Đơn giá thù lao buổi được hệ thống tự động gán đồng bộ theo loại hình <strong>Cơ Hữu ({formatVND(permanentSessionRateInput)}/buổi)</strong> hoặc <strong>Thỉnh Giảng ({formatVND(visitingSessionRateInput)}/buổi)</strong>.
                   </p>
                 </div>
 
@@ -5321,9 +5776,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       <th className="py-3.5 px-4">1. Mã GV &amp; Họ Tên</th>
                       <th className="py-3.5 px-4">2. Cơ Sở Chính</th>
                       <th className="py-3.5 px-4">3. Phân Loại Nhân Sự</th>
-                      <th className="py-3.5 px-4 text-center">4. Số Tiết / Ca</th>
-                      <th className="py-3.5 px-4">5. Đơn Giá Áp Dụng / Tiết</th>
-                      <th className="py-3.5 px-4">6. Thù Lao / Buổi Chuẩn</th>
+                      <th className="py-3.5 px-4 text-center">4. Đơn Vị Tính Công</th>
+                      <th className="py-3.5 px-4">5. Đơn Giá Áp Dụng / Buổi</th>
+                      <th className="py-3.5 px-4">6. Quy Đổi Tham Chiếu</th>
                       <th className="py-3.5 px-4">7. Tài Khoản Nhận Lương</th>
                       <th className="py-3.5 px-4 text-right">8. Trạng Thái</th>
                     </tr>
@@ -5332,8 +5787,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     {filteredTeachers.map((teacher, idx) => {
                       const isPerm = (teacher.type || teacher.teacher_type) === 'permanent';
                       const periods = periodsPerSessionInput || 2;
-                      const appliedRatePerPeriod = isPerm ? permanentPeriodRateInput : visitingPeriodRateInput;
-                      const appliedSessionRate = appliedRatePerPeriod * periods;
+                      const appliedSessionRate = isPerm ? permanentSessionRateInput : visitingSessionRateInput;
+                      const appliedRatePerPeriod = Math.round(appliedSessionRate / periods);
                       const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
 
                       return (
@@ -5376,29 +5831,29 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             </span>
                           </td>
 
-                          {/* 4. Số tiết/ca */}
+                          {/* 4. Đơn vị tính công */}
                           <td className="py-3.5 px-4 text-center font-mono">
                             <span className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 font-bold text-white">
-                              {periods} tiết/buổi
+                              1 buổi (90 phút)
                             </span>
                           </td>
 
-                          {/* 5. Đơn giá/tiết */}
+                          {/* 5. Đơn giá/buổi */}
                           <td className="py-3.5 px-4 font-mono">
                             <div className={`font-extrabold text-sm ${isPerm ? 'text-cyan-300' : 'text-amber-300'}`}>
-                              {formatVND(appliedRatePerPeriod)}
-                              <span className="text-[10px] text-slate-400 font-normal"> / tiết</span>
-                            </div>
-                          </td>
-
-                          {/* 6. Thù lao/buổi quy đổi */}
-                          <td className="py-3.5 px-4 font-mono">
-                            <div className="font-extrabold text-emerald-400 text-sm">
                               {formatVND(appliedSessionRate)}
                               <span className="text-[10px] text-slate-400 font-normal"> / buổi</span>
                             </div>
+                          </td>
+
+                          {/* 6. Quy đổi tham chiếu */}
+                          <td className="py-3.5 px-4 font-mono">
+                            <div className="font-extrabold text-emerald-400 text-sm">
+                              {formatVND(appliedSessionRate)}
+                              <span className="text-[10px] text-slate-400 font-normal"> / ca dạy</span>
+                            </div>
                             <div className="text-[10px] text-slate-500">
-                              = {periods} tiết &times; {formatVND(appliedRatePerPeriod)}
+                              ({formatVND(appliedRatePerPeriod)}/tiết &times; {periods} tiết)
                             </div>
                           </td>
 

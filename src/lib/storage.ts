@@ -25,16 +25,22 @@ import {
   ParentRegistration,
   SystemNotification,
   AppUser,
+  UserRole,
+  SystemRole,
+  UserPermissionMatrix,
   AuditLogRecord,
   LogActionType,
   CloudStorageConfig,
   PayrollRateConfig,
   AppStore,
 } from '../types';
+import { createClient } from '@supabase/supabase-js';
 
 export type { AppStore, PayrollRateConfig };
 
 export const initialPayrollRateConfig: PayrollRateConfig = {
+  permanent_session_rate: 300000,
+  visiting_session_rate: 270000,
   permanent_rate_per_period: 150000,
   visiting_rate_per_period: 135000,
   periods_per_session: 2,
@@ -68,14 +74,43 @@ import {
   initialTransfers,
 } from '../data/seedData';
 
-const STORAGE_KEY = 'royal_extracurricular_store_v3';
+const STORAGE_KEY = 'royal_extracurricular_store_v4_clean';
 
 export const GOOGLE_DRIVE_FOLDER_ID = '1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k';
 export const GOOGLE_DRIVE_ROOT_URL = 'https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing';
 
+function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected: boolean } {
+  try {
+    const raw = localStorage.getItem('royal_supabase_config');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.url && parsed.anonKey) {
+        return {
+          url: String(parsed.url),
+          anonKey: String(parsed.anonKey),
+          isConnected: Boolean(parsed.isConnected),
+        };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  const envUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
+  const envKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+  if (envUrl && envKey && envUrl.startsWith('http') && !envUrl.includes('your-project-id')) {
+    return { url: envUrl, anonKey: envKey, isConnected: true };
+  }
+  return { url: '', anonKey: '', isConnected: false };
+}
+
+/**
+ * CƠ SỞ DỮ LIỆU CHUẨN HÓA SẠCH (KHÔNG CHỨA DỮ LIỆU MẪU VẬN HÀNH)
+ * Chỉ giữ danh mục cấu hình nền tảng (2 cơ sở PMH & PL, Khóa học, Danh mục môn, Khung giờ & Tài khoản Quản trị gốc)
+ */
 export function getInitialStore(): AppStore {
+  const rootUsers = initialUsers.filter(u => u.username === 'admin');
   return {
-    users: initialUsers,
+    users: rootUsers.length > 0 ? rootUsers : [initialUsers[0]],
     campuses: initialCampuses,
     terms: initialTerms,
     subjectCategories: initialSubjectCategories,
@@ -85,41 +120,37 @@ export function getInitialStore(): AppStore {
     pricings: initialPricings,
     facilities: initialFacilities,
     timeSlots: initialTimeSlots,
-    teachers: initialTeachers,
-    classes: initialClasses,
-    students: initialStudents,
-    enrollments: initialEnrollments,
-    invoices: initialInvoices,
-    sessions: initialSessions,
-    teacherAttendance: initialTeacherAttendance,
-    attendance: initialAttendance,
-    makeupCredits: initialMakeupCredits,
-    transfers: initialTransfers,
+    teachers: [],
+    classes: [],
+    students: [],
+    enrollments: [],
+    invoices: [],
+    sessions: [],
+    teacherAttendance: [],
+    attendance: [],
+    makeupCredits: [],
+    transfers: [],
     payrollSettlements: [],
     payrollRateConfig: initialPayrollRateConfig,
-    parentRegistrations: initialParentRegistrations,
-    notifications: initialNotifications,
-    auditLogs: initialAuditLogs,
+    parentRegistrations: [],
+    notifications: [],
+    auditLogs: [],
     telecomConfig: {
       zaloZnsEnabled: true,
       smsBrandnameEnabled: true,
       emailEnabled: true,
       brandName: 'ROYAL SCHOOL',
     },
-    supabaseConfig: {
-      url: '',
-      anonKey: '',
-      isConnected: false,
-    },
+    supabaseConfig: getStoredSupabaseConfig(),
     cloudStorageConfig: {
       provider: 'google_drive',
       drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
       drive_folder_name: 'RoyalSchool_Storage_Drive',
       drive_root_url: GOOGLE_DRIVE_ROOT_URL,
       drive_storage_quota: {
-        used_bytes: 5153960755,
+        used_bytes: 0,
         total_bytes: 107374182400,
-        used_label: '4.8 GB',
+        used_label: '0 MB',
         total_label: '100 GB (Google Workspace for Education)',
       },
       subfolders: {
@@ -131,9 +162,32 @@ export function getInitialStore(): AppStore {
         backups: '06_SaoLuuHeThong',
       },
       auto_create_subfolders: true,
-      updated_at: '2026-10-20',
-      updated_by: 'ThS. Nguyễn Hoàng Long (Phòng Quản Trị & Đào Tạo)',
+      updated_at: new Date().toISOString().split('T')[0],
+      updated_by: 'Ban Quản Trị Hệ Thống Royal School',
     },
+  };
+}
+
+/**
+ * Tùy chọn nạp bộ dữ liệu mẫu Demo (Chỉ dùng khi Quản trị viên chủ động bấm nút nạp dữ liệu thử nghiệm)
+ */
+export function getSampleDemoStore(): AppStore {
+  return {
+    ...getInitialStore(),
+    users: initialUsers,
+    teachers: initialTeachers,
+    classes: initialClasses,
+    students: initialStudents,
+    enrollments: initialEnrollments,
+    invoices: initialInvoices,
+    sessions: initialSessions,
+    teacherAttendance: initialTeacherAttendance,
+    attendance: initialAttendance,
+    makeupCredits: initialMakeupCredits,
+    transfers: initialTransfers,
+    parentRegistrations: initialParentRegistrations,
+    notifications: initialNotifications,
+    auditLogs: initialAuditLogs,
   };
 }
 
@@ -143,7 +197,7 @@ export function getInitialStore(): AppStore {
 export function buildGoogleDriveFileInfo(
   category: 'student_photos' | 'attendance_proofs' | 'admissions' | 'tuition_invoices' | 'reports' | 'backups',
   fileName: string,
-  rootFolderName = 'RoyalSchool_Storage_Drive'
+  _rootFolderName = 'RoyalSchool_Storage_Drive'
 ) {
   const subfolderMap: Record<string, string> = {
     student_photos: '01_HinhHocSinh',
@@ -193,10 +247,11 @@ export function deduplicateEnrollments(enrollments: Enrollment[] = []): Enrollme
 
 export function loadStore(): AppStore {
   try {
-    // Clear out deprecated store caches
+    // Xóa toàn bộ cache dữ liệu mẫu cũ từ các phiên bản trước
     try {
       localStorage.removeItem('royal_extracurricular_store_v1');
       localStorage.removeItem('royal_extracurricular_store_v2');
+      localStorage.removeItem('royal_extracurricular_store_v3');
     } catch {
       // noop
     }
@@ -207,305 +262,95 @@ export function loadStore(): AppStore {
       saveStore(initial);
       return initial;
     }
+
     const parsed = JSON.parse(raw);
     const initial = getInitialStore();
 
-    // If cached store is from old schema/count, reset to initial
-    if (!parsed.students || parsed.students.length < 10 || !parsed.classes || parsed.classes.length < 5) {
-      saveStore(initial);
-      return initial;
-    }
-
-    // Migration and backward compatibility
-    const terms: AcademicTerm[] = (parsed.terms || initial.terms).map((t: AcademicTerm) => ({
+    const terms: AcademicTerm[] = (Array.isArray(parsed.terms) ? parsed.terms : initial.terms).map((t: AcademicTerm) => ({
       ...t,
       status: t.status || (t.is_active ? 'open_enrollment' : 'draft'),
     }));
 
-    const subjectCategories: SubjectCategory[] = 
-      parsed.subjectCategories && parsed.subjectCategories.length > 0
+    const subjectCategories: SubjectCategory[] =
+      Array.isArray(parsed.subjectCategories) && parsed.subjectCategories.length > 0
         ? parsed.subjectCategories
         : initial.subjectCategories;
 
     const termSubjects: TermSubjectConfig[] = (
-      parsed.termSubjects && parsed.termSubjects.length > 0
-        ? parsed.termSubjects
-        : initial.termSubjects
+      Array.isArray(parsed.termSubjects) ? parsed.termSubjects : initial.termSubjects
     ).map((ts: TermSubjectConfig) => ({
       ...ts,
-      discount_type: 'none',
-      discount_value: 0,
-      discount_reason: undefined,
+      discount_type: ts.discount_type || 'none',
+      discount_value: ts.discount_value || 0,
     }));
 
     const campusPricings: CampusTermPricing[] = (
-      parsed.campusPricings && parsed.campusPricings.length > 0
-        ? parsed.campusPricings
-        : initial.campusPricings
+      Array.isArray(parsed.campusPricings) ? parsed.campusPricings : initial.campusPricings
     ).map((cp: CampusTermPricing) => ({
       ...cp,
-      discount_type: 'none',
-      discount_value: 0,
-      discount_reason: undefined,
+      discount_type: cp.discount_type || 'none',
+      discount_value: cp.discount_value || 0,
     }));
 
-    // Ensure users array exists and admin user is populated with requested password '123456'
-    let users = parsed.users && parsed.users.length > 0 ? parsed.users : initialUsers;
-    const adminUser = users.find((u: any) => u.username === 'admin');
-    if (!adminUser) {
-      users = [initialUsers[0], ...users];
-    } else if (adminUser.password !== '123456') {
-      users = users.map((u: any) => u.username === 'admin' ? { ...u, password: '123456', role: 'super_admin', status: 'active' } : u);
-    }
+    // Đảm bảo tài khoản Quản trị viên tối thiểu tồn tại để đăng nhập
+    const rawUsers: AppUser[] =
+      Array.isArray(parsed.users) && parsed.users.length > 0 ? [...parsed.users] : [...initial.users];
+    const users: AppUser[] = rawUsers.map(u => ({
+      ...u,
+      password_hash: u.password_hash || u.password || '123456',
+      permissions:
+        u.permissions && !Array.isArray(u.permissions)
+          ? { ...getDefaultPermissionsForRole(u.role), ...u.permissions }
+          : getDefaultPermissionsForRole(u.role),
+    }));
 
-    // Auto-clean any duplicated enrollments from stored localStorage
-    const rawEnrollments: Enrollment[] = parsed.enrollments || initial.enrollments;
-    const enrollments = deduplicateEnrollments(rawEnrollments);
-
-    const auditLogs: AuditLogRecord[] = 
-      parsed.auditLogs && parsed.auditLogs.length > 0
-        ? parsed.auditLogs
-        : initialAuditLogs;
-
-    const cloudStorageConfig: CloudStorageConfig = {
-      ...(initial.cloudStorageConfig || {
-        provider: 'google_drive',
-        drive_folder_id: GOOGLE_DRIVE_FOLDER_ID,
-        drive_folder_name: 'RoyalSchool_Storage_Drive',
-        drive_root_url: GOOGLE_DRIVE_ROOT_URL,
-        subfolders: {
-          student_photos: '01_HinhHocSinh',
-          attendance_proofs: '02_DonNghiPhep',
-          admissions: '03_DonTuyenSinh',
-          tuition_invoices: '04_HoaDonHocPhi',
-          reports: '05_BaoCaoThongKe',
-          backups: '06_SaoLuuHeThong',
-        },
-        auto_create_subfolders: true,
-      }),
-      ...(parsed.cloudStorageConfig || {}),
-      provider: 'google_drive',
-      drive_folder_id: (parsed.cloudStorageConfig?.drive_folder_id && parsed.cloudStorageConfig.drive_folder_id !== '1RoyalSchool_Drive_Storage_PMH_PL_2026' && parsed.cloudStorageConfig.drive_folder_id !== '1A9xK_RoyalSchool_Extracurricular_Proof_2026')
-        ? parsed.cloudStorageConfig.drive_folder_id
-        : GOOGLE_DRIVE_FOLDER_ID,
-      drive_root_url: (parsed.cloudStorageConfig?.drive_root_url && !parsed.cloudStorageConfig.drive_root_url.includes('1RoyalSchool_Drive_Storage_PMH_PL_2026'))
-        ? parsed.cloudStorageConfig.drive_root_url
-        : GOOGLE_DRIVE_ROOT_URL,
-      subfolders: {
-        ...(initial.cloudStorageConfig?.subfolders || {
-          student_photos: '01_HinhHocSinh',
-          attendance_proofs: '02_DonNghiPhep',
-          admissions: '03_DonTuyenSinh',
-          tuition_invoices: '04_HoaDonHocPhi',
-          reports: '05_BaoCaoThongKe',
-          backups: '06_SaoLuuHeThong',
-        }),
-        ...(parsed.cloudStorageConfig?.subfolders || {}),
-      },
+    const payrollRateConfig: PayrollRateConfig = {
+      ...initialPayrollRateConfig,
+      ...(parsed.payrollRateConfig || {}),
+      permanent_session_rate: parsed.payrollRateConfig?.permanent_session_rate ?? 300000,
+      visiting_session_rate: parsed.payrollRateConfig?.visiting_session_rate ?? 270000,
+      permanent_rate_per_period: parsed.payrollRateConfig?.permanent_rate_per_period ?? 150000,
+      visiting_rate_per_period: parsed.payrollRateConfig?.visiting_rate_per_period ?? 135000,
     };
 
-    const rawRegistrations: ParentRegistration[] =
-      parsed.parentRegistrations && parsed.parentRegistrations.length > 0
-        ? [...parsed.parentRegistrations]
-        : [...initial.parentRegistrations];
+    const storedSbConfig = getStoredSupabaseConfig();
+    const supabaseConfig = {
+      url: parsed.supabaseConfig?.url || storedSbConfig.url || '',
+      anonKey: parsed.supabaseConfig?.anonKey || storedSbConfig.anonKey || '',
+      isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? storedSbConfig.isConnected),
+    };
 
-    // Ensure new demonstration leads (preg_05, preg_06, preg_07) exist in store
-    initial.parentRegistrations.forEach(seedReg => {
-      if (!rawRegistrations.some(r => r.id === seedReg.id)) {
-        rawRegistrations.unshift(seedReg);
-      }
-    });
-
-    const parentRegistrations: ParentRegistration[] = rawRegistrations.map((reg: ParentRegistration) => {
-      const fixFee = (val?: number) => {
-        if (val === 3790500) return 3990000;
-        if (val === 4275000) return 4500000;
-        if (val === 2945000) return 3100000;
-        if (val === 3078000) return 3240000;
-        if (val === 3610000) return 3800000;
-        return val;
-      };
-      // Sync preg_01 and preg_02 parent phone with Royal DB if still on old placeholder phone
-      const syncedParentPhone =
-        reg.id === 'preg_01' && reg.parent_phone === '0903 888 777'
-          ? '0935 443 322'
-          : reg.id === 'preg_02' && reg.parent_phone === '0918 222 333'
-          ? '0904 556 688'
-          : reg.parent_phone;
-      const syncedParentName =
-        reg.id === 'preg_01' && reg.parent_name === 'Nguyễn Thị Bích Ngọc'
-          ? 'Lương Minh Trí'
-          : reg.id === 'preg_02' && reg.parent_name === 'Trần Văn Mạnh'
-          ? 'Trương Quốc Hùng'
-          : reg.parent_name;
-
-      return {
-        ...reg,
-        parent_phone: syncedParentPhone,
-        parent_name: syncedParentName,
-        estimated_fee: fixFee(reg.estimated_fee),
-        discount_policy:
-          reg.discount_policy && reg.discount_policy.includes('5%')
-            ? 'Áp dụng đơn giá chuẩn của Cơ sở'
-            : reg.discount_policy,
-        registered_subjects: reg.registered_subjects?.map(sub => ({
-          ...sub,
-          estimated_fee: fixFee(sub.estimated_fee) || sub.estimated_fee,
-        })),
-      };
-    });
-
-    // Ensure Next-Term and Cross-Term classes exist in store.classes
-    const rawClasses: ExtracurricularClass[] =
-      parsed.classes && parsed.classes.length > 0 ? [...parsed.classes] : [...initial.classes];
-    initial.classes.forEach(seedCls => {
-      const existingIdx = rawClasses.findIndex(c => c.id === seedCls.id);
-      if (existingIdx === -1) {
-        rawClasses.push(seedCls);
-      } else if (seedCls.is_cross_term && !rawClasses[existingIdx].is_cross_term) {
-        rawClasses[existingIdx] = { ...rawClasses[existingIdx], ...seedCls };
-      }
-    });
-
-    // Ensure seeded sessions & attendance records exist and term_id is backfilled
-    const rawSessions: ClassSession[] =
-      (parsed.sessions && parsed.sessions.length > 0 ? [...parsed.sessions] : [...initial.sessions]).map(ses => {
-        if (!ses.term_id) {
-          const cls = rawClasses.find(c => c.id === ses.class_id);
-          if (cls) {
-            if (cls.is_cross_term && cls.spanning_term_id && cls.term_distribution) {
-              const termId = ses.session_number > cls.term_distribution.primary_term_sessions ? cls.spanning_term_id : cls.term_id;
-              return { ...ses, term_id: termId };
-            }
-            return { ...ses, term_id: cls.term_id };
-          }
-        }
-        return ses;
-      });
-    initial.sessions.forEach(seedSes => {
-      const existingIdx = rawSessions.findIndex(s => s.id === seedSes.id);
-      if (existingIdx === -1) {
-        rawSessions.push(seedSes);
-      } else if (seedSes.id === 'ses_swim_pmh_03' && rawSessions[existingIdx].status === 'scheduled') {
-        rawSessions[existingIdx] = seedSes;
-      }
-    });
-
-    const rawAttendance: AttendanceRecord[] =
-      parsed.attendance && parsed.attendance.length > 0 ? [...parsed.attendance] : [...initial.attendance];
-    initial.attendance.forEach(seedAtt => {
-      if (!rawAttendance.some(a => a.id === seedAtt.id)) {
-        rawAttendance.push(seedAtt);
-      }
-    });
-
-    // Sanitize makeupCredits so CRE-2026-0001 (and any legacy credit) strictly conforms to >= 3 consecutive sessions rule
-    const rawMakeupCredits: MakeupCredit[] =
-      parsed.makeupCredits && parsed.makeupCredits.length > 0
-        ? [...parsed.makeupCredits]
-        : [...initial.makeupCredits];
-    const makeupCredits: MakeupCredit[] = rawMakeupCredits.map(cred => {
-      const count = Math.max(3, cred.consecutive_absent_sessions || cred.consecutive_absent_count || 3);
-      const dates =
-        (cred.absent_dates && cred.absent_dates.length >= 3)
-          ? cred.absent_dates
-          : (cred.consecutive_dates && cred.consecutive_dates.length >= 3)
-          ? cred.consecutive_dates
-          : ['2026-09-07', '2026-09-09', '2026-09-14'];
-      const rateOld = cred.unit_price_old || cred.source_rate || 166250;
-      const totalAmount = count * rateOld;
-      const studentObj = (parsed.students || initial.students).find((s: Student) => s.id === cred.student_id);
-      return {
-        ...cred,
-        student_name: cred.student_name || studentObj?.name || '',
-        source_term_id: cred.source_term_id || cred.term_id || 'term_fall_2026',
-        consecutive_absent_sessions: count,
-        consecutive_absent_count: count,
-        absent_dates: dates,
-        consecutive_dates: dates,
-        unit_price_old: rateOld,
-        source_rate: rateOld,
-        total_credit_amount: totalAmount,
-        transferred_sessions: count,
-        expires_at: cred.expires_at || cred.expiry_date,
-        note:
-          cred.id === 'cred_01' && (!cred.note || cred.note.includes('2 buổi'))
-            ? 'Bảo lưu 3 buổi nghỉ sốt siêu vi liên tiếp có giấy khám & toa thuốc BV Nhi Đồng'
-            : cred.note,
-      };
-    });
-
-    // Migrate teachers with default_rate_per_period, periods_per_session, code, campus_id, bank_account
-    const rawTeachers: Teacher[] =
-      parsed.teachers && parsed.teachers.length > 0 ? [...parsed.teachers] : [...initial.teachers];
-    const teachers: Teacher[] = rawTeachers.map((tc, idx) => {
-      const seedMatch = initial.teachers.find(st => st.id === tc.id);
-      const periodsPerSession = tc.periods_per_session || seedMatch?.periods_per_session || 2;
-      const defaultRatePerPeriod =
-        tc.default_rate_per_period ||
-        seedMatch?.default_rate_per_period ||
-        Math.round((tc.fixed_rate_per_session || 300000) / periodsPerSession);
-      return {
-        ...seedMatch,
-        ...tc,
-        code: tc.code || seedMatch?.code || `GV-PMH-00${idx + 1}`,
-        campus_id: tc.campus_id || seedMatch?.campus_id || 'camp_pmh',
-        type: tc.type || tc.teacher_type || seedMatch?.type || 'permanent',
-        teacher_type: tc.teacher_type || tc.type || seedMatch?.teacher_type || 'permanent',
-        default_rate_per_period: defaultRatePerPeriod,
-        periods_per_session: periodsPerSession,
-        weekend_multiplier: tc.weekend_multiplier ?? seedMatch?.weekend_multiplier ?? 1.0,
-        custom_subject_rates: tc.custom_subject_rates || seedMatch?.custom_subject_rates || [],
-        bank_account: tc.bank_account || seedMatch?.bank_account || {
-          bank_name: 'Vietcombank',
-          account_number: `018100998877${idx}`,
-          account_holder: tc.name.toUpperCase(),
-        },
-        fixed_rate_per_session: defaultRatePerPeriod * periodsPerSession,
-      };
-    });
-
-    // Migrate or initialize teacherAttendance
-    const rawTeacherAttendance: TeacherAttendanceRecord[] =
-      parsed.teacherAttendance && parsed.teacherAttendance.length > 0
-        ? [...parsed.teacherAttendance]
-        : [...initialTeacherAttendance];
-    initialTeacherAttendance.forEach(seedTatt => {
-      if (!rawTeacherAttendance.some(ta => ta.id === seedTatt.id || (ta.class_id === seedTatt.class_id && ta.session_date === seedTatt.session_date))) {
-        rawTeacherAttendance.push(seedTatt);
-      }
-    });
-
-    const rawInvoices: TuitionInvoice[] =
-      parsed.invoices && parsed.invoices.length > 0 ? [...parsed.invoices] : [...initial.invoices];
-    initial.invoices.forEach(seedInv => {
-      if (!rawInvoices.some(i => i.id === seedInv.id)) {
-        rawInvoices.push(seedInv);
-      }
-    });
-
-    return {
+    const loadedStore: AppStore = {
       ...initial,
       ...parsed,
       users,
+      campuses: Array.isArray(parsed.campuses) ? parsed.campuses : initial.campuses,
       terms,
       subjectCategories,
+      subjects: Array.isArray(parsed.subjects) ? parsed.subjects : initial.subjects,
       termSubjects,
       campusPricings,
-      teachers,
-      classes: rawClasses,
-      sessions: rawSessions,
-      invoices: rawInvoices,
-      teacherAttendance: rawTeacherAttendance,
-      attendance: rawAttendance,
-      makeupCredits,
-      enrollments,
-      transfers: parsed.transfers && parsed.transfers.length > 0 ? parsed.transfers : initialTransfers,
-      payrollRateConfig: parsed.payrollRateConfig || initialPayrollRateConfig,
-      parentRegistrations,
-      auditLogs,
-      cloudStorageConfig,
+      facilities: Array.isArray(parsed.facilities) ? parsed.facilities : initial.facilities,
+      timeSlots: Array.isArray(parsed.timeSlots) ? parsed.timeSlots : initial.timeSlots,
+      teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
+      classes: Array.isArray(parsed.classes) ? parsed.classes : [],
+      students: Array.isArray(parsed.students) ? parsed.students : [],
+      enrollments: deduplicateEnrollments(Array.isArray(parsed.enrollments) ? parsed.enrollments : []),
+      invoices: Array.isArray(parsed.invoices) ? parsed.invoices : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      teacherAttendance: Array.isArray(parsed.teacherAttendance) ? parsed.teacherAttendance : [],
+      attendance: Array.isArray(parsed.attendance) ? parsed.attendance : [],
+      makeupCredits: Array.isArray(parsed.makeupCredits) ? parsed.makeupCredits : [],
+      transfers: Array.isArray(parsed.transfers) ? parsed.transfers : [],
+      payrollSettlements: Array.isArray(parsed.payrollSettlements) ? parsed.payrollSettlements : [],
+      payrollRateConfig,
+      parentRegistrations: Array.isArray(parsed.parentRegistrations) ? parsed.parentRegistrations : [],
+      notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
+      auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+      supabaseConfig,
     };
+
+    return loadedStore;
   } catch (err) {
     console.error('Failed to load store from localStorage', err);
     return getInitialStore();
@@ -1893,52 +1738,567 @@ export function canModifyRedeemedCredit(
 }
 
 /**
+ * Tính toán đơn giá buổi thực tế (rate_applied) của giáo viên theo chuẩn thù lao toàn trường:
+ * - Giáo viên Cơ Hữu (Permanent): 300.000 VNĐ / buổi
+ * - Giáo viên Thỉnh Giảng (Visiting): 270.000 VNĐ / buổi
+ */
+export function getTeacherEffectiveSessionRate(
+  teacher: Teacher | undefined,
+  payrollConfig?: PayrollRateConfig
+): number {
+  if (!teacher) return payrollConfig?.permanent_session_rate ?? 300000;
+  const isVisiting = teacher.type === 'visiting' || teacher.teacher_type === 'visiting';
+  if (isVisiting) {
+    return (
+      payrollConfig?.visiting_session_rate ??
+      (payrollConfig?.visiting_rate_per_period ? payrollConfig.visiting_rate_per_period * (payrollConfig.periods_per_session || 2) : 270000)
+    );
+  }
+  return (
+    payrollConfig?.permanent_session_rate ??
+    (payrollConfig?.permanent_rate_per_period ? payrollConfig.permanent_rate_per_period * (payrollConfig.periods_per_session || 2) : 300000)
+  );
+}
+
+/**
  * Tính toán đơn giá tiết thực tế (rate_per_period) của giáo viên theo chuẩn thù lao toàn trường
- * Giáo viên Cơ Hữu (Permanent): 150.000 VNĐ / tiết (300.000 VNĐ / buổi 2 tiết)
- * Giáo viên Thỉnh Giảng (Visiting): 135.000 VNĐ / tiết (270.000 VNĐ / buổi 2 tiết)
  */
 export function getTeacherEffectivePeriodRate(
   teacher: Teacher | undefined,
-  subjectId?: string,
-  isWeekend: boolean = false,
+  _subjectId?: string,
+  _isWeekend: boolean = false,
   payrollConfig?: PayrollRateConfig
 ): number {
-  if (!teacher) return 150000;
-  
-  const isVisiting = teacher.type === 'visiting' || teacher.teacher_type === 'visiting';
-  const permanentRate = payrollConfig?.permanent_rate_per_period ?? 150000;
-  const visitingRate = payrollConfig?.visiting_rate_per_period ?? 135000;
+  const sessionRate = getTeacherEffectiveSessionRate(teacher, payrollConfig);
+  const periods = teacher?.periods_per_session || payrollConfig?.periods_per_session || 2;
+  return Math.round(sessionRate / periods);
+}
 
-  let basePeriodRate = isVisiting ? visitingRate : permanentRate;
+/**
+ * HỒI TỐ (RETROACTIVE RECALCULATION) ĐỒNG BỘ THÙ LAO THEO BUỔI CHO CÁC CA ĐÃ ĐIỂM DANH
+ * Áp dụng định mức thù lao theo buổi mới (Cơ hữu: 300.000 đ/buổi, Thỉnh giảng: 270.000 đ/buổi)
+ * cho toàn bộ các ca dạy đã phát sinh trong lịch sử và đồng bộ lại trạng thái quyết toán.
+ */
+export function recalculatePastSessions(
+  store: AppStore,
+  permanentSessionRate: number = 300000,
+  visitingSessionRate: number = 270000
+): AppStore {
+  const nowIso = new Date().toISOString();
+  const periods = store.payrollRateConfig?.periods_per_session || 2;
+  const permPeriodRate = Math.round(permanentSessionRate / periods);
+  const visPeriodRate = Math.round(visitingSessionRate / periods);
 
-  // Nếu giáo viên có cấu hình thù lao cụ thể và chưa có payrollConfig ghi đè
-  if (!payrollConfig && teacher.default_rate_per_period) {
-    basePeriodRate = teacher.default_rate_per_period;
+  const updatedTeachers: Teacher[] = (store.teachers || []).map(t => {
+    const isVisiting = (t.type || t.teacher_type) === 'visiting';
+    const sessionRate = isVisiting ? visitingSessionRate : permanentSessionRate;
+    const periodRate = isVisiting ? visPeriodRate : permPeriodRate;
+    return {
+      ...t,
+      type: isVisiting ? 'visiting' : 'permanent',
+      teacher_type: isVisiting ? 'visiting' : 'permanent',
+      default_rate_per_period: periodRate,
+      periods_per_session: periods,
+      fixed_rate_per_session: sessionRate,
+      custom_subject_rates: [],
+    };
+  });
+
+  const updatedTeacherAttendance: TeacherAttendanceRecord[] = (store.teacherAttendance || []).map(rec => {
+    const actualTeacher = updatedTeachers.find(t => t.id === rec.actual_teacher_id);
+    const isVisiting = (actualTeacher?.type || actualTeacher?.teacher_type) === 'visiting';
+    const rateApplied = isVisiting ? visitingSessionRate : permanentSessionRate;
+    const isAbsent =
+      rec.status === 'absent_excused' ||
+      rec.status === 'absent_unexcused' ||
+      rec.periods_count === 0;
+    const earnedAmount = isAbsent ? 0 : 1 * rateApplied;
+    const periodRate = Math.round(rateApplied / (rec.periods_count || 2));
+
+    return {
+      ...rec,
+      rate_applied: rateApplied,
+      earned_amount: earnedAmount,
+      rate_per_period: periodRate,
+      total_payout: earnedAmount,
+      recalculated_at: nowIso,
+    };
+  });
+
+  // Reset settlement status to pending ("Chờ kế toán duyệt chi") when rates are retroactively recalculated
+  const updatedPayrollSettlements = (store.payrollSettlements || []).map(ps => ({
+    ...ps,
+    is_settled: false,
+  }));
+
+  return {
+    ...store,
+    teachers: updatedTeachers,
+    teacherAttendance: updatedTeacherAttendance,
+    payrollSettlements: updatedPayrollSettlements,
+    payrollRateConfig: {
+      ...(store.payrollRateConfig || initialPayrollRateConfig),
+      permanent_session_rate: permanentSessionRate,
+      visiting_session_rate: visitingSessionRate,
+      permanent_rate_per_period: permPeriodRate,
+      visiting_rate_per_period: visPeriodRate,
+      periods_per_session: periods,
+    },
+  };
+}
+
+// ============================================================================
+// PHÂN HỆ QUẢN LÝ NGƯỜI DÙNG & PHÂN QUYỀN TRUY CẬP (USER MANAGEMENT & RBAC)
+// ============================================================================
+
+export const APP_USERS_SQL_DDL = `-- 1. Bảng lưu trữ tài khoản người dùng & phân quyền RBAC trên Supabase
+CREATE TABLE IF NOT EXISTS app_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username VARCHAR(100) UNIQUE NOT NULL,
+  email VARCHAR(150) UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  full_name VARCHAR(150) NOT NULL,
+  phone VARCHAR(20),
+  role VARCHAR(50) NOT NULL DEFAULT 'academic',
+  campus_id VARCHAR(20) NOT NULL DEFAULT 'all', -- 'all', 'pmh', 'pl'
+  status VARCHAR(20) NOT NULL DEFAULT 'active', -- 'active' hoặc 'locked'
+  permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  linked_teacher_id VARCHAR(50),
+  last_login TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Index tăng tốc truy vấn đăng nhập
+CREATE INDEX IF NOT EXISTS idx_app_users_lookup ON app_users (username, email, status);`;
+
+export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserPermissionMatrix {
+  switch (role) {
+    case 'super_admin':
+      return {
+        can_manage_classes: true,
+        can_take_attendance: true,
+        can_manage_enrollment: true,
+        can_manage_finance: true,
+        can_manage_credits: true,
+        can_settle_payroll: true,
+        can_config_system: true,
+        can_manage_users: true,
+        can_view_classes: true,
+        can_view_registrations: true,
+        can_manage_trial: true,
+        can_config_payroll_rates: true,
+      };
+    case 'campus_manager':
+      return {
+        can_manage_classes: true,
+        can_take_attendance: true,
+        can_manage_enrollment: true,
+        can_manage_finance: true,
+        can_manage_credits: true,
+        can_settle_payroll: true,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: true,
+        can_manage_trial: true,
+        can_config_payroll_rates: false,
+      };
+    case 'academic_accountant':
+      return {
+        can_manage_classes: true,
+        can_take_attendance: true,
+        can_manage_enrollment: true,
+        can_manage_finance: true,
+        can_manage_credits: true,
+        can_settle_payroll: true,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: true,
+        can_manage_trial: true,
+        can_config_payroll_rates: false,
+      };
+    case 'academic_admissions':
+    case 'academic':
+      return {
+        can_manage_classes: true,
+        can_take_attendance: true,
+        can_manage_enrollment: true,
+        can_manage_finance: false,
+        can_manage_credits: true,
+        can_settle_payroll: false,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: true,
+        can_manage_trial: true,
+        can_config_payroll_rates: false,
+      };
+    case 'admissions':
+      return {
+        can_manage_classes: false,
+        can_take_attendance: false,
+        can_manage_enrollment: true,
+        can_manage_finance: false,
+        can_manage_credits: false,
+        can_settle_payroll: false,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: true,
+        can_manage_trial: true,
+        can_config_payroll_rates: false,
+      };
+    case 'accountant':
+      return {
+        can_manage_classes: false,
+        can_take_attendance: false,
+        can_manage_enrollment: false,
+        can_manage_finance: true,
+        can_manage_credits: true,
+        can_settle_payroll: true,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: false,
+        can_manage_trial: false,
+        can_config_payroll_rates: true,
+      };
+    case 'teacher':
+    default:
+      return {
+        can_manage_classes: false,
+        can_take_attendance: true,
+        can_manage_enrollment: false,
+        can_manage_finance: false,
+        can_manage_credits: false,
+        can_settle_payroll: false,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: false,
+        can_manage_trial: false,
+        can_config_payroll_rates: false,
+      };
+  }
+}
+
+export function getUserPermissions(user?: AppUser | null, fallbackRole: UserRole = 'super_admin'): UserPermissionMatrix {
+  if (!user) {
+    return getDefaultPermissionsForRole(fallbackRole);
+  }
+  if (user.is_root || user.username === 'overadmin' || user.role === 'super_admin') {
+    if (user.permissions && !Array.isArray(user.permissions)) {
+      return {
+        ...getDefaultPermissionsForRole('super_admin'),
+        ...user.permissions,
+        can_manage_users: true,
+      };
+    }
+    return getDefaultPermissionsForRole('super_admin');
+  }
+  if (user.permissions && !Array.isArray(user.permissions)) {
+    return {
+      ...getDefaultPermissionsForRole(user.role),
+      ...user.permissions,
+    };
+  }
+  return getDefaultPermissionsForRole(user.role);
+}
+
+export function getRoleLabelVN(role: UserRole, user?: AppUser | null): string {
+  if (user?.is_root || user?.username === 'overadmin') return 'Quản Trị Tối Cao (OverAdmin)';
+  switch (role) {
+    case 'super_admin':
+      return 'Quản Trị Cấp Cao';
+    case 'campus_manager':
+      return 'Quản Lý Cơ Sở';
+    case 'academic_accountant':
+      return 'Học Vụ & Kế Toán';
+    case 'academic_admissions':
+      return 'Học Vụ & Tuyển Sinh';
+    case 'academic':
+      return 'Giáo Vụ / Học Vụ';
+    case 'admissions':
+      return 'Chuyên Viên Tuyển Sinh';
+    case 'accountant':
+      return 'Kế Toán Học Phí & Thù Lao';
+    case 'teacher':
+      if (user?.department?.toLowerCase().includes('thỉnh giảng') || user?.username === 'tuan.lq' || user?.username === 'gv_david') {
+        return 'Giáo Viên (Thỉnh Giảng)';
+      }
+      return 'Giáo Viên Bộ Môn';
+    default:
+      return 'Cán Bộ Nhân Sự';
+  }
+}
+
+export function getCampusLabelVN(campusId?: string): string {
+  if (!campusId || campusId === 'all') return 'Toàn Trường (All)';
+  if (campusId === 'pmh' || campusId === 'camp_pmh') return 'Cơ sở PMH';
+  if (campusId === 'pl' || campusId === 'camp_pl') return 'Cơ sở Phú Lâm';
+  return campusId;
+}
+
+export function normalizeCampusScope(campusId?: string): 'all' | 'camp_pmh' | 'camp_pl' {
+  if (!campusId || campusId === 'all') return 'all';
+  if (campusId === 'pmh' || campusId === 'camp_pmh') return 'camp_pmh';
+  if (campusId === 'pl' || campusId === 'camp_pl') return 'camp_pl';
+  return 'all';
+}
+
+export function getPermissionSummaryText(user: AppUser): string {
+  if (user.is_root || user.username === 'overadmin' || user.role === 'super_admin') {
+    const perms = getUserPermissions(user);
+    const allTrue =
+      perms.can_manage_classes &&
+      perms.can_take_attendance &&
+      perms.can_manage_enrollment &&
+      perms.can_manage_finance &&
+      perms.can_manage_credits &&
+      perms.can_settle_payroll &&
+      perms.can_config_system &&
+      perms.can_manage_users;
+    if (allTrue) return 'Toàn Quyền Hệ Thống (*)';
   }
 
-  if (subjectId && teacher.custom_subject_rates && teacher.custom_subject_rates.length > 0) {
-    const customMatch = teacher.custom_subject_rates.find(cr => cr.subject_id === subjectId);
-    if (customMatch && customMatch.rate_per_period > 0) {
-      basePeriodRate = customMatch.rate_per_period;
+  const perms = getUserPermissions(user);
+  if (
+    user.role === 'teacher' &&
+    !perms.can_manage_classes &&
+    !perms.can_manage_enrollment &&
+    !perms.can_manage_finance &&
+    perms.can_take_attendance
+  ) {
+    return 'Chỉ xem lịch dạy & Sổ điểm danh';
+  }
+
+  const parts: string[] = [];
+  if (perms.can_manage_classes || perms.can_view_classes) parts.push('Lớp học');
+  if (perms.can_take_attendance) parts.push('Điểm danh');
+  if (perms.can_manage_enrollment) parts.push('Ghi danh');
+  if (perms.can_manage_finance) parts.push('Học phí');
+  if (perms.can_manage_credits) parts.push('Bảo lưu');
+  if (perms.can_settle_payroll) parts.push('Thù lao GV');
+  if (perms.can_config_system) parts.push('Cấu hình');
+  if (perms.can_manage_users) parts.push('Phân quyền');
+
+  return parts.length > 0 ? parts.join(' • ') : 'Chỉ xem cơ bản';
+}
+
+function getConfiguredSupabaseClient() {
+  try {
+    const rawCfg = localStorage.getItem('royal_supabase_config');
+    if (rawCfg) {
+      const parsed = JSON.parse(rawCfg);
+      if (parsed.url && parsed.anonKey && parsed.url.startsWith('http')) {
+        return createClient(parsed.url, parsed.anonKey);
+      }
+    }
+    const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
+    const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+    if (envUrl && envKey && envUrl.startsWith('http')) {
+      return createClient(envUrl, envKey);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'delete' = 'upsert'): Promise<void> {
+  const supabase = getConfiguredSupabaseClient();
+  if (!supabase) return;
+  try {
+    if (action === 'delete') {
+      await supabase.from('app_users').delete().or(`id.eq.${user.id},username.eq.${user.username}`);
+    } else {
+      await supabase.from('app_users').upsert({
+        username: user.username.toLowerCase(),
+        email: user.email.toLowerCase(),
+        password_hash: user.password_hash || user.password || '123456',
+        full_name: user.full_name,
+        phone: user.phone || '',
+        role: user.role,
+        campus_id: user.campus_id === 'camp_pmh' ? 'pmh' : user.campus_id === 'camp_pl' ? 'pl' : user.campus_id,
+        status: user.status,
+        permissions: getUserPermissions(user),
+        linked_teacher_id: user.linked_teacher_id || null,
+        last_login: user.last_login || null,
+      }, { onConflict: 'username' });
+    }
+  } catch {
+    // Fallback gracefully to local store when Supabase table is not yet provisioned
+  }
+}
+
+export async function handleLoginProcess(
+  usernameOrEmail: string,
+  passwordInput: string,
+  store: AppStore
+): Promise<{
+  success: boolean;
+  user?: AppUser;
+  errorToast?: string;
+  successToast?: string;
+  reason?: 'not_found' | 'locked' | 'wrong_password';
+}> {
+  const cleanUser = usernameOrEmail.trim().toLowerCase();
+  const cleanPass = passwordInput.trim();
+
+  // BƯỚC 1: KIỂM TRA TÀI KHOẢN KHẨN CẤP (OVER-SUPER ADMIN) TRƯỚC TIÊN
+  if (
+    (cleanUser === 'overadmin' || cleanUser === 'overadmin@royal.edu.vn') &&
+    cleanPass === 'overadmin123'
+  ) {
+    const overAdminSession: AppUser = {
+      id: 'root-overadmin',
+      code: 'OVER-ROOT-9999',
+      username: 'overadmin',
+      email: 'overadmin@royal.edu.vn',
+      password: '',
+      password_hash: '',
+      name: 'Quản Trị Tối Cao (OverAdmin)',
+      full_name: 'Quản Trị Tối Cao (OverAdmin)',
+      phone: '0900 999 999',
+      role: 'super_admin',
+      department: 'Ban Quản Trị Tối Cao (Root System)',
+      campus_id: 'all',
+      status: 'active',
+      permissions: getDefaultPermissionsForRole('super_admin'),
+      created_at: new Date().toISOString(),
+      last_login: new Date().toISOString(),
+      is_root: true,
+    };
+
+    try {
+      localStorage.setItem('royal_auth_session', JSON.stringify(overAdminSession));
+      localStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
+      sessionStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
+    } catch {
+      // ignore
+    }
+
+    return {
+      success: true,
+      user: overAdminSession,
+      successToast: '⚡ Đăng nhập thành công với quyền Quản Trị Tối Cao (OverAdmin)!',
+    };
+  }
+
+  // BƯỚC 2: TRUY VẤN TÀI KHOẢN TỪ BẢNG `app_users` TRÊN SUPABASE (HOẶC STORE NẾU CHƯA KẾT NỐI)
+  let dbUser: AppUser | null = null;
+  const supabase = getConfiguredSupabaseClient();
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('app_users')
+        .select('*')
+        .or(`username.eq.${cleanUser},email.eq.${cleanUser}`)
+        .maybeSingle();
+
+      if (!error && data) {
+        dbUser = {
+          id: data.id,
+          username: data.username,
+          email: data.email,
+          password: data.password_hash,
+          password_hash: data.password_hash,
+          full_name: data.full_name,
+          name: data.full_name,
+          phone: data.phone || '',
+          role: data.role as UserRole,
+          department: getRoleLabelVN(data.role as UserRole),
+          campus_id: data.campus_id || 'all',
+          status: data.status as 'active' | 'locked',
+          permissions: data.permissions || getDefaultPermissionsForRole(data.role as UserRole),
+          linked_teacher_id: data.linked_teacher_id || undefined,
+          created_at: data.created_at || new Date().toISOString(),
+          last_login: data.last_login || undefined,
+        };
+      }
+    } catch {
+      // Fallback to local store.users
     }
   }
 
-  if (isWeekend && teacher.weekend_multiplier && teacher.weekend_multiplier > 1) {
-    return Math.round(basePeriodRate * teacher.weekend_multiplier);
+  if (!dbUser) {
+    const localFound = store.users.find(
+      u => u.username.toLowerCase() === cleanUser || u.email.toLowerCase() === cleanUser
+    );
+    if (localFound) {
+      dbUser = {
+        ...localFound,
+        permissions: getUserPermissions(localFound),
+      };
+    }
   }
 
-  return basePeriodRate;
+  if (!dbUser) {
+    return {
+      success: false,
+      reason: 'not_found',
+      errorToast: '✕ Tài khoản hoặc email không tồn tại trong hệ thống.',
+    };
+  }
+
+  // BƯỚC 3: KIỂM TRA TRẠNG THÁI KHÓA TÀI KHOẢN (`status === 'locked'`) TRƯỚC KHI KIỂM TRA MẬT KHẨU
+  if (dbUser.status === 'locked') {
+    return {
+      success: false,
+      user: dbUser,
+      reason: 'locked',
+      errorToast: '🔒 Tài khoản của bạn đã bị khóa bởi Quản trị viên. Vui lòng liên hệ ban quản trị để được hỗ trợ.',
+    };
+  }
+
+  // BƯỚC 4: KIỂM TRA MẬT KHẨU
+  const expectedPass = dbUser.password_hash || dbUser.password || '';
+  if (expectedPass && expectedPass !== cleanPass) {
+    return {
+      success: false,
+      user: dbUser,
+      reason: 'wrong_password',
+      errorToast: '✕ Mật khẩu không chính xác. Vui lòng thử lại.',
+    };
+  }
+
+  // BƯỚC 5: CẬP NHẬT THỜI GIAN ĐĂNG NHẬP CUỐI CÙNG (`last_login`) LÊN SUPABASE & LƯU SESSION
+  const nowIso = new Date().toISOString();
+  const authenticatedUser: AppUser = {
+    ...dbUser,
+    last_login: nowIso,
+    permissions: getUserPermissions(dbUser),
+  };
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('app_users')
+        .update({ last_login: nowIso })
+        .eq('id', dbUser.id);
+    } catch {
+      // ignore
+    }
+  }
+
+  try {
+    localStorage.setItem('royal_auth_session', JSON.stringify(authenticatedUser));
+    localStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
+    sessionStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
+  } catch {
+    // ignore
+  }
+
+  // BƯỚC 6: TRẢ VỀ KẾT QUẢ & THÔNG BÁO CHÀO MỪNG
+  const roleLabel = getRoleLabelVN(authenticatedUser.role, authenticatedUser);
+  return {
+    success: true,
+    user: authenticatedUser,
+    successToast: `✓ Chào mừng ${authenticatedUser.full_name} (${roleLabel}) đã đăng nhập thành công!`,
+  };
 }
 
-// Re-export Database Integrity Manager & 3NF validation services
-export {
-  DatabaseIntegrityManager,
-  normalizeVietnameseName,
-  normalizePhoneNumber,
-} from './schemaValidator';
-export type {
-  StudentMatchResult,
-  CreditEligibilityResult,
-  TransferCalculationResult,
-  IntegrityCheckResult,
-} from './schemaValidator';
+
+

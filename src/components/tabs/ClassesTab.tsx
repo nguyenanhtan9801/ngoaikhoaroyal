@@ -27,7 +27,6 @@ import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTer
 import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
-import { CreateClassModal } from '../modals/CreateClassModal';
 
 export interface ScheduleCalculationResult {
   actualSessions: number;      // Số buổi thực tế diễn ra trong khóa
@@ -202,6 +201,198 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const currentSelectedTerm = store.terms.find(t => t.id === localTermId);
   const isSelectedTermClosed = currentSelectedTerm?.status === 'closed';
 
+  // Form state for Create / Edit Class Modal
+  const defaultActiveTermId =
+    (localTermId !== 'all' ? localTermId : undefined) ||
+    store.terms.find(t => t.is_active)?.id ||
+    store.terms[0]?.id ||
+    'term_fall_2026';
+  const defaultCampusId =
+    (localCampusId !== 'all' ? localCampusId : undefined) ||
+    store.campuses[0]?.id ||
+    'camp_pmh';
+  const defaultSubjectId = store.subjects[0]?.id || 'subj_robotics';
+  const defaultPricing = getEffectivePrice(defaultActiveTermId, defaultCampusId, defaultSubjectId, store);
+
+  const [formData, setFormData] = useState<{
+    name: string;
+    term_id: string;
+    campus_id: string;
+    subject_id: string;
+    facility_id: string;
+    time_slot_id: string;
+    days_of_week: string[];
+    start_date: string;
+    primary_teacher_id: string;
+    max_students: number;
+    total_sessions: number;
+    full_course_fee: number;
+    allow_over_quota: boolean;
+  }>({
+    name: '',
+    term_id: defaultActiveTermId,
+    campus_id: defaultCampusId,
+    subject_id: defaultSubjectId,
+    facility_id: store.facilities.find(f => f.campus_id === defaultCampusId)?.id || store.facilities[0]?.id || '',
+    time_slot_id: store.timeSlots[0]?.id || 'slot_weekday_1',
+    days_of_week: ['T2', 'T4'],
+    start_date: store.terms.find(t => t.id === defaultActiveTermId)?.start_date || '2026-09-01',
+    primary_teacher_id: store.teachers[0]?.id || 'tea_1',
+    max_students: 20,
+    total_sessions: defaultPricing.total_sessions || 24,
+    full_course_fee: defaultPricing.course_fee || 5400000,
+    allow_over_quota: false,
+  });
+
+  const [crossTermMode, setCrossTermMode] = useState<'allow_cross_term' | 'truncate_to_term'>('allow_cross_term');
+
+  const activeFormTerm = useMemo(
+    () => store.terms.find(t => t.id === formData.term_id) || store.terms[0],
+    [store.terms, formData.term_id]
+  );
+
+  // Auto-detect next consecutive term (Khóa kế tiếp)
+  const nextFormTerm = useMemo(() => {
+    if (!activeFormTerm) return undefined;
+    const sortedTerms = [...store.terms].sort((a, b) => a.start_date.localeCompare(b.start_date));
+    return sortedTerms.find(t => t.id !== activeFormTerm.id && t.start_date > activeFormTerm.start_date);
+  }, [store.terms, activeFormTerm]);
+
+  const isStartDateOutOfBounds = useMemo(() => {
+    if (!activeFormTerm || !formData.start_date) return false;
+    return formData.start_date < activeFormTerm.start_date || formData.start_date > activeFormTerm.end_date;
+  }, [activeFormTerm, formData.start_date]);
+
+  const effectiveModalPricing = useMemo(
+    () => getEffectivePrice(formData.term_id, formData.campus_id, formData.subject_id, store),
+    [formData.term_id, formData.campus_id, formData.subject_id, store]
+  );
+
+  const computedSessionRate = useMemo(
+    () => effectiveModalPricing.session_rate || calculateCeilSessionRate(formData.full_course_fee, formData.total_sessions),
+    [effectiveModalPricing.session_rate, formData.full_course_fee, formData.total_sessions]
+  );
+
+  // Calculate full schedule across primary term and optional spanning next term
+  const scheduleCalcResult = useMemo(() => {
+    const standardSessions = effectiveModalPricing.total_sessions || 24;
+    const sessionRate = effectiveModalPricing.session_rate || computedSessionRate;
+    const primaryEndStr = activeFormTerm?.end_date || '2026-12-25';
+
+    // Base calculation within primary term
+    const truncatedCalc = calculateClassTimeline(
+      formData.start_date,
+      standardSessions,
+      formData.days_of_week,
+      primaryEndStr,
+      sessionRate
+    );
+
+    // Full calculation without primary term end cap (to check if class spans into next term)
+    const farFutureEndStr = nextFormTerm?.end_date || '2027-12-31';
+    const fullCalc = calculateClassTimeline(
+      formData.start_date,
+      standardSessions,
+      formData.days_of_week,
+      farFutureEndStr,
+      sessionRate
+    );
+
+    const isCrossTermCandidate =
+      truncatedCalc.actualSessions < standardSessions &&
+      fullCalc.endDate > primaryEndStr;
+
+    const primarySessionDates = fullCalc.sessionDates.filter(d => d <= primaryEndStr);
+    const spanningSessionDates = fullCalc.sessionDates.filter(d => d > primaryEndStr);
+
+    if (isCrossTermCandidate && crossTermMode === 'allow_cross_term') {
+      return {
+        actualSessions: fullCalc.actualSessions,
+        endDate: fullCalc.endDate,
+        isTruncatedByTerm: false,
+        calculatedFee: fullCalc.actualSessions * sessionRate,
+        sessionDates: fullCalc.sessionDates,
+        isCrossTermCandidate: true,
+        fullCourseEndDate: fullCalc.endDate,
+        primaryTermSessions: primarySessionDates.length,
+        spanningTermSessions: spanningSessionDates.length,
+        primarySessionDates,
+        spanningSessionDates,
+        truncatedEndDate: truncatedCalc.endDate,
+        truncatedSessions: truncatedCalc.actualSessions,
+        truncatedFee: truncatedCalc.calculatedFee,
+      };
+    }
+
+    return {
+      ...truncatedCalc,
+      isCrossTermCandidate,
+      fullCourseEndDate: fullCalc.endDate,
+      primaryTermSessions: primarySessionDates.length,
+      spanningTermSessions: spanningSessionDates.length,
+      primarySessionDates,
+      spanningSessionDates,
+      truncatedEndDate: truncatedCalc.endDate,
+      truncatedSessions: truncatedCalc.actualSessions,
+      truncatedFee: truncatedCalc.calculatedFee,
+    };
+  }, [
+    formData.start_date,
+    formData.days_of_week,
+    effectiveModalPricing.total_sessions,
+    effectiveModalPricing.session_rate,
+    computedSessionRate,
+    activeFormTerm?.end_date,
+    nextFormTerm?.end_date,
+    crossTermMode,
+  ]);
+
+  const handleCascadingChange = (
+    newTermId: string,
+    newCampusId: string,
+    newSubjectId: string,
+    preserveStartDate = false
+  ) => {
+    const termObj = store.terms.find(t => t.id === newTermId);
+    const pricing = getEffectivePrice(newTermId, newCampusId, newSubjectId, store);
+    const campusFacs = store.facilities.filter(f => f.campus_id === newCampusId && f.is_active);
+    setFormData(prev => ({
+      ...prev,
+      term_id: newTermId,
+      campus_id: newCampusId,
+      subject_id: newSubjectId,
+      facility_id: campusFacs.some(f => f.id === prev.facility_id)
+        ? prev.facility_id
+        : (campusFacs[0]?.id || prev.facility_id),
+      start_date: preserveStartDate ? prev.start_date : (termObj?.start_date || prev.start_date),
+      total_sessions: pricing.total_sessions || 24,
+      full_course_fee: pricing.course_fee || 5400000,
+    }));
+  };
+
+  const handleToggleDay = (dayCode: string) => {
+    setDayPickerNotice(null);
+    setFormData(prev => {
+      const exists = prev.days_of_week.includes(dayCode);
+      if (exists) {
+        return {
+          ...prev,
+          days_of_week: prev.days_of_week.filter(d => d !== dayCode),
+        };
+      }
+      if (prev.days_of_week.length >= 2) {
+        setDayPickerNotice('Mỗi lớp chỉ học cố định 2 buổi/tuần. Hãy bỏ chọn 1 ngày trước khi chọn ngày mới.');
+        return prev;
+      }
+      const order = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
+      const updated = [...prev.days_of_week, dayCode].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+      return {
+        ...prev,
+        days_of_week: updated,
+      };
+    });
+  };
+
   const handleOpenAddModal = () => {
     if (isSelectedTermClosed) {
       showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể mở thêm lớp mới.', 'error', {
@@ -209,7 +400,34 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       });
       return;
     }
+    const targetTermId = localTermId !== 'all' ? localTermId : defaultActiveTermId;
+    const targetCampusId = localCampusId !== 'all' ? localCampusId : defaultCampusId;
+    const termObj = store.terms.find(t => t.id === targetTermId);
+    const termSubjs = store.termSubjects.filter(ts => ts.term_id === targetTermId && ts.is_active);
+    const targetSubjectId =
+      localSubjectId !== 'all' && termSubjs.some(ts => ts.subject_id === localSubjectId)
+        ? localSubjectId
+        : (termSubjs[0]?.subject_id || store.subjects[0]?.id || '');
+    const pricing = getEffectivePrice(targetTermId, targetCampusId, targetSubjectId, store);
+    const campusFacs = store.facilities.filter(f => f.campus_id === targetCampusId && f.is_active);
+
     setEditingClass(null);
+    setCrossTermMode('allow_cross_term');
+    setFormData({
+      name: '',
+      term_id: targetTermId,
+      campus_id: targetCampusId,
+      subject_id: targetSubjectId,
+      facility_id: campusFacs[0]?.id || store.facilities[0]?.id || '',
+      time_slot_id: store.timeSlots[0]?.id || 'slot_weekday_1',
+      days_of_week: ['T2', 'T4'],
+      start_date: termObj?.start_date || '2026-09-01',
+      primary_teacher_id: store.teachers[0]?.id || 'tea_1',
+      max_students: 20,
+      total_sessions: pricing.total_sessions || 24,
+      full_course_fee: pricing.course_fee || 5400000,
+      allow_over_quota: false,
+    });
     setShowAddModal(true);
   };
 
@@ -221,7 +439,142 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       return;
     }
     setEditingClass(cls);
+    setCrossTermMode(cls.is_cross_term ? 'allow_cross_term' : 'truncate_to_term');
+    setFormData({
+      name: cls.name,
+      term_id: cls.term_id,
+      campus_id: cls.campus_id,
+      subject_id: cls.subject_id,
+      facility_id: cls.facility_id,
+      time_slot_id: cls.time_slot_id,
+      days_of_week: getClassDays(cls, store),
+      start_date: cls.start_date || store.terms.find(t => t.id === cls.term_id)?.start_date || '2026-09-01',
+      primary_teacher_id: cls.primary_teacher_id,
+      max_students: cls.max_students,
+      total_sessions: cls.total_sessions,
+      full_course_fee: cls.full_course_fee,
+      allow_over_quota: cls.allow_over_quota,
+    });
     setShowAddModal(true);
+  };
+
+  const handleSaveClass = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (formData.days_of_week.length !== 2 || isStartDateOutOfBounds || scheduleCalcResult.actualSessions <= 0) {
+      return;
+    }
+
+    const isCrossTerm = Boolean(
+      scheduleCalcResult.isCrossTermCandidate &&
+      crossTermMode === 'allow_cross_term' &&
+      nextFormTerm
+    );
+    const spanningTermId = isCrossTerm ? nextFormTerm?.id : undefined;
+    const termDistribution = isCrossTerm
+      ? {
+          primary_term_sessions: scheduleCalcResult.primaryTermSessions,
+          spanning_term_sessions: scheduleCalcResult.spanningTermSessions,
+        }
+      : undefined;
+
+    const classId = editingClass?.id || `cls_${Date.now()}`;
+    const newClassObj: ExtracurricularClass = {
+      id: classId,
+      name: formData.name.trim(),
+      campus_id: formData.campus_id,
+      term_id: formData.term_id,
+      subject_id: formData.subject_id,
+      facility_id: formData.facility_id,
+      time_slot_id: formData.time_slot_id,
+      days_of_week: formData.days_of_week,
+      start_date: formData.start_date,
+      end_date: scheduleCalcResult.endDate,
+      primary_teacher_id: formData.primary_teacher_id,
+      max_students: formData.max_students,
+      enrolled_count: editingClass?.enrolled_count || 0,
+      total_sessions: scheduleCalcResult.actualSessions,
+      full_course_fee: scheduleCalcResult.calculatedFee,
+      price_per_session: computedSessionRate,
+      allow_over_quota: formData.allow_over_quota,
+      status: editingClass?.status || 'active',
+      is_cross_term: isCrossTerm,
+      spanning_term_id: spanningTermId,
+      term_distribution: termDistribution,
+    };
+
+    onUpdateStore(prev => {
+      const updatedClasses = editingClass
+        ? prev.classes.map(c => (c.id === editingClass.id ? newClassObj : c))
+        : [newClassObj, ...prev.classes];
+
+      // Generate scheduled ClassSession records across Stage 1 & Stage 2 for new classes (or preserve completed ones)
+      const existingCompletedSessions = prev.sessions.filter(
+        s => s.class_id === classId && s.status === 'completed'
+      );
+      const completedDateSet = new Set(existingCompletedSessions.map(s => s.session_date));
+      const otherClassSessions = prev.sessions.filter(s => s.class_id !== classId);
+
+      const generatedSessions: ClassSession[] = scheduleCalcResult.sessionDates.map((dateStr, idx) => {
+        const existingComp = existingCompletedSessions.find(s => s.session_date === dateStr);
+        if (existingComp) return existingComp;
+        const belongsToSpanning =
+          isCrossTerm &&
+          activeFormTerm?.end_date &&
+          dateStr > activeFormTerm.end_date &&
+          nextFormTerm;
+        return {
+          id: `ses_${classId}_${String(idx + 1).padStart(2, '0')}`,
+          class_id: classId,
+          term_id: belongsToSpanning ? nextFormTerm.id : formData.term_id,
+          session_date: dateStr,
+          session_number: idx + 1,
+          actual_teacher_id: formData.primary_teacher_id,
+          is_substitute: false,
+          snacks_allocated: 0,
+          snacks_consumed: 0,
+          snacks_returned: 0,
+          status: 'scheduled',
+        };
+      });
+
+      // Keep any completed sessions not in the new generated dates
+      const extraCompleted = existingCompletedSessions.filter(
+        s => !scheduleCalcResult.sessionDates.includes(s.session_date) && completedDateSet.has(s.session_date)
+      );
+
+      const auditLog = createAuditRecord(
+        editingClass ? 'CLASS_UPDATE' : 'CLASS_CREATE',
+        'ACADEMIC',
+        newClassObj.name,
+        `${editingClass ? 'Cập nhật' : 'Tạo mới'} lớp "${newClassObj.name}" (${newClassObj.total_sessions} buổi, ${
+          isCrossTerm
+            ? `Liên khóa: ${termDistribution?.primary_term_sessions}b ${activeFormTerm?.name} + ${termDistribution?.spanning_term_sessions}b ${nextFormTerm?.name}`
+            : `Trong khóa ${activeFormTerm?.name}`
+        })`,
+        null,
+        {
+          target_id: newClassObj.id,
+          details: { status: 'success', after: newClassObj },
+        }
+      );
+
+      return {
+        ...prev,
+        classes: updatedClasses,
+        sessions: [...otherClassSessions, ...extraCompleted, ...generatedSessions],
+        auditLogs: appendAuditLog(prev.auditLogs, auditLog),
+      };
+    });
+
+    setShowAddModal(false);
+    setEditingClass(null);
+    showToast(
+      isCrossTerm
+        ? `✓ Đã lưu lớp liên khóa "${newClassObj.name}" (${termDistribution?.primary_term_sessions} buổi ${activeFormTerm?.name} + ${termDistribution?.spanning_term_sessions} buổi ${nextFormTerm?.name})!`
+        : `✓ Đã lưu lớp ngoại khóa "${newClassObj.name}" (${newClassObj.total_sessions} buổi) thành công!`,
+      'success',
+      { title: editingClass ? 'Cập nhật lớp học' : 'Tạo lớp ngoại khóa mới' }
+    );
   };
 
   // Filter classes by campus, term, subject & search query
@@ -842,19 +1195,30 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       )}
 
       {/* Create / Edit Class Modal with Full Cross-Term Support */}
-      <CreateClassModal
-        isOpen={showAddModal}
-        onClose={() => {
-          setShowAddModal(false);
-          setEditingClass(null);
-        }}
-        editingClass={editingClass}
-        store={store}
-        onUpdateStore={onUpdateStore}
-        initialTermId={localTermId !== 'all' ? localTermId : undefined}
-        initialCampusId={localCampusId !== 'all' ? localCampusId : undefined}
-        initialSubjectId={localSubjectId !== 'all' ? localSubjectId : undefined}
-      />
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#111827] border border-slate-800 rounded-3xl max-w-2xl w-full p-6 shadow-2xl my-8 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
+              <div>
+                <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-amber-400" />
+                  <span>{editingClass ? 'Chỉnh Sửa Lớp Ngoại Khóa' : 'Tạo Lớp Ngoại Khóa Mới'}</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Tự động tính ngày kết thúc dự kiến, kiểm soát biên khóa học và cập nhật biểu phí theo số buổi thực tế.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddModal(false);
+                  setEditingClass(null);
+                }}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
             {/* Active Pricing Result computation */}
             {(() => {
@@ -1221,27 +1585,41 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                           {scheduleCalcResult.actualSessions > 0 ? formatDateVN(scheduleCalcResult.endDate) : '—'}
                         </div>
                         <span className="text-[10px] text-slate-500 mt-0.5">
-                          Buổi học cuối cùng trong khóa
+                          {scheduleCalcResult.isCrossTermCandidate && crossTermMode === 'allow_cross_term'
+                            ? `Hoàn tất tại ${nextFormTerm?.name || 'Khóa kế tiếp'}`
+                            : 'Buổi học cuối cùng trong khóa'}
                         </span>
                       </div>
 
-                      {/* Chỉ số 2: Số buổi thực tế trong khóa */}
+                      {/* Chỉ số 2: Số buổi thực tế */}
                       <div className={`p-3 rounded-xl border flex flex-col justify-between ${
-                        scheduleCalcResult.isTruncatedByTerm
+                        scheduleCalcResult.isCrossTermCandidate && crossTermMode === 'allow_cross_term'
+                          ? 'bg-indigo-950/30 border-indigo-500/40'
+                          : scheduleCalcResult.isTruncatedByTerm
                           ? 'bg-amber-950/20 border-amber-500/40'
                           : 'bg-emerald-950/15 border-emerald-500/30'
                       }`}>
-                        <span className="text-[10px] text-slate-400 font-semibold uppercase">Số buổi thực tế trong khóa</span>
+                        <span className="text-[10px] text-slate-400 font-semibold uppercase">Số buổi thực tế</span>
                         <div className={`mt-1 font-mono font-extrabold text-sm flex items-center gap-1.5 ${
-                          scheduleCalcResult.isTruncatedByTerm ? 'text-amber-400' : 'text-emerald-400'
+                          scheduleCalcResult.isCrossTermCandidate && crossTermMode === 'allow_cross_term'
+                            ? 'text-indigo-300'
+                            : scheduleCalcResult.isTruncatedByTerm
+                            ? 'text-amber-400'
+                            : 'text-emerald-400'
                         }`}>
                           <span>{scheduleCalcResult.actualSessions} / {standardSessions} buổi</span>
                         </div>
                         <span className={`text-[10px] font-semibold mt-0.5 ${
-                          scheduleCalcResult.isTruncatedByTerm ? 'text-amber-300/90' : 'text-emerald-300/80'
+                          scheduleCalcResult.isCrossTermCandidate && crossTermMode === 'allow_cross_term'
+                            ? 'text-indigo-300/90'
+                            : scheduleCalcResult.isTruncatedByTerm
+                            ? 'text-amber-300/90'
+                            : 'text-emerald-300/80'
                         }`}>
-                          {scheduleCalcResult.isTruncatedByTerm
-                            ? 'Bị giới hạn bởi ngày kết thúc khóa'
+                          {scheduleCalcResult.isCrossTermCandidate && crossTermMode === 'allow_cross_term'
+                            ? `🌐 Liên khóa (${scheduleCalcResult.primaryTermSessions}b + ${scheduleCalcResult.spanningTermSessions}b)`
+                            : scheduleCalcResult.isTruncatedByTerm
+                            ? 'Cắt ngắn theo ngày kết thúc khóa'
                             : '✓ Đủ định mức buổi chuẩn toàn khóa'}
                         </span>
                       </div>
@@ -1260,15 +1638,73 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       </div>
                     </div>
 
-                    {/* Banner cảnh báo màu vàng khi lớp mở muộn / bị giới hạn bởi ngày kết thúc khóa */}
-                    {scheduleCalcResult.isTruncatedByTerm && !isStartDateOutOfBounds && (
-                      <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs leading-relaxed flex items-start gap-2.5">
-                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                        <div>
-                          ⚠️ <strong>Lớp học được mở muộn trong khóa:</strong> Khóa học kết thúc vào ngày{' '}
-                          <strong className="text-white font-mono">{formatDateVN(activeFormTerm?.end_date)}</strong>, lớp sẽ hoàn thành{' '}
-                          <strong className="text-amber-300 font-mono">{scheduleCalcResult.actualSessions}/{standardSessions}</strong> buổi. Học phí lớp được tính là{' '}
-                          <strong className="text-amber-300 font-mono">{formatVND(scheduleCalcResult.calculatedFee)}</strong>.
+                    {/* HỘP CẢNH BÁO & TÙY CHỌN LỚP HỌC LIÊN KHÓA (CROSS-TERM CLASS) */}
+                    {scheduleCalcResult.isCrossTermCandidate && !isStartDateOutOfBounds && (
+                      <div className="p-4 rounded-2xl bg-indigo-950/35 border border-indigo-500/40 text-indigo-100 space-y-3 shadow-lg">
+                        <div className="flex items-start gap-2.5">
+                          <Globe className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                          <div className="text-xs leading-relaxed">
+                            <div className="font-extrabold text-indigo-300">
+                              🌐 Lớp học liên khóa (Cross-Term Class): Lớp kéo dài từ {activeFormTerm?.name} sang {nextFormTerm?.name || 'Khóa kế tiếp'}.
+                            </div>
+                            <p className="text-[11px] text-indigo-200/80 mt-0.5">
+                              Do mở lớp ngày <strong className="font-mono text-white">{formatDateVN(formData.start_date)}</strong>, để hoàn thành đủ{' '}
+                              <strong className="font-mono text-white">{standardSessions} buổi</strong> chuẩn, buổi cuối sẽ rơi vào ngày{' '}
+                              <strong className="font-mono text-indigo-300">{formatDateVN(scheduleCalcResult.fullCourseEndDate)}</strong> (vượt qua ngày kết thúc {activeFormTerm?.name} là{' '}
+                              <span className="font-mono">{formatDateVN(activeFormTerm?.end_date)}</span>).
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* 2 Radio Pill Options */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setCrossTermMode('allow_cross_term')}
+                            className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                              crossTermMode === 'allow_cross_term'
+                                ? 'bg-indigo-600/25 border-indigo-400 text-white shadow-md shadow-indigo-500/15 ring-1 ring-indigo-400/50'
+                                : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-indigo-500/40'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-extrabold text-xs text-indigo-300">
+                                [ Cho phép vắt sang khóa sau (Khuyên dùng) ]
+                              </span>
+                              <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                                crossTermMode === 'allow_cross_term' ? 'border-indigo-300 bg-indigo-500' : 'border-slate-600'
+                              }`}>
+                                {crossTermMode === 'allow_cross_term' && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                              Giữ nguyên <strong>{standardSessions} buổi</strong> ({formatVND(standardSessions * effectivePricing.session_rate)}). Giai đoạn 1: <strong>{scheduleCalcResult.primaryTermSessions} buổi</strong> ({activeFormTerm?.name}) &bull; Giai đoạn 2: <strong>{scheduleCalcResult.spanningTermSessions} buổi</strong> ({nextFormTerm?.name || 'Khóa sau'}).
+                            </p>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setCrossTermMode('truncate_to_term')}
+                            className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                              crossTermMode === 'truncate_to_term'
+                                ? 'bg-amber-500/20 border-amber-400 text-white shadow-md shadow-amber-500/15 ring-1 ring-amber-400/50'
+                                : 'bg-slate-950/70 border-slate-800 text-slate-300 hover:border-amber-500/40'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-extrabold text-xs text-amber-300">
+                                [ Cắt ngắn lớp kết thúc theo khóa hiện tại ]
+                              </span>
+                              <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                                crossTermMode === 'truncate_to_term' ? 'border-amber-300 bg-amber-500' : 'border-slate-600'
+                              }`}>
+                                {crossTermMode === 'truncate_to_term' && <span className="w-1.5 h-1.5 rounded-full bg-slate-950" />}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-300 mt-1 leading-snug">
+                              Kết thúc ngày <strong className="font-mono">{formatDateVN(scheduleCalcResult.truncatedEndDate)}</strong>. Chỉ học <strong>{scheduleCalcResult.truncatedSessions}/{standardSessions} buổi</strong> &bull; Học phí giảm tương ứng còn <strong>{formatVND(scheduleCalcResult.truncatedFee)}</strong>.
+                            </p>
+                          </button>
                         </div>
                       </div>
                     )}

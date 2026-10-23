@@ -50,10 +50,9 @@ import {
   isStudentScheduledForDate,
   formatStudentScheduleLabel,
   formatDateVN,
-  getTeacherEffectivePeriodRate
+  getTeacherEffectivePeriodRate,
+  getTeacherEffectiveSessionRate,
 } from '../../lib/storage';
-import { uploadAttendanceProofToSupabase } from '../../lib/supabase';
-import { pushAttendanceRecordAsync, pushTeacherWorkSessionAsync } from '../../lib/supabaseSync';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
@@ -176,10 +175,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   }, [selectedClass?.id]);
 
-  // 2. Lọc danh sách lớp học khả dụng theo Khóa Học & Cơ Sở
+  // 2. Lọc danh sách lớp học khả dụng theo Khóa Học & Cơ Sở (Bao gồm lớp liên khóa vắt sang khóa sau)
   const availableClasses = useMemo(() => {
     return store.classes.filter(cls => {
-      const matchTerm = cls.term_id === selectedTermId;
+      const matchTerm =
+        cls.term_id === selectedTermId ||
+        (cls.is_cross_term && cls.spanning_term_id === selectedTermId);
       const normalizedCampus =
         selectedCampusId === 'pmh' ? 'camp_pmh' : selectedCampusId === 'pl' ? 'camp_pl' : selectedCampusId;
       const matchCampus = cls.campus_id === normalizedCampus || cls.campus_id === selectedCampusId;
@@ -452,7 +453,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   }, [currentClass?.id, selectedDate, store.teacherAttendance]);
 
-  // Live Teacher Rate & Payout Calculation for Current Session
+  // Live Teacher Rate & Payout Calculation for Current Session (Per-Session Model: 300K Cơ hữu / 270K Thỉnh giảng)
   const assignedTeacherObj = currentClass
     ? store.teachers.find(t => t.id === currentClass.primary_teacher_id)
     : undefined;
@@ -464,8 +465,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     isWeekendSlot,
     store.payrollRateConfig
   );
+  const liveTeacherSessionRate = getTeacherEffectiveSessionRate(
+    actualTeacherObj,
+    store.payrollRateConfig
+  );
   const liveTeacherEffectivePeriods = teacherMode === 'absent' ? 0 : teacherPeriodsCount;
-  const liveTeacherTotalPayout = liveTeacherEffectivePeriods * liveTeacherPeriodRate;
+  const liveTeacherTotalPayout = teacherMode === 'absent' ? 0 : liveTeacherSessionRate;
 
   // Update attendance state when selectedDate or store.attendance changes (Guaranteed Persistence)
   useEffect(() => {
@@ -565,23 +570,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         ratio: result.compressionRatio,
       });
 
-      // 2. Upload file to Supabase Storage Bucket 'attendance-proofs' with structured path:
-      // proofs/{term_id}/{campus_id}/{class_id}/{session_date}_{student_code}_{file_name}
+      // 2. Upload file to Supabase Storage Bucket 'attendance-proofs' if configured
       let uploadedUrl: string | undefined = undefined;
       if (proofModalStudent && currentClass) {
-        const sbRes = await uploadAttendanceProofToSupabase(
-          result.base64,
-          {
-            termId: currentClass.term_id,
-            campusId: currentClass.campus_id,
-            classId: currentClass.id,
-            sessionDate: selectedDate,
-            studentCode: proofModalStudent.code,
-            fileName: result.fileName,
-          }
+        const sbRes = await uploadToSupabaseBucket(
+          file,
+          `${selectedDate}_${proofModalStudent.code}_${result.fileName}`,
+          store.supabaseConfig
         );
-        if (sbRes.success && sbRes.publicUrl) {
-          uploadedUrl = sbRes.publicUrl;
+        if (sbRes.success && sbRes.url) {
+          uploadedUrl = sbRes.url;
         }
       }
 
@@ -677,6 +675,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       const newSession: ClassSession = {
         id: currentSession?.id || `ses_${Date.now()}`,
         class_id: currentClass.id,
+        term_id: selectedTermId || currentClass.term_id,
         session_date: selectedDate,
         session_number: currentSession?.session_number || sessionNumber,
         actual_teacher_id: selectedTeacherId,
@@ -874,7 +873,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       const newTeacherAttendanceRecord: TeacherAttendanceRecord = {
         id: existingTeacherAtt?.id || `tatt_${currentClass.id}_${selectedDate}`,
         class_id: currentClass.id,
-        term_id: currentClass.term_id,
+        term_id: selectedTermId || currentClass.term_id,
         campus_id: currentClass.campus_id,
         session_date: selectedDate,
         session_number: newSession.session_number,
@@ -886,24 +885,22 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         late_minutes: teacherMode === 'late' ? teacherLateMinutes : undefined,
         check_in_time: teacherMode === 'absent' ? undefined : teacherCheckInTime,
         rate_per_period: liveTeacherPeriodRate,
+        rate_applied: liveTeacherSessionRate,
+        earned_amount: liveTeacherTotalPayout,
         total_payout: liveTeacherTotalPayout,
         verified_by: currentUser?.full_name || 'Ban Học Vụ',
         notes:
           teacherSessionNote.trim() ||
           (teacherMode === 'substitute'
-            ? `${assignedTeacherObj?.name || 'GV chính'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay ${teacherPeriodsCount} tiết`
+            ? `${assignedTeacherObj?.name || 'GV chính'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay 1 buổi (${formatVND(liveTeacherTotalPayout)})`
             : teacherMode === 'late'
             ? `Vào lớp lúc ${teacherCheckInTime} (muộn ${teacherLateMinutes} phút)`
             : teacherMode === 'absent'
-            ? `Giáo viên ${assignedTeacherObj?.name || ''} vắng mặt buổi này (0 tiết - chờ bố trí học bù)`
+            ? `Giáo viên ${assignedTeacherObj?.name || ''} vắng mặt buổi này (0 buổi - chờ bố trí học bù)`
             : 'Giáo viên chính thức đứng lớp đúng giờ'),
       };
 
       const finalTeacherAttendance = [...remainingTeacherAttendance, newTeacherAttendanceRecord];
-
-      // Optimistic background sync to Supabase PostgreSQL (non-blocking)
-      newRecords.forEach(rec => pushAttendanceRecordAsync(rec, prev));
-      pushTeacherWorkSessionAsync(newTeacherAttendanceRecord, prev);
 
       return {
         ...prev,
@@ -918,7 +915,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
 
     showToast(
-      `Đã lưu sổ điểm danh học sinh, chấm công giáo viên (${liveTeacherEffectivePeriods} tiết = ${formatVND(liveTeacherTotalPayout)}) và đối soát bánh sữa ngày ${selectedDate}!`,
+      `Đã lưu sổ điểm danh học sinh, chấm công giáo viên (${teacherMode === 'absent' ? '0 buổi' : '1 buổi'} = ${formatVND(liveTeacherTotalPayout)}) và đối soát bánh sữa ngày ${selectedDate}!`,
       'success',
       { title: 'Lưu điểm danh & Chấm công GV thành công' }
     );
@@ -1102,6 +1099,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 {currentClass && (
                   <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold">
                     {currentClass.status === 'active' ? 'Đang hoạt động' : 'Tạm dừng'}
+                  </span>
+                )}
+                {currentClass?.is_cross_term && currentClass.spanning_term_id === selectedTermId && (
+                  <span className="px-2.5 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 text-xs font-extrabold flex items-center gap-1">
+                    <span>🌐 [Lớp vắt từ khóa trước]</span>
+                  </span>
+                )}
+                {currentClass?.is_cross_term && currentClass.term_id === selectedTermId && (
+                  <span className="px-2.5 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[11px] font-bold">
+                    🌐 Lớp liên khóa ({currentClass.term_distribution?.primary_term_sessions || 16}b + {currentClass.term_distribution?.spanning_term_sessions || 8}b)
                   </span>
                 )}
               </div>
@@ -1290,8 +1297,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       Thù lao buổi ({actualTeacherObj?.name}):
                     </div>
                     <div className="text-xs font-mono text-slate-300 mt-0.5">
-                      <strong className="text-white">{liveTeacherEffectivePeriods} tiết</strong> &times;{' '}
-                      <strong className="text-amber-300">{formatVND(liveTeacherPeriodRate)}/tiết</strong> ={' '}
+                      <strong className="text-white">{teacherMode === 'absent' ? '0 buổi' : '1 buổi'}</strong> &times;{' '}
+                      <strong className="text-amber-300">{formatVND(liveTeacherSessionRate)}/buổi</strong> ={' '}
                       <strong className="text-sm font-extrabold text-emerald-400">{formatVND(liveTeacherTotalPayout)}</strong>
                     </div>
                   </div>
