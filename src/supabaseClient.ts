@@ -4,9 +4,9 @@ export const DEFAULT_SUPABASE_URL = (
   String((import.meta as any).env?.VITE_SUPABASE_URL || 'https://wobszxqzlalzcjcfbzhq.supabase.co')
 ).replace(/\/+$/, '').replace(/\/rest\/v1\/?$/, '');
 
-// Khóa Legacy Anon JWT chuẩn 3 phần của project wobszxqzlalzcjcfbzhq
+// Khóa Legacy Anon JWT chính thức của project wobszxqzlalzcjcfbzhq
 export const DEFAULT_SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mzg1Mzg0MDAsImV4cCI6MjA1NDExNDQwMH0.wobszxqzlalzcjcfbzhq_anon_key';
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI0Nzg3MDQsImV4cCI6MjEwODA1NDcwNH0.fACSgo3mpzdBS-of_fFkMF14NYL3J3P_5WM2k6FtEcA';
 
 export interface SafeSyncStorage extends SupportedStorage {
   getItem: (key: string) => string | null;
@@ -352,6 +352,7 @@ export const getSupabaseClient = (
       global: {
         headers: {
           apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
           'x-client-info': 'royal-school-hub-ios',
         },
         fetch: safeSupabaseFetch,

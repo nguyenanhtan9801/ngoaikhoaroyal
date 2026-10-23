@@ -40,6 +40,7 @@ import {
   safeStorage,
   DEFAULT_SUPABASE_URL,
   DEFAULT_SUPABASE_ANON_KEY,
+  isLikelyValidAnonKey,
 } from '../supabaseClient';
 
 export type { AppStore, PayrollRateConfig };
@@ -94,7 +95,9 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
         const cleanUrl = sanitizeSupabaseBaseUrl(String(parsed.url));
         return {
           url: cleanUrl || DEFAULT_SUPABASE_URL,
-          anonKey: String(parsed.anonKey).trim() || DEFAULT_SUPABASE_ANON_KEY,
+          anonKey:
+            (isLikelyValidAnonKey(parsed.anonKey) ? String(parsed.anonKey).trim() : null) ||
+            DEFAULT_SUPABASE_ANON_KEY,
           isConnected: Boolean(parsed.isConnected ?? true),
         };
       }
@@ -108,10 +111,7 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
     envUrl && envUrl.startsWith('http') && !envUrl.includes('your-project-id')
       ? envUrl
       : DEFAULT_SUPABASE_URL;
-  const anonKey =
-    envKey && !envKey.includes('your-anon-public-key') && envKey !== '[DÁN_CHUỖI_EYJ..._CỦA_BẠN_VÀO_ĐÂY]'
-      ? envKey
-      : DEFAULT_SUPABASE_ANON_KEY;
+  const anonKey = isLikelyValidAnonKey(envKey) ? envKey : DEFAULT_SUPABASE_ANON_KEY;
   return { url, anonKey, isConnected: true };
 }
 
@@ -366,9 +366,11 @@ export function loadStore(): AppStore {
     };
 
     const storedSbConfig = getStoredSupabaseConfig();
+    const rawSbKey = parsed.supabaseConfig?.anonKey;
+    const validSbKey = isLikelyValidAnonKey(rawSbKey) ? String(rawSbKey).trim() : null;
     const supabaseConfig = {
       url: sanitizeSupabaseBaseUrl(parsed.supabaseConfig?.url || storedSbConfig.url || DEFAULT_SUPABASE_URL),
-      anonKey: String(parsed.supabaseConfig?.anonKey || storedSbConfig.anonKey || DEFAULT_SUPABASE_ANON_KEY).trim(),
+      anonKey: validSbKey || storedSbConfig.anonKey || DEFAULT_SUPABASE_ANON_KEY,
       isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? true),
     };
 
