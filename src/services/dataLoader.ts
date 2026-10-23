@@ -35,6 +35,8 @@ export interface AppDataSafeResult {
   tuitionInvoices: any[];
   appUsers: any[];
   parentRegistrations: any[];
+  subjectCategories: any[];
+  timeSlots: any[];
   isLoading: boolean;
 }
 
@@ -75,6 +77,8 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     fetchTable('tuition_invoices'),
     fetchTable('app_users'),
     fetchTable('parent_registrations'),
+    fetchTable('subject_categories'),
+    fetchTable('time_slots'),
   ]);
 
   const getData = (index: number): any[] => {
@@ -94,6 +98,8 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     invoices,
     users,
     registrations,
+    subjectCategories,
+    timeSlots,
   ] = [
     getData(0),
     getData(1),
@@ -106,6 +112,8 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     getData(8),
     getData(9),
     getData(10),
+    getData(11),
+    getData(12),
   ];
 
   return {
@@ -120,6 +128,8 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     tuitionInvoices: invoices,
     appUsers: users,
     parentRegistrations: registrations,
+    subjectCategories,
+    timeSlots,
     isLoading: false,
   };
 }
@@ -189,6 +199,8 @@ export async function loadInitialDataSafely(
       { tableName: 'credit_notes', storeKey: 'makeupCredits' },
       { tableName: 'app_users', storeKey: 'users' },
       { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
+      { tableName: 'subject_categories', storeKey: 'subjectCategories' },
+      { tableName: 'time_slots', storeKey: 'timeSlots' },
     ];
 
     // Nạp song song độc lập từng bảng với Promise.allSettled

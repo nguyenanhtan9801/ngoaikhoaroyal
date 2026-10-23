@@ -21,6 +21,7 @@ import {
   GraduationCap,
   ArrowRightLeft,
   CheckCircle2,
+  Clock,
   Menu,
   X,
   ChevronRight,
@@ -168,6 +169,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           label: 'Lớp Học Ngoại Khóa', 
           icon: Calendar, 
           desc: 'Phòng học, sân bãi, khung giờ, giáo viên và kiểm tra trùng lịch' 
+        },
+        { 
+          id: 'sub_schedule', 
+          label: 'Quản Lý Khung Giờ Học', 
+          icon: Clock, 
+          desc: 'Quản lý ca học, thời lượng, các ngày áp dụng trong tuần và đồng bộ CSDL' 
         },
         { 
           id: 'sub_attendance', 

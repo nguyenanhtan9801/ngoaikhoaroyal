@@ -374,6 +374,20 @@ export function loadStore(): AppStore {
       isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? true),
     };
 
+    const timeSlots: TimeSlot[] = (
+      Array.isArray(parsed.timeSlots) && parsed.timeSlots.length > 0
+        ? parsed.timeSlots
+        : initial.timeSlots
+    ).map((slot: any, idx: number) => ({
+      ...slot,
+      code: slot.code || `SLOT_${idx + 1}`,
+      duration_minutes: Number(slot.duration_minutes) || 90,
+      days_of_week: Array.isArray(slot.days_of_week) ? slot.days_of_week : ['T2', 'T4'],
+      status: slot.status || 'active',
+      start_time: slot.start_time || '16:45',
+      end_time: slot.end_time || '18:15',
+    }));
+
     const loadedStore: AppStore = {
       ...initial,
       ...parsed,
@@ -385,7 +399,7 @@ export function loadStore(): AppStore {
       termSubjects,
       campusPricings,
       facilities: Array.isArray(parsed.facilities) ? parsed.facilities : initial.facilities,
-      timeSlots: Array.isArray(parsed.timeSlots) ? parsed.timeSlots : initial.timeSlots,
+      timeSlots,
       teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
       classes: Array.isArray(parsed.classes) ? parsed.classes : [],
       students: Array.isArray(parsed.students) ? parsed.students.map(normalizeStudentRecord) : [],

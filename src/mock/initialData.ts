@@ -179,42 +179,57 @@ export const initialFacilities: Facility[] = [
 export const initialTimeSlots: TimeSlot[] = [
   {
     id: 'slot-t2t4-pm',
+    code: 'T2T4_1630',
     name: 'Thứ 2 & Thứ 4 (16:30 - 18:00)',
     days_of_week: ['T2', 'T4'],
     start_time: '16:30',
     end_time: '18:00',
+    duration_minutes: 90,
+    status: 'active',
     slot_type: 'after_school'
   },
   {
     id: 'slot-t3t5-pm',
+    code: 'T3T5_1630',
     name: 'Thứ 3 & Thứ 5 (16:30 - 18:00)',
     days_of_week: ['T3', 'T5'],
     start_time: '16:30',
     end_time: '18:00',
+    duration_minutes: 90,
+    status: 'active',
     slot_type: 'after_school'
   },
   {
     id: 'slot-t6-pm',
+    code: 'T6_1630',
     name: 'Thứ 6 Chuyên Sâu (16:30 - 18:30)',
     days_of_week: ['T6'],
     start_time: '16:30',
     end_time: '18:30',
+    duration_minutes: 120,
+    status: 'active',
     slot_type: 'after_school'
   },
   {
     id: 'slot-sat-am',
+    code: 'T7CN_0830',
     name: 'Thứ 7 & Chủ Nhật Sáng (08:30 - 10:00)',
     days_of_week: ['T7', 'CN'],
     start_time: '08:30',
     end_time: '10:00',
+    duration_minutes: 90,
+    status: 'active',
     slot_type: 'weekend'
   },
   {
     id: 'slot-sat-pm',
+    code: 'T7CN_1500',
     name: 'Thứ 7 & Chủ Nhật Chiều (15:00 - 16:30)',
     days_of_week: ['T7', 'CN'],
     start_time: '15:00',
     end_time: '16:30',
+    duration_minutes: 90,
+    status: 'active',
     slot_type: 'weekend'
   }
 ];

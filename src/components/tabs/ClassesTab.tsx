@@ -28,6 +28,7 @@ import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateClassModal } from '../modals/CreateClassModal';
+import { TimeSlotsManager } from '../classes/TimeSlotsManager';
 
 export interface ScheduleCalculationResult {
   actualSessions: number;      // Số buổi thực tế diễn ra trong khóa
@@ -136,6 +137,7 @@ interface ClassesTabProps {
   onSelectTermId?: (id: string) => void;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSelectClassForAttendance: (cls: ExtracurricularClass) => void;
+  initialTab?: 'classes' | 'time_slots';
 }
 
 export const ClassesTab: React.FC<ClassesTabProps> = ({
@@ -148,11 +150,20 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onSelectTermId,
   onUpdateStore,
   onSelectClassForAttendance,
+  initialTab = 'classes',
 }) => {
+  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots'>(initialTab);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
   const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
+
+  // Synchronize initialTab if changed externally
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
 
   // Local Filter States (bộ lọc nội bộ đồng bộ với props toàn cục)
   const [localCampusId, setLocalCampusId] = useState<string>(selectedCampusId);
@@ -698,36 +709,91 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         </div>
       )}
 
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Calendar className="w-5 h-5 text-amber-400" />
-            <span>Danh Sách Lớp Ngoại Khóa & Khung Giờ Hoạt Động</span>
-          </h2>
-          <p className="text-xs text-slate-400">
-            Kiểm soát sĩ số tối đa, phát hiện trùng lịch giáo viên/phòng học và áp dụng công thức đơn giá buổi chuẩn Ceil
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5">
-          <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
+      {/* Sub-tab Navigation: Classes vs Time Slots */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab('classes')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'classes'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Calendar className="w-3.5 h-3.5" />
+            <span>Danh Sách Lớp Ngoại Khóa ({store.classes.length})</span>
+          </button>
 
           <button
-            onClick={handleOpenAddModal}
-            disabled={isSelectedTermClosed}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
-              isSelectedTermClosed 
-                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/60'
-                : 'bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-md shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98]'
+            type="button"
+            onClick={() => setActiveTab('time_slots')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'time_slots'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
-            title={isSelectedTermClosed ? 'Khóa học đã đóng - Không thể mở lớp mới' : 'Mở Lớp Ngoại Khóa Mới'}
           >
-            {isSelectedTermClosed ? <Lock className="w-4 h-4 text-slate-500" /> : <Plus className="w-4 h-4 text-slate-950" />}
-            <span>Mở Lớp Mới</span>
+            <Clock className="w-3.5 h-3.5" />
+            <span>Quản Lý Khung Giờ Học ({store.timeSlots?.length || 0})</span>
           </button>
         </div>
+
+        {activeTab === 'classes' && (
+          <button
+            type="button"
+            onClick={() => setActiveTab('time_slots')}
+            className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors"
+          >
+            <span>Quản lý ca &amp; thời gian học &rarr;</span>
+          </button>
+        )}
       </div>
+
+      {activeTab === 'time_slots' ? (
+        <TimeSlotsManager store={store} onUpdateStore={onUpdateStore} />
+      ) : (
+        <>
+          {/* Top Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-amber-400" />
+                <span>Danh Sách Lớp Ngoại Khóa &amp; Khung Giờ Hoạt Động</span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Kiểm soát sĩ số tối đa, phát hiện trùng lịch giáo viên/phòng học và áp dụng công thức đơn giá buổi chuẩn Ceil
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('time_slots')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 bg-slate-900 hover:bg-slate-800 text-amber-400 border border-amber-500/30 cursor-pointer"
+                title="Quản lý khung giờ học"
+              >
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span>Khung Giờ</span>
+              </button>
+
+              <button
+                onClick={handleOpenAddModal}
+                disabled={isSelectedTermClosed}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer ${
+                  isSelectedTermClosed 
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/60'
+                    : 'bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-md shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98]'
+                }`}
+                title={isSelectedTermClosed ? 'Khóa học đã đóng - Không thể mở lớp mới' : 'Mở Lớp Ngoại Khóa Mới'}
+              >
+                {isSelectedTermClosed ? <Lock className="w-4 h-4 text-slate-500" /> : <Plus className="w-4 h-4 text-slate-950" />}
+                <span>Mở Lớp Mới</span>
+              </button>
+            </div>
+          </div>
 
       {/* FILTER TOOLBAR: KHÓA HỌC, CƠ SỞ, BỘ MÔN & TÌM KIẾM NHANH */}
       <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 p-4 backdrop-blur-md shadow-xl space-y-3">
@@ -1208,6 +1274,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         initialCampusId={localCampusId !== 'all' ? localCampusId : undefined}
         initialSubjectId={localSubjectId !== 'all' ? localSubjectId : undefined}
       />
+      </>
+      )}
 
     </div>
   );

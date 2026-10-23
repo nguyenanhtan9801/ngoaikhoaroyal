@@ -678,6 +678,7 @@ export default function App() {
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
               onUpdateStore={updateStore}
+              initialTab="time_slots"
               onSelectClassForAttendance={(cls: ExtracurricularClass) => {
                 setFocusedClass(cls);
                 setCurrentRoute('sub_attendance');

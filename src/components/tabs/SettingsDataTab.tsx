@@ -578,7 +578,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         },
       ];
 
-  const getCategoryColorDetails = (color: string) => {
+  const getCategoryColorDetails = (color?: string) => {
     switch (color) {
       case 'amber':
         return {
@@ -664,7 +664,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     }
   };
 
-  const getCategoryIconComponent = (iconName: string) => {
+  const getCategoryIconComponent = (iconName?: string) => {
     switch (iconName) {
       case 'Activity': return Activity;
       case 'Palette': return Palette;
@@ -712,8 +712,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     setCategoryFormData({
       code: cat.code,
       name: cat.name,
-      color: cat.color,
-      icon: cat.icon,
+      color: cat.color || 'amber',
+      icon: cat.icon || 'Activity',
       description: cat.description || '',
       status: cat.status,
     });
@@ -825,20 +825,24 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [subjectFormData, setSubjectFormData] = useState({
     code: '',
     name: '',
+    category_code: categoriesList[0]?.code || 'SPORTS',
     category: categoriesList[0]?.name || 'Thể thao',
     standard_duration: '90 phút',
     description: '',
   });
 
   const handleOpenAddSubject = (presetCategory?: string | React.MouseEvent) => {
-    const defaultCat = (typeof presetCategory === 'string' && presetCategory)
-      ? presetCategory
-      : (categoriesList[0]?.name || 'Thể thao');
+    let defaultCatObj = categoriesList[0];
+    if (typeof presetCategory === 'string' && presetCategory) {
+      const match = categoriesList.find(c => c.name === presetCategory || c.code === presetCategory);
+      if (match) defaultCatObj = match;
+    }
     setEditingSubject(null);
     setSubjectFormData({
       code: '',
       name: '',
-      category: defaultCat,
+      category_code: defaultCatObj?.code || '',
+      category: defaultCatObj?.name || 'Thể thao',
       standard_duration: '90 phút',
       description: '',
     });
@@ -847,10 +851,14 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
   const handleOpenEditSubject = (subject: Subject) => {
     setEditingSubject(subject);
+    const catObj = categoriesList.find(
+      c => c.code === subject.category_code || c.name === subject.category || c.code === subject.category
+    );
     setSubjectFormData({
       code: subject.code,
       name: subject.name,
-      category: subject.category,
+      category_code: subject.category_code || catObj?.code || '',
+      category: subject.category || catObj?.name || 'Thể thao',
       standard_duration: subject.standard_duration || '90 phút',
       description: subject.description || '',
     });
@@ -899,6 +907,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       return;
     }
 
+    const matchedCategory = categoriesList.find(
+      c => c.code === subjectFormData.category_code || c.name === subjectFormData.category_code || c.name === subjectFormData.category
+    );
+    const finalCategoryName = matchedCategory ? matchedCategory.name : (subjectFormData.category || subjectFormData.category_code);
+    const finalCategoryCode = matchedCategory ? matchedCategory.code : (subjectFormData.category_code || '');
+
     if (editingSubject) {
       onUpdateStore(prev => ({
         ...prev,
@@ -907,6 +921,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             ? {
                 ...s,
                 ...subjectFormData,
+                category: finalCategoryName,
+                category_code: finalCategoryCode,
+                category_id: matchedCategory?.id,
                 code: cleanCode,
                 name: cleanName,
               }
@@ -918,6 +935,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       const newSubject: Subject = {
         id: newSubId,
         ...subjectFormData,
+        category: finalCategoryName,
+        category_code: finalCategoryCode,
+        category_id: matchedCategory?.id,
         code: cleanCode,
         name: cleanName,
       };
@@ -4196,12 +4216,21 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 <div className="col-span-2">
                   <label className="block text-slate-400 font-medium mb-1">Phân loại môn *</label>
                   <select
-                    value={subjectFormData.category}
-                    onChange={(e) => setSubjectFormData({ ...subjectFormData, category: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
+                    value={subjectFormData.category_code}
+                    onChange={(e) => {
+                      const selectedCat = categoriesList.find(c => c.code === e.target.value);
+                      setSubjectFormData({
+                        ...subjectFormData,
+                        category_code: e.target.value,
+                        category: selectedCat ? selectedCat.name : e.target.value,
+                      });
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-500"
+                    required
                   >
-                    {categoriesList.map(cat => (
-                      <option key={cat.id} value={cat.name} className="bg-slate-900 text-white">
+                    <option value="">-- Chọn Phân Loại Môn --</option>
+                    {categoriesList.filter(c => c.status === 'active').map((cat) => (
+                      <option key={cat.code} value={cat.code}>
                         {cat.name} ({cat.code})
                       </option>
                     ))}

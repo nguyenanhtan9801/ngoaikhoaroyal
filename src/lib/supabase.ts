@@ -362,12 +362,42 @@ CREATE TABLE IF NOT EXISTS academic_terms (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- BẢNG PHÂN LOẠI MÔN HỌC (SUBJECT CATEGORIES)
+CREATE TABLE IF NOT EXISTS subject_categories (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  icon TEXT DEFAULT 'Activity',
+  color TEXT DEFAULT 'amber',
+  description TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  "order" INTEGER DEFAULT 1,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- BẢNG KHUNG GIỜ HỌC (TIME SLOTS)
+CREATE TABLE IF NOT EXISTS time_slots (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE,
+  name TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  duration_minutes INTEGER DEFAULT 90,
+  days_of_week JSONB DEFAULT '["T2", "T4"]'::jsonb,
+  campus_id TEXT,
+  status TEXT DEFAULT 'active',
+  notes TEXT DEFAULT '',
+  slot_type TEXT DEFAULT 'after_school',
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 03. BẢNG MÔN HỌC NGOẠI KHÓA & BIỂU PHÍ CHUẨN (03_MON_HOC_BIEU_PHI)
 CREATE TABLE IF NOT EXISTS subjects (
   id TEXT PRIMARY KEY,
   code TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   category TEXT NOT NULL,
+  category_code TEXT,
   standard_duration TEXT DEFAULT '90 phút',
   standard_sessions INTEGER DEFAULT 24,
   standard_course_fee NUMERIC DEFAULT 3990000,
@@ -378,6 +408,9 @@ CREATE TABLE IF NOT EXISTS subjects (
   is_active BOOLEAN DEFAULT true,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.subjects 
+ADD COLUMN IF NOT EXISTS category_code TEXT;
 
 -- 04. BẢNG HỒ SƠ GIÁO VIÊN & ĐỊNH MỨC THÙ LAO (04_GIAO_VIEN)
 CREATE TABLE IF NOT EXISTS teachers (
@@ -628,7 +661,7 @@ DECLARE
   tbl TEXT;
 BEGIN
   FOREACH tbl IN ARRAY ARRAY[
-    'campuses', 'academic_terms', 'subjects', 'teachers',
+    'campuses', 'academic_terms', 'subject_categories', 'subjects', 'time_slots', 'teachers',
     'extracurricular_classes', 'students', 'enrollments',
     'attendance_records', 'teacher_work_sessions', 'tuition_invoices',
     'credit_notes', 'app_users', 'parent_registrations'
@@ -643,6 +676,8 @@ END $$;
 
 -- KÍCH HOẠT REALTIME CHO TOÀN BỘ CÁC BẢNG NGHIỆP VỤ CỐT LÕI (SUPABASE REALTIME REPLICATION)
 ALTER PUBLICATION supabase_realtime ADD TABLE app_users;
+ALTER PUBLICATION supabase_realtime ADD TABLE subject_categories;
+ALTER PUBLICATION supabase_realtime ADD TABLE time_slots;
 ALTER PUBLICATION supabase_realtime ADD TABLE extracurricular_classes;
 ALTER PUBLICATION supabase_realtime ADD TABLE enrollments;
 ALTER PUBLICATION supabase_realtime ADD TABLE attendance_records;
@@ -659,6 +694,8 @@ ON CONFLICT (id) DO NOTHING;
 
 export const SUPABASE_REALTIME_PUBLICATION_SQL = `-- Kích hoạt Realtime cho toàn bộ các bảng nghiệp vụ cốt lõi
 ALTER PUBLICATION supabase_realtime ADD TABLE app_users;
+ALTER PUBLICATION supabase_realtime ADD TABLE subject_categories;
+ALTER PUBLICATION supabase_realtime ADD TABLE time_slots;
 ALTER PUBLICATION supabase_realtime ADD TABLE extracurricular_classes;
 ALTER PUBLICATION supabase_realtime ADD TABLE enrollments;
 ALTER PUBLICATION supabase_realtime ADD TABLE attendance_records;
@@ -1401,6 +1438,35 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         attachment_url: r.attachment_url && !r.attachment_url.startsWith('data:') ? r.attachment_url : null,
       }));
 
+    case 'subject_categories':
+      return (store.subjectCategories || []).map(c => ({
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        icon: c.icon || 'Activity',
+        color: c.color || 'amber',
+        description: c.description || '',
+        status: c.status || 'active',
+        order: c.order || 1,
+        updated_at: new Date().toISOString(),
+      }));
+
+    case 'time_slots':
+      return (store.timeSlots || []).map(slot => ({
+        id: slot.id,
+        code: slot.code || slot.id,
+        name: slot.name,
+        start_time: slot.start_time,
+        end_time: slot.end_time,
+        duration_minutes: slot.duration_minutes || 90,
+        days_of_week: slot.days_of_week,
+        campus_id: slot.campus_id || null,
+        status: slot.status || 'active',
+        notes: slot.notes || '',
+        slot_type: slot.slot_type || 'after_school',
+        updated_at: new Date().toISOString(),
+      }));
+
     default:
       return [];
   }
@@ -1672,6 +1738,26 @@ export async function pullAllTablesFromSupabase(
   }
 
   try {
+    const { data: catData } = await client.from('subject_categories').select('*');
+    if (Array.isArray(catData) && catData.length > 0) {
+      nextStore.subjectCategories = catData.map((r: any) => mapSupabaseRowToStoreEntity('subject_categories', r));
+      totalPulled += catData.length;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const { data: slotData } = await client.from('time_slots').select('*');
+    if (Array.isArray(slotData) && slotData.length > 0) {
+      nextStore.timeSlots = slotData.map((r: any) => mapSupabaseRowToStoreEntity('time_slots', r));
+      totalPulled += slotData.length;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
     const { data: usersData } = await client.from('app_users').select('*');
     if (Array.isArray(usersData) && usersData.length > 0) {
       nextStore.users = usersData.map((r: any) => mapSupabaseRowToStoreEntity('app_users', r));
@@ -1739,8 +1825,8 @@ export async function pushAllTablesToSupabase(
     }
   }
 
-  // Push credit_notes, app_users, parent_registrations as well if any
-  for (const extraTable of ['credit_notes', 'app_users', 'parent_registrations']) {
+  // Push subject_categories, time_slots, credit_notes, app_users, parent_registrations as well
+  for (const extraTable of ['subject_categories', 'time_slots', 'credit_notes', 'app_users', 'parent_registrations']) {
     const extraRes = await pushSingleTableToSupabase(extraTable, store, urlInput, anonKeyInput);
     if (extraRes.success) totalSynced += extraRes.count;
   }
@@ -1769,7 +1855,9 @@ export const SUPABASE_TABLE_TO_STORE_KEY: Record<string, keyof AppStore> = {
   app_users: 'users',
   campuses: 'campuses',
   academic_terms: 'terms',
+  subject_categories: 'subjectCategories',
   subjects: 'subjects',
+  time_slots: 'timeSlots',
   teachers: 'teachers',
   extracurricular_classes: 'classes',
   students: 'students',
@@ -2000,6 +2088,33 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         created_at: r.created_at || new Date().toISOString(),
       };
 
+    case 'subject_categories':
+      return {
+        id: r.id,
+        code: r.code || r.id,
+        name: r.name,
+        icon: r.icon || 'Activity',
+        color: r.color || 'amber',
+        description: r.description || '',
+        status: r.status || 'active',
+        order: Number(r.order) || 1,
+      };
+
+    case 'time_slots':
+      return {
+        id: r.id,
+        code: r.code || r.id,
+        name: r.name,
+        start_time: r.start_time || '16:30',
+        end_time: r.end_time || '18:00',
+        duration_minutes: Number(r.duration_minutes) || 90,
+        days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+        campus_id: r.campus_id || undefined,
+        status: r.status || 'active',
+        notes: r.notes || '',
+        slot_type: r.slot_type || 'after_school',
+      };
+
     default:
       return r;
   }
@@ -2029,7 +2144,9 @@ export async function syncStoreDeltaToSupabase(
     { table: 'app_users', storeKey: 'users' },
     { table: 'campuses', storeKey: 'campuses' },
     { table: 'academic_terms', storeKey: 'terms' },
+    { table: 'subject_categories', storeKey: 'subjectCategories' },
     { table: 'subjects', storeKey: 'subjects' },
+    { table: 'time_slots', storeKey: 'timeSlots' },
     { table: 'teachers', storeKey: 'teachers' },
     { table: 'extracurricular_classes', storeKey: 'classes' },
     { table: 'students', storeKey: 'students' },

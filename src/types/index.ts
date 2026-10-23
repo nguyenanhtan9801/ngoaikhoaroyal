@@ -101,8 +101,8 @@ export interface SubjectCategory {
   id: string;
   code: string;
   name: string;
-  color: 'amber' | 'purple' | 'cyan' | 'emerald' | 'blue' | 'rose' | 'indigo' | 'orange';
-  icon: string;
+  icon?: string;
+  color?: string;
   description?: string;
   status: 'active' | 'inactive';
   order?: number;
@@ -113,6 +113,8 @@ export interface Subject {
   code: string;
   name: string;
   category: string;
+  category_code?: string;
+  category_id?: string;
   standard_duration?: string;
   description?: string;
   required_room_type?: string;
@@ -212,11 +214,16 @@ export interface Facility {
 
 export interface TimeSlot {
   id: string;
+  code: string;
   name: string;
-  days_of_week: string[]; // e.g. ['T2', 'T4', 'T6'] or ['T7', 'CN']
-  start_time: string; // HH:mm
-  end_time: string; // HH:mm
-  slot_type: 'after_school' | 'weekend';
+  start_time: string;
+  end_time: string;
+  duration_minutes: number;
+  days_of_week: string[];
+  campus_id?: string;
+  status: 'active' | 'inactive';
+  notes?: string;
+  slot_type?: 'after_school' | 'weekend' | string;
 }
 
 export interface Teacher {
@@ -629,7 +636,10 @@ export type LogActionType =
   | 'USER_PASSWORD_CHANGE'    // Đổi mật khẩu
   | 'STORAGE_CONFIG_UPDATE'   // Cập nhật cấu hình lưu trữ Cloud
   | 'TEACHER_RATE_UPDATE'     // Cập nhật định mức thù lao tiết dạy giáo viên
-  | 'TEACHER_PAYROLL_SETTLE'; // Xác nhận quyết toán chi trả thù lao giáo viên
+  | 'TEACHER_PAYROLL_SETTLE'  // Xác nhận quyết toán chi trả thù lao giáo viên
+  | 'TIME_SLOT_CREATE'        // Thêm khung giờ học
+  | 'TIME_SLOT_UPDATE'        // Cập nhật khung giờ học
+  | 'TIME_SLOT_DELETE';       // Xóa khung giờ học
 
 export interface AuditLogRecord {
   id: string;
