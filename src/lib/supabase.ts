@@ -1228,8 +1228,9 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         const ts = (store.termSubjects || []).find(item => item.subject_id === s.id);
         const pmh = (store.campusPricings || []).find(cp => cp.subject_id === s.id && cp.campus_id === 'camp_pmh');
         const pl = (store.campusPricings || []).find(cp => cp.subject_id === s.id && cp.campus_id === 'camp_pl');
-        const stdFee = ts?.standard_course_fee || 3990000;
         const stdSessions = s.standard_sessions || ts?.standard_sessions || 24;
+        const stdFee = s.standard_course_fee || ts?.standard_course_fee || 3990000;
+        const stdRate = s.standard_session_rate || ts?.standard_session_rate || Math.ceil(stdFee / Math.max(1, stdSessions));
         return {
           id: s.id,
           code: s.code,
@@ -1239,7 +1240,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
           standard_duration: s.standard_duration || '90 phút',
           standard_sessions: stdSessions,
           standard_course_fee: stdFee,
-          standard_session_rate: ts?.standard_session_rate || Math.ceil(stdFee / Math.max(1, stdSessions)),
+          standard_session_rate: stdRate,
           pmh_course_fee: pmh?.custom_course_fee || stdFee,
           pl_course_fee: pl?.custom_course_fee || stdFee,
           description: s.description || '',
@@ -1577,17 +1578,24 @@ export async function pullAllTablesFromSupabase(
           nextStore.terms = data as AcademicTerm[];
           break;
         case 'subjects':
-          nextStore.subjects = data.map((r: any): Subject => ({
-            id: r.id,
-            code: r.code,
-            name: r.name,
-            category: r.category || 'Thể thao',
-            category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
-            standard_duration: r.standard_duration || '90 phút',
-            standard_sessions: r.standard_sessions ? Number(r.standard_sessions) : 24,
-            description: r.description || '',
-            is_active: r.is_active !== false,
-          }));
+          nextStore.subjects = data.map((r: any): Subject => {
+            const stdSessions = r.standard_sessions ? Number(r.standard_sessions) : 24;
+            const stdFee = r.standard_course_fee ? Number(r.standard_course_fee) : 3990000;
+            const stdRate = r.standard_session_rate ? Number(r.standard_session_rate) : Math.ceil(stdFee / Math.max(1, stdSessions));
+            return {
+              id: r.id,
+              code: r.code,
+              name: r.name,
+              category: r.category || 'Thể thao',
+              category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
+              standard_duration: r.standard_duration || '90 phút',
+              standard_sessions: stdSessions,
+              standard_course_fee: stdFee,
+              standard_session_rate: stdRate,
+              description: r.description || '',
+              is_active: r.is_active !== false,
+            };
+          });
           break;
         case 'teachers':
           nextStore.teachers = data.map((r: any): Teacher => ({

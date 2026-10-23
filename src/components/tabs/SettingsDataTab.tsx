@@ -937,6 +937,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     category: categoriesList[0]?.name || 'Thể thao',
     standard_duration: '90 phút',
     standard_sessions: 24,
+    standard_course_fee: 3990000,
+    standard_session_rate: 166250,
     description: '',
   });
 
@@ -985,6 +987,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       category: defaultCatObj?.name || 'Thể thao',
       standard_duration: '90 phút',
       standard_sessions: 24,
+      standard_course_fee: 3990000,
+      standard_session_rate: 166250,
       description: '',
     });
     setShowSubjectModal(true);
@@ -995,13 +999,18 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const catObj = categoriesList.find(
       c => c.code === subject.category_code || c.name === subject.category || c.code === subject.category
     );
+    const sessions = subject.standard_sessions ? Number(subject.standard_sessions) : 24;
+    const fee = subject.standard_course_fee ? Number(subject.standard_course_fee) : 3990000;
+    const rate = subject.standard_session_rate ? Number(subject.standard_session_rate) : Math.ceil(fee / Math.max(1, sessions));
     setSubjectFormData({
       code: subject.code,
       name: subject.name,
       category_code: subject.category_code || catObj?.code || '',
       category: subject.category || catObj?.name || 'Thể thao',
       standard_duration: subject.standard_duration || '90 phút',
-      standard_sessions: subject.standard_sessions ? Number(subject.standard_sessions) : 24,
+      standard_sessions: sessions,
+      standard_course_fee: fee,
+      standard_session_rate: rate,
       description: subject.description || '',
     });
     setShowSubjectModal(true);
@@ -1068,6 +1077,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const finalCategoryName = matchedCategory ? matchedCategory.name : (subjectFormData.category || subjectFormData.category_code);
     const finalCategoryCode = matchedCategory ? matchedCategory.code : (subjectFormData.category_code || '');
     const standardSessionsNum = Number(subjectFormData.standard_sessions) || 24;
+    const standardCourseFeeNum = Number(subjectFormData.standard_course_fee) || 3990000;
+    const standardSessionRateNum = Math.ceil(standardCourseFeeNum / Math.max(1, standardSessionsNum));
     const client = getSupabaseClient() || supabase;
 
     if (editingSubject) {
@@ -1082,6 +1093,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             category_code: finalCategoryCode,
             standard_duration: subjectFormData.standard_duration || '90 phút',
             standard_sessions: standardSessionsNum,
+            standard_course_fee: standardCourseFeeNum,
+            standard_session_rate: standardSessionRateNum,
             description: subjectFormData.description || '',
             is_active: editingSubject.is_active !== false,
             updated_at: new Date().toISOString(),
@@ -1100,6 +1113,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 ...s,
                 ...subjectFormData,
                 standard_sessions: standardSessionsNum,
+                standard_course_fee: standardCourseFeeNum,
+                standard_session_rate: standardSessionRateNum,
                 category: finalCategoryName,
                 category_code: finalCategoryCode,
                 category_id: matchedCategory?.id,
@@ -1117,6 +1132,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         id: newSubId,
         ...subjectFormData,
         standard_sessions: standardSessionsNum,
+        standard_course_fee: standardCourseFeeNum,
+        standard_session_rate: standardSessionRateNum,
         category: finalCategoryName,
         category_code: finalCategoryCode,
         category_id: matchedCategory?.id,
@@ -1136,6 +1153,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             category_code: finalCategoryCode,
             standard_duration: subjectFormData.standard_duration || '90 phút',
             standard_sessions: standardSessionsNum,
+            standard_course_fee: standardCourseFeeNum,
+            standard_session_rate: standardSessionRateNum,
             description: subjectFormData.description || '',
             is_active: true,
             updated_at: new Date().toISOString(),
@@ -1153,8 +1172,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           subject_id: newSubId,
           is_active: true,
           standard_sessions: standardSessionsNum,
-          standard_course_fee: 3600000,
-          standard_session_rate: Math.ceil(3600000 / standardSessionsNum),
+          standard_course_fee: standardCourseFeeNum,
+          standard_session_rate: standardSessionRateNum,
           discount_type: 'none',
           discount_value: 0,
           notes: `${cleanName} - Khóa ${t.name}`,
@@ -4581,47 +4600,122 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">Số buổi chuẩn *</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={100}
-                    required
-                    value={subjectFormData.standard_sessions}
-                    onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_sessions: Number(e.target.value) || 24 })}
-                    placeholder="VD: 24"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
-                  />
-                  <span className="text-[10px] text-slate-500 mt-0.5 block">Số buổi chuẩn mặc định toàn trường (VD: 24 buổi)</span>
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">Thời lượng chuẩn mỗi buổi</label>
-                  <input
-                    type="text"
-                    value={subjectFormData.standard_duration}
-                    onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_duration: e.target.value })}
-                    placeholder="VD: 90 phút"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-medium focus:outline-none focus:border-amber-500"
-                  />
-                  <div className="grid grid-cols-4 gap-1 mt-1">
-                    {['45 phút', '60 phút', '75 phút', '90 phút'].map(dur => (
+              {/* SỐ BUỔI CHUẨN KÈM NÚT CHỌN NHANH 12, 16, 20, 24 BUỔI */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-slate-400 font-medium">Số buổi chuẩn *</label>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] text-slate-500 mr-1">Chọn nhanh:</span>
+                    {[12, 16, 20, 24].map(sNum => (
                       <button
                         type="button"
-                        key={dur}
-                        onClick={() => setSubjectFormData({ ...subjectFormData, standard_duration: dur })}
-                        className={`py-0.5 px-1 rounded-lg text-center text-[10px] font-medium transition-all ${
-                          subjectFormData.standard_duration === dur
-                            ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
-                            : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+                        key={sNum}
+                        onClick={() => {
+                          const newRate = Math.ceil((subjectFormData.standard_course_fee || 0) / sNum);
+                          setSubjectFormData({
+                            ...subjectFormData,
+                            standard_sessions: sNum,
+                            standard_session_rate: newRate,
+                          });
+                        }}
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold transition-all ${
+                          subjectFormData.standard_sessions === sNum
+                            ? 'bg-amber-500 text-slate-950 shadow-sm'
+                            : 'bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
                         }`}
                       >
-                        {dur}
+                        {sNum}b
                       </button>
                     ))}
                   </div>
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  required
+                  value={subjectFormData.standard_sessions}
+                  onChange={(e) => {
+                    const sNum = Number(e.target.value) || 1;
+                    const newRate = Math.ceil((subjectFormData.standard_course_fee || 0) / Math.max(1, sNum));
+                    setSubjectFormData({
+                      ...subjectFormData,
+                      standard_sessions: sNum,
+                      standard_session_rate: newRate,
+                    });
+                  }}
+                  placeholder="VD: 16 hoặc 24"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* HỌC PHÍ CHUẨN CẢ KHÓA & ĐƠN GIÁ BUỔI TỰ ĐỘNG */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">Học phí chuẩn cả khóa (VNĐ) *</label>
+                  <input
+                    type="number"
+                    step={50000}
+                    min={0}
+                    required
+                    value={subjectFormData.standard_course_fee}
+                    onChange={(e) => {
+                      const feeNum = Number(e.target.value) || 0;
+                      const sNum = Math.max(1, Number(subjectFormData.standard_sessions) || 24);
+                      const newRate = Math.ceil(feeNum / sNum);
+                      setSubjectFormData({
+                        ...subjectFormData,
+                        standard_course_fee: feeNum,
+                        standard_session_rate: newRate,
+                      });
+                    }}
+                    placeholder="VD: 3990000"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">
+                    {formatVND(subjectFormData.standard_course_fee || 0)}
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">Đơn giá buổi tự động</label>
+                  <div className="w-full px-3 py-2 rounded-xl bg-slate-950/80 border border-slate-800 text-emerald-400 font-mono font-bold flex items-center justify-between">
+                    <span>
+                      {formatVND(Math.ceil((subjectFormData.standard_course_fee || 0) / Math.max(1, subjectFormData.standard_sessions || 24)))} / b
+                    </span>
+                    <span className="text-[10px] text-slate-500 font-sans font-normal">(Làm tròn)</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">
+                    = Học phí / {subjectFormData.standard_sessions || 24} buổi
+                  </span>
+                </div>
+              </div>
+
+              {/* THỜI LƯỢNG CHUẨN MỖI BUỔI */}
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">Thời lượng chuẩn mỗi buổi</label>
+                <input
+                  type="text"
+                  value={subjectFormData.standard_duration}
+                  onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_duration: e.target.value })}
+                  placeholder="VD: 90 phút"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-medium focus:outline-none focus:border-amber-500"
+                />
+                <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+                  {['45 phút', '60 phút', '75 phút', '90 phút'].map(dur => (
+                    <button
+                      type="button"
+                      key={dur}
+                      onClick={() => setSubjectFormData({ ...subjectFormData, standard_duration: dur })}
+                      className={`py-1 px-2 rounded-lg text-center text-xs font-medium transition-all ${
+                        subjectFormData.standard_duration === dur
+                          ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
+                          : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {dur}
+                    </button>
+                  ))}
                 </div>
               </div>
 

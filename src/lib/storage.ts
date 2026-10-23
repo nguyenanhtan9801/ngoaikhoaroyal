@@ -286,10 +286,15 @@ export function normalizeSubjectRecord(sub: Subject): Subject {
   const category_code = (sub.category_code && sub.category_code.trim())
     ? sub.category_code.trim().toUpperCase()
     : resolveSubjectCategoryCode(sub.category, sub.name);
+  const standard_sessions = sub.standard_sessions ? Number(sub.standard_sessions) : 24;
+  const standard_course_fee = sub.standard_course_fee ? Number(sub.standard_course_fee) : 3990000;
+  const standard_session_rate = sub.standard_session_rate ? Number(sub.standard_session_rate) : Math.ceil(standard_course_fee / Math.max(1, standard_sessions));
   return {
     ...sub,
     category_code,
-    standard_sessions: sub.standard_sessions ? Number(sub.standard_sessions) : 24,
+    standard_sessions,
+    standard_course_fee,
+    standard_session_rate,
   };
 }
 

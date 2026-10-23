@@ -118,6 +118,8 @@ export interface Subject {
   category_id?: string;
   standard_duration?: string;
   standard_sessions?: number;
+  standard_course_fee?: number;
+  standard_session_rate?: number;
   duration_minutes?: number;
   description?: string;
   required_room_type?: string;
