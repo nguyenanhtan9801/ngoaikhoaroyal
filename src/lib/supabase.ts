@@ -3,6 +3,10 @@ import {
   getSupabaseClient,
   getResolvedSupabaseConfig,
   isValidSupabaseAnonJwt,
+  sanitizeSupabaseBaseUrl,
+  sanitizeSupabaseTableName,
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
   supabase,
 } from '../supabaseClient';
 import {
@@ -681,7 +685,15 @@ export function createSupabaseClientInstance(urlInput?: string, anonKeyInput?: s
   return getSupabaseClient(urlInput, anonKeyInput);
 }
 
-export { getSupabaseClient, isValidSupabaseAnonJwt, supabase };
+export {
+  getSupabaseClient,
+  isValidSupabaseAnonJwt,
+  sanitizeSupabaseBaseUrl,
+  sanitizeSupabaseTableName,
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  supabase,
+};
 
 /**
  * Kiểm tra toàn diện kết nối CSDL Supabase (REST API, Auth Key, Storage Bucket & Độ trễ)
@@ -690,7 +702,8 @@ export async function verifySupabaseConnection(
   urlInput?: string,
   anonKeyInput?: string
 ): Promise<SupabaseConnectionCheckResult> {
-  const { url, anonKey } = resolveSupabaseCredentials(urlInput, anonKeyInput);
+  const { url: rawUrl, anonKey } = resolveSupabaseCredentials(urlInput, anonKeyInput);
+  const url = sanitizeSupabaseBaseUrl(rawUrl);
   const checkedAt = new Date().toISOString();
 
   if (!url || !anonKey) {
@@ -723,7 +736,8 @@ export async function verifySupabaseConnection(
 
   const start = Date.now();
   try {
-    const res = await fetch(`${url}/rest/v1/`, {
+    const cleanRestEndpoint = `${url}/rest/v1/`.replace(/(\/rest\/v1)+/gi, '/rest/v1');
+    const res = await fetch(cleanRestEndpoint, {
       method: 'GET',
       headers: {
         apikey: anonKey,
@@ -960,9 +974,10 @@ export async function inspectAllDatabaseTables(
       }
 
       const start = Date.now();
+      const safeTableName = sanitizeSupabaseTableName(tblDef.tableName);
       try {
         const { count, error } = await client
-          .from(tblDef.tableName)
+          .from(safeTableName)
           .select('*', { count: 'exact', head: true });
         const latencyMs = Date.now() - start;
 
@@ -1089,7 +1104,8 @@ export async function inspectAllDatabaseTables(
  * Chuyển đổi dữ liệu từ AppStore sang bản ghi chuẩn SQL để Upsert lên Supabase
  */
 function serializeTableRowsForSupabase(tableName: string, store: AppStore): Record<string, any>[] {
-  switch (tableName) {
+  const cleanTable = sanitizeSupabaseTableName(tableName);
+  switch (cleanTable) {
     case 'campuses':
       return (store.campuses || []).map(c => ({
         id: c.id,
@@ -1363,35 +1379,36 @@ export async function pushSingleTableToSupabase(
   urlInput?: string,
   anonKeyInput?: string
 ): Promise<{ success: boolean; count: number; message: string }> {
+  const safeTableName = sanitizeSupabaseTableName(tableName);
   const client = createSupabaseClientInstance(urlInput, anonKeyInput);
   if (!client) {
     return { success: false, count: 0, message: 'Chưa kết nối Supabase.' };
   }
 
-  const rows = serializeTableRowsForSupabase(tableName, store);
+  const rows = serializeTableRowsForSupabase(safeTableName, store);
   if (rows.length === 0) {
-    return { success: true, count: 0, message: `Bảng ${tableName} hiện đang trống (0 bản ghi).` };
+    return { success: true, count: 0, message: `Bảng ${safeTableName} hiện đang trống (0 bản ghi).` };
   }
 
   try {
-    const { error } = await client.from(tableName).upsert(rows, { onConflict: 'id' });
+    const { error } = await client.from(safeTableName).upsert(rows, { onConflict: 'id' });
     if (error) {
       return {
         success: false,
         count: 0,
-        message: `Lỗi đẩy bảng ${tableName}: ${error.message}`,
+        message: `Lỗi đẩy bảng ${safeTableName}: ${error.message}`,
       };
     }
     return {
       success: true,
       count: rows.length,
-      message: `Đã đồng bộ ${rows.length} bản ghi lên bảng ${tableName} thành công!`,
+      message: `Đã đồng bộ ${rows.length} bản ghi lên bảng ${safeTableName} thành công!`,
     };
   } catch (err: any) {
     return {
       success: false,
       count: 0,
-      message: `Lỗi kết nối khi đẩy bảng ${tableName}: ${err?.message || 'Unknown error'}`,
+      message: `Lỗi kết nối khi đẩy bảng ${safeTableName}: ${err?.message || 'Unknown error'}`,
     };
   }
 }
@@ -1421,15 +1438,16 @@ export async function pullAllTablesFromSupabase(
 
   for (let i = 0; i < totalTables; i++) {
     const tbl = ROYAL_STANDARDIZED_10_TABLES[i];
-    onProgress?.(tbl.tableName, Math.round(((i + 1) / totalTables) * 100));
+    const safeTableName = sanitizeSupabaseTableName(tbl.tableName);
+    onProgress?.(safeTableName, Math.round(((i + 1) / totalTables) * 100));
 
     try {
-      const { data, error } = await client.from(tbl.tableName).select('*');
+      const { data, error } = await client.from(safeTableName).select('*');
       if (error || !Array.isArray(data) || data.length === 0) continue;
 
       totalPulled += data.length;
 
-      switch (tbl.tableName) {
+      switch (safeTableName) {
         case 'campuses':
           nextStore.campuses = data as Campus[];
           break;
@@ -1721,8 +1739,9 @@ export const SUPABASE_TABLE_TO_STORE_KEY: Record<string, keyof AppStore> = {
  */
 export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
   if (!r || typeof r !== 'object') return r;
+  const cleanTable = sanitizeSupabaseTableName(tableName);
 
-  switch (tableName) {
+  switch (cleanTable) {
     case 'app_users':
       return {
         id: r.id,

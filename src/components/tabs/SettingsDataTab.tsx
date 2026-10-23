@@ -80,6 +80,7 @@ import {
   pushSingleTableToSupabase,
   pushAllTablesToSupabase,
   pullAllTablesFromSupabase,
+  sanitizeSupabaseBaseUrl,
   TableHealthStatus,
   SupabaseConnectionCheckResult
 } from '../../lib/supabase';
@@ -1165,7 +1166,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   }>({ loading: false });
 
   // Supabase Config & 10-Table Diagnostics State
-  const [sbUrl, setSbUrl] = useState(store.supabaseConfig.url || '');
+  const [sbUrl, setSbUrl] = useState(() => sanitizeSupabaseBaseUrl(store.supabaseConfig.url || ''));
   const [sbKey, setSbKey] = useState(store.supabaseConfig.anonKey || '');
   const [sbConnected, setSbConnected] = useState(store.supabaseConfig.isConnected);
   const [sbLatency, setSbLatency] = useState<number | null>(null);
@@ -1437,8 +1438,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
   // Run Full Connection & 10-Table Health Check
   const handleInspectDatabaseHealth = async (customUrl?: string, customKey?: string) => {
-    const targetUrl = (customUrl ?? sbUrl).trim();
+    const targetUrl = sanitizeSupabaseBaseUrl(customUrl ?? sbUrl);
     const targetKey = (customKey ?? sbKey).trim();
+    if (targetUrl && targetUrl !== sbUrl) {
+      setSbUrl(targetUrl);
+    }
     setSbInspectingTables(true);
 
     if (targetUrl && targetKey) {
@@ -1484,7 +1488,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // Save Supabase Config & Verify Connection + All 10 Tables
   const handleSaveSupabase = async () => {
     setSbTesting(true);
-    const result = await verifySupabaseConnection(sbUrl, sbKey);
+    const cleanUrl = sanitizeSupabaseBaseUrl(sbUrl);
+    const cleanKey = sbKey.trim();
+    if (cleanUrl !== sbUrl) {
+      setSbUrl(cleanUrl);
+    }
+    const result = await verifySupabaseConnection(cleanUrl, cleanKey);
     setSbCheckDetails(result);
     setSbLatency(result.latencyMs);
     setSbHasBucket(result.hasStorageBucket);
@@ -1493,16 +1502,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     onUpdateStore(prev => ({
       ...prev,
       supabaseConfig: {
-        url: sbUrl.trim(),
-        anonKey: sbKey.trim(),
+        url: cleanUrl,
+        anonKey: cleanKey,
         isConnected: result.connected,
       },
     }));
 
     const health = await inspectAllDatabaseTables(
       store,
-      result.connected ? sbUrl : '',
-      result.connected ? sbKey : ''
+      result.connected ? cleanUrl : '',
+      result.connected ? cleanKey : ''
     );
     setTableHealthList(health);
     setSbTesting(false);

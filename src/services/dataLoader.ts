@@ -1,5 +1,10 @@
 import { AppStore } from '../types';
-import { getSupabaseClient, getResolvedSupabaseConfig } from '../supabaseClient';
+import {
+  getSupabaseClient,
+  getResolvedSupabaseConfig,
+  sanitizeSupabaseBaseUrl,
+  sanitizeSupabaseTableName,
+} from '../supabaseClient';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
   mapSupabaseRowToStoreEntity,
@@ -29,10 +34,11 @@ export async function loadInitialDataSafely(
   currentStore?: AppStore
 ): Promise<SafeDataLoadResult> {
   const fallbackStore: AppStore = currentStore || loadStore();
-  const { url, anonKey } = getResolvedSupabaseConfig(
+  const { url: rawUrl, anonKey } = getResolvedSupabaseConfig(
     fallbackStore.supabaseConfig?.url,
     fallbackStore.supabaseConfig?.anonKey
   );
+  const url = sanitizeSupabaseBaseUrl(rawUrl);
 
   // Nếu chưa cấu hình URL hoặc Anon Key, chuyển sang chế độ ngoại tuyến an toàn
   if (!url || !anonKey) {
@@ -75,8 +81,9 @@ export async function loadInitialDataSafely(
     let encounteredFatalError = false;
 
     for (const tbl of ROYAL_STANDARDIZED_10_TABLES) {
+      const safeTableName = sanitizeSupabaseTableName(tbl.tableName);
       try {
-        const { data, error } = await supabase.from(tbl.tableName).select('*');
+        const { data, error } = await supabase.from(safeTableName).select('*');
         if (error) {
           // Nếu lỗi xác thực (401/403) hoặc mất kết nối mạng, dừng truy vấn các bảng tiếp theo
           const msg = String(error.message || '').toLowerCase();
@@ -95,7 +102,7 @@ export async function loadInitialDataSafely(
         reachableTablesCount += 1;
         if (Array.isArray(data) && data.length > 0) {
           const mappedRows = data
-            .map(row => mapSupabaseRowToStoreEntity(tbl.tableName, row))
+            .map(row => mapSupabaseRowToStoreEntity(safeTableName, row))
             .filter(Boolean);
           if (mappedRows.length > 0) {
             (nextStore as any)[tbl.storeKey] = mappedRows;

@@ -34,7 +34,7 @@ import {
   PayrollRateConfig,
   AppStore,
 } from '../types';
-import { createClient } from '@supabase/supabase-js';
+import { getSupabaseClient, sanitizeSupabaseBaseUrl } from '../supabaseClient';
 
 export type { AppStore, PayrollRateConfig };
 
@@ -85,9 +85,10 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed.url && parsed.anonKey) {
+        const cleanUrl = sanitizeSupabaseBaseUrl(String(parsed.url));
         return {
-          url: String(parsed.url),
-          anonKey: String(parsed.anonKey),
+          url: cleanUrl,
+          anonKey: String(parsed.anonKey).trim(),
           isConnected: Boolean(parsed.isConnected),
         };
       }
@@ -95,8 +96,8 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
   } catch {
     // ignore
   }
-  const envUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
-  const envKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+  const envUrl = sanitizeSupabaseBaseUrl((import.meta as any).env?.VITE_SUPABASE_URL || '');
+  const envKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
   if (envUrl && envKey && envUrl.startsWith('http') && !envUrl.includes('your-project-id')) {
     return { url: envUrl, anonKey: envKey, isConnected: true };
   }
@@ -315,8 +316,8 @@ export function loadStore(): AppStore {
 
     const storedSbConfig = getStoredSupabaseConfig();
     const supabaseConfig = {
-      url: parsed.supabaseConfig?.url || storedSbConfig.url || '',
-      anonKey: parsed.supabaseConfig?.anonKey || storedSbConfig.anonKey || '',
+      url: sanitizeSupabaseBaseUrl(parsed.supabaseConfig?.url || storedSbConfig.url || ''),
+      anonKey: String(parsed.supabaseConfig?.anonKey || storedSbConfig.anonKey || '').trim(),
       isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? storedSbConfig.isConnected),
     };
 
@@ -2087,23 +2088,7 @@ export function getPermissionSummaryText(user: AppUser): string {
 }
 
 function getConfiguredSupabaseClient() {
-  try {
-    const rawCfg = localStorage.getItem('royal_supabase_config');
-    if (rawCfg) {
-      const parsed = JSON.parse(rawCfg);
-      if (parsed.url && parsed.anonKey && parsed.url.startsWith('http')) {
-        return createClient(parsed.url, parsed.anonKey);
-      }
-    }
-    const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
-    const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-    if (envUrl && envKey && envUrl.startsWith('http')) {
-      return createClient(envUrl, envKey);
-    }
-  } catch {
-    // ignore
-  }
-  return null;
+  return getSupabaseClient();
 }
 
 export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'delete' = 'upsert'): Promise<void> {
