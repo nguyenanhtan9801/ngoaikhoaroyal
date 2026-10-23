@@ -1,12 +1,11 @@
 import { createClient, SupabaseClient, SupportedStorage } from '@supabase/supabase-js';
 
-export const DEFAULT_SUPABASE_URL = (
-  String((import.meta as any).env?.VITE_SUPABASE_URL || 'https://wobszxqzlalzcjcfbzhq.supabase.co')
-).replace(/\/+$/, '').replace(/\/rest\/v1\/?$/, '');
-
-// Khóa Legacy Anon JWT chính thức của project wobszxqzlalzcjcfbzhq
-export const DEFAULT_SUPABASE_ANON_KEY =
+export const SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
+export const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI0Nzg3MDQsImV4cCI6MjEwODA1NDcwNH0.fACSgo3mpzdBS-of_fFkMF14NYL3J3P_5WM2k6FtEcA';
+
+export const DEFAULT_SUPABASE_URL = SUPABASE_URL;
+export const DEFAULT_SUPABASE_ANON_KEY = SUPABASE_ANON_KEY;
 
 export interface SafeSyncStorage extends SupportedStorage {
   getItem: (key: string) => string | null;
@@ -135,36 +134,44 @@ export function sanitizeSupabaseTableName(tableName?: string | null): string {
     .replace(/\s+/g, '_');
 }
 
-const rawEnvUrl = String((import.meta as any).env?.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL);
-export const SUPABASE_URL = sanitizeSupabaseBaseUrl(rawEnvUrl) || DEFAULT_SUPABASE_URL;
-
-const rawEnvKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
-export const SUPABASE_ANON_KEY = isLikelyValidAnonKey(rawEnvKey) ? rawEnvKey : DEFAULT_SUPABASE_ANON_KEY;
+/**
+ * Helper hàm ghép URL chuẩn cho REST API: ${SUPABASE_URL}/rest/v1/${tableName}
+ * Đảm bảo không bao giờ bị lỗi lặp kép '/rest/v1/rest/v1/'
+ */
+export function getSupabaseRestUrl(tableName: string): string {
+  const cleanTable = sanitizeSupabaseTableName(tableName);
+  return `${SUPABASE_URL}/rest/v1/${cleanTable}`;
+}
 
 /**
  * Custom Fetch Interceptor cho Supabase Client & WebKit iOS/macOS:
- * - Sửa triệt để lỗi 401 "No API key found in request":
- *   + Không dùng object spread `{ ...init?.headers }` vì init.headers là instance của Headers trong Postgrest (spread trả về {}).
- *   + Đọc và sao chép đầy đủ toàn bộ header gốc từ Request/Headers.
- *   + Luôn đảm bảo header 'apikey' và 'Authorization' được đính kèm chuẩn xác trong mọi request.
- * - Tự động thêm 'cache: no-store' để WebKit/Safari luôn nạp dữ liệu mới nhất (chống cache cứng)
- * - Gửi header nhận diện 'x-client-info': 'royal-school-hub-ios'
- * - Tự động khử trùng lặp '/rest/v1/rest/v1/' thành '/rest/v1/' trong mọi tình huống
- * - Tự động sửa tên bảng bị mã hóa khoảng trắng '%20' thành '_'
+ * - Xử lý dứt điểm lỗi 401 Unauthorized:
+ *   + Tự động ghép ${SUPABASE_URL}/rest/v1/${tableName} nếu đường dẫn tương đối.
+ *   + Khử trùng lặp '/rest/v1/rest/v1/' thành '/rest/v1/'.
+ *   + Sao chép toàn bộ headers gốc từ Request/Headers instance mà không bị mất.
+ *   + Gắn BẮT BUỘC header 'apikey' và 'Authorization: Bearer <ANON_KEY>' vào MỌI request.
+ * - Tự động thêm 'cache: no-store' để WebKit/Safari luôn nạp dữ liệu mới nhất (chống cache cứng).
+ * - Gửi header nhận diện 'x-client-info': 'royal-school-hub-ios'.
  */
 export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   let targetUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
-  // Khử trùng lặp '/rest/v1/rest/v1' (kể cả lặp nhiều lần)
+  // 1. Tự động chuẩn hóa REST API URL: nếu gọi relative table path (VD: 'campuses' hoặc '/rest/v1/campuses')
+  if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+    const cleanPath = targetUrl.replace(/^\/+/, '').replace(/^rest\/v1\/?/, '');
+    targetUrl = `${SUPABASE_URL}/rest/v1/${cleanPath}`;
+  }
+
+  // 2. Khử trùng lặp '/rest/v1/rest/v1' (kể cả lặp nhiều lần)
   targetUrl = targetUrl.replace(/(\/rest\/v1)+/gi, '/rest/v1');
 
-  // Chuẩn hóa tên bảng có khoảng trắng hoặc %20 ngay sau '/rest/v1/'
+  // 3. Chuẩn hóa tên bảng có khoảng trắng hoặc %20 ngay sau '/rest/v1/'
   targetUrl = targetUrl.replace(/\/rest\/v1\/([^?/#]+)/i, (_match, tableSegment: string) => {
     const cleanTable = decodeURIComponent(tableSegment).trim().replace(/\s+/g, '_');
     return `/rest/v1/${cleanTable}`;
   });
 
-  // Sao chép an toàn headers từ cả input (nếu là Request) và init.headers
+  // 4. Sao chép an toàn headers từ cả input (nếu là Request) và init.headers
   const headers = new Headers();
   if (input instanceof Request) {
     input.headers.forEach((value, key) => {
@@ -192,19 +199,9 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   // Header nhận diện client
   headers.set('x-client-info', 'royal-school-hub-ios');
 
-  // Khắc phục triệt để lỗi "No API key found in request": Luôn đảm bảo có apikey & Authorization
-  const currentKey = headers.get('apikey');
-  const validKey = isLikelyValidAnonKey(currentKey)
-    ? currentKey!
-    : SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
-
-  if (validKey) {
-    headers.set('apikey', validKey);
-    const authHeader = headers.get('Authorization');
-    if (!authHeader || authHeader === 'Bearer wobszxqzlalzcjcfbzhq') {
-      headers.set('Authorization', `Bearer ${validKey}`);
-    }
-  }
+  // 5. GẮN BẮT BUỘC apikey VÀ Authorization: Bearer <ANON_KEY> VÀO MỌI REQUEST
+  headers.set('apikey', SUPABASE_ANON_KEY);
+  headers.set('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
 
   const mergedInit: RequestInit = {
     ...init,

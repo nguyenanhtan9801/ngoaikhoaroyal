@@ -11,6 +11,7 @@ import {
   SUPABASE_ANON_KEY,
   supabase,
   isSupabaseConfigured,
+  getSupabaseRestUrl,
 } from '../supabaseClient';
 
 import {
@@ -723,6 +724,7 @@ export {
   DEFAULT_SUPABASE_ANON_KEY,
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
+  getSupabaseRestUrl,
   supabase,
 };
 
