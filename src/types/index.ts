@@ -106,6 +106,7 @@ export interface SubjectCategory {
   description?: string;
   status: 'active' | 'inactive';
   order?: number;
+  subject_count?: number;
 }
 
 export interface Subject {

@@ -66,8 +66,10 @@ import {
   isTermClosed,
   createAuditRecord,
   appendAuditLog,
-  recalculatePastSessions
+  recalculatePastSessions,
+  resolveSubjectCategoryCode
 } from '../../lib/storage';
+import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { AuditLogsTab } from './AuditLogsTab';
 import { UserManagementTab } from './UserManagementTab';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
@@ -522,61 +524,73 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [matrixFilterSource, setMatrixFilterSource] = useState<'all' | 'campus_override' | 'term_standard'>('all');
   const [matrixSearchQuery, setMatrixSearchQuery] = useState<string>('');
 
-  // Fallback categories list if store.subjectCategories is empty
-  const categoriesList: SubjectCategory[] = store.subjectCategories && store.subjectCategories.length > 0
+  // 4 Nhóm phân loại môn cốt lõi chuẩn hóa toàn trường (SPORTS, TECH, ART, SKILLS)
+  const defaultSubjectCategories: SubjectCategory[] = [
+    {
+      id: 'cat_sports',
+      code: 'SPORTS',
+      name: 'Thể Thao & Vận Động',
+      color: 'amber',
+      icon: 'Activity',
+      description: 'Rèn luyện thể lực, phản xạ, tinh thần đồng đội và nâng cao sức bền (Bóng rổ, Bơi lội, Cầu lông, Bóng đá mini).',
+      status: 'active',
+      order: 1,
+    },
+    {
+      id: 'cat_tech',
+      code: 'TECH',
+      name: 'Công Nghệ & Sáng Tạo',
+      color: 'cyan',
+      icon: 'Code',
+      description: 'Tư duy logic thuật toán, ứng dụng công nghệ tương lai và kỹ năng chế tạo (Robotics VEX IQ, Lập trình Scratch, AI & IoT).',
+      status: 'active',
+      order: 2,
+    },
+    {
+      id: 'cat_art',
+      code: 'ART',
+      name: 'Nghệ Thuật & Hội Họa',
+      color: 'purple',
+      icon: 'Palette',
+      description: 'Nuôi dưỡng cảm xúc thẩm mỹ, sáng tạo không gian và phát triển năng khiếu âm nhạc, hội họa (Piano, Hội họa, Thanh nhạc).',
+      status: 'active',
+      order: 3,
+    },
+    {
+      id: 'cat_skills',
+      code: 'SKILLS',
+      name: 'Kỹ Năng Sống & Sinh Tồn',
+      color: 'rose',
+      icon: 'HeartPulse',
+      description: 'Kỹ năng tự vệ, sơ cấp cứu học đường, ứng biến tình huống khẩn cấp và giao tiếp tự tin.',
+      status: 'active',
+      order: 4,
+    },
+  ];
+
+  // 1. Đồng bộ Số môn trực thuộc (Subject Count by Category):
+  // Khi tính toán danh sách categories, đếm số lượng môn học từ danh sách subjects dựa trên trường category_code
+  const baseCategories: SubjectCategory[] = store.subjectCategories && store.subjectCategories.length > 0
     ? store.subjectCategories
-    : [
-        {
-          id: 'cat_sports',
-          code: 'SPORTS',
-          name: 'Thể thao',
-          color: 'amber',
-          icon: 'Activity',
-          description: 'Rèn luyện thể lực, phản xạ, tinh thần đồng đội và nâng cao sức bền (Bóng rổ, Bơi lội, Cầu lông, Bóng đá mini).',
-          status: 'active',
-          order: 1,
-        },
-        {
-          id: 'cat_arts',
-          code: 'ARTS',
-          name: 'Nghệ thuật',
-          color: 'purple',
-          icon: 'Palette',
-          description: 'Nuôi dưỡng cảm xúc thẩm mỹ, sáng tạo không gian và phát triển năng khiếu âm nhạc, hội họa (Piano, Hội họa, Thanh nhạc).',
-          status: 'active',
-          order: 2,
-        },
-        {
-          id: 'cat_tech',
-          code: 'DIGITAL',
-          name: 'Kỹ năng số',
-          color: 'cyan',
-          icon: 'Code',
-          description: 'Tư duy logic thuật toán, ứng dụng công nghệ tương lai và kỹ năng chế tạo (Robotics VEX IQ, Lập trình Scratch, AI & IoT).',
-          status: 'active',
-          order: 3,
-        },
-        {
-          id: 'cat_academic',
-          code: 'ACADEMIC',
-          name: 'Học thuật',
-          color: 'emerald',
-          icon: 'GraduationCap',
-          description: 'Phát triển tư duy ngôn ngữ học, hùng biện, kỹ năng tranh biện quốc tế và toán học tư duy ứng dụng.',
-          status: 'active',
-          order: 4,
-        },
-        {
-          id: 'cat_lifeskills',
-          code: 'LIFESKILLS',
-          name: 'Kỹ năng sống & Sinh tồn',
-          color: 'rose',
-          icon: 'HeartPulse',
-          description: 'Kỹ năng tự vệ, sơ cấp cứu học đường, ứng biến tình huống khẩn cấp và giao tiếp tự tin.',
-          status: 'active',
-          order: 5,
-        },
-      ];
+    : defaultSubjectCategories;
+
+  const categoriesList: (SubjectCategory & { subject_count: number })[] = baseCategories.map((cat) => {
+    const catCode = (cat.code || '').trim().toUpperCase();
+    const count = (store.subjects || []).filter((s) => {
+      const sCode = (s.category_code || resolveSubjectCategoryCode(s.category, s.name)).trim().toUpperCase();
+      if (sCode === catCode) return true;
+      if ((sCode === 'ART' || sCode === 'ARTS') && (catCode === 'ART' || catCode === 'ARTS')) return true;
+      if ((sCode === 'TECH' || sCode === 'DIGITAL') && (catCode === 'TECH' || catCode === 'DIGITAL')) return true;
+      if ((sCode === 'SKILLS' || sCode === 'LIFESKILLS') && (catCode === 'SKILLS' || catCode === 'LIFESKILLS')) return true;
+      if (s.category && (s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() || s.category.trim().toLowerCase() === catCode.toLowerCase())) return true;
+      return false;
+    }).length;
+
+    return {
+      ...cat,
+      subject_count: count,
+    };
+  });
 
   const getCategoryColorDetails = (color?: string) => {
     switch (color) {
@@ -720,15 +734,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     setShowCategoryModal(true);
   };
 
-  const handleDeleteCategory = (cat: SubjectCategory) => {
-    const relatedSubjects = store.subjects.filter(
-      s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
-           s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
-    );
+  const handleDeleteCategory = async (cat: SubjectCategory) => {
+    // 1. Kiểm tra nếu nhóm này đang có môn trực thuộc (subject_count > 0)
+    const subjectCount = cat.subject_count ?? (store.subjects || []).filter(
+      s => (s.category_code || resolveSubjectCategoryCode(s.category, s.name)).toUpperCase() === cat.code.toUpperCase()
+    ).length;
 
-    if (relatedSubjects.length > 0) {
+    if (subjectCount > 0) {
       showToast(
-        `Không thể xóa phân loại "${cat.name}" (${cat.code}) vì hiện đang có ${relatedSubjects.length} môn học trực thuộc (${relatedSubjects.map(s => s.name).join(', ')}).`,
+        'Không thể xóa phân loại đang có môn học trực thuộc. Vui lòng chuyển các môn sang nhóm khác trước.',
         'warning',
         { title: 'Không thể xóa phân loại' }
       );
@@ -738,13 +752,35 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const ok = window.confirm(`Bạn có chắc chắn muốn xóa phân loại "${cat.name}" (${cat.code}) khỏi hệ thống?`);
     if (!ok) return;
 
+    // 2. Thực hiện xóa trực tiếp trên Supabase
+    const client = getSupabaseClient() || supabase;
+    if (client) {
+      try {
+        const { error } = await client
+          .from('subject_categories')
+          .delete()
+          .eq('code', cat.code);
+
+        if (error) {
+          console.warn('Lỗi Supabase khi xóa subject_categories:', error.message);
+        }
+      } catch (err) {
+        console.warn('Exception khi gọi Supabase delete subject_categories:', err);
+      }
+    }
+
+    // 3. Cập nhật state để giao diện re-render ngay lập tức
     onUpdateStore(prev => ({
       ...prev,
-      subjectCategories: (prev.subjectCategories || categoriesList).filter(c => c.id !== cat.id),
+      subjectCategories: (prev.subjectCategories || categoriesList).filter(
+        c => c.id !== cat.id && c.code !== cat.code
+      ),
     }));
+
+    showToast(`Đã xóa phân loại "${cat.name}" (${cat.code}) thành công.`, 'success');
   };
 
-  const handleSaveCategory = (e: React.FormEvent) => {
+  const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = categoryFormData.code.trim().toUpperCase();
     const cleanName = categoryFormData.name.trim();
@@ -764,11 +800,39 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       return;
     }
 
+    const client = getSupabaseClient() || supabase;
+
     if (editingCategory) {
+      const oldCode = editingCategory.code;
       const oldName = editingCategory.name;
+
+      // 1. Cập nhật trực tiếp lên Supabase
+      if (client) {
+        try {
+          const { error } = await client
+            .from('subject_categories')
+            .update({
+              name: cleanName,
+              color: categoryFormData.color,
+              icon: categoryFormData.icon || 'Activity',
+              description: categoryFormData.description,
+              status: categoryFormData.status,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('code', oldCode);
+
+          if (error) {
+            console.warn('Lỗi Supabase khi cập nhật subject_categories:', error.message);
+          }
+        } catch (err) {
+          console.warn('Exception khi gọi Supabase update subject_categories:', err);
+        }
+      }
+
+      // 2. Cập nhật Global State & đồng bộ lại môn học
       onUpdateStore(prev => {
         const updatedCategories = (prev.subjectCategories || categoriesList).map(c =>
-          c.id === editingCategory.id
+          c.id === editingCategory.id || c.code === oldCode
             ? {
                 ...c,
                 ...categoryFormData,
@@ -778,9 +842,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             : c
         );
 
-        const updatedSubjects = oldName !== cleanName
-          ? prev.subjects.map(s => s.category === oldName ? { ...s, category: cleanName } : s)
-          : prev.subjects;
+        const updatedSubjects = prev.subjects.map(s => {
+          let changed = false;
+          let newCatName = s.category;
+          let newCatCode = s.category_code;
+          if (s.category === oldName || (s.category_code && s.category_code.toUpperCase() === oldCode.toUpperCase())) {
+            newCatName = cleanName;
+            newCatCode = cleanCode;
+            changed = true;
+          }
+          return changed ? { ...s, category: newCatName, category_code: newCatCode } : s;
+        });
 
         return {
           ...prev,
@@ -788,20 +860,56 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           subjects: updatedSubjects,
         };
       });
+
+      showToast(`Đã cập nhật phân loại "${cleanName}" (${cleanCode}) thành công!`, 'success');
     } else {
+      // THÊM MỚI
       const newCatId = `cat_${cleanCode.toLowerCase()}_${Date.now()}`;
       const newCategory: SubjectCategory = {
         id: newCatId,
-        ...categoryFormData,
         code: cleanCode,
         name: cleanName,
+        color: categoryFormData.color,
+        icon: categoryFormData.icon || 'Activity',
+        description: categoryFormData.description,
+        status: categoryFormData.status || 'active',
         order: currentList.length + 1,
       };
 
+      // 1. Thêm mới trực tiếp lên Supabase
+      if (client) {
+        try {
+          const { error } = await client
+            .from('subject_categories')
+            .insert([
+              {
+                id: newCatId,
+                code: cleanCode,
+                name: cleanName,
+                color: categoryFormData.color,
+                icon: categoryFormData.icon || 'Activity',
+                description: categoryFormData.description,
+                status: categoryFormData.status || 'active',
+                order: currentList.length + 1,
+                updated_at: new Date().toISOString(),
+              },
+            ]);
+
+          if (error) {
+            console.warn('Lỗi Supabase khi thêm mới subject_categories:', error.message);
+          }
+        } catch (err) {
+          console.warn('Exception khi gọi Supabase insert subject_categories:', err);
+        }
+      }
+
+      // 2. Cập nhật Global State
       onUpdateStore(prev => ({
         ...prev,
         subjectCategories: [...(prev.subjectCategories || categoriesList), newCategory],
       }));
+
+      showToast(`Đã thêm mới phân loại "${cleanName}" (${cleanCode}) thành công!`, 'success');
     }
 
     setShowCategoryModal(false);
@@ -2016,10 +2124,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               {categoriesViewMode === 'cards' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredCategories.map(cat => {
-                    const relatedSubjects = store.subjects.filter(
-                      s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
-                           s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
-                    );
+                    const relatedSubjects = (store.subjects || []).filter(s => {
+                      const sCode = (s.category_code || resolveSubjectCategoryCode(s.category, s.name)).trim().toUpperCase();
+                      const catCode = (cat.code || '').trim().toUpperCase();
+                      if (sCode === catCode) return true;
+                      if ((sCode === 'ART' || sCode === 'ARTS') && (catCode === 'ART' || catCode === 'ARTS')) return true;
+                      if ((sCode === 'TECH' || sCode === 'DIGITAL') && (catCode === 'TECH' || catCode === 'DIGITAL')) return true;
+                      if ((sCode === 'SKILLS' || sCode === 'LIFESKILLS') && (catCode === 'SKILLS' || catCode === 'LIFESKILLS')) return true;
+                      if (s.category && (s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() || s.category.trim().toLowerCase() === catCode.toLowerCase())) return true;
+                      return false;
+                    });
+                    const subjectCount = cat.subject_count ?? relatedSubjects.length;
                     const colorStyle = getCategoryColorDetails(cat.color);
                     const IconComp = getCategoryIconComponent(cat.icon);
 
@@ -2084,7 +2199,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <span className="text-slate-400">Môn học trực thuộc:</span>
                             <span className="font-bold text-white flex items-center gap-1">
                               <span className={`w-2 h-2 rounded-full ${colorStyle.dot}`}></span>
-                              {relatedSubjects.length} môn
+                              {subjectCount} môn
                             </span>
                           </div>
 
@@ -2114,7 +2229,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               }}
                               className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors"
                             >
-                              <span>Xem danh sách môn ({relatedSubjects.length})</span>
+                              <span>Xem danh sách môn ({subjectCount})</span>
                               <ChevronRight className="w-3 h-3" />
                             </button>
                             <button
@@ -2147,10 +2262,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       </thead>
                       <tbody className="divide-y divide-slate-800/80">
                         {filteredCategories.map(cat => {
-                          const relatedSubjects = store.subjects.filter(
-                            s => s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() ||
-                                 s.category.trim().toLowerCase() === cat.code.trim().toLowerCase()
-                          );
+                          const relatedSubjects = (store.subjects || []).filter(s => {
+                            const sCode = (s.category_code || resolveSubjectCategoryCode(s.category, s.name)).trim().toUpperCase();
+                            const catCode = (cat.code || '').trim().toUpperCase();
+                            if (sCode === catCode) return true;
+                            if ((sCode === 'ART' || sCode === 'ARTS') && (catCode === 'ART' || catCode === 'ARTS')) return true;
+                            if ((sCode === 'TECH' || sCode === 'DIGITAL') && (catCode === 'TECH' || catCode === 'DIGITAL')) return true;
+                            if ((sCode === 'SKILLS' || sCode === 'LIFESKILLS') && (catCode === 'SKILLS' || catCode === 'LIFESKILLS')) return true;
+                            if (s.category && (s.category.trim().toLowerCase() === cat.name.trim().toLowerCase() || s.category.trim().toLowerCase() === catCode.toLowerCase())) return true;
+                            return false;
+                          });
+                          const subjectCount = cat.subject_count ?? relatedSubjects.length;
                           const colorStyle = getCategoryColorDetails(cat.color);
                           const IconComp = getCategoryIconComponent(cat.icon);
 
@@ -2186,7 +2308,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                   }}
                                   className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-amber-500/20 text-slate-300 hover:text-amber-400 font-bold border border-slate-800 transition-all text-xs"
                                 >
-                                  {relatedSubjects.length} môn
+                                  {subjectCount} môn
                                 </button>
                               </td>
                               <td className="py-3 px-3.5 text-center">

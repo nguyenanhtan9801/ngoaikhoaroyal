@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { AppStore, resolveStudentCampusId } from './storage';
+import { AppStore, resolveStudentCampusId, resolveSubjectCategoryCode } from './storage';
 import { formatCapitalizedName } from './formatters';
 import {
   Campus,
@@ -765,6 +765,7 @@ export async function parseMasterExcelFile(
             const stdSessions = Number(r['Số Buổi Chuẩn'] || 24) || 24;
             const stdFee = Number(r['Học Phí Chuẩn (VNĐ)'] || 3990000) || 3990000;
             const stdRate = Number(r['Đơn Giá Buổi (VNĐ)']) || Math.ceil(stdFee / Math.max(1, stdSessions));
+            const catCode = String(r['Mã Phân Loại'] || r['category_code'] || resolveSubjectCategoryCode(category, name)).trim().toUpperCase();
             const pmhFee = Number(r['Học Phí Cơ Sở PMH (VNĐ)']) || stdFee;
             const plFee = Number(r['Học Phí Cơ Sở PL (VNĐ)']) || stdFee;
 
@@ -773,6 +774,7 @@ export async function parseMasterExcelFile(
               code,
               name,
               category,
+              category_code: catCode,
               standard_duration: duration,
               description: String(r['Mô Tả Chương Trình'] || '').trim(),
             });

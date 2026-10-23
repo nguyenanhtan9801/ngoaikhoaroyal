@@ -29,7 +29,7 @@ import {
   MakeupCredit,
   AppUser,
 } from '../types';
-import { resolveStudentCampusId } from './storage';
+import { resolveStudentCampusId, resolveSubjectCategoryCode } from './storage';
 
 export interface TableColumnSpec {
   dbCol: string;
@@ -1562,6 +1562,7 @@ export async function pullAllTablesFromSupabase(
             code: r.code,
             name: r.name,
             category: r.category || 'Thể thao',
+            category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
             standard_duration: r.standard_duration || '90 phút',
             description: r.description || '',
             is_active: r.is_active !== false,
@@ -2113,6 +2114,18 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         status: r.status || 'active',
         notes: r.notes || '',
         slot_type: r.slot_type || 'after_school',
+      };
+
+    case 'subjects':
+      return {
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        category: r.category || 'Thể thao',
+        category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
+        standard_duration: r.standard_duration || '90 phút',
+        description: r.description || '',
+        is_active: r.is_active !== false,
       };
 
     default:

@@ -202,6 +202,96 @@ export function resolveStudentCampusId(student?: Partial<Student> | null): 'pmh'
   return 'pmh';
 }
 
+export function resolveSubjectCategoryCode(category?: string, name?: string): string {
+  const cat = (category || '').trim().toLowerCase();
+  const n = (name || '').trim().toLowerCase();
+  
+  if (
+    cat.includes('thể thao') ||
+    cat.includes('sport') ||
+    cat.includes('vận động') ||
+    n.includes('bơi') ||
+    n.includes('bóng rổ') ||
+    n.includes('bóng đá') ||
+    n.includes('cầu lông') ||
+    n.includes('võ thuật') ||
+    n.includes('taekwondo')
+  ) {
+    return 'SPORTS';
+  }
+  if (
+    cat.includes('công nghệ') ||
+    cat.includes('tech') ||
+    cat.includes('stem') ||
+    cat.includes('robot') ||
+    cat.includes('kỹ năng số') ||
+    cat.includes('digital') ||
+    n.includes('robot') ||
+    n.includes('scratch') ||
+    n.includes('lập trình') ||
+    n.includes('stem') ||
+    n.includes('ai')
+  ) {
+    return 'TECH';
+  }
+  if (
+    cat.includes('nghệ thuật') ||
+    cat.includes('art') ||
+    cat.includes('hội họa') ||
+    cat.includes('mỹ thuật') ||
+    cat.includes('âm nhạc') ||
+    cat.includes('sáng tạo') ||
+    n.includes('piano') ||
+    n.includes('hội họa') ||
+    n.includes('vẽ') ||
+    n.includes('nhạc') ||
+    n.includes('organ') ||
+    n.includes('guitar') ||
+    n.includes('thanh nhạc') ||
+    n.includes('múa')
+  ) {
+    return 'ART';
+  }
+  if (
+    cat.includes('kỹ năng sống') ||
+    cat.includes('sinh tồn') ||
+    cat.includes('tự vệ') ||
+    cat.includes('kỹ năng') ||
+    cat.includes('lifeskills') ||
+    cat.includes('skills') ||
+    n.includes('sinh tồn') ||
+    n.includes('tự vệ') ||
+    n.includes('sơ cấp cứu') ||
+    n.includes('mc') ||
+    n.includes('giao tiếp')
+  ) {
+    return 'SKILLS';
+  }
+  if (
+    cat.includes('học thuật') ||
+    cat.includes('ngôn ngữ') ||
+    cat.includes('academic') ||
+    n.includes('cờ vua') ||
+    n.includes('drama') ||
+    n.includes('tiếng anh') ||
+    n.includes('toán') ||
+    n.includes('hùng biện')
+  ) {
+    return 'ACADEMIC';
+  }
+  return 'SPORTS';
+}
+
+export function normalizeSubjectRecord(sub: Subject): Subject {
+  const category_code = (sub.category_code && sub.category_code.trim())
+    ? sub.category_code.trim().toUpperCase()
+    : resolveSubjectCategoryCode(sub.category, sub.name);
+  return {
+    ...sub,
+    category_code,
+  };
+}
+
 export function normalizeStudentRecord(student: Student): Student {
   const campus_id = resolveStudentCampusId(student);
   const isRoyal = Boolean(student.is_royal_student ?? (student.student_type === 'royal'));
@@ -395,7 +485,7 @@ export function loadStore(): AppStore {
       campuses: Array.isArray(parsed.campuses) ? parsed.campuses : initial.campuses,
       terms,
       subjectCategories,
-      subjects: Array.isArray(parsed.subjects) ? parsed.subjects : initial.subjects,
+      subjects: (Array.isArray(parsed.subjects) ? parsed.subjects : initial.subjects).map(normalizeSubjectRecord),
       termSubjects,
       campusPricings,
       facilities: Array.isArray(parsed.facilities) ? parsed.facilities : initial.facilities,
