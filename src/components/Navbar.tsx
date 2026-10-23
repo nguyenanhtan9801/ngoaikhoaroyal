@@ -61,6 +61,9 @@ interface NavbarProps {
   onOpenNotifications: () => void;
   currentUser?: AppUser | null;
   onLogout?: () => void;
+  realtimeStatus?: 'connected' | 'reconnecting' | 'disconnected';
+  onReconnectRealtime?: () => void;
+  pendingRegistrationsCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -76,6 +79,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenNotifications,
   currentUser,
   onLogout,
+  realtimeStatus = 'connected',
+  onReconnectRealtime,
+  pendingRegistrationsCount = 0,
 }) => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [showRoleMenu, setShowRoleMenu] = useState(false);
@@ -122,7 +128,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           id: 'sub_parents', 
           label: 'Đơn Đăng Ký Tuyển Sinh', 
           icon: Users, 
-          desc: 'Hồ sơ tiếp nhận trực tuyến từ phụ huynh dành cho cán bộ tuyển sinh và học vụ' 
+          desc: 'Hồ sơ tiếp nhận trực tuyến từ phụ huynh dành cho cán bộ tuyển sinh và học vụ',
+          badge: pendingRegistrationsCount > 0 ? `${pendingRegistrationsCount} đơn mới` : undefined,
+          badgeColor: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
         },
         { 
           id: 'sub_students', 
@@ -347,6 +355,32 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </span>
                 )}
               </button>
+
+              {/* Realtime Connection Status Indicator (Cạnh thông tin người dùng) */}
+              {realtimeStatus === 'connected' ? (
+                <button
+                  type="button"
+                  onClick={onReconnectRealtime}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold shadow-sm shadow-emerald-500/10 hover:bg-emerald-500/15 transition-all shrink-0"
+                  title="Kênh đồng bộ thời gian thực (royal_hub_realtime) đang hoạt động ổn định"
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                  </span>
+                  <span className="hidden md:inline">Realtime Connected</span>
+                  <span className="md:hidden">Realtime</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onReconnectRealtime}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-bold shadow-sm shadow-amber-500/10 animate-pulse hover:bg-amber-500/25 transition-all shrink-0"
+                  title="Đang tự động kết nối lại theo cơ chế Exponential Backoff — Bấm để thử kết nối ngay"
+                >
+                  <span>⚠️ Reconnecting...</span>
+                </button>
+              )}
 
               {/* Role Switcher & Login Portal Button */}
               <div className="relative flex items-center gap-1.5">

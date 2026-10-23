@@ -49,7 +49,10 @@ import {
   FolderCheck,
   HardDrive,
   Share2,
-  ExternalLink
+  ExternalLink,
+  Table,
+  ShieldCheck,
+  Users
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -66,10 +69,12 @@ import {
   recalculatePastSessions
 } from '../../lib/storage';
 import { AuditLogsTab } from './AuditLogsTab';
+import { UserManagementTab } from './UserManagementTab';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
   SUPABASE_FULL_DDL_SQL,
+  SUPABASE_REALTIME_PUBLICATION_SQL,
   verifySupabaseConnection,
   inspectAllDatabaseTables,
   pushSingleTableToSupabase,
@@ -80,6 +85,7 @@ import {
 } from '../../lib/supabase';
 import { 
   UserRole, 
+  AppUser,
   TermCampusSubjectPricing, 
   Campus, 
   AcademicTerm, 
@@ -100,19 +106,21 @@ import { showToast } from '../../lib/toast';
 interface SettingsDataTabProps {
   store: AppStore;
   currentRole: UserRole;
+  currentUser?: AppUser | null;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
-  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs';
+  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs';
   initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
 export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   store,
   currentRole,
+  currentUser,
   onUpdateStore,
   initialSection = 'pricing',
   initialSubTab = 'terms',
 }) => {
-  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs'>(initialSection || 'pricing');
+  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs'>(initialSection || 'pricing');
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
@@ -1675,91 +1683,113 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   return (
     <div className="space-y-6">
       
-      {/* Navigation Pills */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none border-b border-slate-800">
+      {/* Navigation Pills - Optimized with Flex Wrap + Smooth Horizontal Scroll + Compact Padding (px-3 py-1.5 text-xs font-semibold) */}
+      <div className="flex flex-wrap items-center gap-2 overflow-x-auto no-scrollbar py-1.5 scroll-smooth border-b border-slate-800">
         <button
           onClick={() => setActiveSection('pricing')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'pricing'
-              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
           }`}
         >
-          <Layers className="w-4 h-4" />
-          <span>Cấu Hình Khóa Học & Biểu Phí Cơ Sở</span>
+          <Layers className="w-3.5 h-3.5 shrink-0" />
+          <span>Cấu Hình Khóa Học &amp; Biểu Phí</span>
         </button>
+
         <button
           onClick={() => setActiveSection('teacher_rates')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'teacher_rates'
-              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
               : 'bg-slate-900 text-amber-300 hover:text-white border border-amber-500/30'
           }`}
         >
-          <GraduationCap className="w-4 h-4" />
-          <span>Cấu Hình Định Mức Thù Lao Giảng Dạy ({store.teachers.length})</span>
+          <GraduationCap className="w-3.5 h-3.5 shrink-0" />
+          <span>Định Mức Thù Lao GV ({store.teachers.length})</span>
         </button>
+
         <button
           onClick={() => setActiveSection('campuses')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'campuses'
-              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
           }`}
         >
-          Cơ Sở & Ngân Hàng ({store.campuses.length})
+          <Building2 className="w-3.5 h-3.5 shrink-0" />
+          <span>Cơ Sở &amp; Ngân Hàng ({store.campuses.length})</span>
         </button>
+
         <button
           onClick={() => setActiveSection('clean_reset')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'clean_reset'
-              ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
+              ? 'bg-rose-600 text-white font-bold shadow-md shadow-rose-600/30'
               : 'bg-slate-900 text-rose-400 hover:text-rose-300 border border-rose-500/30'
           }`}
         >
-          <Trash2 className="w-3.5 h-3.5" />
+          <Trash2 className="w-3.5 h-3.5 shrink-0" />
           <span>Dọn Sạch Dữ Liệu (Reset DB)</span>
         </button>
+
         <button
           onClick={() => setActiveSection('excel_master')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'excel_master'
-              ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+              ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-600/30'
               : 'bg-slate-900 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30'
           }`}
         >
-          <FileSpreadsheet className="w-3.5 h-3.5" />
+          <Table className="w-3.5 h-3.5 shrink-0" />
           <span>Bảng Tính Tổng Thể (10 Bảng)</span>
         </button>
+
         <button
           onClick={() => setActiveSection('telecom')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'telecom'
-              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
           }`}
         >
-          Kênh Viễn Thông (Zalo/SMS)
+          <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+          <span>Kênh Viễn Thông (Zalo/SMS)</span>
         </button>
+
+        <button
+          onClick={() => setActiveSection('users')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+            activeSection === 'users'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-cyan-300 hover:text-white border border-cyan-500/30'
+          }`}
+        >
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+          <span>Quản Lý Người Dùng &amp; Phân Quyền (RBAC)</span>
+        </button>
+
         <button
           onClick={() => setActiveSection('supabase')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'supabase'
-              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
           }`}
         >
-          Supabase PostgreSQL
+          <Database className="w-3.5 h-3.5 shrink-0" />
+          <span>Kết Nối CSDL &amp; Supabase (10 Bảng)</span>
         </button>
+
         <button
           onClick={() => setActiveSection('audit_logs')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
             activeSection === 'audit_logs'
-              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-              : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
           }`}
         >
-          <ShieldAlert className="w-3.5 h-3.5" />
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
           <span>Nhật Ký Kiểm Toán (Audit Logs)</span>
         </button>
       </div>
@@ -1785,7 +1815,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </div>
 
             {/* Sub-tab Navigation */}
-            <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-slate-900/90 border border-slate-800 overflow-x-auto">
+            <div className="flex flex-wrap items-center gap-1.5 p-1 rounded-2xl bg-slate-900/90 border border-slate-800 overflow-x-auto no-scrollbar scroll-smooth">
               <button
                 onClick={() => setHierarchySubTab('categories')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
@@ -5180,6 +5210,40 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               </div>
             </div>
 
+            {/* SUPABASE REALTIME PUBLICATION SQL CARD */}
+            <div className="p-5 rounded-2xl bg-slate-900/90 border border-emerald-500/30 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400"></span>
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                      Cấu Hình Supabase Replication &amp; Realtime WebSockets (Kênh: royal_hub_realtime)
+                    </h4>
+                    <p className="text-[11px] text-slate-400">
+                      Kích hoạt đồng bộ tức thì (INSERT / UPDATE / DELETE) cho 8 bảng nghiệp vụ trọng yếu mà không cần tải lại trang.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(SUPABASE_REALTIME_PUBLICATION_SQL);
+                    showToast('Đã sao chép lệnh SQL kích hoạt Supabase Realtime!', 'success');
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 self-start sm:self-auto cursor-pointer transition-all"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Sao Chép Lệnh Realtime SQL</span>
+                </button>
+              </div>
+              <pre className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-emerald-300 overflow-x-auto leading-relaxed select-all">
+                {SUPABASE_REALTIME_PUBLICATION_SQL}
+              </pre>
+            </div>
+
             {/* 10-TABLE HEALTH & SYNC STATUS INSPECTOR */}
             <div className="space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -6209,11 +6273,22 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         </div>
       )}
 
+      {/* SECTION 6B: QUẢN LÝ NGƯỜI DÙNG & PHÂN QUYỀN TRUY CẬP (RBAC) */}
+      {activeSection === 'users' && (
+        <UserManagementTab
+          store={store}
+          currentRole={currentRole}
+          currentUser={currentUser || null}
+          onUpdateStore={onUpdateStore}
+        />
+      )}
+
       {/* SECTION 7: NHẬT KÝ KIỂM TOÁN & LỊCH SỬ THAO TÁC */}
       {activeSection === 'audit_logs' && (
         <AuditLogsTab
           store={store}
           currentRole={currentRole}
+          currentUser={currentUser}
           onUpdateStore={onUpdateStore}
         />
       )}

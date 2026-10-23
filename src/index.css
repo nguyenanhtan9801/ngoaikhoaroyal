@@ -49,3 +49,13 @@ h1, h2, h3, h4, h5, h6, .font-heading, .apple-heading {
   background: rgba(245, 158, 11, 0.6);
 }
 
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

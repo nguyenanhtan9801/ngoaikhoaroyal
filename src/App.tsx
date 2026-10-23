@@ -22,6 +22,7 @@ import { showToast } from './lib/toast';
 import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, validateCreditNoteCreation, formatVND, normalizeCampusScope } from './lib/storage';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
+import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
 
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
@@ -191,6 +192,40 @@ export default function App() {
   }, []);
 
   // Cơ chế thu hồi phiên tức thì (Instant Session Invalidation) nếu tài khoản bị khóa & đồng bộ quyền hạn
+  const forceLockoutCurrentUser = () => {
+    showToast(
+      'Tài khoản của bạn đã bị khóa bởi Quản trị viên.',
+      'error',
+      { title: 'Khóa Tài Khoản & Thu Hồi Phiên' }
+    );
+    setCurrentUser(null);
+    setIsLoginModalOpen(true);
+    try {
+      localStorage.removeItem('royal_current_user');
+      localStorage.removeItem('royal_auth_session');
+      sessionStorage.removeItem('royal_current_user');
+    } catch {
+      // noop
+    }
+  };
+
+  // Kênh lắng nghe & đồng bộ đa kênh thời gian thực (Supabase Realtime WebSockets: royal_hub_realtime)
+  const realtime = useSupabaseRealtime({
+    store,
+    setStore,
+    currentUser,
+    onCurrentUserLocked: () => {
+      forceLockoutCurrentUser();
+    },
+    onNewParentRegistration: reg => {
+      showToast(
+        `Phụ huynh ${reg.parent_name} vừa gửi đơn đăng ký cho bé ${reg.student_name} (${reg.parent_phone}).`,
+        'info',
+        { title: '🔔 Đơn Đăng Ký Tuyển Sinh Mới (Realtime)' }
+      );
+    },
+  });
+
   useEffect(() => {
     if (!currentUser || currentUser.is_root || currentUser.username === 'overadmin') return;
     const latestInStore = store.users.find(
@@ -199,18 +234,7 @@ export default function App() {
     if (!latestInStore) return;
 
     if (latestInStore.status === 'locked') {
-      showToast(
-        '🔒 Tài khoản của bạn đã bị khóa bởi Quản trị viên. Vui lòng liên hệ ban quản trị để được hỗ trợ.',
-        'warning'
-      );
-      setCurrentUser(null);
-      try {
-        localStorage.removeItem('royal_current_user');
-        localStorage.removeItem('royal_auth_session');
-        sessionStorage.removeItem('royal_current_user');
-      } catch {
-        // noop
-      }
+      forceLockoutCurrentUser();
       return;
     }
 
@@ -220,6 +244,10 @@ export default function App() {
       setSelectedCampusId(scoped);
     }
   }, [store.users, currentUser, selectedCampusId]);
+
+  const pendingRegistrationsCount = (store.parentRegistrations || []).filter(
+    r => r.status === 'pending'
+  ).length;
 
   const updateStore = (updater: (prev: AppStore) => AppStore) => {
     setStore(prev => {
@@ -553,6 +581,9 @@ export default function App() {
         onOpenNotifications={() => setIsNotificationOpen(true)}
         currentUser={currentUser}
         onLogout={handleLogout}
+        realtimeStatus={realtime.connectionState}
+        onReconnectRealtime={realtime.reconnectNow}
+        pendingRegistrationsCount={pendingRegistrationsCount}
       />
 
       {/* Main Body with Optimized Viewport for 1366x768 and Standard Displays */}
@@ -751,8 +782,9 @@ export default function App() {
             <SettingsDataTab
               store={store}
               currentRole={currentRole}
+              currentUser={currentUser}
               onUpdateStore={updateStore}
-              initialSection="clean_reset"
+              initialSection="excel_master"
             />
           )}
 

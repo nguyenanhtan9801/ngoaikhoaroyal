@@ -551,6 +551,38 @@ CREATE TABLE IF NOT EXISTS app_users (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- BẢNG BỔ TRỢ 13: ĐƠN ĐĂNG KÝ TUYỂN SINH TỪ CỔNG PHỤ HUYNH (PARENT REGISTRATIONS)
+CREATE TABLE IF NOT EXISTS parent_registrations (
+  id TEXT PRIMARY KEY,
+  registration_code TEXT,
+  parent_name TEXT NOT NULL,
+  parent_phone TEXT NOT NULL,
+  parent_email TEXT DEFAULT '',
+  student_name TEXT NOT NULL,
+  student_dob DATE,
+  student_grade TEXT DEFAULT '',
+  current_school TEXT DEFAULT 'Royal School',
+  current_class TEXT DEFAULT '',
+  desired_campus_id TEXT NOT NULL DEFAULT 'camp_pmh',
+  desired_term_id TEXT,
+  desired_subject_id TEXT NOT NULL,
+  desired_time_slot_type TEXT DEFAULT 'after_school',
+  registered_subjects JSONB DEFAULT '[]'::jsonb,
+  is_royal_student BOOLEAN DEFAULT true,
+  medical_notes TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  estimated_fee NUMERIC DEFAULT 0,
+  discount_policy TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  contact_notes TEXT DEFAULT '',
+  student_id TEXT,
+  assigned_class_id TEXT,
+  assigned_class_ids JSONB DEFAULT '[]'::jsonb,
+  attachment_file_name TEXT,
+  attachment_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- KÍCH HOẠT ROW LEVEL SECURITY (CHO PHÉP ĐỒNG BỘ QUA ANON KEY TRONG MÔI TRƯỜNG TRƯỜNG HỌC)
 DO $$
 DECLARE
@@ -560,20 +592,42 @@ BEGIN
     'campuses', 'academic_terms', 'subjects', 'teachers',
     'extracurricular_classes', 'students', 'enrollments',
     'attendance_records', 'teacher_work_sessions', 'tuition_invoices',
-    'credit_notes', 'app_users'
+    'credit_notes', 'app_users', 'parent_registrations'
   ]
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', tbl);
     EXECUTE format('DROP POLICY IF EXISTS "Allow full access for Royal School Hub" ON %I;', tbl);
     EXECUTE format('CREATE POLICY "Allow full access for Royal School Hub" ON %I FOR ALL USING (true) WITH CHECK (true);', tbl);
+    EXECUTE format('ALTER TABLE %I REPLICA IDENTITY FULL;', tbl);
   END LOOP;
 END $$;
+
+-- KÍCH HOẠT REALTIME CHO TOÀN BỘ CÁC BẢNG NGHIỆP VỤ CỐT LÕI (SUPABASE REALTIME REPLICATION)
+ALTER PUBLICATION supabase_realtime ADD TABLE app_users;
+ALTER PUBLICATION supabase_realtime ADD TABLE extracurricular_classes;
+ALTER PUBLICATION supabase_realtime ADD TABLE enrollments;
+ALTER PUBLICATION supabase_realtime ADD TABLE attendance_records;
+ALTER PUBLICATION supabase_realtime ADD TABLE teacher_work_sessions;
+ALTER PUBLICATION supabase_realtime ADD TABLE tuition_invoices;
+ALTER PUBLICATION supabase_realtime ADD TABLE credit_notes;
+ALTER PUBLICATION supabase_realtime ADD TABLE parent_registrations;
 
 -- KHỞI TẠO STORAGE BUCKET LƯU MINH CHỨNG NGHỈ PHÉP
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('attendance-proofs', 'attendance-proofs', true)
 ON CONFLICT (id) DO NOTHING;
 `;
+
+export const SUPABASE_REALTIME_PUBLICATION_SQL = `-- Kích hoạt Realtime cho toàn bộ các bảng nghiệp vụ cốt lõi
+ALTER PUBLICATION supabase_realtime ADD TABLE app_users;
+ALTER PUBLICATION supabase_realtime ADD TABLE extracurricular_classes;
+ALTER PUBLICATION supabase_realtime ADD TABLE enrollments;
+ALTER PUBLICATION supabase_realtime ADD TABLE attendance_records;
+ALTER PUBLICATION supabase_realtime ADD TABLE teacher_work_sessions;
+ALTER PUBLICATION supabase_realtime ADD TABLE tuition_invoices;
+ALTER PUBLICATION supabase_realtime ADD TABLE credit_notes;
+ALTER PUBLICATION supabase_realtime ADD TABLE parent_registrations;`;
+
 
 export interface SupabaseConnectionCheckResult {
   connected: boolean;
@@ -1268,6 +1322,54 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         note: cr.note || '',
       }));
 
+    case 'app_users':
+      return (store.users || []).map(u => ({
+        id: u.id,
+        username: u.username,
+        email: u.email || `${u.username}@royal.edu.vn`,
+        password_hash: u.password_hash || u.password || '123456',
+        full_name: u.full_name,
+        phone: u.phone || '',
+        role: u.role || 'academic',
+        department: u.department || '',
+        campus_id: u.campus_id || 'all',
+        status: u.status || 'active',
+        permissions: u.permissions || {},
+        linked_teacher_id: u.linked_teacher_id || u.teacher_id || null,
+        last_login: u.last_login || null,
+      }));
+
+    case 'parent_registrations':
+      return (store.parentRegistrations || []).map(r => ({
+        id: r.id,
+        registration_code: r.registration_code || r.code || r.id,
+        parent_name: r.parent_name,
+        parent_phone: r.parent_phone,
+        parent_email: r.parent_email || '',
+        student_name: r.student_name,
+        student_dob: r.student_dob || r.dob || null,
+        student_grade: r.student_grade || '',
+        current_school: r.current_school || 'Royal School',
+        current_class: r.current_class || '',
+        desired_campus_id: r.desired_campus_id || r.campus_id || 'camp_pmh',
+        desired_term_id: r.desired_term_id || null,
+        desired_subject_id: r.desired_subject_id || r.preferred_subject_id || '',
+        desired_time_slot_type: r.desired_time_slot_type || 'after_school',
+        registered_subjects: r.registered_subjects || [],
+        is_royal_student: Boolean(r.is_royal_student ?? r.is_royal ?? true),
+        medical_notes: r.medical_notes || '',
+        notes: r.notes || '',
+        estimated_fee: r.estimated_fee || 0,
+        discount_policy: r.discount_policy || '',
+        status: r.status || 'pending',
+        contact_notes: r.contact_notes || '',
+        student_id: r.student_id || r.assigned_student_id || null,
+        assigned_class_id: r.assigned_class_id || null,
+        assigned_class_ids: r.assigned_class_ids || [],
+        attachment_file_name: r.attachment_file_name || null,
+        attachment_url: r.attachment_url && !r.attachment_url.startsWith('data:') ? r.attachment_url : null,
+      }));
+
     default:
       return [];
   }
@@ -1514,12 +1616,32 @@ export async function pullAllTablesFromSupabase(
     }
   }
 
-  // Pull credit_notes & app_users if available
+  // Pull credit_notes, app_users & parent_registrations if available
   try {
     const { data: creditsData } = await client.from('credit_notes').select('*');
     if (Array.isArray(creditsData) && creditsData.length > 0) {
       nextStore.makeupCredits = creditsData as MakeupCredit[];
       totalPulled += creditsData.length;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const { data: usersData } = await client.from('app_users').select('*');
+    if (Array.isArray(usersData) && usersData.length > 0) {
+      nextStore.users = usersData.map((r: any) => mapSupabaseRowToStoreEntity('app_users', r));
+      totalPulled += usersData.length;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const { data: regsData } = await client.from('parent_registrations').select('*');
+    if (Array.isArray(regsData) && regsData.length > 0) {
+      nextStore.parentRegistrations = regsData.map((r: any) => mapSupabaseRowToStoreEntity('parent_registrations', r));
+      totalPulled += regsData.length;
     }
   } catch {
     // ignore
@@ -1573,10 +1695,10 @@ export async function pushAllTablesToSupabase(
     }
   }
 
-  // Push credit_notes as well if any
-  if ((store.makeupCredits || []).length > 0) {
-    const creditRes = await pushSingleTableToSupabase('credit_notes', store, urlInput, anonKeyInput);
-    if (creditRes.success) totalSynced += creditRes.count;
+  // Push credit_notes, app_users, parent_registrations as well if any
+  for (const extraTable of ['credit_notes', 'app_users', 'parent_registrations']) {
+    const extraRes = await pushSingleTableToSupabase(extraTable, store, urlInput, anonKeyInput);
+    if (extraRes.success) totalSynced += extraRes.count;
   }
 
   if (failedTables.length > 0) {
@@ -1595,3 +1717,343 @@ export async function pushAllTablesToSupabase(
     message: `Đã đồng bộ thành công toàn bộ 10 bảng (${totalSynced} bản ghi) lên Supabase PostgreSQL!`,
   };
 }
+
+/**
+ * Ánh xạ tên bảng Supabase sang khóa tương ứng trong AppStore
+ */
+export const SUPABASE_TABLE_TO_STORE_KEY: Record<string, keyof AppStore> = {
+  app_users: 'users',
+  campuses: 'campuses',
+  academic_terms: 'terms',
+  subjects: 'subjects',
+  teachers: 'teachers',
+  extracurricular_classes: 'classes',
+  students: 'students',
+  enrollments: 'enrollments',
+  attendance_records: 'attendance',
+  teacher_work_sessions: 'teacherAttendance',
+  tuition_invoices: 'invoices',
+  credit_notes: 'makeupCredits',
+  parent_registrations: 'parentRegistrations',
+};
+
+/**
+ * Chuyển đổi 1 dòng dữ liệu (Row) nhận từ Supabase Realtime Payload sang chuẩn Entity trong AppStore
+ */
+export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
+  if (!r || typeof r !== 'object') return r;
+
+  switch (tableName) {
+    case 'app_users':
+      return {
+        id: r.id,
+        username: r.username || '',
+        email: r.email || '',
+        password: r.password || r.password_hash || '123456',
+        password_hash: r.password_hash || r.password || '123456',
+        full_name: r.full_name || r.name || r.username || '',
+        phone: r.phone || '',
+        role: r.role || 'academic',
+        department: r.department || '',
+        campus_id: r.campus_id || 'all',
+        status: r.status === 'locked' ? 'locked' : 'active',
+        permissions: r.permissions || undefined,
+        linked_teacher_id: r.linked_teacher_id || r.teacher_id || undefined,
+        last_login: r.last_login || undefined,
+        created_at: r.created_at || new Date().toISOString().split('T')[0],
+      };
+
+    case 'extracurricular_classes':
+      return {
+        id: r.id,
+        code: r.code || r.id,
+        name: r.name,
+        term_id: r.term_id,
+        spanning_term_id: r.spanning_term_id || undefined,
+        is_cross_term: Boolean(r.is_cross_term),
+        term_distribution: r.term_distribution || undefined,
+        campus_id: r.campus_id,
+        subject_id: r.subject_id,
+        facility_id: r.facility_id || '',
+        time_slot_id: r.time_slot_id || '',
+        days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+        start_date: r.start_date || undefined,
+        end_date: r.end_date || undefined,
+        primary_teacher_id: r.primary_teacher_id || '',
+        max_students: Number(r.max_students) || 25,
+        current_students: r.current_students !== undefined ? Number(r.current_students) : undefined,
+        total_sessions: Number(r.total_sessions) || 24,
+        full_course_fee: Number(r.full_course_fee) || 0,
+        price_per_session: Number(r.price_per_session) || 0,
+        status: r.status || 'active',
+        allow_over_quota: Boolean(r.allow_over_quota),
+      };
+
+    case 'enrollments':
+      return {
+        id: r.id,
+        student_id: r.student_id,
+        class_id: r.class_id,
+        registered_sessions: Number(r.registered_sessions) || 24,
+        joined_date: r.joined_date || new Date().toISOString().split('T')[0],
+        enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : undefined,
+        is_partial_schedule: Boolean(r.is_partial_schedule),
+        is_trial: Boolean(r.is_trial),
+        trial_session_date: r.trial_session_date || undefined,
+        trial_attended: Boolean(r.trial_attended),
+        status: r.status || 'active',
+      };
+
+    case 'attendance_records':
+      return {
+        id: r.id,
+        session_id: r.session_id || '',
+        class_id: r.class_id,
+        student_id: r.student_id,
+        session_date: r.session_date,
+        status: r.status || 'present',
+        note: r.note || '',
+        proof_file_name: r.proof_file_name || undefined,
+        proof_url: r.proof_url || undefined,
+        uploaded_by: r.uploaded_by || undefined,
+        uploaded_at: r.uploaded_at || undefined,
+      };
+
+    case 'teacher_work_sessions':
+      return {
+        id: r.id,
+        class_id: r.class_id,
+        term_id: r.term_id,
+        campus_id: r.campus_id,
+        session_date: r.session_date,
+        session_number: Number(r.session_number) || 1,
+        periods_count: Number(r.periods_count) || 2,
+        assigned_teacher_id: r.assigned_teacher_id || '',
+        actual_teacher_id: r.actual_teacher_id || '',
+        is_substitute: Boolean(r.is_substitute),
+        substitute_reason: r.substitute_reason || undefined,
+        status: r.status || 'present',
+        late_minutes: Number(r.late_minutes) || 0,
+        check_in_time: r.check_in_time || '16:40',
+        rate_per_period: Number(r.rate_per_period) || 150000,
+        rate_applied: Number(r.rate_applied) || 300000,
+        earned_amount: Number(r.earned_amount) || Number(r.total_payout) || 300000,
+        total_payout: Number(r.total_payout) || 300000,
+        verified_by: r.verified_by || '',
+        notes: r.notes || '',
+        recalculated_at: r.recalculated_at || undefined,
+      };
+
+    case 'tuition_invoices':
+      return {
+        id: r.id,
+        invoice_code: r.invoice_code,
+        student_id: r.student_id,
+        class_id: r.class_id,
+        registered_sessions: Number(r.registered_sessions) || 24,
+        total_class_sessions: Number(r.total_class_sessions) || 24,
+        session_rate: Number(r.session_rate) || 166250,
+        gross_amount: Number(r.gross_amount) || 0,
+        credit_deducted: Number(r.credit_deducted) || 0,
+        discount_amount: Number(r.discount_amount) || 0,
+        net_payable: Number(r.net_payable) || 0,
+        paid_amount: Number(r.paid_amount) || 0,
+        outstanding_amount: Number(r.outstanding_amount) || 0,
+        payment_status: r.payment_status || 'unpaid',
+        due_date: r.due_date || '',
+        payment_reference: r.payment_reference || undefined,
+        verified_by: r.verified_by || undefined,
+        verified_at: r.verified_at || undefined,
+        payment_history: Array.isArray(r.payment_history) ? r.payment_history : [],
+        created_at: r.created_at || new Date().toISOString().split('T')[0],
+      };
+
+    case 'credit_notes':
+      return {
+        id: r.id,
+        credit_code: r.credit_code,
+        student_id: r.student_id,
+        source_class_id: r.source_class_id || '',
+        subject_id: r.subject_id || '',
+        term_id: r.term_id || '',
+        consecutive_absent_count: Number(r.consecutive_absent_count) || 3,
+        consecutive_dates: Array.isArray(r.consecutive_dates) ? r.consecutive_dates : [],
+        source_rate: Number(r.source_rate) || 0,
+        credit_rule: r.credit_rule || 'monetary',
+        total_credit_amount: Number(r.total_credit_amount) || 0,
+        transferred_sessions: Number(r.transferred_sessions) || 3,
+        issue_date: r.issue_date || new Date().toISOString().split('T')[0],
+        expiry_date: r.expiry_date || '',
+        status: r.status || 'issued',
+        redeemed_info: r.redeemed_info || undefined,
+        note: r.note || '',
+      };
+
+    case 'parent_registrations':
+      return {
+        id: r.id,
+        registration_code: r.registration_code || r.code || r.id,
+        code: r.registration_code || r.code || r.id,
+        parent_name: r.parent_name || '',
+        parent_phone: r.parent_phone || '',
+        parent_email: r.parent_email || '',
+        student_name: r.student_name || '',
+        student_dob: r.student_dob || r.dob || '2016-01-01',
+        dob: r.student_dob || r.dob || '2016-01-01',
+        student_grade: r.student_grade || '',
+        current_school: r.current_school || 'Royal School',
+        current_class: r.current_class || '',
+        desired_campus_id: r.desired_campus_id || r.campus_id || 'camp_pmh',
+        campus_id: r.desired_campus_id || r.campus_id || 'camp_pmh',
+        desired_term_id: r.desired_term_id || undefined,
+        desired_subject_id: r.desired_subject_id || r.preferred_subject_id || '',
+        preferred_subject_id: r.desired_subject_id || r.preferred_subject_id || '',
+        desired_time_slot_type: r.desired_time_slot_type || 'after_school',
+        registered_subjects: Array.isArray(r.registered_subjects) ? r.registered_subjects : [],
+        is_royal_student: Boolean(r.is_royal_student ?? r.is_royal ?? true),
+        is_royal: Boolean(r.is_royal_student ?? r.is_royal ?? true),
+        medical_notes: r.medical_notes || '',
+        notes: r.notes || '',
+        estimated_fee: Number(r.estimated_fee) || 0,
+        discount_policy: r.discount_policy || '',
+        status: r.status || 'pending',
+        contact_notes: r.contact_notes || '',
+        student_id: r.student_id || undefined,
+        assigned_class_id: r.assigned_class_id || undefined,
+        assigned_class_ids: Array.isArray(r.assigned_class_ids) ? r.assigned_class_ids : [],
+        attachment_file_name: r.attachment_file_name || undefined,
+        attachment_url: r.attachment_url || undefined,
+        created_at: r.created_at || new Date().toISOString(),
+      };
+
+    default:
+      return r;
+  }
+}
+
+export interface RealtimeMutationEvent {
+  table: string;
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE';
+  new: any;
+  old: any;
+  commit_timestamp: string;
+  originClientId?: string;
+}
+
+/**
+ * Phát hiện sự thay đổi (Diff) giữa 2 trạng thái Store và tự động đồng bộ các bản ghi Thêm / Sửa / Xóa lên Supabase
+ */
+export async function syncStoreDeltaToSupabase(
+  prevStore: AppStore,
+  nextStore: AppStore,
+  originClientId: string
+): Promise<RealtimeMutationEvent[]> {
+  const events: RealtimeMutationEvent[] = [];
+  const nowIso = new Date().toISOString();
+
+  const tablesToWatch: Array<{ table: string; storeKey: keyof AppStore }> = [
+    { table: 'app_users', storeKey: 'users' },
+    { table: 'campuses', storeKey: 'campuses' },
+    { table: 'academic_terms', storeKey: 'terms' },
+    { table: 'subjects', storeKey: 'subjects' },
+    { table: 'teachers', storeKey: 'teachers' },
+    { table: 'extracurricular_classes', storeKey: 'classes' },
+    { table: 'students', storeKey: 'students' },
+    { table: 'enrollments', storeKey: 'enrollments' },
+    { table: 'attendance_records', storeKey: 'attendance' },
+    { table: 'teacher_work_sessions', storeKey: 'teacherAttendance' },
+    { table: 'tuition_invoices', storeKey: 'invoices' },
+    { table: 'credit_notes', storeKey: 'makeupCredits' },
+    { table: 'parent_registrations', storeKey: 'parentRegistrations' },
+  ];
+
+  const client = createSupabaseClientInstance(
+    nextStore.supabaseConfig?.url,
+    nextStore.supabaseConfig?.anonKey
+  );
+
+  for (const { table, storeKey } of tablesToWatch) {
+    const prevList = ((prevStore[storeKey] as any[]) || []);
+    const nextList = ((nextStore[storeKey] as any[]) || []);
+    if (prevList === nextList) continue;
+
+    const prevMap = new Map<string, any>();
+    for (const item of prevList) {
+      if (item && item.id) prevMap.set(String(item.id), item);
+    }
+
+    const nextMap = new Map<string, any>();
+    const toUpsertIds = new Set<string>();
+
+    for (const item of nextList) {
+      if (!item || !item.id) continue;
+      const id = String(item.id);
+      nextMap.set(id, item);
+
+      const oldItem = prevMap.get(id);
+      if (!oldItem) {
+        toUpsertIds.add(id);
+        events.push({
+          table,
+          eventType: 'INSERT',
+          new: item,
+          old: {},
+          commit_timestamp: nowIso,
+          originClientId,
+        });
+      } else if (oldItem !== item && JSON.stringify(oldItem) !== JSON.stringify(item)) {
+        toUpsertIds.add(id);
+        events.push({
+          table,
+          eventType: 'UPDATE',
+          new: item,
+          old: oldItem,
+          commit_timestamp: nowIso,
+          originClientId,
+        });
+      }
+    }
+
+    const toDeleteIds: string[] = [];
+    for (const [id, oldItem] of prevMap.entries()) {
+      if (!nextMap.has(id)) {
+        toDeleteIds.push(id);
+        events.push({
+          table,
+          eventType: 'DELETE',
+          new: {},
+          old: { id, ...oldItem },
+          commit_timestamp: nowIso,
+          originClientId,
+        });
+      }
+    }
+
+    if (client) {
+      if (toUpsertIds.size > 0) {
+        const serializedAll = serializeTableRowsForSupabase(table, nextStore);
+        const rowsToUpsert = serializedAll.filter(r => toUpsertIds.has(String(r.id)));
+        if (rowsToUpsert.length > 0) {
+          client
+            .from(table)
+            .upsert(rowsToUpsert, { onConflict: 'id' })
+            .then(() => {})
+            .catch(() => {});
+        }
+      }
+
+      if (toDeleteIds.length > 0) {
+        client
+          .from(table)
+          .delete()
+          .in('id', toDeleteIds)
+          .then(() => {})
+          .catch(() => {});
+      }
+    }
+  }
+
+  return events;
+}
+
+
