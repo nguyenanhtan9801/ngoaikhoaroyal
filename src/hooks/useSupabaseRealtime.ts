@@ -345,7 +345,7 @@ export function useSupabaseRealtime({
       store.supabaseConfig?.anonKey
     );
 
-    if (url && anonKey && isValidSupabaseAnonJwt(anonKey)) {
+    if (url && anonKey) {
       loadInitialDataSafely(store)
         .then(res => {
           if (res.isOfflineFallback) {
@@ -353,6 +353,7 @@ export function useSupabaseRealtime({
             setIsSupabaseCloudActive(false);
           } else if (res.loadedFromCloud && res.totalRecordsLoaded > 0) {
             setIsOffline(false);
+            setIsSupabaseCloudActive(true);
             const recomputed = recomputeDerivedRealtimeState(res.store);
             prevStoreRef.current = recomputed;
             setStore(recomputed);

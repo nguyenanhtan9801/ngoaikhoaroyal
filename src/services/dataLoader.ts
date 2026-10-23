@@ -1,13 +1,16 @@
+import { SupabaseClient } from '@supabase/supabase-js';
 import { AppStore } from '../types';
 import {
   getSupabaseClient,
   getResolvedSupabaseConfig,
   sanitizeSupabaseBaseUrl,
   sanitizeSupabaseTableName,
+  supabase,
 } from '../supabaseClient';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
   mapSupabaseRowToStoreEntity,
+  SUPABASE_TABLE_TO_STORE_KEY,
 } from '../lib/supabase';
 import { loadStore, saveStore } from '../lib/storage';
 import { showToast } from '../lib/toast';
@@ -20,15 +23,114 @@ export interface SafeDataLoadResult {
   errorMessage?: string;
 }
 
+export interface AppDataSafeResult {
+  students: any[];
+  classes: any[];
+  terms: any[];
+  campuses: any[];
+  teachers: any[];
+  campusSubjectFees: any[];
+  enrollments: any[];
+  attendanceRecords: any[];
+  tuitionInvoices: any[];
+  appUsers: any[];
+  parentRegistrations: any[];
+  isLoading: boolean;
+}
+
 let hasShownOfflineFallbackToast = false;
 
 /**
- * Cơ chế Khởi Động & Tải Dữ Liệu An Toàn (Safe Data Loader)
- * - Bọc toàn bộ lời gọi API supabase.from(...).select('*') trong khối try...catch.
- * - Nếu Supabase chưa khởi tạo bảng, sai khóa hoặc mất kết nối:
- *   + Tuyệt đối không để màn hình trắng (White Screen).
- *   + Hiển thị thông báo Toast nhẹ: "Đang hoạt động ở chế độ ngoại tuyến/cơ sở dữ liệu mẫu do chưa kết nối được máy chủ."
- *   + Giữ nguyên cấu trúc dữ liệu Local / Mặc định để giao diện vận hành bình thường.
+ * Nạp độc lập từng bảng dữ liệu từ Supabase sử dụng Promise.allSettled.
+ * Bảng nào có dữ liệu thì nạp, bảng nào lỗi hoặc rỗng thì trả về mảng [],
+ * không để sập giao diện hoặc treo màn hình trên macOS / iOS Safari & Chrome.
+ */
+export async function loadAppDataSafe(customClient?: SupabaseClient | null): Promise<AppDataSafeResult> {
+  const client = customClient || getSupabaseClient() || supabase;
+
+  const fetchTable = async (tableName: string): Promise<any[]> => {
+    if (!client) return [];
+    try {
+      const { data, error } = await client.from(tableName).select('*');
+      if (error) {
+        console.warn(`Lỗi khi đọc bảng ${tableName}:`, error.message);
+        return [];
+      }
+      return Array.isArray(data) ? data : [];
+    } catch (e) {
+      console.warn(`Exception bảng ${tableName}:`, e);
+      return [];
+    }
+  };
+
+  const results = await Promise.allSettled([
+    fetchTable('students'),
+    fetchTable('extracurricular_classes'),
+    fetchTable('academic_terms'),
+    fetchTable('campuses'),
+    fetchTable('teachers'),
+    fetchTable('campus_subject_fees'),
+    fetchTable('enrollments'),
+    fetchTable('attendance_records'),
+    fetchTable('tuition_invoices'),
+    fetchTable('app_users'),
+    fetchTable('parent_registrations'),
+  ]);
+
+  const getData = (index: number): any[] => {
+    const item = results[index];
+    return item.status === 'fulfilled' && Array.isArray(item.value) ? item.value : [];
+  };
+
+  const [
+    students,
+    classes,
+    terms,
+    campuses,
+    teachers,
+    fees,
+    enrollments,
+    attendance,
+    invoices,
+    users,
+    registrations,
+  ] = [
+    getData(0),
+    getData(1),
+    getData(2),
+    getData(3),
+    getData(4),
+    getData(5),
+    getData(6),
+    getData(7),
+    getData(8),
+    getData(9),
+    getData(10),
+  ];
+
+  return {
+    students,
+    classes,
+    terms,
+    campuses,
+    teachers,
+    campusSubjectFees: fees,
+    enrollments,
+    attendanceRecords: attendance,
+    tuitionInvoices: invoices,
+    appUsers: users,
+    parentRegistrations: registrations,
+    isLoading: false,
+  };
+}
+
+/**
+ * Cơ chế Khởi Động & Tải Dữ Liệu An Toàn (Safe Data Loader) cho AppStore
+ * - Sử dụng Promise.allSettled nạp song song độc lập tất cả các bảng.
+ * - Từng bảng được xử lý riêng biệt trong try/catch: nếu một bảng bị lỗi RLS, rỗng,
+ *   hoặc timeout trên iOS/macOS WebKit, các bảng còn lại vẫn nạp thành công bình thường.
+ * - Giữ nguyên cấu trúc dữ liệu Local / Mặc định cho những bảng không lấy được từ Cloud.
+ * - Tuyệt đối không để màn hình trắng (White Screen) hay treo ứng dụng.
  */
 export async function loadInitialDataSafely(
   currentStore?: AppStore
@@ -57,8 +159,8 @@ export async function loadInitialDataSafely(
     };
   }
 
-  const supabase = getSupabaseClient(url, anonKey);
-  if (!supabase) {
+  const client = getSupabaseClient(url, anonKey) || supabase;
+  if (!client) {
     if (!hasShownOfflineFallbackToast) {
       hasShownOfflineFallbackToast = true;
       showToast(
@@ -77,95 +179,69 @@ export async function loadInitialDataSafely(
   try {
     const nextStore: AppStore = { ...fallbackStore };
     let totalRecordsLoaded = 0;
-    let reachableTablesCount = 0;
-    let encounteredFatalError = false;
 
-    for (const tbl of ROYAL_STANDARDIZED_10_TABLES) {
-      const safeTableName = sanitizeSupabaseTableName(tbl.tableName);
+    // Danh sách toàn bộ các bảng cần nạp từ Supabase
+    const allTableDefinitions: Array<{ tableName: string; storeKey: keyof AppStore }> = [
+      ...ROYAL_STANDARDIZED_10_TABLES.map(t => ({
+        tableName: sanitizeSupabaseTableName(t.tableName),
+        storeKey: t.storeKey,
+      })),
+      { tableName: 'credit_notes', storeKey: 'makeupCredits' },
+      { tableName: 'app_users', storeKey: 'users' },
+      { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
+    ];
+
+    // Nạp song song độc lập từng bảng với Promise.allSettled
+    const fetchPromises = allTableDefinitions.map(async item => {
       try {
-        const { data, error } = await supabase.from(safeTableName).select('*');
+        const { data, error } = await client.from(item.tableName).select('*');
         if (error) {
-          // Nếu lỗi xác thực (401/403) hoặc mất kết nối mạng, dừng truy vấn các bảng tiếp theo
-          const msg = String(error.message || '').toLowerCase();
-          if (
-            error.code === 'PGRST301' ||
-            msg.includes('jwt') ||
-            msg.includes('invalid api key') ||
-            msg.includes('failed to fetch')
-          ) {
-            encounteredFatalError = true;
-            break;
-          }
-          continue;
+          console.warn(`[SafeLoader] Bảng ${item.tableName} không nạp được (${error.message}), giữ dữ liệu cục bộ.`);
+          return { tableName: item.tableName, storeKey: item.storeKey, data: [] };
         }
-
-        reachableTablesCount += 1;
-        if (Array.isArray(data) && data.length > 0) {
-          const mappedRows = data
-            .map(row => mapSupabaseRowToStoreEntity(safeTableName, row))
-            .filter(Boolean);
-          if (mappedRows.length > 0) {
-            (nextStore as any)[tbl.storeKey] = mappedRows;
-            totalRecordsLoaded += mappedRows.length;
-          }
-        }
-      } catch {
-        encounteredFatalError = true;
-        break;
+        return {
+          tableName: item.tableName,
+          storeKey: item.storeKey,
+          data: Array.isArray(data) ? data : [],
+        };
+      } catch (err: any) {
+        console.warn(`[SafeLoader] Exception khi đọc bảng ${item.tableName}:`, err?.message || err);
+        return { tableName: item.tableName, storeKey: item.storeKey, data: [] };
       }
-    }
+    });
 
-    // Thử tải thêm 3 bảng bổ trợ (credit_notes, app_users, parent_registrations) trong khối try...catch an toàn
-    if (!encounteredFatalError && reachableTablesCount > 0) {
-      const extraTables: Array<{ table: string; storeKey: keyof AppStore }> = [
-        { table: 'credit_notes', storeKey: 'makeupCredits' },
-        { table: 'app_users', storeKey: 'users' },
-        { table: 'parent_registrations', storeKey: 'parentRegistrations' },
-      ];
+    const settledResults = await Promise.allSettled(fetchPromises);
 
-      for (const extra of extraTables) {
-        try {
-          const { data, error } = await supabase.from(extra.table).select('*');
-          if (!error && Array.isArray(data) && data.length > 0) {
-            const mapped = data
-              .map(row => mapSupabaseRowToStoreEntity(extra.table, row))
-              .filter(Boolean);
-            if (mapped.length > 0) {
-              (nextStore as any)[extra.storeKey] = mapped;
-              totalRecordsLoaded += mapped.length;
-            }
-          }
-        } catch {
-          // Bỏ qua lỗi bảng bổ trợ để không ảnh hưởng toàn hệ thống
+    settledResults.forEach(res => {
+      if (res.status === 'fulfilled' && res.value && Array.isArray(res.value.data) && res.value.data.length > 0) {
+        const { tableName, storeKey, data } = res.value;
+        const mappedRows = data
+          .map(row => mapSupabaseRowToStoreEntity(tableName, row))
+          .filter(Boolean);
+
+        if (mappedRows.length > 0) {
+          (nextStore as any)[storeKey] = mappedRows;
+          totalRecordsLoaded += mappedRows.length;
         }
       }
-    }
-
-    if (encounteredFatalError || reachableTablesCount === 0) {
-      if (!hasShownOfflineFallbackToast) {
-        hasShownOfflineFallbackToast = true;
-        showToast(
-          'Đang hoạt động ở chế độ ngoại tuyến/cơ sở dữ liệu mẫu do chưa kết nối được máy chủ.',
-          'info'
-        );
-      }
-      return {
-        store: fallbackStore,
-        isOfflineFallback: true,
-        loadedFromCloud: false,
-        totalRecordsLoaded: 0,
-      };
-    }
+    });
 
     if (totalRecordsLoaded > 0) {
       saveStore(nextStore);
+      return {
+        store: nextStore,
+        isOfflineFallback: false,
+        loadedFromCloud: true,
+        totalRecordsLoaded,
+      };
     }
 
+    // Nếu toàn bộ bảng trên Cloud đều rỗng hoặc chưa nạp được bản ghi nào
     return {
-      store: nextStore,
+      store: fallbackStore,
       isOfflineFallback: false,
-      loadedFromCloud: true,
-      totalRecordsLoaded,
+      loadedFromCloud: false,
+      totalRecordsLoaded: 0,
     };
   } catch (err: any) {
     console.warn('⚠️ Lỗi tải dữ liệu ban đầu từ Supabase, chuyển sang chế độ ngoại tuyến:', err);

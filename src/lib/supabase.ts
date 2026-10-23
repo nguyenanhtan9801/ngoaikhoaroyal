@@ -722,6 +722,8 @@ export {
   supabase,
 };
 
+export { loadAppDataSafe } from '../services/dataLoader';
+
 /**
  * Kiểm tra toàn diện kết nối CSDL Supabase (REST API, Auth Key, Storage Bucket & Độ trễ)
  */
