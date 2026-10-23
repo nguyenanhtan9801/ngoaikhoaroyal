@@ -24,6 +24,7 @@ import {
   MakeupCredit,
   AppUser,
 } from '../types';
+import { resolveStudentCampusId } from './storage';
 
 export interface TableColumnSpec {
   dbCol: string;
@@ -198,6 +199,7 @@ export const ROYAL_STANDARDIZED_10_TABLES: StandardizedTableDefinition[] = [
       { dbCol: 'dob', excelHeader: 'Ngày Sinh', type: 'DATE', required: true, description: 'YYYY-MM-DD' },
       { dbCol: 'gender', excelHeader: 'Giới Tính', type: 'TEXT', description: 'Nam | Nữ' },
       { dbCol: 'is_royal_student', excelHeader: 'Học Sinh Royal (Cấp Bánh Sữa)', type: 'BOOLEAN', required: true, description: 'CÓ (Royal) | KHÔNG (Ngoài trường)' },
+      { dbCol: 'campus_id', excelHeader: 'Mã Cơ Sở', type: 'TEXT', required: true, description: 'pmh (Phú Mỹ Hưng) | pl (Phú Lâm)' },
       { dbCol: 'school_name', excelHeader: 'Trường Đang Học', type: 'TEXT', description: 'Tên trường chính khóa' },
       { dbCol: 'regular_class', excelHeader: 'Lớp Chính Khóa', type: 'TEXT', description: 'Lớp chính khóa (VD: 4A1)' },
       { dbCol: 'parent_name', excelHeader: 'Họ Tên Phụ Huynh', type: 'TEXT', required: true, description: 'Phụ huynh liên hệ' },
@@ -426,6 +428,7 @@ CREATE TABLE IF NOT EXISTS students (
   dob DATE,
   gender TEXT DEFAULT 'Nam',
   is_royal_student BOOLEAN DEFAULT true,
+  campus_id TEXT NOT NULL DEFAULT 'pmh',
   school_name TEXT DEFAULT 'Royal School',
   regular_class TEXT DEFAULT '',
   parent_name TEXT NOT NULL,
@@ -436,6 +439,27 @@ CREATE TABLE IF NOT EXISTS students (
   created_at DATE DEFAULT CURRENT_DATE,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Bổ sung cột campus_id, ràng buộc hợp lệ & Index cho bảng students
+ALTER TABLE public.students 
+ADD COLUMN IF NOT EXISTS campus_id TEXT NOT NULL DEFAULT 'pmh';
+
+ALTER TABLE public.students 
+DROP CONSTRAINT IF EXISTS chk_student_campus;
+
+ALTER TABLE public.students 
+ADD CONSTRAINT chk_student_campus CHECK (campus_id IN ('pmh', 'pl'));
+
+UPDATE public.students 
+SET campus_id = 'pmh' 
+WHERE campus_id IS NULL OR school_name ILIKE '%PMH%' OR school_name ILIKE '%Phú Mỹ Hưng%';
+
+UPDATE public.students 
+SET campus_id = 'pl' 
+WHERE school_name ILIKE '%PL%' OR school_name ILIKE '%Phú Lâm%';
+
+CREATE INDEX IF NOT EXISTS idx_students_campus_id ON public.students (campus_id);
+NOTIFY pgrst, 'reload schema';
 
 -- 07. BẢNG GHI DANH XẾP LỚP & HỌC THỬ (07_GHI_DANH)
 CREATE TABLE IF NOT EXISTS enrollments (
@@ -1207,6 +1231,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         dob: s.dob || null,
         gender: s.gender || 'Nam',
         is_royal_student: Boolean(s.is_royal_student),
+        campus_id: resolveStudentCampusId(s),
         school_name: s.school_name || 'Royal School',
         regular_class: s.regular_class || '',
         parent_name: s.parent_name || '',
@@ -1510,23 +1535,34 @@ export async function pullAllTablesFromSupabase(
           }));
           break;
         case 'students':
-          nextStore.students = data.map((r: any): Student => ({
-            id: r.id,
-            code: r.code,
-            previous_student_code: r.previous_student_code || undefined,
-            name: r.name,
-            dob: r.dob || '2016-01-01',
-            gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
-            is_royal_student: Boolean(r.is_royal_student),
-            school_name: r.school_name || 'Royal School',
-            regular_class: r.regular_class || '',
-            parent_name: r.parent_name || '',
-            parent_phone: r.parent_phone || '',
-            medical_notes: r.medical_notes || '',
-            avatar_url: r.avatar_url || undefined,
-            status: r.status || 'active',
-            created_at: r.created_at || new Date().toISOString().split('T')[0],
-          }));
+          nextStore.students = data.map((r: any): Student => {
+            const isRoyal = Boolean(r.is_royal_student ?? (r.student_type === 'royal'));
+            const dob = r.dob || r.birth_date || '2016-01-01';
+            const regularClass = r.regular_class || r.class_name || '';
+            const campusId = resolveStudentCampusId(r);
+            return {
+              id: r.id,
+              code: r.code,
+              previous_student_code: r.previous_student_code || undefined,
+              name: r.name,
+              dob,
+              birth_date: dob,
+              gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
+              is_royal_student: isRoyal,
+              student_type: isRoyal ? 'royal' : 'external',
+              has_snack: isRoyal,
+              campus_id: campusId,
+              school_name: r.school_name || (campusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH'),
+              regular_class: regularClass,
+              class_name: regularClass,
+              parent_name: r.parent_name || '',
+              parent_phone: r.parent_phone || '',
+              medical_notes: r.medical_notes || '',
+              avatar_url: r.avatar_url || undefined,
+              status: r.status || 'active',
+              created_at: r.created_at || new Date().toISOString().split('T')[0],
+            };
+          });
           break;
         case 'enrollments':
           nextStore.enrollments = data.map((r: any): Enrollment => ({
@@ -1786,6 +1822,35 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         status: r.status || 'active',
         allow_over_quota: Boolean(r.allow_over_quota),
       };
+
+    case 'students': {
+      const isRoyal = Boolean(r.is_royal_student ?? (r.student_type === 'royal'));
+      const dob = r.dob || r.birth_date || '2016-01-01';
+      const regularClass = r.regular_class || r.class_name || '';
+      const campusId = resolveStudentCampusId(r);
+      return {
+        id: r.id,
+        code: r.code,
+        previous_student_code: r.previous_student_code || undefined,
+        name: r.name,
+        dob,
+        birth_date: dob,
+        gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
+        is_royal_student: isRoyal,
+        student_type: isRoyal ? 'royal' : 'external',
+        has_snack: isRoyal,
+        campus_id: campusId,
+        school_name: r.school_name || (campusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH'),
+        regular_class: regularClass,
+        class_name: regularClass,
+        parent_name: r.parent_name || '',
+        parent_phone: r.parent_phone || '',
+        medical_notes: r.medical_notes || '',
+        avatar_url: r.avatar_url || undefined,
+        status: r.status || 'active',
+        created_at: r.created_at || new Date().toISOString().split('T')[0],
+      };
+    }
 
     case 'enrollments':
       return {

@@ -170,6 +170,46 @@ export function getInitialStore(): AppStore {
 }
 
 /**
+ * Tự động chuẩn hóa mã cơ sở ('pmh' | 'pl') cho học sinh dựa trên campus_id hoặc tên trường/lớp
+ */
+export function resolveStudentCampusId(student?: Partial<Student> | null): 'pmh' | 'pl' {
+  if (!student) return 'pmh';
+  const rawCampus = String(student.campus_id || '').trim().toLowerCase();
+  if (rawCampus === 'pl' || rawCampus === 'camp_pl') return 'pl';
+  if (rawCampus === 'pmh' || rawCampus === 'camp_pmh') return 'pmh';
+
+  const combinedText = `${student.school_name || ''} ${student.regular_class || ''} ${student.class_name || ''} ${student.medical_notes || ''}`.toLowerCase();
+  if (
+    combinedText.includes('phú lâm') ||
+    combinedText.includes('phu lam') ||
+    combinedText.includes('quận 6') ||
+    combinedText.includes('bình tân') ||
+    /\bpl\d*\b/i.test(combinedText)
+  ) {
+    return 'pl';
+  }
+  return 'pmh';
+}
+
+export function normalizeStudentRecord(student: Student): Student {
+  const campus_id = resolveStudentCampusId(student);
+  const isRoyal = Boolean(student.is_royal_student ?? (student.student_type === 'royal'));
+  const dob = student.dob || student.birth_date || '2016-01-01';
+  const regular_class = student.regular_class || student.class_name || '';
+  return {
+    ...student,
+    dob,
+    birth_date: dob,
+    campus_id,
+    is_royal_student: isRoyal,
+    student_type: isRoyal ? 'royal' : 'external',
+    has_snack: isRoyal,
+    regular_class,
+    class_name: regular_class,
+  };
+}
+
+/**
  * Tùy chọn nạp bộ dữ liệu mẫu Demo (Chỉ dùng khi Quản trị viên chủ động bấm nút nạp dữ liệu thử nghiệm)
  */
 export function getSampleDemoStore(): AppStore {
@@ -178,7 +218,7 @@ export function getSampleDemoStore(): AppStore {
     users: initialUsers,
     teachers: initialTeachers,
     classes: initialClasses,
-    students: initialStudents,
+    students: initialStudents.map(normalizeStudentRecord),
     enrollments: initialEnrollments,
     invoices: initialInvoices,
     sessions: initialSessions,
@@ -335,7 +375,7 @@ export function loadStore(): AppStore {
       timeSlots: Array.isArray(parsed.timeSlots) ? parsed.timeSlots : initial.timeSlots,
       teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
       classes: Array.isArray(parsed.classes) ? parsed.classes : [],
-      students: Array.isArray(parsed.students) ? parsed.students : [],
+      students: Array.isArray(parsed.students) ? parsed.students.map(normalizeStudentRecord) : [],
       enrollments: deduplicateEnrollments(Array.isArray(parsed.enrollments) ? parsed.enrollments : []),
       invoices: Array.isArray(parsed.invoices) ? parsed.invoices : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],

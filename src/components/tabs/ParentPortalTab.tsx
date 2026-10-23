@@ -617,16 +617,28 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
     let newStudent: Student | null = null;
     if (!existingStudent) {
+      const targetCampusId: 'pmh' | 'pl' =
+        lead.desired_campus_id === 'camp_pl' || lead.desired_campus_id === 'pl' ? 'pl' : 'pmh';
+      const regularCls = lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường');
       newStudent = {
         id: studentId,
         code: studentCode,
         name: lead.student_name.trim(),
         dob: lead.student_dob,
+        birth_date: lead.student_dob,
         gender: 'Nam',
+        campus_id: targetCampusId,
+        student_type: lead.is_royal_student ? 'royal' : 'external',
+        has_snack: lead.is_royal_student,
         parent_name: lead.parent_name.trim(),
         parent_phone: lead.parent_phone.trim(),
-        school_name: lead.is_royal_student ? 'Royal School' : 'Trường ngoài',
-        regular_class: lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường'),
+        school_name: lead.is_royal_student
+          ? targetCampusId === 'pl'
+            ? 'Royal School Phú Lâm'
+            : 'Royal School PMH'
+          : lead.current_school || 'Trường ngoài',
+        regular_class: regularCls,
+        class_name: regularCls,
         is_royal_student: lead.is_royal_student,
         medical_notes: finalMedicalNotes,
         status: 'active',

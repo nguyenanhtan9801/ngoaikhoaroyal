@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   Users, 
   UserPlus, 
@@ -44,7 +44,8 @@ import {
   getDefaultClassStartDate,
   calculateRemainingSessions,
   calculateClassProratedPricing,
-  getCampusPricingForClass
+  getCampusPricingForClass,
+  resolveStudentCampusId
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
@@ -71,6 +72,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [search, setSearch] = useState(initialSearch || '');
+  const [selectedCampus, setSelectedCampus] = useState<'all' | 'pmh' | 'pl'>('all');
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
   const [onlyHealth, setOnlyHealth] = useState(focusHealth);
 
@@ -114,6 +116,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     name: '',
     dob: '2016-01-01',
     gender: 'Nam' as 'Nam' | 'Nữ',
+    campus_id: 'pmh' as 'pmh' | 'pl',
     parent_name: '',
     parent_phone: '',
     school_name: 'Royal School PMH',
@@ -233,23 +236,33 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   } | null>(null);
   const [trialNotes, setTrialNotes] = useState('');
 
-  // Filter students
-  const filteredStudents = store.students.filter(s => {
-    const matchSearch = 
-      s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.code.toLowerCase().includes(search.toLowerCase()) ||
-      s.parent_phone.includes(search) ||
-      (s.medical_notes && s.medical_notes.toLowerCase().includes(search.toLowerCase()));
+  // Filter students combining Campus ('all' | 'pmh' | 'pl'), Type, Medical & Search Query
+  const filteredStudents = useMemo(() => {
+    return store.students.filter((student) => {
+      const studentCampus = resolveStudentCampusId(student);
+      const matchCampus = selectedCampus === 'all' || studentCampus === selectedCampus;
 
-    const matchType = 
-      filterType === 'all' ? true :
-      filterType === 'royal' ? s.is_royal_student :
-      !s.is_royal_student;
+      const isRoyal = Boolean(student.is_royal_student ?? (student.student_type === 'royal'));
+      const matchType =
+        filterType === 'all' ? true :
+        filterType === 'royal' ? isRoyal :
+        !isRoyal;
 
-    const matchHealth = onlyHealth ? !!s.medical_notes && s.medical_notes.trim().length > 0 : true;
+      const matchHealth = onlyHealth
+        ? Boolean(student.medical_notes && student.medical_notes.trim().length > 0 && student.medical_notes !== 'Bình thường')
+        : true;
 
-    return matchSearch && matchType && matchHealth;
-  });
+      const query = search.trim().toLowerCase();
+      const matchSearch =
+        !query ||
+        student.name.toLowerCase().includes(query) ||
+        student.code.toLowerCase().includes(query) ||
+        student.parent_phone.includes(query) ||
+        Boolean(student.medical_notes && student.medical_notes.toLowerCase().includes(query));
+
+      return matchCampus && matchType && matchHealth && matchSearch;
+    });
+  }, [store.students, selectedCampus, filterType, onlyHealth, search]);
 
   // Convert Outside Student to Royal Student
   const handleConfirmConvert = (student: Student) => {
@@ -307,7 +320,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         'STUDENT_UPDATE',
         'ACADEMIC',
         'Hồ sơ Học sinh',
-        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code})${formData.avatar_url !== editingStudent.avatar_url ? ' - Đồng bộ hình thẻ vào Cloud' : ''}`,
+        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${formData.avatar_url !== editingStudent.avatar_url ? ' - Đồng bộ hình thẻ vào Cloud' : ''}`,
         null,
         {
           target_id: editingStudent.code,
@@ -316,12 +329,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             photo_stored_at: storedAt,
             before: {
               name: editingStudent.name,
+              campus_id: resolveStudentCampusId(editingStudent),
               parent_phone: editingStudent.parent_phone,
               regular_class: editingStudent.regular_class,
               medical_notes: editingStudent.medical_notes,
             },
             after: {
               name: formData.name,
+              campus_id: formData.campus_id,
               parent_phone: formData.parent_phone,
               regular_class: formData.regular_class,
               medical_notes: formData.medical_notes,
@@ -336,7 +351,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           s.id === editingStudent.id 
             ? { 
                 ...s, 
-                ...formData, 
+                ...formData,
+                birth_date: formData.dob,
+                class_name: formData.regular_class,
+                student_type: formData.is_royal_student ? 'royal' : 'external',
+                has_snack: formData.is_royal_student,
                 photo_stored_at: storedAt, 
                 photo_updated_at: formData.avatar_url ? (s.photo_updated_at || new Date().toISOString().split('T')[0]) : undefined 
               } 
@@ -356,11 +375,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         code,
         name: formData.name,
         dob: formData.dob,
+        birth_date: formData.dob,
         gender: formData.gender,
+        campus_id: formData.campus_id,
+        student_type: formData.is_royal_student ? 'royal' : 'external',
+        has_snack: formData.is_royal_student,
         parent_name: formData.parent_name,
         parent_phone: formData.parent_phone,
         school_name: formData.school_name,
         regular_class: formData.regular_class,
+        class_name: formData.regular_class,
         is_royal_student: formData.is_royal_student,
         medical_notes: formData.medical_notes,
         avatar_url: formData.avatar_url || undefined,
@@ -374,7 +398,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         'STUDENT_CREATE',
         'ACADEMIC',
         'Hồ sơ Học sinh',
-        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
+        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
         null,
         {
           target_id: newStudent.code,
@@ -385,6 +409,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             after: {
               code: newStudent.code,
               name: newStudent.name,
+              campus_id: newStudent.campus_id,
               parent_phone: newStudent.parent_phone,
               is_royal: newStudent.is_royal_student,
             }
@@ -401,8 +426,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     showToast(
       editingStudent
-        ? `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code}) thành công!`
-        : `Đã thêm mới hồ sơ học viên ${formData.name} thành công!`,
+        ? `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`
+        : `Đã thêm mới hồ sơ học viên ${formData.name} (Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`,
       'success',
       { title: editingStudent ? 'Cập nhật hồ sơ học sinh' : 'Thêm mới học sinh' }
     );
@@ -415,12 +440,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     setEditingStudent(student);
     setFormData({
       name: student.name,
-      dob: student.dob,
+      dob: student.dob || student.birth_date || '2016-01-01',
       gender: student.gender,
+      campus_id: resolveStudentCampusId(student),
       parent_name: student.parent_name,
       parent_phone: student.parent_phone,
       school_name: student.school_name || '',
-      regular_class: student.regular_class || '',
+      regular_class: student.regular_class || student.class_name || '',
       is_royal_student: student.is_royal_student,
       medical_notes: student.medical_notes || '',
       avatar_url: student.avatar_url || '',
@@ -675,12 +701,52 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     <div className="space-y-6">
       
       {/* Action Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          {/* Filter Pills */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Cụm bộ lọc Cơ sở (Segmented Filter Pills) */}
+          <div className="flex items-center gap-1.5 bg-slate-900/80 p-1 rounded-xl border border-slate-800">
+            <button
+              onClick={() => setSelectedCampus('all')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                selectedCampus === 'all'
+                  ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Tất cả cơ sở ({store.students.length})
+            </button>
+
+            <button
+              onClick={() => setSelectedCampus('pmh')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                selectedCampus === 'pmh'
+                  ? 'bg-sky-600 text-white shadow-md font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full bg-sky-400"></span>
+              Phú Mỹ Hưng ({store.students.filter(s => resolveStudentCampusId(s) === 'pmh').length})
+            </button>
+
+            <button
+              onClick={() => setSelectedCampus('pl')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                selectedCampus === 'pl'
+                  ? 'bg-purple-600 text-white shadow-md font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+              Phú Lâm ({store.students.filter(s => resolveStudentCampusId(s) === 'pl').length})
+            </button>
+          </div>
+
+          <div className="h-5 w-px bg-slate-800 hidden sm:block" />
+
+          {/* Filter Pills theo phân loại học viên */}
           <button
             onClick={() => setFilterType('all')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               filterType === 'all'
                 ? 'bg-amber-500 text-slate-950 font-bold'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -690,7 +756,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           </button>
           <button
             onClick={() => setFilterType('royal')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               filterType === 'royal'
                 ? 'bg-amber-500 text-slate-950 font-bold'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -700,7 +766,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           </button>
           <button
             onClick={() => setFilterType('outside')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               filterType === 'outside'
                 ? 'bg-amber-500 text-slate-950 font-bold'
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -710,13 +776,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           </button>
           <button
             onClick={() => setOnlyHealth(!onlyHealth)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
               onlyHealth
                 ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/20'
                 : 'bg-slate-900 text-rose-400 hover:text-rose-300 border border-rose-500/30'
             }`}
           >
-            <span>Có lưu ý y tế ({store.students.filter(s => !!s.medical_notes).length})</span>
+            <span>Có lưu ý y tế ({store.students.filter(s => Boolean(s.medical_notes && s.medical_notes !== 'Bình thường')).length})</span>
           </button>
         </div>
 
@@ -749,14 +815,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           <button
             onClick={() => {
               setEditingStudent(null);
+              const defaultCampus = selectedCampus === 'pl' ? 'pl' : 'pmh';
               setFormData({
                 name: '',
                 dob: '2016-01-01',
                 gender: 'Nam',
+                campus_id: defaultCampus,
                 parent_name: '',
                 parent_phone: '',
-                school_name: 'Royal School PMH',
-                regular_class: 'Grade 4A1',
+                school_name: defaultCampus === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH',
+                regular_class: defaultCampus === 'pl' ? 'Grade 4PL1' : 'Grade 4A1',
                 is_royal_student: true,
                 medical_notes: '',
                 avatar_url: '',
@@ -764,7 +832,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               });
               setShowAddModal(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0 cursor-pointer"
           >
             <UserPlus className="w-4 h-4 text-slate-950" />
             <span>Thêm Học Viên</span>
@@ -872,8 +940,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       </td>
 
                       <td className="py-3 px-3 text-slate-300">
-                        <div>{student.school_name || 'Royal School'}</div>
-                        <div className="text-[10px] text-slate-500">{student.regular_class || 'Chưa xếp lớp'}</div>
+                        <div className="font-medium text-white">{student.school_name || 'Royal School'}</div>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          {resolveStudentCampusId(student) === 'pl' ? (
+                            <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono font-bold text-[10px] leading-none">
+                              [PL]
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/40 font-mono font-bold text-[10px] leading-none">
+                              [PMH]
+                            </span>
+                          )}
+                          <span className="text-[11px] text-slate-400 font-medium">
+                            {student.regular_class || student.class_name || 'Chưa xếp lớp'}
+                          </span>
+                        </div>
                       </td>
 
                       <td className="py-3 px-3">
@@ -1098,8 +1179,19 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       <span>Sinh: {student.dob}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <GraduationCap className="w-3.5 h-3.5 text-slate-500" />
-                      <span>{student.school_name} &bull; {student.regular_class || 'Chưa xếp lớp'}</span>
+                      <GraduationCap className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {resolveStudentCampusId(student) === 'pl' ? (
+                          <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono font-bold text-[10px] leading-none">
+                            [PL]
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/40 font-mono font-bold text-[10px] leading-none">
+                            [PMH]
+                          </span>
+                        )}
+                        <span className="text-slate-300">{student.school_name || 'Royal School'} &bull; {student.regular_class || student.class_name || 'Chưa xếp lớp'}</span>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Phone className="w-3.5 h-3.5 text-slate-500" />
@@ -1399,6 +1491,82 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
                     placeholder="0903..."
                   />
+                </div>
+              </div>
+
+              {/* Cơ sở trường học * (Radio / Segmented Selector) */}
+              <div>
+                <label className="block text-slate-300 font-bold mb-1.5">
+                  Cơ sở trường học <span className="text-rose-400">*</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <label
+                    onClick={() => {
+                      const nextSchool =
+                        formData.is_royal_student &&
+                        (!formData.school_name || formData.school_name.includes('Royal School'))
+                          ? 'Royal School PMH'
+                          : formData.school_name;
+                      setFormData({
+                        ...formData,
+                        campus_id: 'pmh',
+                        school_name: nextSchool,
+                      });
+                    }}
+                    className={`flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                      formData.campus_id === 'pmh'
+                        ? 'bg-sky-500/15 border-sky-500 text-white shadow-sm ring-1 ring-sky-500/30'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="student_campus_id"
+                      value="pmh"
+                      checked={formData.campus_id === 'pmh'}
+                      onChange={() => {}}
+                      className="accent-sky-500"
+                    />
+                    <span className="w-2 h-2 rounded-full bg-sky-400 shrink-0"></span>
+                    <div className="leading-tight">
+                      <div className="font-bold text-xs">Cơ sở Phú Mỹ Hưng (PMH)</div>
+                      <div className="text-[10px] text-slate-400 font-mono">campus_id: &apos;pmh&apos;</div>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => {
+                      const nextSchool =
+                        formData.is_royal_student &&
+                        (!formData.school_name || formData.school_name.includes('Royal School'))
+                          ? 'Royal School Phú Lâm'
+                          : formData.school_name;
+                      setFormData({
+                        ...formData,
+                        campus_id: 'pl',
+                        school_name: nextSchool,
+                      });
+                    }}
+                    className={`flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                      formData.campus_id === 'pl'
+                        ? 'bg-purple-500/15 border-purple-500 text-white shadow-sm ring-1 ring-purple-500/30'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="student_campus_id"
+                      value="pl"
+                      checked={formData.campus_id === 'pl'}
+                      onChange={() => {}}
+                      className="accent-purple-500"
+                    />
+                    <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0"></span>
+                    <div className="leading-tight">
+                      <div className="font-bold text-xs">Cơ sở Phú Lâm (PL)</div>
+                      <div className="text-[10px] text-slate-400 font-mono">campus_id: &apos;pl&apos;</div>
+                    </div>
+                  </label>
                 </div>
               </div>
 

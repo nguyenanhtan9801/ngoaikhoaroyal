@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { AppStore } from './storage';
+import { AppStore, resolveStudentCampusId } from './storage';
 import { formatCapitalizedName } from './formatters';
 import {
   Campus,
@@ -208,6 +208,7 @@ export function exportMasterWorkbook(
     'Họ Và Tên Học Sinh',
     'Ngày Sinh',
     'Giới Tính',
+    'Mã Cơ Sở',
     'Học Sinh Royal (Cấp Bánh Sữa)',
     'Trường Đang Học',
     'Lớp Chính Khóa',
@@ -224,6 +225,7 @@ export function exportMasterWorkbook(
     'Họ Và Tên Học Sinh': st.name,
     'Ngày Sinh': st.dob,
     'Giới Tính': st.gender,
+    'Mã Cơ Sở': resolveStudentCampusId(st).toUpperCase(),
     'Học Sinh Royal (Cấp Bánh Sữa)': st.is_royal_student ? 'CÓ' : 'KHÔNG',
     'Trường Đang Học': st.school_name || '',
     'Lớp Chính Khóa': st.regular_class || '',
@@ -931,6 +933,16 @@ export async function parseMasterExcelFile(
             const rawRoyal = String(r['Học Sinh Royal (Cấp Bánh Sữa)'] ?? r['is_royal_student'] ?? 'CÓ').toLowerCase();
             const isRoyal = rawRoyal.includes('có') || rawRoyal.includes('yes') || rawRoyal.includes('true') || rawRoyal.includes('royal');
             const code = String(r['Mã Học Viên'] || r['code'] || `RY-2026-${String(idx + 1).padStart(5, '0')}`).trim();
+            const schoolName = String(r['Trường Đang Học'] || (isRoyal ? 'Royal School' : 'Trường ngoài')).trim();
+            const regularClass = String(r['Lớp Chính Khóa'] || '').trim();
+            const rawCampusCol = String(r['Mã Cơ Sở'] || r['campus_id'] || '').trim().toLowerCase();
+            const campusId = resolveStudentCampusId({
+              campus_id: (rawCampusCol === 'pl' || rawCampusCol === 'pmh' ? rawCampusCol : undefined) as any,
+              school_name: schoolName,
+              regular_class: regularClass,
+              medical_notes: String(r['Lưu Ý Y Tế & Thực Phẩm'] || '').trim(),
+            });
+            const dob = String(r['Ngày Sinh'] || r['dob'] || '2016-01-01').trim();
             return {
               id: String(r['ID Học Sinh'] || r['id'] || `std_${code.toLowerCase().replace(/[^a-z0-9]/g, '_')}`).trim(),
               code,
@@ -938,12 +950,17 @@ export async function parseMasterExcelFile(
                 ? String(r['Mã Cũ (Nếu Có)'] || r['Mã Cũ (Nếu chuyển từ Ngoài vào)']).trim()
                 : undefined,
               name: formatCapitalizedName(String(r['Họ Và Tên Học Sinh'] || r['Họ Và Tên'] || r['name']).trim()),
-              dob: String(r['Ngày Sinh'] || r['dob'] || '2016-01-01').trim(),
+              dob,
+              birth_date: dob,
               gender: String(r['Giới Tính'] || 'Nam').includes('Nữ') ? 'Nữ' : 'Nam',
+              campus_id: campusId,
+              student_type: isRoyal ? 'royal' : 'external',
+              has_snack: isRoyal,
               parent_name: formatCapitalizedName(String(r['Họ Tên Phụ Huynh'] || r['Phụ Huynh'] || '').trim()),
               parent_phone: String(r['SĐT Phụ Huynh'] || '').trim(),
-              school_name: String(r['Trường Đang Học'] || (isRoyal ? 'Royal School' : 'Trường ngoài')).trim(),
-              regular_class: String(r['Lớp Chính Khóa'] || '').trim(),
+              school_name: schoolName,
+              regular_class: regularClass,
+              class_name: regularClass,
               is_royal_student: isRoyal,
               medical_notes: String(r['Lưu Ý Y Tế & Thực Phẩm'] || '').trim(),
               status: 'active',

@@ -310,16 +310,21 @@ export interface Student {
   name: string;
   normalized_name?: string;
   dob: string;
+  birth_date?: string;
   date_of_birth?: string;
   grade_level?: string;
   student_type?: 'royal' | 'external';
+  has_snack?: boolean; // Bánh sữa
+  campus_id?: 'pmh' | 'pl'; // MÃ CƠ SỞ CHÍNH THỨC: 'pmh' | 'pl'
   gender: 'Nam' | 'Nữ';
   parent_name: string;
   parent_phone: string;
-  school_name?: string;
-  regular_class?: string;
+  school_name?: string; // Royal School PMH / Royal School PL
+  regular_class?: string; // 3A1, 2A1...
+  class_name?: string; // 3A1, 2A1...
   is_royal_student: boolean; // true = eligible for snacks
   medical_notes?: string; // e.g. "Dị ứng đậu phộng, uống sữa không đường"
+  current_classes?: string[];
   avatar_url?: string; // Hình thẻ học sinh 3x4 (URL hoặc base64, có thể tải lên sau)
   photo_stored_at?: string; // Vị trí thư mục Google Drive (VD: Google Drive: RoyalSchool_Drive_Storage_2026/01_TheHocVien/RY-2026-00001.jpg)
   drive_url?: string; // Link mở tệp trực tiếp trên Google Drive
