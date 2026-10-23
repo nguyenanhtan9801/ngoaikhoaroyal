@@ -62,6 +62,7 @@ export interface AcademicTerm {
   academic_year: string;
   start_date: string;
   end_date: string;
+  total_weeks?: number;
   is_active: boolean;
   status: TermStatus;
   description?: string;
@@ -83,8 +84,23 @@ export interface Subject {
   code: string;
   name: string;
   category: string;
-  standard_duration: string;
+  standard_duration?: string;
   description?: string;
+  required_room_type?: string;
+  is_active?: boolean;
+}
+
+export type SubjectMaster = Subject;
+
+export interface CampusSubjectFee {
+  id: string;                     // PK: term_id + campus_id + subject_id
+  term_id: string;                // FK -> AcademicTerm.id
+  campus_id: string;              // FK -> Campus.id
+  subject_id: string;             // FK -> SubjectMaster.id
+  standard_sessions: number;      // Số buổi chuẩn (VD: 24 buổi)
+  price_per_session: number;      // Đơn giá 1 buổi Ceil chuẩn của cơ sở (VD: 166.250 đ)
+  full_package_fee: number;       // standard_sessions * price_per_session
+  is_activated: boolean;          // Đã kích hoạt tuyển sinh tại cơ sở này hay chưa
 }
 
 export type DiscountType = 'none' | 'percentage' | 'fixed_amount';
@@ -177,29 +193,73 @@ export interface TimeSlot {
 export interface Teacher {
   id: string;
   user_id?: string;
+  code?: string; // Mã GV (VD: GV-PMH-001)
   name: string;
   phone: string;
   email: string;
+  campus_id?: string; // Cơ sở hoạt động chính ('camp_pmh' | 'camp_pl' | 'all')
+  type?: 'permanent' | 'visiting'; // Cơ hữu (Permanent) | Thỉnh giảng (Visiting)
   teacher_type: 'permanent' | 'visiting';
-  fixed_rate_per_session: number; // for permanent
+  default_rate_per_period?: number; // Định mức thù lao chuẩn 1 tiết (VD: 150,000 VNĐ/tiết)
+  periods_per_session?: number; // Số tiết quy đổi trên 1 buổi học chuẩn (Mặc định: 2 tiết = 90 phút)
+  weekend_multiplier?: number; // Hệ số phụ cấp ca cuối tuần T7/CN (Mặc định: 1.0, ví dụ 1.2 = +20%)
+  custom_subject_rates?: {
+    subject_id: string;
+    rate_per_period: number; // Đơn giá tiết riêng nếu dạy môn đặc thù (VD: STEM/Robotics)
+  }[];
+  bank_account?: {
+    bank_name: string;
+    account_number: string;
+    account_holder: string;
+  };
+  fixed_rate_per_session: number; // for permanent (= default_rate_per_period * periods_per_session)
   percentage_rate: number; // for visiting (e.g. 60%)
   status: 'active' | 'inactive';
   subjects?: string[];
 }
 
+export interface TeacherAttendanceRecord {
+  id: string;
+  class_id: string;
+  term_id: string;
+  campus_id: string;
+  session_date: string; // YYYY-MM-DD
+  session_number: number; // Buổi thứ mấy của lớp
+  periods_count: number; // Số tiết thực dạy trong buổi (Mặc định: 2 tiết)
+  assigned_teacher_id: string; // Giáo viên phân công chính thức của lớp
+  actual_teacher_id: string; // Giáo viên thực tế đứng lớp (chính thức hoặc dạy thay)
+  is_substitute: boolean; // true nếu là ca dạy thay
+  substitute_reason?: string; // Lý do dạy thay
+  status: 'present' | 'late' | 'absent_excused' | 'absent_unexcused' | 'substitute';
+  late_minutes?: number; // Số phút đi muộn (nếu status === 'late')
+  check_in_time?: string; // Giờ vào lớp thực tế (VD: '16:55')
+  rate_per_period: number; // Đơn giá tiết áp dụng tại thời điểm chấm công
+  total_payout: number; // Thành tiền buổi dạy = periods_count * rate_per_period (hoặc trừ phạt nếu quy định)
+  verified_by?: string; // Học vụ xác nhận
+  notes?: string; // Ghi chú (VD: "Cô Hương nghỉ ốm, Thầy Tuấn dạy thay 2 tiết")
+}
+
 export interface ExtracurricularClass {
   id: string;
   name: string;
+  code?: string;
   term_id: string;
   campus_id: string;
   subject_id: string;
   facility_id: string;
+  room_id?: string;
   time_slot_id: string;
+  time_slot?: string;
   days_of_week?: string[]; // e.g. ['T2', 'T4'] - Exactly 2 days per class
+  start_date?: string; // Ngày bắt đầu mở lớp (YYYY-MM-DD)
+  end_date?: string; // Ngày kết thúc dự kiến (YYYY-MM-DD)
+  standard_sessions?: number; // Số buổi chuẩn ban đầu của môn học trong khóa (VD: 24)
   primary_teacher_id: string;
   max_students: number;
-  total_sessions: number;
-  full_course_fee: number;
+  current_students?: number;
+  total_sessions: number; // Số buổi thực tế của lớp (VD: 18 hoặc 24)
+  full_course_fee: number; // Học phí theo số buổi thực tế
+  tuition_fee?: number; // Học phí chuẩn theo số buổi thực tế (tương thích schema)
   price_per_session: number;
   status: 'active' | 'completed' | 'canceled';
   allow_over_quota?: boolean;
@@ -210,7 +270,11 @@ export interface Student {
   code: string; // RY-2026-xxxxx or EXT-2026-xxxxx
   previous_student_code?: string;
   name: string;
+  normalized_name?: string;
   dob: string;
+  date_of_birth?: string;
+  grade_level?: string;
+  student_type?: 'royal' | 'external';
   gender: 'Nam' | 'Nữ';
   parent_name: string;
   parent_phone: string;
@@ -226,6 +290,8 @@ export interface Student {
   status: 'active' | 'graduated' | 'dropped';
   created_at: string;
 }
+
+export type TeacherWorkSession = TeacherAttendanceRecord;
 
 export interface Enrollment {
   id: string;
@@ -380,18 +446,27 @@ export interface ClassTransfer {
   created_by: string;
 }
 
+export type TransferRecord = ClassTransfer;
+
 export interface TeacherPayrollSettlement {
   id: string;
   teacher_id: string;
-  class_id: string;
+  class_id: string; // Có thể lưu class_id cụ thể hoặc 'all' khi chốt toàn khóa
   term_id: string;
+  campus_id?: string;
   taught_sessions: number;
   substitute_sessions: number;
+  total_periods?: number;
+  substitute_periods_added?: number;
+  absent_periods_deducted?: number;
   class_revenue: number;
-  calculation_type: 'fixed' | 'percentage';
+  calculation_type: 'fixed' | 'percentage' | 'period_rate';
   total_payroll: number;
   settled_date: string;
   is_settled: boolean;
+  verified_by?: string;
+  bank_reference?: string;
+  notes?: string;
 }
 
 export interface RegisteredSubjectItem {
@@ -502,7 +577,9 @@ export type LogActionType =
   | 'EXCEL_IMPORT'            // Import Master Excel
   | 'USER_CREATE'             // Tạo tài khoản nhân sự
   | 'USER_PASSWORD_CHANGE'    // Đổi mật khẩu
-  | 'STORAGE_CONFIG_UPDATE';  // Cập nhật cấu hình lưu trữ Cloud
+  | 'STORAGE_CONFIG_UPDATE'   // Cập nhật cấu hình lưu trữ Cloud
+  | 'TEACHER_RATE_UPDATE'     // Cập nhật định mức thù lao tiết dạy giáo viên
+  | 'TEACHER_PAYROLL_SETTLE'; // Xác nhận quyết toán chi trả thù lao giáo viên
 
 export interface AuditLogRecord {
   id: string;
@@ -523,4 +600,43 @@ export interface AuditLogRecord {
     status?: 'success' | 'failed';
     [key: string]: any;
   };
+}
+
+export interface AppStore {
+  users: AppUser[];
+  campuses: Campus[];
+  terms: AcademicTerm[];
+  subjectCategories: SubjectCategory[];
+  subjects: Subject[];
+  termSubjects: TermSubjectConfig[];
+  campusPricings: CampusTermPricing[];
+  pricings: TermCampusSubjectPricing[];
+  facilities: Facility[];
+  timeSlots: TimeSlot[];
+  teachers: Teacher[];
+  classes: ExtracurricularClass[];
+  students: Student[];
+  enrollments: Enrollment[];
+  invoices: TuitionInvoice[];
+  sessions: ClassSession[];
+  teacherAttendance?: TeacherAttendanceRecord[];
+  attendance: AttendanceRecord[];
+  makeupCredits: MakeupCredit[];
+  transfers: ClassTransfer[];
+  payrollSettlements: TeacherPayrollSettlement[];
+  parentRegistrations: ParentRegistration[];
+  notifications: SystemNotification[];
+  auditLogs: AuditLogRecord[];
+  telecomConfig: {
+    zaloZnsEnabled: boolean;
+    smsBrandnameEnabled: boolean;
+    emailEnabled: boolean;
+    brandName: string;
+  };
+  supabaseConfig: {
+    url: string;
+    anonKey: string;
+    isConnected: boolean;
+  };
+  cloudStorageConfig?: CloudStorageConfig;
 }

@@ -12,6 +12,7 @@ import {
   Facility,
   TimeSlot,
   Teacher,
+  TeacherAttendanceRecord,
   ExtracurricularClass,
   Student,
   Enrollment,
@@ -26,8 +27,11 @@ import {
   AppUser,
   AuditLogRecord,
   LogActionType,
-  CloudStorageConfig
+  CloudStorageConfig,
+  AppStore,
 } from '../types';
+
+export type { AppStore };
 
 import {
   initialCampuses,
@@ -45,6 +49,7 @@ import {
   initialEnrollments,
   initialInvoices,
   initialSessions,
+  initialTeacherAttendance,
   initialAttendance,
   initialMakeupCredits,
   initialParentRegistrations,
@@ -53,44 +58,6 @@ import {
   initialAuditLogs,
   initialTransfers,
 } from '../data/seedData';
-
-export interface AppStore {
-  users: AppUser[];
-  campuses: Campus[];
-  terms: AcademicTerm[];
-  subjectCategories: SubjectCategory[];
-  subjects: Subject[];
-  termSubjects: TermSubjectConfig[];
-  campusPricings: CampusTermPricing[];
-  pricings: TermCampusSubjectPricing[];
-  facilities: Facility[];
-  timeSlots: TimeSlot[];
-  teachers: Teacher[];
-  classes: ExtracurricularClass[];
-  students: Student[];
-  enrollments: Enrollment[];
-  invoices: TuitionInvoice[];
-  sessions: ClassSession[];
-  attendance: AttendanceRecord[];
-  makeupCredits: MakeupCredit[];
-  transfers: ClassTransfer[];
-  payrollSettlements: TeacherPayrollSettlement[];
-  parentRegistrations: ParentRegistration[];
-  notifications: SystemNotification[];
-  auditLogs: AuditLogRecord[];
-  telecomConfig: {
-    zaloZnsEnabled: boolean;
-    smsBrandnameEnabled: boolean;
-    emailEnabled: boolean;
-    brandName: string;
-  };
-  supabaseConfig: {
-    url: string;
-    anonKey: string;
-    isConnected: boolean;
-  };
-  cloudStorageConfig?: CloudStorageConfig;
-}
 
 const STORAGE_KEY = 'royal_extracurricular_store_v3';
 
@@ -115,6 +82,7 @@ export function getInitialStore(): AppStore {
     enrollments: initialEnrollments,
     invoices: initialInvoices,
     sessions: initialSessions,
+    teacherAttendance: initialTeacherAttendance,
     attendance: initialAttendance,
     makeupCredits: initialMakeupCredits,
     transfers: initialTransfers,
@@ -232,8 +200,8 @@ export function loadStore(): AppStore {
     const parsed = JSON.parse(raw);
     const initial = getInitialStore();
 
-    // If cached store is from old schema/count (not 50 students or not 5 classes), reset to initial
-    if (!parsed.students || parsed.students.length !== 50 || !parsed.classes || parsed.classes.length !== 5) {
+    // If cached store is from old schema/count, reset to initial
+    if (!parsed.students || parsed.students.length < 10 || !parsed.classes || parsed.classes.length < 5) {
       saveStore(initial);
       return initial;
     }
@@ -442,6 +410,47 @@ export function loadStore(): AppStore {
       };
     });
 
+    // Migrate teachers with default_rate_per_period, periods_per_session, code, campus_id, bank_account
+    const rawTeachers: Teacher[] =
+      parsed.teachers && parsed.teachers.length > 0 ? [...parsed.teachers] : [...initial.teachers];
+    const teachers: Teacher[] = rawTeachers.map((tc, idx) => {
+      const seedMatch = initial.teachers.find(st => st.id === tc.id);
+      const periodsPerSession = tc.periods_per_session || seedMatch?.periods_per_session || 2;
+      const defaultRatePerPeriod =
+        tc.default_rate_per_period ||
+        seedMatch?.default_rate_per_period ||
+        Math.round((tc.fixed_rate_per_session || 300000) / periodsPerSession);
+      return {
+        ...seedMatch,
+        ...tc,
+        code: tc.code || seedMatch?.code || `GV-PMH-00${idx + 1}`,
+        campus_id: tc.campus_id || seedMatch?.campus_id || 'camp_pmh',
+        type: tc.type || tc.teacher_type || seedMatch?.type || 'permanent',
+        teacher_type: tc.teacher_type || tc.type || seedMatch?.teacher_type || 'permanent',
+        default_rate_per_period: defaultRatePerPeriod,
+        periods_per_session: periodsPerSession,
+        weekend_multiplier: tc.weekend_multiplier ?? seedMatch?.weekend_multiplier ?? 1.0,
+        custom_subject_rates: tc.custom_subject_rates || seedMatch?.custom_subject_rates || [],
+        bank_account: tc.bank_account || seedMatch?.bank_account || {
+          bank_name: 'Vietcombank',
+          account_number: `018100998877${idx}`,
+          account_holder: tc.name.toUpperCase(),
+        },
+        fixed_rate_per_session: defaultRatePerPeriod * periodsPerSession,
+      };
+    });
+
+    // Migrate or initialize teacherAttendance
+    const rawTeacherAttendance: TeacherAttendanceRecord[] =
+      parsed.teacherAttendance && parsed.teacherAttendance.length > 0
+        ? [...parsed.teacherAttendance]
+        : [...initialTeacherAttendance];
+    initialTeacherAttendance.forEach(seedTatt => {
+      if (!rawTeacherAttendance.some(ta => ta.id === seedTatt.id || (ta.class_id === seedTatt.class_id && ta.session_date === seedTatt.session_date))) {
+        rawTeacherAttendance.push(seedTatt);
+      }
+    });
+
     return {
       ...initial,
       ...parsed,
@@ -450,8 +459,10 @@ export function loadStore(): AppStore {
       subjectCategories,
       termSubjects,
       campusPricings,
+      teachers,
       classes: rawClasses,
       sessions: rawSessions,
+      teacherAttendance: rawTeacherAttendance,
       attendance: rawAttendance,
       makeupCredits,
       enrollments,
@@ -466,16 +477,130 @@ export function loadStore(): AppStore {
   }
 }
 
-export function saveStore(store: AppStore): void {
-  try {
-    const cleanStore: AppStore = {
-      ...store,
-      enrollments: deduplicateEnrollments(store.enrollments),
+/**
+ * Chuẩn hóa và làm sạch store trước khi serialize vào localStorage
+ * Ngăn chặn hoàn toàn lỗi QuotaExceededError do các chuỗi base64 ảnh/file đính kèm hoặc nhật ký audit log quá lớn
+ */
+function prepareStoreForStorage(store: AppStore, aggressiveLevel = 0): AppStore {
+  // 1. Cắt giảm auditLogs theo các mức: Level 0: 60 log mới nhất; Level 1: 25 log; Level 2: 10 log
+  const maxLogs = aggressiveLevel === 0 ? 60 : aggressiveLevel === 1 ? 25 : 10;
+  const sanitizedLogs = (store.auditLogs || []).slice(-maxLogs).map(log => {
+    if (aggressiveLevel > 0) {
+      const { details, ...rest } = log;
+      return rest;
+    }
+    // Ở level 0, nếu details chứa chuỗi quá dài thì lược bớt
+    if (log.details && JSON.stringify(log.details).length > 400) {
+      return {
+        ...log,
+        details: { summary: 'Compact audit details' }
+      };
+    }
+    return log;
+  });
+
+  // 2. Làm sạch chuỗi base64 trong attendance (proof_base64)
+  // Chỉ lưu proof_file_name, proof_url nếu không phải data URL khổng lồ
+  const sanitizedAttendance = (store.attendance || []).map(att => {
+    let proofBase64 = att.proof_base64;
+    let proofUrl = att.proof_url;
+
+    // Nếu proof_base64 dài hơn 300 ký tự -> không lưu vào localStorage
+    if (proofBase64 && proofBase64.length > 300) {
+      proofBase64 = undefined;
+    }
+    // Nếu proof_url là data URL base64 dài hơn 300 ký tự -> chuyển thành placeholder link
+    if (proofUrl && proofUrl.startsWith('data:') && proofUrl.length > 300) {
+      proofUrl = `blob:proof_${att.id}`;
+    }
+
+    return {
+      ...att,
+      proof_base64: aggressiveLevel >= 1 ? undefined : proofBase64,
+      proof_url: proofUrl,
     };
+  });
+
+  // 3. Làm sạch ảnh thẻ học sinh nếu là chuỗi base64 quá lớn
+  const sanitizedStudents = (store.students || []).map(s => {
+    let avatarUrl = s.avatar_url;
+    if (avatarUrl && avatarUrl.startsWith('data:') && avatarUrl.length > 300) {
+      avatarUrl = undefined;
+    }
+    return {
+      ...s,
+      avatar_url: avatarUrl,
+    };
+  });
+
+  // 4. Làm sạch ảnh minh chứng hóa đơn nếu là base64 quá lớn
+  const sanitizedInvoices = (store.invoices || []).map(inv => {
+    let proofImg = inv.proof_image_url;
+    if (proofImg && proofImg.startsWith('data:') && proofImg.length > 300) {
+      proofImg = undefined;
+    }
+    return {
+      ...inv,
+      proof_image_url: proofImg,
+    };
+  });
+
+  // 5. Làm sạch file đính kèm đơn tuyển sinh nếu là base64 quá lớn
+  const sanitizedRegistrations = (store.parentRegistrations || []).map(r => {
+    let attachUrl = r.attachment_url;
+    if (attachUrl && attachUrl.startsWith('data:') && attachUrl.length > 300) {
+      attachUrl = undefined;
+    }
+    return {
+      ...r,
+      attachment_url: attachUrl,
+    };
+  });
+
+  // 6. Giới hạn notifications
+  const maxNotifs = aggressiveLevel === 0 ? 40 : 15;
+  const sanitizedNotifications = (store.notifications || []).slice(-maxNotifs);
+
+  return {
+    ...store,
+    enrollments: deduplicateEnrollments(store.enrollments),
+    auditLogs: sanitizedLogs,
+    attendance: sanitizedAttendance,
+    students: sanitizedStudents,
+    invoices: sanitizedInvoices,
+    parentRegistrations: sanitizedRegistrations,
+    notifications: sanitizedNotifications,
+  };
+}
+
+export function saveStore(store: AppStore): void {
+  // Level 0: Standard sanitized write
+  try {
+    const cleanStore = prepareStoreForStorage(store, 0);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanStore));
     window.dispatchEvent(new Event('royal_store_updated'));
-  } catch (err) {
-    console.error('Failed to save store to localStorage', err);
+    return;
+  } catch (err: any) {
+    console.warn('Standard saveStore hit quota limit, executing progressive compaction level 1...', err);
+  }
+
+  // Level 1: Aggressive compaction
+  try {
+    const compactStoreL1 = prepareStoreForStorage(store, 1);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL1));
+    window.dispatchEvent(new Event('royal_store_updated'));
+    return;
+  } catch (err2: any) {
+    console.warn('Compaction level 1 hit quota, executing emergency compaction level 2...', err2);
+  }
+
+  // Level 2: Emergency compaction
+  try {
+    const compactStoreL2 = prepareStoreForStorage(store, 2);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL2));
+    window.dispatchEvent(new Event('royal_store_updated'));
+  } catch (finalErr: any) {
+    console.error('CRITICAL: Unable to save to localStorage after all progressive compactions', finalErr);
   }
 }
 
@@ -1732,5 +1857,44 @@ export function canModifyRedeemedCredit(
   };
 }
 
+/**
+ * Tính toán đơn giá tiết thực tế (rate_per_period) của giáo viên cho một bộ môn / lớp học
+ * Ưu tiên: Đơn giá riêng theo môn (custom_subject_rates) -> Đơn giá tiết mặc định (default_rate_per_period) -> fixed_rate_per_session / periods_per_session
+ */
+export function getTeacherEffectivePeriodRate(
+  teacher: Teacher | undefined,
+  subjectId?: string,
+  isWeekend: boolean = false
+): number {
+  if (!teacher) return 150000;
+  const periodsPerSession = teacher.periods_per_session || 2;
+  let basePeriodRate =
+    teacher.default_rate_per_period ||
+    Math.round((teacher.fixed_rate_per_session || 300000) / Math.max(1, periodsPerSession));
 
+  if (subjectId && teacher.custom_subject_rates && teacher.custom_subject_rates.length > 0) {
+    const customMatch = teacher.custom_subject_rates.find(cr => cr.subject_id === subjectId);
+    if (customMatch && customMatch.rate_per_period > 0) {
+      basePeriodRate = customMatch.rate_per_period;
+    }
+  }
 
+  if (isWeekend && teacher.weekend_multiplier && teacher.weekend_multiplier > 1) {
+    return Math.round(basePeriodRate * teacher.weekend_multiplier);
+  }
+
+  return basePeriodRate;
+}
+
+// Re-export Database Integrity Manager & 3NF validation services
+export {
+  DatabaseIntegrityManager,
+  normalizeVietnameseName,
+  normalizePhoneNumber,
+} from './schemaValidator';
+export type {
+  StudentMatchResult,
+  CreditEligibilityResult,
+  TransferCalculationResult,
+  IntegrityCheckResult,
+} from './schemaValidator';

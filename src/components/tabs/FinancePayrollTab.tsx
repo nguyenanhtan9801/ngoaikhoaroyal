@@ -27,11 +27,14 @@ import {
   SlidersHorizontal,
   BookmarkCheck,
   ChevronRight,
-  Eye
+  Eye,
+  FileSpreadsheet,
+  RefreshCw
 } from 'lucide-react';
-import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords, formatDaysListLabel, getClassDaysOfWeek } from '../../lib/storage';
-import { generateVietQRUrl } from '../../lib/vietqr';
-import { TuitionInvoice, Teacher, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord, ClassTransfer, CreditNote } from '../../types';
+import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords, formatDaysListLabel, getClassDaysOfWeek, getTeacherEffectivePeriodRate, formatDateVN } from '../../lib/storage';
+import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
+import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
+import { TuitionInvoice, Teacher, TeacherAttendanceRecord, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord, ClassTransfer, CreditNote } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
@@ -75,6 +78,27 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
   const [viewingQrInvoice, setViewingQrInvoice] = useState<TuitionInvoice | null>(null);
   const [verifyingInvoice, setVerifyingInvoice] = useState<TuitionInvoice | null>(null);
+
+  // Teacher Payroll & Workload BI Dashboard Filter & Modal States
+  const [payrollTermFilter, setPayrollTermFilter] = useState<string>(() => {
+    if (selectedTermId && selectedTermId !== 'all') return selectedTermId;
+    return store.terms.find(t => t.is_active)?.id || store.terms[0]?.id || 'term_fall_2026';
+  });
+  const [payrollCampusFilter, setPayrollCampusFilter] = useState<string>(selectedCampusId || 'all');
+  const [detailLogTeacher, setDetailLogTeacher] = useState<Teacher | null>(null);
+  const [printingPayslipTeacher, setPrintingPayslipTeacher] = useState<Teacher | null>(null);
+
+  useEffect(() => {
+    if (selectedTermId && selectedTermId !== 'all') {
+      setPayrollTermFilter(selectedTermId);
+    }
+  }, [selectedTermId]);
+
+  useEffect(() => {
+    if (selectedCampusId) {
+      setPayrollCampusFilter(selectedCampusId);
+    }
+  }, [selectedCampusId]);
 
   // Partial payment form states
   const [paymentMode, setPaymentMode] = useState<'full' | 'partial'>('full');
@@ -1338,183 +1362,1045 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         </div>
       )}
 
-      {/* SECTION 2: TEACHER PAYROLL SETTLEMENT */}
-      {activeSection === 'payroll' && (
-        <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
-            <div>
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <UserCheck className="w-5 h-5 text-amber-400" />
-                <span>Quyết Toán Thù Lao Giáo Viên Trọn Gói Cuối Khóa ({store.teachers.length} giáo viên)</span>
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                &bull; <strong>Giáo viên cơ hữu:</strong> Mức cố định trên từng buổi dạy thực tế (chấm công qua sổ điểm danh).<br />
-                &bull; <strong>Giáo viên thỉnh giảng / Đối tác:</strong> % Doanh thu thực tế của lớp (Nhà trường tạm ứng chi trả đủ).
-              </p>
-              <div className="flex items-center gap-2 mt-2 flex-wrap">
-                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Phạm vi quyết toán:</span>
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  Khóa: {store.terms.find(t => t.id === selectedTermId)?.name || 'Tất cả niên khóa'}
-                </span>
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-500/10 text-sky-300 border border-sky-500/20">
-                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
-                  Cơ sở: {store.campuses.find(c => c.id === selectedCampusId)?.name || 'Tất cả cơ sở'}
-                </span>
+      {/* SECTION 2: TEACHER PAYROLL & WORKLOAD BI DASHBOARD */}
+      {activeSection === 'payroll' && (() => {
+        // Synthesize teacher attendance records from store.teacherAttendance + fallback from completed store.sessions
+        const effectiveTeacherRecords: TeacherAttendanceRecord[] = (() => {
+          const baseList = [...(store.teacherAttendance || [])];
+          store.sessions.forEach(ses => {
+            if (ses.status !== 'completed') return;
+            const alreadyRecorded = baseList.some(
+              ta => ta.class_id === ses.class_id && ta.session_date === ses.session_date
+            );
+            if (!alreadyRecorded) {
+              const cls = store.classes.find(c => c.id === ses.class_id);
+              if (!cls) return;
+              const actualTeacher = store.teachers.find(t => t.id === (ses.actual_teacher_id || cls.primary_teacher_id));
+              const periods = actualTeacher?.periods_per_session || 2;
+              const rate = getTeacherEffectivePeriodRate(actualTeacher, cls.subject_id, false);
+              baseList.push({
+                id: `synth_${ses.id}`,
+                class_id: cls.id,
+                term_id: cls.term_id,
+                campus_id: cls.campus_id,
+                session_date: ses.session_date,
+                session_number: ses.session_number,
+                periods_count: periods,
+                assigned_teacher_id: cls.primary_teacher_id,
+                actual_teacher_id: ses.actual_teacher_id || cls.primary_teacher_id,
+                is_substitute: Boolean(ses.is_substitute || (ses.actual_teacher_id && ses.actual_teacher_id !== cls.primary_teacher_id)),
+                status: 'present',
+                check_in_time: '16:40',
+                rate_per_period: rate,
+                total_payout: periods * rate,
+                verified_by: 'Hệ thống đồng bộ Sổ điểm danh',
+                notes: 'Đồng bộ tự động từ ca học hoàn thành',
+              });
+            }
+          });
+          return baseList.filter(rec => {
+            const matchTerm = payrollTermFilter === 'all' || rec.term_id === payrollTermFilter;
+            const matchCampus = payrollCampusFilter === 'all' || rec.campus_id === payrollCampusFilter;
+            return matchTerm && matchCampus;
+          });
+        })();
+
+        // Compute per-teacher workload & payroll summary rows
+        const teacherPayrollRows = store.teachers
+          .filter(teacher => {
+            if (payrollCampusFilter === 'all') return true;
+            const teacherPrimaryCampus = teacher.campus_id || 'camp_pmh';
+            const hasSessionInCampus = effectiveTeacherRecords.some(
+              r => r.actual_teacher_id === teacher.id || r.assigned_teacher_id === teacher.id
+            );
+            const hasClassInCampus = store.classes.some(
+              c => c.primary_teacher_id === teacher.id && c.campus_id === payrollCampusFilter
+            );
+            return teacherPrimaryCampus === payrollCampusFilter || hasSessionInCampus || hasClassInCampus;
+          })
+          .map((teacher, idx) => {
+            const periodsPerSession = teacher.periods_per_session || 2;
+            const defaultRatePerPeriod =
+              teacher.default_rate_per_period ||
+              Math.round((teacher.fixed_rate_per_session || 300000) / periodsPerSession);
+            const defaultSessionRate = defaultRatePerPeriod * periodsPerSession;
+
+            // Sessions actually taught by this teacher (main + substitute) where status is present or late
+            const taughtRecords = effectiveTeacherRecords.filter(
+              r =>
+                r.actual_teacher_id === teacher.id &&
+                r.status !== 'absent_excused' &&
+                r.status !== 'absent_unexcused' &&
+                r.periods_count > 0
+            );
+
+            // Substitute sessions where this teacher stepped in for another teacher
+            const substituteAddedRecords = taughtRecords.filter(
+              r => r.is_substitute || r.assigned_teacher_id !== teacher.id
+            );
+
+            // Sessions where this teacher was the assigned primary teacher, but was absent or replaced by a substitute
+            const absentOrTransferredRecords = effectiveTeacherRecords.filter(
+              r =>
+                r.assigned_teacher_id === teacher.id &&
+                (r.actual_teacher_id !== teacher.id ||
+                  r.status === 'absent_excused' ||
+                  r.status === 'absent_unexcused' ||
+                  r.periods_count === 0)
+            );
+
+            const taughtSessionsCount = taughtRecords.length;
+            const totalPeriodsTaught = taughtRecords.reduce((sum, r) => sum + (r.periods_count || 0), 0);
+            const substitutePeriodsAdded = substituteAddedRecords.reduce((sum, r) => sum + (r.periods_count || 0), 0);
+            const absentPeriodsDeducted = absentOrTransferredRecords.reduce(
+              (sum, r) => sum + (r.periods_count > 0 ? r.periods_count : periodsPerSession),
+              0
+            );
+            const totalPayout = taughtRecords.reduce((sum, r) => sum + (r.total_payout || 0), 0);
+
+            const settlementRecord = (store.payrollSettlements || []).find(
+              ps =>
+                ps.teacher_id === teacher.id &&
+                (payrollTermFilter === 'all' || ps.term_id === payrollTermFilter) &&
+                ps.is_settled
+            );
+
+            const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
+            const isPermanent = (teacher.type || teacher.teacher_type) === 'permanent';
+
+            return {
+              teacher,
+              code: teacher.code || `GV-PMH-00${idx + 1}`,
+              isPermanent,
+              typeLabel: isPermanent ? 'Cơ Hữu' : 'Thỉnh Giảng',
+              campusCode: campusObj?.code || 'PMH',
+              campusName: campusObj?.name || 'Cơ sở Phú Mỹ Hưng',
+              defaultRatePerPeriod,
+              defaultSessionRate,
+              periodsPerSession,
+              taughtSessionsCount,
+              totalPeriodsTaught,
+              substitutePeriodsAdded,
+              absentPeriodsDeducted,
+              totalPayout,
+              isSettled: Boolean(settlementRecord),
+              settlementRecord,
+              taughtRecords,
+              absentOrTransferredRecords,
+            };
+          });
+
+        // 4 Top KPI Metrics
+        const totalTermPayout = teacherPayrollRows.reduce((sum, r) => sum + r.totalPayout, 0);
+        const totalTermPeriods = teacherPayrollRows.reduce((sum, r) => sum + r.totalPeriodsTaught, 0);
+        const totalTermSessions = teacherPayrollRows.reduce((sum, r) => sum + r.taughtSessionsCount, 0);
+        const totalSubstituteSessions = effectiveTeacherRecords.filter(r => r.is_substitute).length;
+        const settledTeachersCount = teacherPayrollRows.filter(r => r.isSettled).length;
+        const pendingTeachersCount = Math.max(0, teacherPayrollRows.length - settledTeachersCount);
+
+        const handleConfirmTeacherTermSettlement = (row: typeof teacherPayrollRows[number]) => {
+          if (row.totalPayout <= 0) {
+            showToast(`Giáo viên ${row.teacher.name} chưa phát sinh tiết dạy thực tế nào trong phạm vi lọc!`, 'info');
+            return;
+          }
+
+          const settledDate = new Date().toISOString().split('T')[0];
+          const bankRef = `PAY-${row.code}-${Date.now().toString().slice(-5)}`;
+
+          onUpdateStore(prev => {
+            const otherSettlements = (prev.payrollSettlements || []).filter(
+              ps => !(ps.teacher_id === row.teacher.id && ps.term_id === payrollTermFilter)
+            );
+
+            const newSettlement = {
+              id: `pay_${Date.now()}`,
+              teacher_id: row.teacher.id,
+              class_id: 'all',
+              term_id: payrollTermFilter,
+              campus_id: payrollCampusFilter,
+              taught_sessions: row.taughtSessionsCount,
+              substitute_sessions: row.taughtRecords.filter(r => r.is_substitute).length,
+              total_periods: row.totalPeriodsTaught,
+              substitute_periods_added: row.substitutePeriodsAdded,
+              absent_periods_deducted: row.absentPeriodsDeducted,
+              class_revenue: 0,
+              calculation_type: 'period_rate' as const,
+              total_payroll: row.totalPayout,
+              settled_date: settledDate,
+              is_settled: true,
+              verified_by: currentUser?.full_name || 'Kế Toán Trưởng',
+              bank_reference: bankRef,
+              notes: `Quyết toán ${row.totalPeriodsTaught} tiết (${row.taughtSessionsCount} buổi) khóa ${payrollTermFilter}`,
+            };
+
+            const log = createAuditRecord(
+              'TEACHER_PAYROLL_SETTLE',
+              'FINANCE',
+              `Quyết toán thù lao ${row.teacher.name} (${row.code})`,
+              `Xác nhận chi trả thù lao giảng dạy cho ${row.teacher.name}: ${row.totalPeriodsTaught} tiết (${row.taughtSessionsCount} buổi, Dạy thay +${row.substitutePeriodsAdded} tiết) = ${formatVND(row.totalPayout)} (Mã UNC: ${bankRef})`,
+              currentUser,
+              {
+                target_id: row.code,
+                details: {
+                  status: 'success',
+                  after: {
+                    teacher_name: row.teacher.name,
+                    term_id: payrollTermFilter,
+                    taught_sessions: row.taughtSessionsCount,
+                    total_periods: row.totalPeriodsTaught,
+                    substitute_periods_added: row.substitutePeriodsAdded,
+                    absent_periods_deducted: row.absentPeriodsDeducted,
+                    total_payroll: row.totalPayout,
+                    bank_reference: bankRef,
+                  },
+                },
+              }
+            );
+
+            return {
+              ...prev,
+              payrollSettlements: [newSettlement, ...otherSettlements],
+              auditLogs: [log, ...(prev.auditLogs || [])],
+            };
+          });
+
+          showToast(
+            `Đã xác nhận tất toán thù lao khóa học cho ${row.teacher.name}: ${formatVND(row.totalPayout)} (${row.totalPeriodsTaught} tiết)!`,
+            'success',
+            { title: 'Quyết toán thù lao giáo viên' }
+          );
+        };
+
+        const handleExportPayrollExcel = () => {
+          const excelRows: TeacherPayrollSummaryExcelRow[] = teacherPayrollRows.map(r => ({
+            code: r.code,
+            name: r.teacher.name,
+            typeLabel: r.typeLabel,
+            campusLabel: `${r.campusCode} - ${r.campusName}`,
+            ratePerPeriod: r.defaultRatePerPeriod,
+            ratePerSession: r.defaultSessionRate,
+            taughtSessions: r.taughtSessionsCount,
+            totalPeriods: r.totalPeriodsTaught,
+            substitutePeriodsAdded: r.substitutePeriodsAdded,
+            absentPeriodsDeducted: r.absentPeriodsDeducted,
+            totalPayout: r.totalPayout,
+            isSettled: r.isSettled,
+            bankInfo: r.teacher.bank_account
+              ? `${r.teacher.bank_account.bank_name} - ${r.teacher.bank_account.account_number} (${r.teacher.bank_account.account_holder})`
+              : 'Chưa cập nhật',
+          }));
+
+          exportTeacherPayrollWorkbook(store, payrollTermFilter, payrollCampusFilter, excelRows);
+          showToast(
+            'Đã xuất tệp Excel Quyết Toán Thù Lao Giáo Viên (2 Sheets: Tổng hợp thù lao & Chi tiết ca dạy) thành công!',
+            'success',
+            { title: 'Xuất Báo Cáo Quyết Toán Excel' }
+          );
+        };
+
+        return (
+          <div className="space-y-5">
+            {/* 1. BỘ LỌC PHÂN CẤP ĐẦU TRANG (TWO-TIER FILTER BAR) & NÚT XUẤT EXCEL */}
+            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 backdrop-blur-md shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Dropdown 1: Khóa học */}
+                <div className="flex items-center gap-2 bg-slate-950/90 border border-slate-800 rounded-xl px-3.5 py-2 focus-within:border-amber-500/50">
+                  <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="text-xs font-semibold text-slate-400">Khóa học:</span>
+                  <select
+                    value={payrollTermFilter}
+                    onChange={(e) => setPayrollTermFilter(e.target.value)}
+                    className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
+                  >
+                    <option value="all" className="bg-slate-900 text-white">Tất cả các khóa học</option>
+                    {store.terms.map(term => (
+                      <option key={term.id} value={term.id} className="bg-slate-900 text-white">
+                        {term.name} {term.is_active ? '(Đang diễn ra)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Dropdown 2: Cơ sở */}
+                <div className="flex items-center gap-2 bg-slate-950/90 border border-slate-800 rounded-xl px-3.5 py-2 focus-within:border-cyan-500/50">
+                  <Building2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span className="text-xs font-semibold text-slate-400">Cơ sở:</span>
+                  <select
+                    value={payrollCampusFilter}
+                    onChange={(e) => setPayrollCampusFilter(e.target.value)}
+                    className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
+                  >
+                    <option value="all" className="bg-slate-900 text-white">Tất cả cơ sở (PMH &amp; PL)</option>
+                    <option value="camp_pmh" className="bg-slate-900 text-white">Phú Mỹ Hưng (PMH)</option>
+                    <option value="camp_pl" className="bg-slate-900 text-white">Phú Lâm (PL)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleExportPayrollExcel}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-600/20 transition-all cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Xuất Báo Cáo Quyết Toán (Excel 2 Sheets)</span>
+                </button>
+                <ViewToggle viewMode={payrollViewMode} onViewModeChange={setPayrollViewMode} />
               </div>
             </div>
 
-            <ViewToggle viewMode={payrollViewMode} onViewModeChange={setPayrollViewMode} />
-          </div>
+            {/* 2. 4 THẺ CHỈ SỐ TỔNG QUAN (TEACHER PAYROLL KPIs) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* KPI 1: Tổng Thù Lao Khóa Học */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-950/50 via-slate-900 to-slate-900 border border-emerald-500/30 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                    1. Tổng Thù Lao Khóa Học
+                  </span>
+                  <DollarSign className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-xl font-extrabold font-mono text-emerald-400 mt-1.5">
+                  {formatVND(totalTermPayout)}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  Tổng chi trả cho {teacherPayrollRows.length} giáo viên trong kỳ
+                </div>
+              </div>
 
-          {/* VIEW 1: PAYROLL CARDS VIEW */}
-          {payrollViewMode === 'cards' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {store.teachers.map(teacher => {
-                const assignedClasses = store.classes.filter(c => {
-                  const matchTeacher = c.primary_teacher_id === teacher.id;
-                  const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
-                  const matchTerm = selectedTermId === 'all' || c.term_id === selectedTermId;
-                  return matchTeacher && matchCampus && matchTerm;
-                });
+              {/* KPI 2: Tổng Số Tiết Đã Giảng Dạy */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-950/40 via-slate-900 to-slate-900 border border-amber-500/30 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
+                    2. Tổng Số Tiết Đã Giảng Dạy
+                  </span>
+                  <Clock className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="text-xl font-extrabold font-mono text-white mt-1.5">
+                  {totalTermPeriods} Tiết <span className="text-xs font-normal text-amber-300">({totalTermSessions} buổi)</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  Đã qua chấm công &amp; đối soát sổ điểm danh
+                </div>
+              </div>
 
-                return (
-                  <div key={teacher.id} className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-white text-sm">{teacher.name}</span>
-                      <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
-                        teacher.teacher_type === 'permanent'
-                          ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                          : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                      }`}>
-                        {teacher.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'}
-                      </span>
-                    </div>
+              {/* KPI 3: Số Ca Dạy Thay Phát Sinh */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-purple-950/40 via-slate-900 to-slate-900 border border-purple-500/30 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-purple-300">
+                    3. Số Ca Dạy Thay Phát Sinh
+                  </span>
+                  <RefreshCw className="w-4 h-4 text-purple-400" />
+                </div>
+                <div className="text-xl font-extrabold font-mono text-purple-300 mt-1.5">
+                  {totalSubstituteSessions} Ca <span className="text-xs font-normal text-purple-400">({totalSubstituteSessions * 2} tiết)</span>
+                </div>
+                <div className="text-[11px] text-purple-300/80 mt-1">
+                  {totalSubstituteSessions > 0
+                    ? '⚡ Đã tự động khấu trừ GV vắng & cộng cho GV dạy thay'
+                    : 'Không có ca dạy thay phát sinh'}
+                </div>
+              </div>
 
-                    <div className="text-xs text-slate-400 space-y-1">
-                      <div>
-                        Công thức tính:{' '}
-                        <strong className="text-slate-200">
-                          {teacher.teacher_type === 'permanent'
-                            ? `${formatVND(teacher.fixed_rate_per_session)} / buổi thực dạy`
-                            : `${teacher.percentage_rate}% Tổng doanh thu lớp`}
-                        </strong>
-                      </div>
-                      <div>Phụ trách: {assignedClasses.length} lớp học</div>
-                    </div>
+              {/* KPI 4: Tình Trạng Quyết Toán */}
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-cyan-950/40 via-slate-900 to-slate-900 border border-cyan-500/30 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400">
+                    4. Tình Trạng Quyết Toán
+                  </span>
+                  <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div className="text-xl font-extrabold font-mono text-white mt-1.5">
+                  <span className="text-emerald-400">{settledTeachersCount} Đã chi</span>
+                  <span className="text-slate-500 mx-1.5">/</span>
+                  <span className="text-amber-400">{pendingTeachersCount} Chờ duyệt</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  Đối soát công nợ lương giáo viên cuối kỳ
+                </div>
+              </div>
+            </div>
 
-                    <div className="pt-2 border-t border-slate-800 space-y-2">
-                      {assignedClasses.map(cls => {
-                        const sessionsTaught = store.sessions.filter(
-                          s => s.class_id === cls.id && s.actual_teacher_id === teacher.id && s.status === 'completed'
-                        ).length;
+            {/* 3. BẢNG CHI TIẾT QUYẾT TOÁN THÙ LAO GIÁO VIÊN (DETAILED PAYROLL TABLE / CARDS) */}
+            <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
+              <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+                    <UserCheck className="w-5 h-5 text-amber-400" />
+                    <span>Bảng Tổng Hợp Chấm Công &amp; Quyết Toán Thù Lao Theo Tiết ({teacherPayrollRows.length} giáo viên)</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Công thức chuẩn: <strong>Tổng Thù Lao Thực Nhận = ∑ (Số tiết thực dạy từng buổi × Đơn giá tiết áp dụng của GV đứng lớp)</strong>. Tự động cộng tiết dạy thay (+) và trừ tiết vắng chuyển giao (-).
+                  </p>
+                </div>
+              </div>
 
-                        return (
-                          <div key={cls.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 flex items-center justify-between text-xs">
-                            <div>
-                              <div className="font-semibold text-white">{cls.name}</div>
-                              <div className="text-[10px] text-slate-500">Đã dạy: {sessionsTaught} / {cls.total_sessions} buổi</div>
-                            </div>
-                            <button
-                              onClick={() => handleSettlePayroll(teacher, cls)}
-                              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] transition-colors"
-                            >
-                              Quyết toán
-                            </button>
+              {payrollViewMode === 'cards' ? (
+                <div className="p-5 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {teacherPayrollRows.map(row => (
+                    <div key={row.teacher.id} className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 hover:border-amber-500/40 transition-all flex flex-col justify-between space-y-4">
+                      <div className="space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="font-mono text-[10px] font-bold text-amber-400">{row.code}</span>
+                            <h4 className="font-bold text-white text-sm">{row.teacher.name}</h4>
+                            <span className="text-[10px] text-slate-400">{row.campusCode} - {row.campusName}</span>
                           </div>
-                        );
-                      })}
+                          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                            row.isPermanent
+                              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          }`}>
+                            {row.typeLabel}
+                          </span>
+                        </div>
+
+                        <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5 text-xs">
+                          <div className="flex justify-between text-slate-400">
+                            <span>Đơn giá chuẩn:</span>
+                            <strong className="font-mono text-amber-300">{formatVND(row.defaultRatePerPeriod)}/tiết ({formatVND(row.defaultSessionRate)}/b)</strong>
+                          </div>
+                          <div className="flex justify-between text-slate-400">
+                            <span>Tổng buổi / tiết đã dạy:</span>
+                            <strong className="font-mono text-white">{row.taughtSessionsCount} buổi ({row.totalPeriodsTaught} tiết)</strong>
+                          </div>
+                          <div className="flex justify-between text-slate-400">
+                            <span>Tiết dạy thay (+) / Vắng (-):</span>
+                            <span className="font-mono">
+                              <strong className="text-purple-300">+{row.substitutePeriodsAdded}t</strong>
+                              {' / '}
+                              <strong className="text-rose-400">-{row.absentPeriodsDeducted}t</strong>
+                            </span>
+                          </div>
+                          <div className="flex justify-between pt-1.5 border-t border-slate-800 text-sm">
+                            <span className="font-bold text-white">Thực nhận:</span>
+                            <strong className="font-mono font-extrabold text-emerald-400">{formatVND(row.totalPayout)}</strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setDetailLogTeacher(row.teacher)}
+                            className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold flex items-center gap-1"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Bảng kê</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPrintingPayslipTeacher(row.teacher)}
+                            className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-[11px] font-bold flex items-center gap-1"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Phiếu lương</span>
+                          </button>
+                        </div>
+
+                        {row.isSettled ? (
+                          <span className="px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
+                            <Check className="w-3 h-3" />
+                            <span>Đã chi trả</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmTeacherTermSettlement(row)}
+                            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold"
+                          >
+                            Xác nhận chi
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
+                      <tr>
+                        <th className="py-3.5 px-4">1. Mã GV &amp; Họ Tên</th>
+                        <th className="py-3.5 px-3">2. Phân Loại</th>
+                        <th className="py-3.5 px-3">3. Cơ Sở</th>
+                        <th className="py-3.5 px-3">4. Đơn Giá / Tiết</th>
+                        <th className="py-3.5 px-3 text-center">5. Số Buổi Đã Dạy</th>
+                        <th className="py-3.5 px-3 text-center">6. Tổng Tiết Quy Đổi</th>
+                        <th className="py-3.5 px-3 text-center">7. Tiết Dạy Thay (+)</th>
+                        <th className="py-3.5 px-3 text-center">8. Tiết Vắng / Chuyển (-)</th>
+                        <th className="py-3.5 px-4 text-right">9. Tổng Thù Lao Thực Nhận</th>
+                        <th className="py-3.5 px-4 text-right">10. Thao Tác Quyết Toán</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70">
+                      {teacherPayrollRows.map(row => (
+                        <tr key={row.teacher.id} className="hover:bg-slate-800/30 transition-colors">
+                          {/* 1. Mã GV & Họ Tên */}
+                          <td className="py-3.5 px-4">
+                            <div className="font-mono text-[10px] font-bold text-amber-400">{row.code}</div>
+                            <div className="font-bold text-white text-sm">{row.teacher.name}</div>
+                            <div className="text-[10px] text-slate-500">{row.teacher.phone}</div>
+                          </td>
+
+                          {/* 2. Phân loại */}
+                          <td className="py-3.5 px-3">
+                            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                              row.isPermanent
+                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            }`}>
+                              {row.typeLabel}
+                            </span>
+                          </td>
+
+                          {/* 3. Cơ sở */}
+                          <td className="py-3.5 px-3">
+                            <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 font-mono font-bold text-slate-200 text-[11px]">
+                              {row.campusCode}
+                            </span>
+                          </td>
+
+                          {/* 4. Đơn giá / Tiết (và quy đổi /buổi) */}
+                          <td className="py-3.5 px-3 font-mono">
+                            <div className="font-bold text-amber-300">{formatVND(row.defaultRatePerPeriod)}/tiết</div>
+                            <div className="text-[10px] text-slate-400">({formatVND(row.defaultSessionRate)}/buổi)</div>
+                          </td>
+
+                          {/* 5. Tổng số buổi đã dạy */}
+                          <td className="py-3.5 px-3 text-center font-mono">
+                            <span className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 font-bold text-white">
+                              {row.taughtSessionsCount} buổi
+                            </span>
+                          </td>
+
+                          {/* 6. Tổng số tiết quy đổi */}
+                          <td className="py-3.5 px-3 text-center font-mono">
+                            <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 font-extrabold text-amber-300">
+                              {row.totalPeriodsTaught} tiết
+                            </span>
+                          </td>
+
+                          {/* 7. Tiết dạy thay nhận thêm (+) */}
+                          <td className="py-3.5 px-3 text-center font-mono">
+                            {row.substitutePeriodsAdded > 0 ? (
+                              <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 border border-purple-500/40 text-purple-300 font-extrabold">
+                                +{row.substitutePeriodsAdded} tiết
+                              </span>
+                            ) : (
+                              <span className="text-slate-500">0 tiết</span>
+                            )}
+                          </td>
+
+                          {/* 8. Tiết vắng / chuyển giao (-) */}
+                          <td className="py-3.5 px-3 text-center font-mono">
+                            {row.absentPeriodsDeducted > 0 ? (
+                              <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-400 font-extrabold">
+                                -{row.absentPeriodsDeducted} tiết
+                              </span>
+                            ) : (
+                              <span className="text-slate-500">0 tiết</span>
+                            )}
+                          </td>
+
+                          {/* 9. Tổng thù lao thực nhận */}
+                          <td className="py-3.5 px-4 text-right font-mono">
+                            <div className="text-sm font-extrabold text-emerald-400">
+                              {formatVND(row.totalPayout)}
+                            </div>
+                            {row.isSettled ? (
+                              <span className="text-[10px] text-emerald-300 font-sans font-semibold flex items-center justify-end gap-1">
+                                <Check className="w-3 h-3" />
+                                Đã quyết toán ({row.settlementRecord?.settled_date})
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-amber-400/90 font-sans">Chờ kế toán duyệt chi</span>
+                            )}
+                          </td>
+
+                          {/* 10. Thao tác */}
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setDetailLogTeacher(row.teacher)}
+                                className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 font-bold text-[11px] flex items-center gap-1 transition-colors"
+                                title="Xem Bảng Kê Chi Tiết từng ca dạy & số tiết"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>Bảng kê</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setPrintingPayslipTeacher(row.teacher)}
+                                className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-[11px] flex items-center gap-1 transition-colors"
+                                title="In Phiếu Lương / Quyết Toán chuẩn A4 kèm mã VietQR"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>In Phiếu</span>
+                              </button>
+
+                              {row.isSettled ? (
+                                <span
+                                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold text-[11px] inline-flex items-center gap-1"
+                                  title={`Đã chi trả bởi ${row.settlementRecord?.verified_by || 'Kế toán'}`}
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Đã Chi</span>
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleConfirmTeacherTermSettlement(row)}
+                                  className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm shadow-emerald-600/20 transition-colors"
+                                  title="Xác nhận đã chi trả quyết toán thù lao khóa học"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Xác Nhận Chi</span>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* MODAL 1: BẢNG KÊ CHI TIẾT CA DẠY & SỐ TIẾT THEO GIÁO VIÊN */}
+            {detailLogTeacher && (() => {
+              const targetRow = teacherPayrollRows.find(r => r.teacher.id === detailLogTeacher.id);
+              const allRelatedRecords = effectiveTeacherRecords
+                .filter(
+                  r =>
+                    r.actual_teacher_id === detailLogTeacher.id ||
+                    r.assigned_teacher_id === detailLogTeacher.id
+                )
+                .sort((a, b) => a.session_date.localeCompare(b.session_date));
+
+              return (
+                <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+                  <div className="bg-[#111827] border border-slate-800 rounded-3xl max-w-5xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+                    {/* Header */}
+                    <div className="p-5 border-b border-slate-800 bg-slate-900/80 flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-400 border border-amber-500/30 font-mono text-xs font-bold">
+                            {targetRow?.code || detailLogTeacher.code || detailLogTeacher.id}
+                          </span>
+                          <h3 className="text-base font-extrabold text-white">
+                            Bảng Kê Chi Tiết Ca Dạy &amp; Thù Lao Theo Tiết — {detailLogTeacher.name}
+                          </h3>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Khóa học: <strong className="text-amber-300">{store.terms.find(t => t.id === payrollTermFilter)?.name || 'Tất cả khóa học'}</strong>
+                          {' • '}
+                          Cơ sở: <strong className="text-cyan-300">{payrollCampusFilter === 'all' ? 'Tất cả cơ sở' : store.campuses.find(c => c.id === payrollCampusFilter)?.name}</strong>
+                          {' • '}
+                          Đơn giá chuẩn: <strong className="text-emerald-400 font-mono">{formatVND(targetRow?.defaultRatePerPeriod || 175000)}/tiết</strong>
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setDetailLogTeacher(null)}
+                        className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Quick Summary Strip */}
+                    {targetRow && (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-slate-950/60 border-b border-slate-800">
+                        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800">
+                          <div className="text-[10px] font-bold uppercase text-slate-400">Tổng Ca Đã Dạy</div>
+                          <div className="text-sm font-extrabold font-mono text-white mt-0.5">
+                            {targetRow.taughtSessionsCount} buổi ({targetRow.totalPeriodsTaught} tiết)
+                          </div>
+                        </div>
+                        <div className="p-3 rounded-xl bg-purple-950/25 border border-purple-500/30">
+                          <div className="text-[10px] font-bold uppercase text-purple-300">Tiết Dạy Thay (+)</div>
+                          <div className="text-sm font-extrabold font-mono text-purple-300 mt-0.5">
+                            +{targetRow.substitutePeriodsAdded} tiết
+                          </div>
+                        </div>
+                        <div className="p-3 rounded-xl bg-rose-950/25 border border-rose-500/30">
+                          <div className="text-[10px] font-bold uppercase text-rose-300">Tiết Nghỉ / Nhờ Thay (-)</div>
+                          <div className="text-sm font-extrabold font-mono text-rose-400 mt-0.5">
+                            -{targetRow.absentPeriodsDeducted} tiết
+                          </div>
+                        </div>
+                        <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
+                          <div className="text-[10px] font-bold uppercase text-emerald-400">Tổng Thực Lĩnh</div>
+                          <div className="text-base font-black font-mono text-emerald-400 mt-0.5">
+                            {formatVND(targetRow.totalPayout)}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Detailed Table */}
+                    <div className="flex-1 overflow-y-auto p-4">
+                      {allRelatedRecords.length === 0 ? (
+                        <div className="p-10 text-center text-slate-400 text-xs">
+                          Chưa có bản ghi chấm công ca dạy nào cho giáo viên này trong phạm vi lọc.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto rounded-2xl border border-slate-800">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-slate-950 text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                                <th className="py-2.5 px-3">Ngày học / Buổi</th>
+                                <th className="py-2.5 px-3">Lớp &amp; Môn Ngoại Khóa</th>
+                                <th className="py-2.5 px-3">Vai trò ca dạy</th>
+                                <th className="py-2.5 px-3 text-center">Trạng thái chấm công</th>
+                                <th className="py-2.5 px-3 text-center">Số tiết tính lương</th>
+                                <th className="py-2.5 px-3 text-right">Đơn giá / tiết</th>
+                                <th className="py-2.5 px-3 text-right">Thành tiền ca dạy</th>
+                                <th className="py-2.5 px-3">Ghi chú / Đối ứng</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/70 text-xs">
+                              {allRelatedRecords.map(rec => {
+                                const cls = store.classes.find(c => c.id === rec.class_id);
+                                const subject = store.subjects.find(s => s.id === cls?.subject_id);
+                                const assignedTeacher = store.teachers.find(t => t.id === rec.assigned_teacher_id);
+                                const actualTeacher = store.teachers.find(t => t.id === rec.actual_teacher_id);
+                                const isTaughtByThisTeacher =
+                                  rec.actual_teacher_id === detailLogTeacher.id &&
+                                  rec.status !== 'absent_excused' &&
+                                  rec.status !== 'absent_unexcused' &&
+                                  rec.periods_count > 0;
+                                const isSubIn = isTaughtByThisTeacher && (rec.is_substitute || rec.assigned_teacher_id !== detailLogTeacher.id);
+
+                                return (
+                                  <tr
+                                    key={rec.id}
+                                    className={`hover:bg-slate-900/50 ${
+                                      !isTaughtByThisTeacher ? 'bg-rose-950/10 opacity-75' : isSubIn ? 'bg-purple-950/15' : ''
+                                    }`}
+                                  >
+                                    <td className="py-2.5 px-3 font-mono">
+                                      <div className="font-bold text-white">{formatDateVN(rec.session_date)}</div>
+                                      <div className="text-[10px] text-slate-400">
+                                        Buổi #{rec.session_number} {rec.check_in_time ? `• Check-in ${rec.check_in_time}` : ''}
+                                      </div>
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <div className="font-bold text-amber-300">{cls?.name || rec.class_id}</div>
+                                      <div className="text-[10px] text-slate-400">
+                                        {subject?.name || 'Môn NK'} • {rec.campus_id === 'camp_pl' ? 'Cơ sở Phú Lâm' : 'Cơ sở Phú Mỹ Hưng'}
+                                      </div>
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      {isSubIn ? (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-500/15 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
+                                          🔄 Dạy thay GV {assignedTeacher?.name || ''}
+                                        </span>
+                                      ) : isTaughtByThisTeacher ? (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                                          ✓ Giáo viên chính
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
+                                          ✕ Nghỉ / Đã chuyển ca
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center">
+                                      {rec.status === 'present' && isTaughtByThisTeacher && (
+                                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">
+                                          ✓ Đúng giờ
+                                        </span>
+                                      )}
+                                      {rec.status === 'late' && isTaughtByThisTeacher && (
+                                        <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[10px] font-bold">
+                                          ⏱ Đi muộn
+                                        </span>
+                                      )}
+                                      {rec.status === 'substitute' && isTaughtByThisTeacher && (
+                                        <span className="px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 text-[10px] font-bold">
+                                          🔄 Ca dạy thay
+                                        </span>
+                                      )}
+                                      {!isTaughtByThisTeacher && (
+                                        <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 text-[10px] font-bold">
+                                          Không tính tiết
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center font-mono font-bold">
+                                      {isTaughtByThisTeacher ? (
+                                        <span className="text-emerald-400">+{rec.periods_count} tiết</span>
+                                      ) : (
+                                        <span className="text-rose-400">0 tiết (-{rec.periods_count || 2})</span>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right font-mono text-slate-300">
+                                      {formatVND(rec.rate_per_period)}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right font-mono font-extrabold">
+                                      {isTaughtByThisTeacher ? (
+                                        <span className="text-emerald-400">{formatVND(rec.total_payout)}</span>
+                                      ) : (
+                                        <span className="text-slate-500">0 ₫</span>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-[11px] text-slate-400">
+                                      {!isTaughtByThisTeacher && rec.actual_teacher_id !== detailLogTeacher.id
+                                        ? `GV ${actualTeacher?.name || 'khác'} dạy thay (${rec.substitute_reason || 'Có phép'})`
+                                        : rec.notes || rec.substitute_reason || '—'}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-4 border-t border-slate-800 bg-slate-900/90 flex items-center justify-between gap-3">
+                      <div className="text-xs text-slate-400">
+                        Người kiểm soát dữ liệu: <strong className="text-white">{currentUser?.full_name || 'Ban Học Vụ & Kế Toán'}</strong>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const teacherToPrint = detailLogTeacher;
+                            setDetailLogTeacher(null);
+                            setPrintingPayslipTeacher(teacherToPrint);
+                          }}
+                          className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>Chuyển Sang In Phiếu Quyết Toán A4</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDetailLogTeacher(null)}
+                          className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors cursor-pointer"
+                        >
+                          Đóng
+                        </button>
+                      </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              );
+            })()}
 
-          {/* VIEW 2: PAYROLL TABLE VIEW */}
-          {payrollViewMode === 'table' && (
-            <div className="overflow-x-auto rounded-2xl border border-slate-800">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-900/80 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
-                  <tr>
-                    <th className="py-3 px-4">Giáo Viên</th>
-                    <th className="py-3 px-4">Loại Hợp Đồng</th>
-                    <th className="py-3 px-4">Định Mức Thù Lao</th>
-                    <th className="py-3 px-4">Số Lớp Phụ Trách</th>
-                    <th className="py-3 px-4">Chi Tiết Lớp & Tiến Độ Dạy</th>
-                    <th className="py-3 px-4 text-right">Quyết Toán Nhanh</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {store.teachers.map(teacher => {
-                    const assignedClasses = store.classes.filter(c => {
-                      const matchTeacher = c.primary_teacher_id === teacher.id;
-                      const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
-                      const matchTerm = selectedTermId === 'all' || c.term_id === selectedTermId;
-                      return matchTeacher && matchCampus && matchTerm;
-                    });
-                    return (
-                      <tr key={teacher.id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-3 px-4">
-                          <div className="font-bold text-white text-sm">{teacher.name}</div>
-                          <div className="text-[10px] text-slate-500">{teacher.phone}</div>
-                        </td>
+            {/* MODAL 2: IN PHIẾU QUYẾT TOÁN THÙ LAO GIẢNG DẠY CÁ NHÂN (CHUẨN A4 KÈM VIETQR) */}
+            {printingPayslipTeacher && (() => {
+              const targetRow = teacherPayrollRows.find(r => r.teacher.id === printingPayslipTeacher.id);
+              if (!targetRow) return null;
 
-                        <td className="py-3 px-4">
-                          <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
-                            teacher.teacher_type === 'permanent'
-                              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                          }`}>
-                            {teacher.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'}
+              const termObj = store.terms.find(t => t.id === payrollTermFilter);
+              const bankAcc = printingPayslipTeacher.bank_account;
+              const bankCode = bankAcc ? getBankCode(bankAcc.bank_name) : 'VCB';
+              const cleanAccNumber = bankAcc?.account_number ? bankAcc.account_number.replace(/\s+/g, '') : '0071000888999';
+              const holderName = bankAcc?.account_holder || printingPayslipTeacher.name.toUpperCase();
+              const transferMemo = `THULAO ${targetRow.code} ${termObj?.name || 'HK2026'}`.substring(0, 50);
+              const teacherQrUrl = `https://img.vietqr.io/image/${bankCode}-${cleanAccNumber}-compact2.png?amount=${Math.max(
+                0,
+                Math.round(targetRow.totalPayout)
+              )}&addInfo=${encodeURIComponent(transferMemo)}&accountName=${encodeURIComponent(holderName)}`;
+
+              return (
+                <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+                  <div className="bg-[#111827] border border-slate-700 rounded-3xl max-w-3xl w-full shadow-2xl overflow-hidden my-6">
+                    {/* Top Action Bar */}
+                    <div className="px-5 py-3.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Printer className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-white">
+                          Phiếu Quyết Toán Thù Lao Giảng Dạy Cá Nhân (Chuẩn A4 + VietQR)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => window.print()}
+                          className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-amber-500/20 cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>In Phiếu Quyết Toán (A4)</span>
+                        </button>
+                        {!targetRow.isSettled && targetRow.totalPayout > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmTeacherTermSettlement(targetRow)}
+                            className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Xác Nhận Đã Chi Trả</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setPrintingPayslipTeacher(null)}
+                          className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* A4 Printable Sheet Content */}
+                    <div className="p-6 sm:p-8 bg-slate-950 text-slate-100 space-y-6">
+                      {/* Header Royal School */}
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-slate-800 pb-5">
+                        <div>
+                          <div className="text-[11px] font-bold uppercase tracking-widest text-amber-400">
+                            HỆ THỐNG TRƯỜNG SONG NGỮ QUỐC TẾ HOÀNG GIA — ROYAL SCHOOL
+                          </div>
+                          <h2 className="text-lg font-black text-white mt-1">
+                            PHIẾU QUYẾT TOÁN THÙ LAO GIẢNG DẠY NGOẠI KHÓA
+                          </h2>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Kỳ quyết toán: <strong className="text-slate-200">{termObj?.name || 'Tất cả khóa học'}</strong>
+                            {' • '}
+                            Phạm vi: <strong className="text-slate-200">{targetRow.campusName}</strong>
+                          </p>
+                        </div>
+                        <div className="text-left sm:text-right font-mono text-xs">
+                          <div className="text-amber-400 font-bold">
+                            Số phiếu: PAY-{targetRow.code}-{new Date().getFullYear()}
+                          </div>
+                          <div className="text-slate-400 text-[11px] mt-0.5">
+                            Ngày lập: {formatDateVN(new Date().toISOString().split('T')[0])}
+                          </div>
+                          <div className="mt-1">
+                            {targetRow.isSettled ? (
+                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+                                ✓ ĐÃ QUYẾT TOÁN ({targetRow.settlementRecord?.settled_date})
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                                ⏳ CHỜ KẾ TOÁN CHI TRẢ
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Teacher Profile & Bank Account Grid */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                            1. Thông Tin Nhân Sự Giảng Dạy
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Họ và tên giáo viên:</span>
+                            <strong className="text-white">{printingPayslipTeacher.name}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Mã định danh nhân sự:</span>
+                            <strong className="text-amber-400 font-mono">{targetRow.code}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Phân loại hợp đồng:</span>
+                            <strong className="text-slate-200">{targetRow.typeLabel} ({targetRow.campusCode})</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Định mức thù lao chuẩn:</span>
+                            <strong className="text-emerald-400 font-mono">
+                              {formatVND(targetRow.defaultRatePerPeriod)}/tiết ({formatVND(targetRow.defaultSessionRate)}/buổi)
+                            </strong>
+                          </div>
+                        </div>
+
+                        <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                            2. Tài Khoản Thụ Hưởng &amp; Thống Kê Tiết Dạy
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Ngân hàng thụ hưởng:</span>
+                            <strong className="text-white">{bankAcc?.bank_name || 'Vietcombank (VCB)'}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Số tài khoản:</span>
+                            <strong className="text-cyan-400 font-mono">{cleanAccNumber}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Chủ tài khoản:</span>
+                            <strong className="text-white">{holderName}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Tổng khối lượng thực dạy:</span>
+                            <strong className="text-amber-300 font-mono">
+                              {targetRow.taughtSessionsCount} buổi = {targetRow.totalPeriodsTaught} tiết (Dạy thay +{targetRow.substitutePeriodsAdded})
+                            </strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Summary Calculation & VietQR Transfer Box */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center p-4 rounded-2xl bg-gradient-to-br from-emerald-950/30 via-slate-900 to-slate-900 border border-emerald-500/30">
+                        <div className="md:col-span-2 space-y-2">
+                          <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                            3. Tổng Hợp Quyết Toán Thù Lao Thực Lĩnh
+                          </div>
+                          <div className="text-2xl font-black font-mono text-emerald-400">
+                            {formatVND(targetRow.totalPayout)}
+                          </div>
+                          <p className="text-xs text-slate-300 leading-relaxed">
+                            Công thức quyết toán: Tổng cộng <strong>{targetRow.totalPeriodsTaught} tiết thực dạy</strong> (bao gồm{' '}
+                            <strong className="text-purple-300">+{targetRow.substitutePeriodsAdded} tiết dạy thay</strong> và đã trừ{' '}
+                            <strong className="text-rose-400">{targetRow.absentPeriodsDeducted} tiết vắng/nhờ dạy thay</strong>).
+                          </p>
+                          <div className="text-[11px] font-mono text-slate-400 bg-slate-950/80 px-3 py-1.5 rounded-xl border border-slate-800 inline-block">
+                            Nội dung CK tự động: <strong className="text-amber-300">{transferMemo}</strong>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col items-center justify-center bg-white p-3 rounded-2xl shadow-lg">
+                          <img
+                            src={teacherQrUrl}
+                            alt="VietQR Chi Trả Thù Lao Giáo Viên"
+                            className="w-36 h-36 object-contain"
+                          />
+                          <span className="text-[10px] font-bold text-slate-800 mt-1">
+                            Quét VietQR Chuyển Khoản Thù Lao
                           </span>
-                        </td>
+                        </div>
+                      </div>
 
-                        <td className="py-3 px-4 font-mono font-bold text-slate-200">
-                          {teacher.teacher_type === 'permanent'
-                            ? `${formatVND(teacher.fixed_rate_per_session)}/buổi`
-                            : `${teacher.percentage_rate}% Doanh thu`}
-                        </td>
-
-                        <td className="py-3 px-4 font-mono text-center">
-                          {assignedClasses.length} lớp
-                        </td>
-
-                        <td className="py-3 px-4 space-y-1">
-                          {assignedClasses.map(cls => {
-                            const sessionsTaught = store.sessions.filter(
-                              s => s.class_id === cls.id && s.actual_teacher_id === teacher.id && s.status === 'completed'
-                            ).length;
-                            return (
-                              <div key={cls.id} className="text-[11px] text-slate-300 flex items-center justify-between gap-2">
-                                <span>{cls.name}</span>
-                                <span className="text-[10px] text-slate-500 font-mono">({sessionsTaught}/{cls.total_sessions}b)</span>
-                              </div>
-                            );
-                          })}
-                        </td>
-
-                        <td className="py-3 px-4 text-right">
-                          {assignedClasses.length > 0 ? (
-                            <button
-                              onClick={() => handleSettlePayroll(teacher, assignedClasses[0])}
-                              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] transition-colors"
-                            >
-                              Quyết toán ({assignedClasses[0]?.name})
-                            </button>
-                          ) : (
-                            <span className="text-slate-500 text-[10px]">Chưa có lớp</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+                      {/* Signatures */}
+                      <div className="grid grid-cols-3 gap-4 pt-4 border-t border-slate-800 text-center text-xs">
+                        <div>
+                          <div className="font-bold text-slate-300">Giáo Viên Xác Nhận</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">(Ký &amp; ghi rõ họ tên)</div>
+                          <div className="h-14" />
+                          <div className="font-bold text-white">{printingPayslipTeacher.name}</div>
+                        </div>
+                        <div>
+                          <div className="font-bold text-slate-300">Ban Học Vụ Đối Soát</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">(Xác nhận số tiết thực tế)</div>
+                          <div className="h-14" />
+                          <div className="font-bold text-white">Phòng Học Vụ Ngoại Khóa</div>
+                        </div>
+                        <div>
+                          <div className="font-bold text-slate-300">Kế Toán Thanh Toán</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">(Duyệt chi &amp; lưu chứng từ)</div>
+                          <div className="h-14" />
+                          <div className="font-bold text-white">{currentUser?.full_name || 'Phòng Kế Toán Royal School'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        );
+      })()}
 
       {/* SECTION 3: CLASS TRANSFER */}
       {activeSection === 'transfer' && (

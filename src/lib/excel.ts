@@ -353,3 +353,100 @@ export async function parseMasterExcelFile(file: File): Promise<{ success: boole
     };
   }
 }
+
+export interface TeacherPayrollSummaryExcelRow {
+  code: string;
+  name: string;
+  typeLabel: string;
+  campusLabel: string;
+  ratePerPeriod: number;
+  ratePerSession: number;
+  taughtSessions: number;
+  totalPeriods: number;
+  substitutePeriodsAdded: number;
+  absentPeriodsDeducted: number;
+  totalPayout: number;
+  isSettled: boolean;
+  bankInfo: string;
+}
+
+export function exportTeacherPayrollWorkbook(
+  store: AppStore,
+  termId: string,
+  campusId: string,
+  summaryRows: TeacherPayrollSummaryExcelRow[]
+) {
+  const wb = XLSX.utils.book_new();
+  const termName = store.terms.find(t => t.id === termId)?.name || 'Toàn khóa';
+  const campusName = campusId === 'all' ? 'Toàn hệ thống (PMH & PL)' : (store.campuses.find(c => c.id === campusId)?.name || campusId);
+
+  // Sheet 1: Tổng hợp thù lao
+  const sheet1Data = summaryRows.map((r, idx) => ({
+    'STT': idx + 1,
+    'Khóa Học': termName,
+    'Phạm Vi Cơ Sở': campusName,
+    'Mã Giáo Viên': r.code,
+    'Họ Tên Giáo Viên': r.name,
+    'Phân Loại Nhân Sự': r.typeLabel,
+    'Cơ Sở Hoạt Động': r.campusLabel,
+    'Đơn Giá / Tiết (VNĐ)': r.ratePerPeriod,
+    'Quy Đổi / Buổi (VNĐ)': r.ratePerSession,
+    'Tổng Số Buổi Đã Dạy': r.taughtSessions,
+    'Tổng Số Tiết Quy Đổi': r.totalPeriods,
+    'Tiết Dạy Thay Nhận Thêm (+)': r.substitutePeriodsAdded,
+    'Tiết Vắng / Chuyển Giao (-)': r.absentPeriodsDeducted,
+    'Tổng Thù Lao Thực Nhận (VNĐ)': r.totalPayout,
+    'Thông Tin Tài Khoản NH': r.bankInfo,
+    'Trạng Thái Quyết Toán': r.isSettled ? 'Đã chi trả quyết toán' : 'Chờ kế toán duyệt chi',
+  }));
+  const ws1 = XLSX.utils.json_to_sheet(sheet1Data);
+  XLSX.utils.book_append_sheet(wb, ws1, 'Tong_Hop_Thu_Lao');
+
+  // Sheet 2: Chi tiết ca dạy
+  const allRecords = (store.teacherAttendance || []).filter(rec => {
+    const matchTerm = termId === 'all' || rec.term_id === termId;
+    const matchCampus = campusId === 'all' || rec.campus_id === campusId;
+    return matchTerm && matchCampus;
+  }).sort((a, b) => a.session_date.localeCompare(b.session_date));
+
+  const sheet2Data = allRecords.map((rec, idx) => {
+    const cls = store.classes.find(c => c.id === rec.class_id);
+    const assignedTeacher = store.teachers.find(t => t.id === rec.assigned_teacher_id);
+    const actualTeacher = store.teachers.find(t => t.id === rec.actual_teacher_id);
+    const campus = store.campuses.find(cp => cp.id === rec.campus_id);
+    const timeSlot = store.timeSlots.find(ts => ts.id === cls?.time_slot_id);
+    const statusLabel =
+      rec.status === 'present'
+        ? 'Đúng giờ'
+        : rec.status === 'late'
+        ? `Đi muộn (${rec.late_minutes || 0}p)`
+        : rec.status === 'absent_excused'
+        ? 'Vắng có phép'
+        : 'Vắng không phép';
+
+    return {
+      'STT': idx + 1,
+      'Ngày Giảng Dạy': rec.session_date,
+      'Buổi Thứ': rec.session_number,
+      'Cơ Sở': campus?.code || '',
+      'Lớp Ngoại Khóa': cls?.name || '',
+      'Ca Học': timeSlot ? `${timeSlot.start_time} - ${timeSlot.end_time}` : '16:45 - 18:15',
+      'GV Phân Công Chính': assignedTeacher?.name || '',
+      'GV Thực Dạy': actualTeacher?.name || '',
+      'Vai Trò Ca Dạy': rec.is_substitute ? 'GV Dạy Thay' : 'GV Chính Thức',
+      'Trạng Thái Chấm Công': statusLabel,
+      'Giờ Check-in': rec.check_in_time || '16:40',
+      'Số Tiết Thực Dạy': rec.periods_count,
+      'Đơn Giá / Tiết (VNĐ)': rec.rate_per_period,
+      'Thành Tiền Buổi Dạy (VNĐ)': rec.total_payout,
+      'Người Xác Nhận': rec.verified_by || 'Ban Học Vụ',
+      'Ghi Chú Đối Soát': rec.notes || '',
+    };
+  });
+  const ws2 = XLSX.utils.json_to_sheet(sheet2Data);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Chi_Tiet_Ca_Day');
+
+  const safeTermCode = store.terms.find(t => t.id === termId)?.code || 'ALL';
+  XLSX.writeFile(wb, `QuyetToan_ThuLao_GiaoVien_${safeTermCode}_${new Date().toISOString().split('T')[0]}.xlsx`);
+}
+

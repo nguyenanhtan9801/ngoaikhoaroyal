@@ -27,7 +27,10 @@ import {
   ShieldCheck,
   Image as ImageIcon,
   RefreshCw,
-  Server
+  Server,
+  Building2,
+  FolderOpen,
+  PlusCircle
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -46,9 +49,10 @@ import {
   formatDaysListLabel,
   isStudentScheduledForDate,
   formatStudentScheduleLabel,
-  formatDateVN
+  formatDateVN,
+  getTeacherEffectivePeriodRate
 } from '../../lib/storage';
-import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
+import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 
@@ -61,6 +65,7 @@ interface AttendanceTabProps {
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onPrintAttendanceBook: (cls: ExtracurricularClass, sessionDate: string) => void;
   onIssueCreditForStudent: (student: Student, cls: ExtracurricularClass, dates: string[]) => void;
+  onNavigateTab?: (tab: string) => void;
 }
 
 interface WeekOption {
@@ -71,13 +76,18 @@ interface WeekOption {
   isCurrent: boolean;
 }
 
-// 16 Tuần học của Khóa Mùa Thu 2026 (Bắt đầu từ Thứ 2: 31/08/2026)
-const TERM_WEEKS: WeekOption[] = (() => {
+const buildTermWeeks = (termStartDateStr?: string, totalWeeks = 16): WeekOption[] => {
   const weeks: WeekOption[] = [];
-  const baseMonday = new Date('2026-08-31T00:00:00');
+  const baseDateStr = termStartDateStr || '2026-08-31';
+  const baseMonday = new Date(`${baseDateStr}T00:00:00`);
+  // Align to Monday if start_date isn't Monday
+  const dayOfWeek = baseMonday.getDay(); // 0=Sun, 1=Mon
+  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  baseMonday.setDate(baseMonday.getDate() + diffToMonday);
+
   const today = new Date().toISOString().split('T')[0];
 
-  for (let i = 1; i <= 16; i++) {
+  for (let i = 1; i <= totalWeeks; i++) {
     const monday = new Date(baseMonday);
     monday.setDate(monday.getDate() + (i - 1) * 7);
     const sunday = new Date(monday);
@@ -100,7 +110,7 @@ const TERM_WEEKS: WeekOption[] = (() => {
     });
   }
   return weeks;
-})();
+};
 
 const DAY_OFFSET_MAP: Record<string, { offset: number; name: string }> = {
   'T2': { offset: 0, name: 'Thứ 2' },
@@ -131,8 +141,84 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   onUpdateStore,
   onPrintAttendanceBook,
   onIssueCreditForStudent,
+  onNavigateTab,
 }) => {
-  const currentClass = selectedClass || store.classes[0];
+  // 1. Khởi tạo state cho Bộ lọc 2 cấp: Khóa Học & Cơ Sở
+  const defaultActiveTerm = useMemo(
+    () => store.terms.find(t => t.is_active) || store.terms[0],
+    [store.terms]
+  );
+
+  const defaultUserCampusId = useMemo(() => {
+    if (selectedClass?.campus_id) return selectedClass.campus_id;
+    if (currentUser?.campus_id && currentUser.campus_id !== 'all') {
+      return currentUser.campus_id === 'pmh' ? 'camp_pmh' : currentUser.campus_id === 'pl' ? 'camp_pl' : currentUser.campus_id;
+    }
+    return 'camp_pmh'; // Mặc định Cơ sở Phú Mỹ Hưng (PMH) nếu là Super Admin
+  }, [currentUser, selectedClass?.campus_id]);
+
+  const [selectedTermId, setSelectedTermId] = useState<string>(
+    selectedClass?.term_id || defaultActiveTerm?.id || 'term_fall_2026'
+  );
+  const [selectedCampusId, setSelectedCampusId] = useState<string>(defaultUserCampusId);
+
+  // Đồng bộ bộ lọc nếu người dùng chọn lớp từ màn hình khác chuyển sang
+  useEffect(() => {
+    if (selectedClass) {
+      if (selectedClass.term_id && selectedClass.term_id !== selectedTermId) {
+        setSelectedTermId(selectedClass.term_id);
+      }
+      if (selectedClass.campus_id && selectedClass.campus_id !== selectedCampusId) {
+        setSelectedCampusId(selectedClass.campus_id);
+      }
+    }
+  }, [selectedClass?.id]);
+
+  // 2. Lọc danh sách lớp học khả dụng theo Khóa Học & Cơ Sở
+  const availableClasses = useMemo(() => {
+    return store.classes.filter(cls => {
+      const matchTerm = cls.term_id === selectedTermId;
+      const normalizedCampus =
+        selectedCampusId === 'pmh' ? 'camp_pmh' : selectedCampusId === 'pl' ? 'camp_pl' : selectedCampusId;
+      const matchCampus = cls.campus_id === normalizedCampus || cls.campus_id === selectedCampusId;
+      return matchTerm && matchCampus;
+    });
+  }, [store.classes, selectedTermId, selectedCampusId]);
+
+  // 3. State lớp học đang chọn trong phạm vi bộ lọc
+  const [selectedClassId, setSelectedClassId] = useState<string>(
+    selectedClass?.id || availableClasses[0]?.id || ''
+  );
+
+  // Tự động chọn lớp đầu tiên khi đổi Khóa học hoặc Cơ sở
+  useEffect(() => {
+    if (availableClasses.length > 0) {
+      const existsInAvailable = availableClasses.some(c => c.id === selectedClassId);
+      if (!existsInAvailable) {
+        const firstClass = availableClasses[0];
+        setSelectedClassId(firstClass.id);
+        onSelectClass(firstClass);
+      }
+    } else {
+      setSelectedClassId('');
+    }
+  }, [selectedTermId, selectedCampusId, availableClasses]);
+
+  const currentClass = useMemo(() => {
+    if (availableClasses.length === 0) return null;
+    return availableClasses.find(c => c.id === selectedClassId) || availableClasses[0] || null;
+  }, [availableClasses, selectedClassId]);
+
+  const activeFilterTerm = useMemo(
+    () => store.terms.find(t => t.id === selectedTermId) || defaultActiveTerm,
+    [store.terms, selectedTermId, defaultActiveTerm]
+  );
+
+  const termWeeks = useMemo(
+    () => buildTermWeeks(activeFilterTerm?.start_date, activeFilterTerm?.total_weeks || 16),
+    [activeFilterTerm]
+  );
+
   const timeSlot = store.timeSlots.find(t => t.id === currentClass?.time_slot_id);
 
   // Class scheduled days of week (Default: T2, T4)
@@ -146,12 +232,24 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   // Current real-world date
   const today = useMemo(() => new Date().toISOString().split('T')[0], []);
 
-  // Selected week (Default: current week or week 8)
+  // Selected week (Default: current week or week 8 for active term, week 1 for other terms)
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(() => {
-    const idx = TERM_WEEKS.findIndex(w => w.isCurrent);
+    const idx = termWeeks.findIndex(w => w.isCurrent);
     return idx >= 0 ? idx : 7; // Tuần 8 mặc định
   });
-  const currentWeek = TERM_WEEKS[selectedWeekIndex] || TERM_WEEKS[0];
+
+  useEffect(() => {
+    const idx = termWeeks.findIndex(w => w.isCurrent);
+    if (idx >= 0) {
+      setSelectedWeekIndex(idx);
+    } else if (selectedTermId === 'term_fall_2026') {
+      setSelectedWeekIndex(7);
+    } else {
+      setSelectedWeekIndex(0);
+    }
+  }, [selectedTermId, termWeeks]);
+
+  const currentWeek = termWeeks[selectedWeekIndex] || termWeeks[0];
 
   // Calculate actual valid dates for the selected week based on class scheduled days
   const scheduledSessionsForWeek = useMemo(() => {
@@ -178,7 +276,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Selected session date (Must be one of the scheduled sessions)
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    // Pick today if today is a scheduled session date, or the latest past session, or the first
     return scheduledSessionsForWeek[0]?.dateStr || '2026-09-02';
   });
 
@@ -187,7 +284,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     if (scheduledSessionsForWeek.length > 0) {
       const isSelectedInWeek = scheduledSessionsForWeek.some(s => s.dateStr === selectedDate);
       if (!isSelectedInWeek) {
-        // Choose today if in this week, or the latest session that is not in the future, else first session
         const todaySession = scheduledSessionsForWeek.find(s => s.isToday);
         if (todaySession) {
           setSelectedDate(todaySession.dateStr);
@@ -211,6 +307,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   );
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [isSubstitute, setIsSubstitute] = useState<boolean>(false);
+
+  // Teacher Attendance & Work Session Tracking State
+  const [teacherMode, setTeacherMode] = useState<'present' | 'late' | 'substitute' | 'absent'>('present');
+  const [teacherPeriodsCount, setTeacherPeriodsCount] = useState<number>(2);
+  const [teacherCheckInTime, setTeacherCheckInTime] = useState<string>('16:40');
+  const [teacherLateMinutes, setTeacherLateMinutes] = useState<number>(10);
+  const [teacherSessionNote, setTeacherSessionNote] = useState<string>('');
 
   // Modal proof attachment state (Upload & Compression)
   const [proofModalStudent, setProofModalStudent] = useState<Student | null>(null);
@@ -301,13 +404,65 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   const [attendanceState, setAttendanceState] = useState<Record<string, StudentAttendanceLocal>>(initialStatusMap);
 
-  // Update teacher selection when class changes
+  // Update teacher selection and load existing TeacherAttendanceRecord when class or selectedDate changes
   useEffect(() => {
-    if (currentClass) {
+    if (!currentClass) return;
+    const existingTeacherAtt = (store.teacherAttendance || []).find(
+      ta => ta.class_id === currentClass.id && ta.session_date === selectedDate
+    );
+    const assignedTeacher = store.teachers.find(t => t.id === currentClass.primary_teacher_id);
+    const defaultPeriods = assignedTeacher?.periods_per_session || 2;
+    const defaultStartTime = timeSlot?.start_time || '16:45';
+
+    if (existingTeacherAtt) {
+      setSelectedTeacherId(existingTeacherAtt.actual_teacher_id);
+      setIsSubstitute(existingTeacherAtt.is_substitute);
+      setTeacherPeriodsCount(existingTeacherAtt.periods_count || defaultPeriods);
+      setTeacherCheckInTime(existingTeacherAtt.check_in_time || defaultStartTime);
+      setTeacherLateMinutes(existingTeacherAtt.late_minutes || 10);
+      setTeacherSessionNote(existingTeacherAtt.notes || '');
+      if (existingTeacherAtt.status === 'absent_excused' || existingTeacherAtt.status === 'absent_unexcused') {
+        setTeacherMode('absent');
+      } else if (existingTeacherAtt.is_substitute) {
+        setTeacherMode('substitute');
+      } else if (existingTeacherAtt.status === 'late') {
+        setTeacherMode('late');
+      } else {
+        setTeacherMode('present');
+      }
+    } else if (currentSession) {
+      setSelectedTeacherId(currentSession.actual_teacher_id || currentClass.primary_teacher_id);
+      const isSub = Boolean(currentSession.is_substitute || (currentSession.actual_teacher_id && currentSession.actual_teacher_id !== currentClass.primary_teacher_id));
+      setIsSubstitute(isSub);
+      setTeacherMode(isSub ? 'substitute' : 'present');
+      setTeacherPeriodsCount(defaultPeriods);
+      setTeacherCheckInTime(defaultStartTime);
+      setTeacherLateMinutes(10);
+      setTeacherSessionNote('');
+    } else {
       setSelectedTeacherId(currentClass.primary_teacher_id);
       setIsSubstitute(false);
+      setTeacherMode('present');
+      setTeacherPeriodsCount(defaultPeriods);
+      setTeacherCheckInTime(defaultStartTime);
+      setTeacherLateMinutes(10);
+      setTeacherSessionNote('');
     }
-  }, [currentClass?.id]);
+  }, [currentClass?.id, selectedDate, store.teacherAttendance]);
+
+  // Live Teacher Rate & Payout Calculation for Current Session
+  const assignedTeacherObj = currentClass
+    ? store.teachers.find(t => t.id === currentClass.primary_teacher_id)
+    : undefined;
+  const actualTeacherObj = store.teachers.find(t => t.id === selectedTeacherId) || assignedTeacherObj;
+  const isWeekendSlot = timeSlot?.slot_type === 'weekend' || selectedDayCode === 'T7' || selectedDayCode === 'CN';
+  const liveTeacherPeriodRate = getTeacherEffectivePeriodRate(
+    actualTeacherObj,
+    currentClass?.subject_id,
+    isWeekendSlot
+  );
+  const liveTeacherEffectivePeriods = teacherMode === 'absent' ? 0 : teacherPeriodsCount;
+  const liveTeacherTotalPayout = liveTeacherEffectivePeriods * liveTeacherPeriodRate;
 
   // Update attendance state when selectedDate or store.attendance changes (Guaranteed Persistence)
   useEffect(() => {
@@ -333,14 +488,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
     setAttendanceState(newMap);
   }, [selectedDate, currentClass?.id, store.attendance]);
-
-  if (!currentClass) {
-    return (
-      <div className="p-8 text-center rounded-3xl bg-[#111827]/80 border border-slate-800 text-slate-400">
-        Chưa có lớp học nào trong hệ thống.
-      </div>
-    );
-  }
 
   // Royal Snacks live calculation for this session
   const royalStudents = enrolledStudents.filter(s => s.is_royal_student);
@@ -483,6 +630,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Save Attendance Session with Strict Validations
   const handleSaveAttendance = () => {
+    if (!currentClass) return;
     if (isFutureDate) {
       showToast(
         `RÀNG BUỘC THỜI GIAN: Ngày ${selectedDate} là ngày trong tương lai. Hệ thống chỉ cho phép điểm danh cho ngày hôm nay hoặc quá khứ!`,
@@ -681,9 +829,55 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         }
       });
 
+      // 1B. TeacherAttendanceRecord persistence (Chấm công giáo viên buổi học)
+      const existingTeacherAtt = (prev.teacherAttendance || []).find(
+        ta => ta.class_id === currentClass.id && ta.session_date === selectedDate
+      );
+      const remainingTeacherAttendance = (prev.teacherAttendance || []).filter(
+        ta => !(ta.class_id === currentClass.id && ta.session_date === selectedDate)
+      );
+
+      const resolvedStatus: TeacherAttendanceRecord['status'] =
+        teacherMode === 'absent'
+          ? 'absent_excused'
+          : teacherMode === 'late'
+          ? 'late'
+          : 'present';
+
+      const newTeacherAttendanceRecord: TeacherAttendanceRecord = {
+        id: existingTeacherAtt?.id || `tatt_${currentClass.id}_${selectedDate}`,
+        class_id: currentClass.id,
+        term_id: currentClass.term_id,
+        campus_id: currentClass.campus_id,
+        session_date: selectedDate,
+        session_number: newSession.session_number,
+        periods_count: teacherMode === 'absent' ? 0 : teacherPeriodsCount,
+        assigned_teacher_id: currentClass.primary_teacher_id,
+        actual_teacher_id: teacherMode === 'absent' ? currentClass.primary_teacher_id : selectedTeacherId,
+        is_substitute: teacherMode === 'substitute' || (selectedTeacherId !== currentClass.primary_teacher_id && teacherMode !== 'absent'),
+        status: resolvedStatus,
+        late_minutes: teacherMode === 'late' ? teacherLateMinutes : undefined,
+        check_in_time: teacherMode === 'absent' ? undefined : teacherCheckInTime,
+        rate_per_period: liveTeacherPeriodRate,
+        total_payout: liveTeacherTotalPayout,
+        verified_by: currentUser?.full_name || 'Ban Học Vụ',
+        notes:
+          teacherSessionNote.trim() ||
+          (teacherMode === 'substitute'
+            ? `${assignedTeacherObj?.name || 'GV chính'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay ${teacherPeriodsCount} tiết`
+            : teacherMode === 'late'
+            ? `Vào lớp lúc ${teacherCheckInTime} (muộn ${teacherLateMinutes} phút)`
+            : teacherMode === 'absent'
+            ? `Giáo viên ${assignedTeacherObj?.name || ''} vắng mặt buổi này (0 tiết - chờ bố trí học bù)`
+            : 'Giáo viên chính thức đứng lớp đúng giờ'),
+      };
+
+      const finalTeacherAttendance = [...remainingTeacherAttendance, newTeacherAttendanceRecord];
+
       return {
         ...prev,
         sessions: updatedSessions,
+        teacherAttendance: finalTeacherAttendance,
         attendance: finalAttendance,
         enrollments: updatedEnrollments,
         invoices: updatedInvoices,
@@ -693,9 +887,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
 
     showToast(
-      `Đã lưu điểm danh buổi ngày ${selectedDate} và tự động kết toán suất bánh sữa thành công!`,
+      `Đã lưu sổ điểm danh học sinh, chấm công giáo viên (${liveTeacherEffectivePeriods} tiết = ${formatVND(liveTeacherTotalPayout)}) và đối soát bánh sữa ngày ${selectedDate}!`,
       'success',
-      { title: 'Lưu điểm danh thành công' }
+      { title: 'Lưu điểm danh & Chấm công GV thành công' }
     );
   };
 
@@ -790,9 +984,56 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     );
   };
 
+  const canSaveAttendance = Boolean(currentClass) && !isFutureDate;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       
+      {/* THANH BỘ LỌC KHÓA & CƠ SỞ TRÊN ĐẦU TRANG (TWO-TIER FILTER BAR) */}
+      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-slate-900/60 border border-slate-800/80 backdrop-blur-md shadow-lg">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Chọn Khóa Học */}
+          <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2 focus-within:border-amber-500/50 transition-colors">
+            <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-xs font-semibold text-slate-400">Khóa học:</span>
+            <select
+              value={selectedTermId}
+              onChange={(e) => setSelectedTermId(e.target.value)}
+              className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
+            >
+              {store.terms.map(term => (
+                <option key={term.id} value={term.id} className="bg-slate-900 text-white">
+                  {term.name} {term.is_active ? '(Đang diễn ra)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Chọn Cơ Sở */}
+          <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2 focus-within:border-cyan-500/50 transition-colors">
+            <Building2 className="w-4 h-4 text-cyan-400 shrink-0" />
+            <span className="text-xs font-semibold text-slate-400">Cơ sở:</span>
+            <select
+              value={selectedCampusId}
+              onChange={(e) => setSelectedCampusId(e.target.value)}
+              className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
+            >
+              <option value="camp_pmh" className="bg-slate-900 text-white">Cơ sở Phú Mỹ Hưng (PMH)</option>
+              <option value="camp_pl" className="bg-slate-900 text-white">Cơ sở Phú Lâm (PL)</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Badge hiển thị số lượng lớp tìm thấy */}
+        <div className={`text-xs font-medium px-3 py-1.5 rounded-xl border ${
+          availableClasses.length > 0
+            ? 'text-slate-300 bg-slate-950/60 border-slate-800'
+            : 'text-amber-300 bg-amber-500/10 border-amber-500/30'
+        }`}>
+          Tìm thấy: <strong className={availableClasses.length > 0 ? 'text-amber-400 font-extrabold' : 'text-rose-400 font-extrabold'}>{availableClasses.length}</strong> lớp học khả dụng
+        </div>
+      </div>
+
       {/* Top Class Switcher & Meta Header */}
       <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-5 backdrop-blur-md shadow-xl">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -802,36 +1043,57 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               <UserCheck className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <select
-                  value={currentClass.id}
+                  value={currentClass?.id || ''}
+                  disabled={availableClasses.length === 0}
                   onChange={(e) => {
-                    const c = store.classes.find(cl => cl.id === e.target.value);
-                    if (c) onSelectClass(c);
+                    const c = availableClasses.find(cl => cl.id === e.target.value);
+                    if (c) {
+                      setSelectedClassId(c.id);
+                      onSelectClass(c);
+                    }
                   }}
-                  className="bg-slate-900 border border-slate-700 text-white text-base font-bold rounded-xl px-3 py-1.5 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  className={`bg-slate-900 border text-base font-bold rounded-xl px-3 py-1.5 focus:outline-none transition-colors ${
+                    availableClasses.length === 0
+                      ? 'border-amber-500/40 text-amber-300 cursor-not-allowed'
+                      : 'border-slate-700 text-white focus:border-amber-500 cursor-pointer'
+                  }`}
                 >
-                  {store.classes.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
+                  {availableClasses.length === 0 ? (
+                    <option value="">[ Không có lớp học nào trong khóa & cơ sở này ]</option>
+                  ) : (
+                    availableClasses.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))
+                  )}
                 </select>
-                <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold">
-                  {currentClass.status === 'active' ? 'Đang hoạt động' : 'Tạm dừng'}
-                </span>
+                {currentClass && (
+                  <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold">
+                    {currentClass.status === 'active' ? 'Đang hoạt động' : 'Tạm dừng'}
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-slate-400 mt-1 flex items-center gap-2">
-                <span>{timeSlot?.name}</span>
-                <span>&bull;</span>
-                <span>Lịch học: {classDays.join(' & ')}</span>
-                <span>&bull;</span>
-                <span>{store.facilities.find(f => f.id === currentClass.facility_id)?.name}</span>
-              </p>
+              {currentClass ? (
+                <p className="text-xs text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                  <span>{timeSlot?.name}</span>
+                  <span>&bull;</span>
+                  <span>Lịch học: {classDays.join(' & ')}</span>
+                  <span>&bull;</span>
+                  <span>{store.facilities.find(f => f.id === currentClass.facility_id)?.name}</span>
+                </p>
+              ) : (
+                <p className="text-xs text-amber-400/90 mt-1">
+                  Chưa có lớp học nào thuộc {activeFilterTerm?.name} tại {selectedCampusId === 'camp_pl' ? 'Cơ sở Phú Lâm (PL)' : 'Cơ sở Phú Mỹ Hưng (PMH)'}.
+                </p>
+              )}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button
-              onClick={() => onPrintAttendanceBook(currentClass, selectedDate)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-colors"
+              onClick={() => currentClass && onPrintAttendanceBook(currentClass, selectedDate)}
+              disabled={!currentClass}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Printer className="w-4 h-4 text-slate-300" />
               <span>In Sổ Điểm Danh</span>
@@ -839,163 +1101,374 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
             <button
               onClick={handleSaveAttendance}
-              disabled={isFutureDate}
-              title={isFutureDate ? 'Không thể lưu điểm danh cho ngày trong tương lai' : 'Lưu dữ liệu điểm danh'}
+              disabled={!canSaveAttendance}
+              title={
+                !currentClass
+                  ? 'Không có lớp học nào khả dụng để lưu điểm danh'
+                  : isFutureDate
+                  ? 'Không thể lưu điểm danh cho ngày trong tương lai'
+                  : 'Lưu dữ liệu điểm danh'
+              }
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                isFutureDate
+                !canSaveAttendance
                   ? 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-50'
                   : 'bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-lg shadow-amber-500/20 hover:scale-[1.02]'
               }`}
             >
-              {isFutureDate ? <Lock className="w-4 h-4 text-slate-500" /> : <Save className="w-4 h-4 text-slate-950" />}
-              <span>{isFutureDate ? 'Bị Khóa (Ngày Tương Lai)' : 'Lưu Buổi Điểm Danh'}</span>
+              {!canSaveAttendance ? <Lock className="w-4 h-4 text-slate-500" /> : <Save className="w-4 h-4 text-slate-950" />}
+              <span>
+                {!currentClass
+                  ? 'Đã Khóa (Chưa Có Lớp)'
+                  : isFutureDate
+                  ? 'Bị Khóa (Ngày Tương Lai)'
+                  : 'Lưu Buổi Điểm Danh'}
+              </span>
             </button>
           </div>
 
         </div>
 
-        {/* WEEK & SCHEDULE SELECTOR BAR */}
-        <div className="mt-4 pt-4 border-t border-slate-800 space-y-3">
-          
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+        {/* WEEK & SCHEDULE SELECTOR BAR (Only shown when a class is available) */}
+        {currentClass && (
+          <div className="mt-4 pt-4 border-t border-slate-800 space-y-3">
             
-            {/* Bộ chọn Tuần học */}
-            <div className="lg:col-span-5 flex items-center gap-2 p-2.5 rounded-2xl bg-slate-900 border border-slate-800">
-              <Calendar className="w-4 h-4 text-amber-400 shrink-0 ml-1" />
-              <div className="flex-1 min-w-0">
-                <span className="text-[10px] text-slate-400 block font-semibold uppercase">Chọn Tuần Học (Khóa Thu 2026):</span>
-                <div className="flex items-center gap-1.5 mt-0.5">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+              
+              {/* Bộ chọn Tuần học */}
+              <div className="lg:col-span-5 flex items-center gap-2 p-2.5 rounded-2xl bg-slate-900 border border-slate-800">
+                <Calendar className="w-4 h-4 text-amber-400 shrink-0 ml-1" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] text-slate-400 block font-semibold uppercase">
+                    Chọn Tuần Học ({activeFilterTerm?.name || 'Khóa Thu 2026'}):
+                  </span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <button
+                      onClick={() => setSelectedWeekIndex(prev => Math.max(0, prev - 1))}
+                      disabled={selectedWeekIndex === 0}
+                      className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
+                      title="Tuần trước"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+
+                    <select
+                      value={selectedWeekIndex}
+                      onChange={(e) => setSelectedWeekIndex(parseInt(e.target.value, 10))}
+                      className="flex-1 bg-slate-950 text-white font-bold text-xs rounded-lg px-2.5 py-1 border border-slate-700/80 focus:outline-none focus:border-amber-500 cursor-pointer"
+                    >
+                      {termWeeks.map((w, idx) => (
+                        <option key={w.weekNumber} value={idx}>
+                          {w.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      onClick={() => setSelectedWeekIndex(prev => Math.min(termWeeks.length - 1, prev + 1))}
+                      disabled={selectedWeekIndex === termWeeks.length - 1}
+                      className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
+                      title="Tuần sau"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Thanh chọn Ngày học thực tế của lớp (Chỉ cho phép 2 ngày/tuần theo cấu hình lớp) */}
+              <div className="lg:col-span-7 flex flex-col justify-center p-2.5 rounded-2xl bg-slate-900 border border-slate-800">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Chọn Ngày Buổi Học Thực Tế ({classDays.join(' & ')}):</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-medium">
+                    * Không thể chọn các ngày ngoài lịch
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {scheduledSessionsForWeek.map((sessionDay) => {
+                    const isSelected = sessionDay.dateStr === selectedDate;
+
+                    return (
+                      <button
+                        key={sessionDay.dateStr}
+                        onClick={() => setSelectedDate(sessionDay.dateStr)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                          isSelected
+                            ? sessionDay.isFuture
+                              ? 'bg-rose-500/20 text-rose-300 border-2 border-rose-500 ring-2 ring-rose-500/20'
+                              : 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30 ring-2 ring-amber-400 font-extrabold'
+                            : sessionDay.isFuture
+                            ? 'bg-slate-950/80 text-slate-400 hover:text-slate-200 border border-slate-800'
+                            : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-700/80'
+                        }`}
+                      >
+                        <span className="font-extrabold">{sessionDay.dayName}</span>
+                        <span>({sessionDay.formatted})</span>
+
+                        {sessionDay.isToday && (
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-black ${
+                            isSelected ? 'bg-slate-950 text-amber-400' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          }`}>
+                            Hôm Nay
+                          </span>
+                        )}
+
+                        {sessionDay.isFuture && (
+                          <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Tương Lai</span>
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+            </div>
+
+            {/* KHỐI CHẤM CÔNG GIÁO VIÊN BUỔI HỌC (TEACHER ATTENDANCE & PAYOUT BAR) */}
+            <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-3 mt-1">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+                <div className="flex items-start gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0 mt-0.5">
+                    <UserCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-extrabold text-white uppercase tracking-wide">
+                        Chấm Công Giáo Viên &amp; Định Mức Tiết Dạy Buổi Học
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-[10px] font-mono text-slate-300">
+                        GV Phân công: <strong className="text-amber-300">{assignedTeacherObj?.name || 'Chưa gán'} (Chính thức)</strong>
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Ca học: <strong>{timeSlot?.start_time || '16:45'} - {timeSlot?.end_time || '18:15'} (90 phút = 2 tiết chuẩn)</strong> &bull; Ghi nhận trực tiếp vào bảng quyết toán thù lao khóa học
+                    </p>
+                  </div>
+                </div>
+
+                {/* Live Payout Formula Display */}
+                <div className="px-3.5 py-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 flex items-center gap-3 shrink-0">
+                  <div className="text-right">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300/90">
+                      Thù lao buổi ({actualTeacherObj?.name}):
+                    </div>
+                    <div className="text-xs font-mono text-slate-300 mt-0.5">
+                      <strong className="text-white">{liveTeacherEffectivePeriods} tiết</strong> &times;{' '}
+                      <strong className="text-amber-300">{formatVND(liveTeacherPeriodRate)}/tiết</strong> ={' '}
+                      <strong className="text-sm font-extrabold text-emerald-400">{formatVND(liveTeacherTotalPayout)}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Teacher Status 4-Button Toggle & Controls */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center">
+                {/* 4 Nút trạng thái chấm công GV */}
+                <div className="lg:col-span-7 flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => setSelectedWeekIndex(prev => Math.max(0, prev - 1))}
-                    disabled={selectedWeekIndex === 0}
-                    className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
-                    title="Tuần trước"
+                    type="button"
+                    disabled={isFutureDate}
+                    onClick={() => {
+                      setTeacherMode('present');
+                      setSelectedTeacherId(currentClass.primary_teacher_id);
+                      setIsSubstitute(false);
+                      setTeacherPeriodsCount(assignedTeacherObj?.periods_per_session || 2);
+                    }}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                      teacherMode === 'present'
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20 font-extrabold'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-emerald-500/40'
+                    }`}
                   >
-                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <Check className="w-3.5 h-3.5" />
+                    <span>✓ Đúng Giờ</span>
                   </button>
 
-                  <select
-                    value={selectedWeekIndex}
-                    onChange={(e) => setSelectedWeekIndex(parseInt(e.target.value, 10))}
-                    className="flex-1 bg-slate-950 text-white font-bold text-xs rounded-lg px-2.5 py-1 border border-slate-700/80 focus:outline-none focus:border-amber-500 cursor-pointer"
+                  <button
+                    type="button"
+                    disabled={isFutureDate}
+                    onClick={() => {
+                      setTeacherMode('late');
+                      setSelectedTeacherId(currentClass.primary_teacher_id);
+                      setIsSubstitute(false);
+                      setTeacherCheckInTime('16:55');
+                      setTeacherLateMinutes(10);
+                    }}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                      teacherMode === 'late'
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20 font-extrabold'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-amber-500/40'
+                    }`}
                   >
-                    {TERM_WEEKS.map((w, idx) => (
-                      <option key={w.weekNumber} value={idx}>
-                        {w.label}
-                      </option>
-                    ))}
-                  </select>
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>⏱ Đi Muộn</span>
+                  </button>
 
                   <button
-                    onClick={() => setSelectedWeekIndex(prev => Math.min(TERM_WEEKS.length - 1, prev + 1))}
-                    disabled={selectedWeekIndex === TERM_WEEKS.length - 1}
-                    className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
-                    title="Tuần sau"
+                    type="button"
+                    disabled={isFutureDate}
+                    onClick={() => {
+                      setTeacherMode('substitute');
+                      setIsSubstitute(true);
+                      const fallbackSub = store.teachers.find(t => t.id !== currentClass.primary_teacher_id) || store.teachers[0];
+                      if (fallbackSub && selectedTeacherId === currentClass.primary_teacher_id) {
+                        setSelectedTeacherId(fallbackSub.id);
+                      }
+                    }}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                      teacherMode === 'substitute'
+                        ? 'bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-500/20 font-extrabold'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-purple-500/40'
+                    }`}
                   >
-                    <ChevronRight className="w-3.5 h-3.5" />
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>🔄 Dạy Thay</span>
                   </button>
+
+                  <button
+                    type="button"
+                    disabled={isFutureDate}
+                    onClick={() => {
+                      setTeacherMode('absent');
+                      setSelectedTeacherId(currentClass.primary_teacher_id);
+                      setIsSubstitute(false);
+                    }}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                      teacherMode === 'absent'
+                        ? 'bg-rose-600 text-white border-rose-400 shadow-md shadow-rose-500/20 font-extrabold'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-rose-500/40'
+                    }`}
+                  >
+                    <XCircle className="w-3.5 h-3.5" />
+                    <span>✕ Vắng Mặt</span>
+                  </button>
+                </div>
+
+                {/* Số tiết thực dạy & Giờ vào lớp */}
+                <div className="lg:col-span-5 flex flex-wrap items-center justify-end gap-2.5 text-xs">
+                  <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl">
+                    <span className="text-[11px] text-slate-400 font-semibold">Số tiết dạy:</span>
+                    <select
+                      value={teacherMode === 'absent' ? 0 : teacherPeriodsCount}
+                      disabled={isFutureDate || teacherMode === 'absent'}
+                      onChange={(e) => setTeacherPeriodsCount(Number(e.target.value))}
+                      className="bg-slate-950 text-amber-400 font-mono font-extrabold text-xs px-2 py-0.5 rounded border border-slate-700 focus:outline-none"
+                    >
+                      {teacherMode === 'absent' ? (
+                        <option value={0}>0 tiết (Vắng)</option>
+                      ) : (
+                        <>
+                          <option value={1}>1 tiết (45p)</option>
+                          <option value={2}>2 tiết (90p chuẩn)</option>
+                          <option value={3}>3 tiết (135p)</option>
+                          <option value={4}>4 tiết (180p)</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+
+                  {teacherMode !== 'absent' && (
+                    <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl">
+                      <span className="text-[11px] text-slate-400 font-semibold">Giờ vào lớp:</span>
+                      <input
+                        type="time"
+                        value={teacherCheckInTime}
+                        disabled={isFutureDate}
+                        onChange={(e) => setTeacherCheckInTime(e.target.value)}
+                        className="bg-slate-950 text-white font-mono text-xs px-2 py-0.5 rounded border border-slate-700 focus:outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Conditional Sub-Panels for Substitute / Late / Absent / Note */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-1 text-xs">
+                {teacherMode === 'substitute' && (
+                  <div className="md:col-span-6 p-3 rounded-xl bg-purple-950/30 border border-purple-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="w-4 h-4 text-purple-400 shrink-0" />
+                      <span className="font-bold text-purple-200 text-xs">Chọn Giáo viên dạy thay:</span>
+                    </div>
+                    <select
+                      value={selectedTeacherId}
+                      onChange={(e) => {
+                        setSelectedTeacherId(e.target.value);
+                        setIsSubstitute(e.target.value !== currentClass.primary_teacher_id);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none"
+                    >
+                      {store.teachers.map(t => {
+                        const subRate = getTeacherEffectivePeriodRate(t, currentClass.subject_id, isWeekendSlot);
+                        return (
+                          <option key={t.id} value={t.id} className="bg-slate-900">
+                            {t.name} ({t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — {formatVND(subRate)}/tiết
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                {teacherMode === 'late' && (
+                  <div className="md:col-span-6 p-3 rounded-xl bg-amber-950/30 border border-amber-500/40 flex items-center justify-between gap-2">
+                    <span className="font-bold text-amber-300 text-xs flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-amber-400" />
+                      <span>Số phút vào lớp trễ:</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={teacherLateMinutes}
+                        onChange={(e) => setTeacherLateMinutes(Math.max(1, Number(e.target.value)))}
+                        className="w-20 px-2.5 py-1 rounded-lg bg-slate-950 border border-amber-500/50 text-amber-300 font-mono font-bold text-xs text-center"
+                      />
+                      <span className="text-slate-400 text-[11px]">phút</span>
+                    </div>
+                  </div>
+                )}
+
+                {teacherMode === 'absent' && (
+                  <div className="md:col-span-6 p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 flex items-center gap-2 text-rose-200 text-[11px]">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>
+                      Giáo viên <strong>{assignedTeacherObj?.name}</strong> vắng mặt không có người dạy thay: Thù lao buổi này = <strong>0 đ</strong>. Vui lòng chọn <strong>[🔄 Dạy Thay]</strong> nếu có giáo viên đứng lớp thay.
+                    </span>
+                  </div>
+                )}
+
+                <div className={teacherMode === 'present' ? 'md:col-span-12' : 'md:col-span-6'}>
+                  <input
+                    type="text"
+                    value={teacherSessionNote}
+                    disabled={isFutureDate}
+                    onChange={(e) => setTeacherSessionNote(e.target.value)}
+                    placeholder={
+                      teacherMode === 'substitute'
+                        ? `Ghi chú dạy thay (VD: Cô Hương nghỉ ốm có phép, ${actualTeacherObj?.name} dạy thay ${teacherPeriodsCount} tiết)...`
+                        : teacherMode === 'late'
+                        ? 'Ghi chú lý do đi muộn & phương án dạy bù giờ...'
+                        : 'Ghi chú chấm công giáo viên buổi học này (không bắt buộc)...'
+                    }
+                    className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 placeholder-slate-500 text-xs focus:outline-none focus:border-amber-500/60"
+                  />
                 </div>
               </div>
             </div>
 
-            {/* Thanh chọn Ngày học thực tế của lớp (Chỉ cho phép 2 ngày/tuần theo cấu hình lớp) */}
-            <div className="lg:col-span-7 flex flex-col justify-center p-2.5 rounded-2xl bg-slate-900 border border-slate-800">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[10px] text-slate-400 font-semibold uppercase flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Chọn Ngày Buổi Học Thực Tế ({classDays.join(' & ')}):</span>
-                </span>
-                <span className="text-[10px] text-slate-500 font-medium">
-                  * Không thể chọn các ngày ngoài lịch
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                {scheduledSessionsForWeek.map((sessionDay) => {
-                  const isSelected = sessionDay.dateStr === selectedDate;
-
-                  return (
-                    <button
-                      key={sessionDay.dateStr}
-                      onClick={() => setSelectedDate(sessionDay.dateStr)}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-                        isSelected
-                          ? sessionDay.isFuture
-                            ? 'bg-rose-500/20 text-rose-300 border-2 border-rose-500 ring-2 ring-rose-500/20'
-                            : 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30 ring-2 ring-amber-400 font-extrabold'
-                          : sessionDay.isFuture
-                          ? 'bg-slate-950/80 text-slate-400 hover:text-slate-200 border border-slate-800'
-                          : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-700/80'
-                      }`}
-                    >
-                      <span className="font-extrabold">{sessionDay.dayName}</span>
-                      <span>({sessionDay.formatted})</span>
-
-                      {sessionDay.isToday && (
-                        <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-black ${
-                          isSelected ? 'bg-slate-950 text-amber-400' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                        }`}>
-                          Hôm Nay
-                        </span>
-                      )}
-
-                      {sessionDay.isFuture && (
-                        <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] bg-rose-500/20 text-rose-400 border border-rose-500/30">
-                          <Lock className="w-2.5 h-2.5" />
-                          <span>Tương Lai</span>
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
           </div>
-
-          {/* Teacher Selection & Substitute Bar */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800">
-              <UserCheck className="w-4 h-4 text-cyan-400 shrink-0" />
-              <div className="flex-1">
-                <span className="text-[10px] text-slate-400 block font-semibold uppercase">Giáo viên đứng lớp buổi này:</span>
-                <select
-                  value={selectedTeacherId}
-                  onChange={(e) => {
-                    setSelectedTeacherId(e.target.value);
-                    setIsSubstitute(e.target.value !== currentClass.primary_teacher_id);
-                  }}
-                  className="w-full bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer"
-                >
-                  {store.teachers.map(t => (
-                    <option key={t.id} value={t.id} className="bg-[#111827]">
-                      {t.name} {t.id === currentClass.primary_teacher_id ? '(GV Chính)' : '(GV Dạy Thay)'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800">
-              <span className="text-slate-400 font-medium">Trạng thái phân công GV:</span>
-              {isSubstitute ? (
-                <span className="px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30 text-[11px] flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3 text-amber-400" />
-                  <span>Giáo viên Dạy Thay</span>
-                </span>
-              ) : (
-                <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30 text-[11px] flex items-center gap-1">
-                  <Check className="w-3 h-3 text-emerald-400" />
-                  <span>Giáo viên Chính thức</span>
-                </span>
-              )}
-            </div>
-          </div>
-
-        </div>
+        )}
 
         {/* FUTURE DATE STRICT LOCK WARNING BANNER */}
-        {isFutureDate && (
+        {currentClass && isFutureDate && (
           <div className="mt-3 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 flex items-center gap-3 text-rose-200 text-xs font-semibold backdrop-blur-md animate-pulse">
             <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center shrink-0 text-rose-400">
               <Lock className="w-4 h-4" />
@@ -1011,113 +1484,150 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
       </div>
 
-      {/* Royal Snack Live Summary Bar */}
-      <div className="rounded-2xl bg-gradient-to-r from-amber-500/10 via-slate-900 to-emerald-500/10 border border-slate-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <Coffee className="w-5 h-5 text-amber-400" />
-          <div>
-            <div className="text-xs font-bold text-white">Đối Soát Bánh Sữa Buổi Này (Dành riêng cho HS Royal)</div>
-            <div className="text-[11px] text-slate-400">
-              Công thức: Tiêu thụ = Có mặt + Vắng KP | Hoàn trả bếp = Vắng CP (Bắt buộc kèm minh chứng Drive)
-            </div>
+      {/* EMPTY STATE: Khi Khóa học & Cơ sở đang chọn chưa có lớp học nào */}
+      {!currentClass ? (
+        <div className="rounded-3xl bg-[#111827]/80 border border-amber-500/30 p-10 text-center backdrop-blur-md shadow-xl space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+            <FolderOpen className="w-8 h-8" />
           </div>
-        </div>
-
-        <div className="flex items-center gap-4 text-xs font-mono font-bold">
-          <div className="text-slate-300">
-            <span className="text-[10px] text-slate-500 block uppercase">Định mức Royal:</span>
-            <span>{totalRoyalCount} suất</span>
-          </div>
-          <div className="text-emerald-400">
-            <span className="text-[10px] text-slate-500 block uppercase">Tiêu thụ:</span>
-            <span>{liveConsumed} suất</span>
-          </div>
-          <div className="text-amber-400">
-            <span className="text-[10px] text-slate-500 block uppercase">Hoàn trả bếp:</span>
-            <span>{liveReturned} suất</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Attendance List Container (Cards or Table) */}
-      <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
-        <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
-              <span>Sổ Điểm Danh Học Viên Ca {selectedDayLabel} ({enrolledStudents.length}/{allClassEnrollments.length} học sinh có lịch học)</span>
-              {offScheduleStudents.length > 0 && (
-                <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold">
-                  Đã lọc {offScheduleStudents.length} HV không thuộc lịch {selectedDayLabel}
-                </span>
-              )}
+          <div className="space-y-1.5 max-w-xl mx-auto">
+            <h3 className="text-base font-extrabold text-white">
+              Không có lớp học nào trong khóa & cơ sở này
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              * Hệ thống tự động hiển thị đúng học sinh có đăng ký học vào <strong>{selectedDayLabel} ({formatDateVN(selectedDate)})</strong>. Học sinh học lệch thứ/bán phần sẽ không bị tính vắng sai và không phát sinh suất bánh sữa dư.
+            <p className="text-sm text-slate-300 font-medium">
+              Vui lòng mở thêm lớp mới trong tab <strong className="text-amber-400">Lớp Học Ngoại Khóa</strong> hoặc chọn cơ sở khác.
             </p>
           </div>
-
-          <div className="flex items-center gap-2.5 flex-wrap">
-            {offScheduleStudents.length > 0 && (
+          <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setSelectedCampusId(selectedCampusId === 'camp_pmh' ? 'camp_pl' : 'camp_pmh')}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors flex items-center gap-2"
+            >
+              <Building2 className="w-4 h-4 text-cyan-400" />
+              <span>Chuyển sang {selectedCampusId === 'camp_pmh' ? 'Cơ sở Phú Lâm (PL)' : 'Cơ sở Phú Mỹ Hưng (PMH)'}</span>
+            </button>
+            {onNavigateTab && (
               <button
                 type="button"
-                onClick={() => setShowOffScheduleStudents(prev => !prev)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
-                  showOffScheduleStudents
-                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                    : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/40 hover:text-cyan-300'
-                }`}
+                onClick={() => onNavigateTab('sub_classes')}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/20"
               >
-                <Calendar className="w-3.5 h-3.5 text-cyan-400" />
-                <span>
-                  {showOffScheduleStudents
-                    ? `Ẩn HV khác lịch (${offScheduleStudents.length})`
-                    : `Xem HV nghỉ theo lịch riêng (${offScheduleStudents.length})`}
-                </span>
+                <PlusCircle className="w-4 h-4" />
+                <span>Mở thêm lớp trong Lớp Học Ngoại Khóa</span>
               </button>
             )}
-            <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
           </div>
         </div>
-
-        {/* Off-Schedule Students Info Drawer (When toggled or when partial-schedule students are hidden today) */}
-        {offScheduleStudents.length > 0 && showOffScheduleStudents && (
-          <div className="mx-4 mt-4 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 space-y-2.5">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="text-xs font-bold text-cyan-300 flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
-                <span>
-                  Danh sách học viên của lớp KHÔNG thuộc ca học {selectedDayLabel} ({formatDateVN(selectedDate)}) — Tự động miễn điểm danh & không tính bánh sữa:
-                </span>
+      ) : (
+        <>
+          {/* Royal Snack Live Summary Bar */}
+          <div className="rounded-2xl bg-gradient-to-r from-amber-500/10 via-slate-900 to-emerald-500/10 border border-slate-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <Coffee className="w-5 h-5 text-amber-400" />
+              <div>
+                <div className="text-xs font-bold text-white">Đối Soát Bánh Sữa Buổi Này (Dành riêng cho HS Royal)</div>
+                <div className="text-[11px] text-slate-400">
+                  Công thức: Tiêu thụ = Có mặt + Vắng KP | Hoàn trả bếp = Vắng CP (Bắt buộc kèm minh chứng Drive)
+                </div>
               </div>
-              <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
-                {offScheduleStudents.length} học viên
-              </span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {offScheduleStudents.map(({ student, enrollment }) => {
-                const isBeforeJoin = enrollment.joined_date && selectedDate < enrollment.joined_date;
-                const studentDaysText =
-                  enrollment.enrolled_days_of_week && enrollment.enrolled_days_of_week.length > 0
-                    ? formatDaysListLabel(enrollment.enrolled_days_of_week)
-                    : formatDaysListLabel(classDays);
 
-                return (
-                  <div
-                    key={student.id}
-                    className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 opacity-85"
+            <div className="flex items-center gap-4 text-xs font-mono font-bold">
+              <div className="text-slate-300">
+                <span className="text-[10px] text-slate-500 block uppercase">Định mức Royal:</span>
+                <span>{totalRoyalCount} suất</span>
+              </div>
+              <div className="text-emerald-400">
+                <span className="text-[10px] text-slate-500 block uppercase">Tiêu thụ:</span>
+                <span>{liveConsumed} suất</span>
+              </div>
+              <div className="text-amber-400">
+                <span className="text-[10px] text-slate-500 block uppercase">Hoàn trả bếp:</span>
+                <span>{liveReturned} suất</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Attendance List Container (Cards or Table) */}
+          <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
+            <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                  <span>Sổ Điểm Danh Học Viên Ca {selectedDayLabel} ({enrolledStudents.length}/{allClassEnrollments.length} học sinh có lịch học)</span>
+                  {offScheduleStudents.length > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold">
+                      Đã lọc {offScheduleStudents.length} HV không thuộc lịch {selectedDayLabel}
+                    </span>
+                  )}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  * Hệ thống tự động hiển thị đúng học sinh có đăng ký học vào <strong>{selectedDayLabel} ({formatDateVN(selectedDate)})</strong>. Học sinh học lệch thứ/bán phần sẽ không bị tính vắng sai và không phát sinh suất bánh sữa dư.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {offScheduleStudents.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowOffScheduleStudents(prev => !prev)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                      showOffScheduleStudents
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                        : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/40 hover:text-cyan-300'
+                    }`}
                   >
-                    <div className="min-w-0">
-                      <div className="font-bold text-slate-200 text-xs truncate flex items-center gap-1.5">
-                        <span>{student.name}</span>
-                        <span className="text-[10px] font-mono text-slate-400">({student.code})</span>
-                      </div>
-                      <div className="text-[10px] text-cyan-300 font-semibold mt-0.5">
-                        {isBeforeJoin
-                          ? `⏳ Bắt đầu học từ: ${formatDateVN(enrollment.joined_date)}`
-                          : `🗓️ Lịch cố định: Chỉ học ${studentDaysText} (${enrollment.registered_sessions} buổi)`}
-                      </div>
-                    </div>
-                    <span className="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-bold shrink-0">
+                    <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>
+                      {showOffScheduleStudents
+                        ? `Ẩn HV khác lịch (${offScheduleStudents.length})`
+                        : `Xem HV nghỉ theo lịch riêng (${offScheduleStudents.length})`}
+                    </span>
+                  </button>
+                )}
+                <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
+              </div>
+            </div>
+
+            {/* Off-Schedule Students Info Drawer (When toggled or when partial-schedule students are hidden today) */}
+            {offScheduleStudents.length > 0 && showOffScheduleStudents && (
+              <div className="mx-4 mt-4 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 space-y-2.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="text-xs font-bold text-cyan-300 flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>
+                      Danh sách học viên của lớp KHÔNG thuộc ca học {selectedDayLabel} ({formatDateVN(selectedDate)}) — Tự động miễn điểm danh & không tính bánh sữa:
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                    {offScheduleStudents.length} học viên
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {offScheduleStudents.map(({ student, enrollment }) => {
+                    const isBeforeJoin = enrollment.joined_date && selectedDate < enrollment.joined_date;
+                    const studentDaysText =
+                      enrollment.enrolled_days_of_week && enrollment.enrolled_days_of_week.length > 0
+                        ? formatDaysListLabel(enrollment.enrolled_days_of_week)
+                        : formatDaysListLabel(classDays);
+
+                    return (
+                      <div
+                        key={student.id}
+                        className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 opacity-85"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-200 text-xs truncate flex items-center gap-1.5">
+                            <span>{student.name}</span>
+                            <span className="text-[10px] font-mono text-slate-400">({student.code})</span>
+                          </div>
+                          <div className="text-[10px] text-cyan-300 font-semibold mt-0.5">
+                            {isBeforeJoin
+                              ? `⏳ Bắt đầu học từ: ${formatDateVN(enrollment.joined_date)}`
+                              : `🗓️ Lịch cố định: Chỉ học ${studentDaysText} (${enrollment.registered_sessions} buổi)`}
+                          </div>
+                        </div>
+                        <span className="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-bold shrink-0">
                       Không thuộc ca
                     </span>
                   </div>
@@ -1641,7 +2151,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           </div>
         )}
 
-      </div>
+          </div>
+        </>
+      )}
 
       {/* MODAL: ĐÍNH KÈM MINH CHỨNG VẮNG CÓ PHÉP (EXCUSED ABSENCE PROOF MODAL) */}
       {proofModalStudent && (
@@ -1658,7 +2170,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   Học sinh: <strong className="text-white">{proofModalStudent.name}</strong> ({proofModalStudent.code})
                 </p>
                 <p className="text-[11px] text-slate-400">
-                  Lớp: <strong className="text-slate-200">{currentClass.name}</strong> • Ngày: <strong className="text-amber-400">{selectedDate}</strong>
+                  Lớp: <strong className="text-slate-200">{currentClass?.name}</strong> • Ngày: <strong className="text-amber-400">{selectedDate}</strong>
                 </p>
               </div>
 
@@ -1817,7 +2329,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   <span>Minh Chứng Đơn Xin Nghỉ Phép</span>
                 </h3>
                 <p className="text-xs text-slate-300 mt-1">
-                  Học sinh: <strong className="text-white">{previewProofModal.student.name}</strong> ({previewProofModal.student.code}) • Lớp: <strong className="text-amber-400">{currentClass.name}</strong>
+                  Học sinh: <strong className="text-white">{previewProofModal.student.name}</strong> ({previewProofModal.student.code}) • Lớp: <strong className="text-amber-400">{currentClass?.name}</strong>
                 </p>
                 <p className="text-[11px] text-slate-400">
                   Ngày nghỉ: <span className="text-slate-200 font-semibold">{selectedDate}</span> • Lý do: <span className="text-amber-300 font-medium">{previewProofModal.record.note || 'Nghỉ có phép'}</span>

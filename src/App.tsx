@@ -621,6 +621,7 @@ export default function App() {
               onUpdateStore={updateStore}
               onPrintAttendanceBook={handlePrintAttendanceBook}
               onIssueCreditForStudent={handleIssueCreditForStudent}
+              onNavigateTab={(tab) => setCurrentRoute(tab as any)}
             />
           )}
 

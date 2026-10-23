@@ -73,7 +73,8 @@ import {
   TermSubjectConfig, 
   CampusTermPricing,
   DiscountType,
-  CloudStorageConfig
+  CloudStorageConfig,
+  Teacher
 } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
@@ -82,7 +83,7 @@ interface SettingsDataTabProps {
   store: AppStore;
   currentRole: UserRole;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
-  initialSection?: 'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs';
+  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs';
   initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
@@ -93,9 +94,296 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   initialSection = 'pricing',
   initialSubTab = 'terms',
 }) => {
-  const [activeSection, setActiveSection] = useState<'pricing' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs'>(initialSection || 'pricing');
+  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'audit_logs'>(initialSection || 'pricing');
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
+
+  // State for Teacher Rate Configuration (Cấu hình Định mức Thù lao Giảng dạy)
+  const [teacherCampusFilter, setTeacherCampusFilter] = useState<string>('all');
+  const [teacherTypeFilter, setTeacherTypeFilter] = useState<'all' | 'permanent' | 'visiting'>('all');
+  const [inlineEditingTeacherId, setInlineEditingTeacherId] = useState<string | null>(null);
+  const [inlinePeriodRate, setInlinePeriodRate] = useState<number>(150000);
+  const [inlinePeriodsPerSession, setInlinePeriodsPerSession] = useState<number>(2);
+  const [editingTeacherModal, setEditingTeacherModal] = useState<Teacher | null>(null);
+  const [isCreatingTeacher, setIsCreatingTeacher] = useState<boolean>(false);
+  const [teacherForm, setTeacherForm] = useState<{
+    code: string;
+    name: string;
+    phone: string;
+    email: string;
+    campus_id: string;
+    teacher_type: 'permanent' | 'visiting';
+    default_rate_per_period: number;
+    periods_per_session: number;
+    weekend_multiplier: number;
+    custom_subject_rates: { subject_id: string; rate_per_period: number }[];
+    bank_name: string;
+    account_number: string;
+    account_holder: string;
+    subjects: string[];
+  }>({
+    code: 'GV-PMH-004',
+    name: '',
+    phone: '',
+    email: '',
+    campus_id: 'camp_pmh',
+    teacher_type: 'permanent',
+    default_rate_per_period: 150000,
+    periods_per_session: 2,
+    weekend_multiplier: 1.0,
+    custom_subject_rates: [],
+    bank_name: 'Vietcombank',
+    account_number: '',
+    account_holder: '',
+    subjects: ['sub_swim'],
+  });
+
+  const handleOpenEditTeacherRateModal = (teacher: Teacher) => {
+    setIsCreatingTeacher(false);
+    setEditingTeacherModal(teacher);
+    const periods = teacher.periods_per_session || 2;
+    const ratePerPeriod =
+      teacher.default_rate_per_period ||
+      Math.round((teacher.fixed_rate_per_session || 300000) / periods);
+    setTeacherForm({
+      code: teacher.code || `GV-PMH-001`,
+      name: teacher.name,
+      phone: teacher.phone,
+      email: teacher.email,
+      campus_id: teacher.campus_id || 'camp_pmh',
+      teacher_type: teacher.type || teacher.teacher_type || 'permanent',
+      default_rate_per_period: ratePerPeriod,
+      periods_per_session: periods,
+      weekend_multiplier: teacher.weekend_multiplier ?? 1.0,
+      custom_subject_rates: teacher.custom_subject_rates ? [...teacher.custom_subject_rates] : [],
+      bank_name: teacher.bank_account?.bank_name || 'Vietcombank',
+      account_number: teacher.bank_account?.account_number || '',
+      account_holder: teacher.bank_account?.account_holder || teacher.name.toUpperCase(),
+      subjects: teacher.subjects || ['sub_swim'],
+    });
+  };
+
+  const handleOpenCreateTeacherModal = () => {
+    setIsCreatingTeacher(true);
+    setEditingTeacherModal(null);
+    const nextIdx = store.teachers.length + 1;
+    setTeacherForm({
+      code: `GV-PMH-00${nextIdx}`,
+      name: '',
+      phone: '',
+      email: '',
+      campus_id: 'camp_pmh',
+      teacher_type: 'permanent',
+      default_rate_per_period: 150000,
+      periods_per_session: 2,
+      weekend_multiplier: 1.0,
+      custom_subject_rates: [],
+      bank_name: 'Vietcombank',
+      account_number: '',
+      account_holder: '',
+      subjects: ['sub_swim'],
+    });
+  };
+
+  const handleSaveInlineTeacherRate = (teacher: Teacher) => {
+    const validRate = Math.max(10000, Number(inlinePeriodRate) || 150000);
+    const validPeriods = Math.max(1, Math.min(6, Number(inlinePeriodsPerSession) || 2));
+    const oldRate = teacher.default_rate_per_period || Math.round((teacher.fixed_rate_per_session || 300000) / (teacher.periods_per_session || 2));
+    const oldPeriods = teacher.periods_per_session || 2;
+    const newSessionRate = validRate * validPeriods;
+
+    onUpdateStore(prev => {
+      const updatedTeachers = prev.teachers.map(t =>
+        t.id === teacher.id
+          ? {
+              ...t,
+              default_rate_per_period: validRate,
+              periods_per_session: validPeriods,
+              fixed_rate_per_session: newSessionRate,
+            }
+          : t
+      );
+
+      const log = createAuditRecord(
+        'TEACHER_RATE_UPDATE',
+        'FINANCE',
+        `Giáo viên ${teacher.name} (${teacher.code || teacher.id})`,
+        `Cập nhật nhanh định mức thù lao giảng dạy cho ${teacher.name}: Đơn giá tiết từ ${formatVND(oldRate)}/tiết → ${formatVND(validRate)}/tiết (${validPeriods} tiết/buổi = ${formatVND(newSessionRate)}/buổi)`,
+        null,
+        {
+          target_id: teacher.code || teacher.id,
+          details: {
+            status: 'success',
+            before: {
+              default_rate_per_period: oldRate,
+              periods_per_session: oldPeriods,
+              fixed_rate_per_session: oldRate * oldPeriods,
+            },
+            after: {
+              default_rate_per_period: validRate,
+              periods_per_session: validPeriods,
+              fixed_rate_per_session: newSessionRate,
+            },
+          },
+        }
+      );
+
+      return {
+        ...prev,
+        teachers: updatedTeachers,
+        auditLogs: [log, ...(prev.auditLogs || [])],
+      };
+    });
+
+    setInlineEditingTeacherId(null);
+    showToast(
+      `Đã cập nhật định mức thù lao của ${teacher.name}: ${formatVND(validRate)}/tiết (${formatVND(newSessionRate)}/buổi) & ghi nhận Audit Log!`,
+      'success',
+      { title: 'Cập nhật định mức thù lao' }
+    );
+  };
+
+  const handleSaveTeacherModal = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!teacherForm.name.trim()) {
+      showToast('Vui lòng nhập họ tên giáo viên!', 'error');
+      return;
+    }
+
+    const validRate = Math.max(10000, Number(teacherForm.default_rate_per_period) || 150000);
+    const validPeriods = Math.max(1, Math.min(6, Number(teacherForm.periods_per_session) || 2));
+    const newSessionRate = validRate * validPeriods;
+
+    onUpdateStore(prev => {
+      if (isCreatingTeacher) {
+        const newTeacher: Teacher = {
+          id: `tch_${Date.now()}`,
+          code: teacherForm.code.trim().toUpperCase(),
+          name: teacherForm.name.trim(),
+          phone: teacherForm.phone.trim() || '0908 000 111',
+          email: teacherForm.email.trim() || 'teacher@royalschool.edu.vn',
+          campus_id: teacherForm.campus_id,
+          type: teacherForm.teacher_type,
+          teacher_type: teacherForm.teacher_type,
+          default_rate_per_period: validRate,
+          periods_per_session: validPeriods,
+          weekend_multiplier: Number(teacherForm.weekend_multiplier) || 1.0,
+          custom_subject_rates: teacherForm.custom_subject_rates.filter(cr => cr.rate_per_period > 0),
+          bank_account: {
+            bank_name: teacherForm.bank_name.trim() || 'Vietcombank',
+            account_number: teacherForm.account_number.trim() || '0181001122334',
+            account_holder: teacherForm.account_holder.trim().toUpperCase() || teacherForm.name.trim().toUpperCase(),
+          },
+          fixed_rate_per_session: newSessionRate,
+          percentage_rate: 60,
+          status: 'active',
+          subjects: teacherForm.subjects.length > 0 ? teacherForm.subjects : ['sub_swim'],
+        };
+
+        const log = createAuditRecord(
+          'TEACHER_RATE_UPDATE',
+          'FINANCE',
+          `Giáo viên mới ${newTeacher.name} (${newTeacher.code})`,
+          `Thêm mới hồ sơ & thiết lập định mức thù lao cho ${newTeacher.name}: ${formatVND(validRate)}/tiết (${validPeriods} tiết/buổi = ${formatVND(newSessionRate)}/buổi)`,
+          null,
+          {
+            target_id: newTeacher.code,
+            details: {
+              status: 'success',
+              after: {
+                code: newTeacher.code,
+                name: newTeacher.name,
+                default_rate_per_period: validRate,
+                periods_per_session: validPeriods,
+                fixed_rate_per_session: newSessionRate,
+              },
+            },
+          }
+        );
+
+        return {
+          ...prev,
+          teachers: [...prev.teachers, newTeacher],
+          auditLogs: [log, ...(prev.auditLogs || [])],
+        };
+      } else if (editingTeacherModal) {
+        const oldRate =
+          editingTeacherModal.default_rate_per_period ||
+          Math.round((editingTeacherModal.fixed_rate_per_session || 300000) / (editingTeacherModal.periods_per_session || 2));
+        const oldPeriods = editingTeacherModal.periods_per_session || 2;
+
+        const updatedTeachers = prev.teachers.map(t =>
+          t.id === editingTeacherModal.id
+            ? {
+                ...t,
+                code: teacherForm.code.trim().toUpperCase(),
+                name: teacherForm.name.trim(),
+                phone: teacherForm.phone.trim(),
+                email: teacherForm.email.trim(),
+                campus_id: teacherForm.campus_id,
+                type: teacherForm.teacher_type,
+                teacher_type: teacherForm.teacher_type,
+                default_rate_per_period: validRate,
+                periods_per_session: validPeriods,
+                weekend_multiplier: Number(teacherForm.weekend_multiplier) || 1.0,
+                custom_subject_rates: teacherForm.custom_subject_rates.filter(cr => cr.rate_per_period > 0),
+                bank_account: {
+                  bank_name: teacherForm.bank_name.trim() || 'Vietcombank',
+                  account_number: teacherForm.account_number.trim(),
+                  account_holder: teacherForm.account_holder.trim().toUpperCase() || teacherForm.name.trim().toUpperCase(),
+                },
+                fixed_rate_per_session: newSessionRate,
+                subjects: teacherForm.subjects.length > 0 ? teacherForm.subjects : t.subjects,
+              }
+            : t
+        );
+
+        const log = createAuditRecord(
+          'TEACHER_RATE_UPDATE',
+          'FINANCE',
+          `Giáo viên ${teacherForm.name} (${teacherForm.code})`,
+          `Cập nhật cấu hình thù lao giảng dạy cho ${teacherForm.name}: Đơn giá tiết từ ${formatVND(oldRate)}/tiết → ${formatVND(validRate)}/tiết (${validPeriods} tiết/buổi = ${formatVND(newSessionRate)}/buổi, Hệ số cuối tuần: x${teacherForm.weekend_multiplier})`,
+          null,
+          {
+            target_id: teacherForm.code,
+            details: {
+              status: 'success',
+              before: {
+                default_rate_per_period: oldRate,
+                periods_per_session: oldPeriods,
+                fixed_rate_per_session: oldRate * oldPeriods,
+                custom_subject_rates: editingTeacherModal.custom_subject_rates || [],
+              },
+              after: {
+                default_rate_per_period: validRate,
+                periods_per_session: validPeriods,
+                fixed_rate_per_session: newSessionRate,
+                weekend_multiplier: teacherForm.weekend_multiplier,
+                custom_subject_rates: teacherForm.custom_subject_rates,
+              },
+            },
+          }
+        );
+
+        return {
+          ...prev,
+          teachers: updatedTeachers,
+          auditLogs: [log, ...(prev.auditLogs || [])],
+        };
+      }
+      return prev;
+    });
+
+    showToast(
+      isCreatingTeacher
+        ? `Đã thêm mới giáo viên ${teacherForm.name} với định mức ${formatVND(validRate)}/tiết!`
+        : `Đã lưu cấu hình thù lao của ${teacherForm.name} (${formatVND(validRate)}/tiết = ${formatVND(newSessionRate)}/buổi)!`,
+      'success',
+      { title: 'Cấu hình định mức thù lao giáo viên' }
+    );
+    setEditingTeacherModal(null);
+    setIsCreatingTeacher(false);
+  };
 
   // Sub-tabs for Section 1: Cấu hình Khóa học & Biểu phí cơ sở
   const [hierarchySubTab, setHierarchySubTab] = useState<'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
@@ -1002,6 +1290,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         >
           <Layers className="w-4 h-4" />
           <span>Cấu Hình Khóa Học & Biểu Phí Cơ Sở</span>
+        </button>
+        <button
+          onClick={() => setActiveSection('teacher_rates')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
+            activeSection === 'teacher_rates'
+              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+              : 'bg-slate-900 text-amber-300 hover:text-white border border-amber-500/30'
+          }`}
+        >
+          <GraduationCap className="w-4 h-4" />
+          <span>Cấu Hình Định Mức Thù Lao Giảng Dạy ({store.teachers.length})</span>
         </button>
         <button
           onClick={() => setActiveSection('campuses')}
@@ -4225,6 +4524,677 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         </div>
       )}
 
+      {/* SECTION 1B: CẤU HÌNH ĐỊNH MỨC THÙ LAO GIẢNG DẠY (TEACHER RATE CONFIGURATION) */}
+      {activeSection === 'teacher_rates' && (() => {
+        const filteredTeachers = store.teachers.filter(t => {
+          const matchCampus = teacherCampusFilter === 'all' || (t.campus_id || 'camp_pmh') === teacherCampusFilter;
+          const matchType = teacherTypeFilter === 'all' || (t.type || t.teacher_type) === teacherTypeFilter;
+          return matchCampus && matchType;
+        });
+
+        const rateAuditLogs = (store.auditLogs || []).filter(
+          log => log.action === 'TEACHER_RATE_UPDATE' || log.action === 'TEACHER_PAYROLL_SETTLE'
+        ).slice(0, 6);
+
+        return (
+          <div className="space-y-5">
+            {/* Header & Quick Filter Bar */}
+            <div className="p-5 rounded-3xl bg-[#111827]/90 border border-slate-800/80 backdrop-blur-md shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <GraduationCap className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-extrabold text-white">
+                      Cấu Hình Định Mức Thù Lao Giảng Dạy Theo Tiết ({filteredTeachers.length}/{store.teachers.length} giáo viên)
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Chuẩn HR &amp; Payroll Royal School
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Thiết lập đơn giá thù lao/tiết chuẩn, số tiết quy đổi trên 1 buổi học (mặc định 2 tiết = 90 phút), hệ số phụ cấp cuối tuần, đơn giá đặc thù theo môn và tài khoản nhận lương VietQR.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-xl px-3 py-1.5 text-xs">
+                  <Building2 className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-slate-400">Cơ sở:</span>
+                  <select
+                    value={teacherCampusFilter}
+                    onChange={(e) => setTeacherCampusFilter(e.target.value)}
+                    className="bg-transparent font-bold text-white focus:outline-none cursor-pointer"
+                  >
+                    <option value="all" className="bg-slate-900">Tất cả cơ sở</option>
+                    <option value="camp_pmh" className="bg-slate-900">Phú Mỹ Hưng (PMH)</option>
+                    <option value="camp_pl" className="bg-slate-900">Phú Lâm (PL)</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-xl px-3 py-1.5 text-xs">
+                  <Filter className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-slate-400">Phân loại:</span>
+                  <select
+                    value={teacherTypeFilter}
+                    onChange={(e) => setTeacherTypeFilter(e.target.value as 'all' | 'permanent' | 'visiting')}
+                    className="bg-transparent font-bold text-white focus:outline-none cursor-pointer"
+                  >
+                    <option value="all" className="bg-slate-900">Tất cả nhân sự</option>
+                    <option value="permanent" className="bg-slate-900">Giáo viên Cơ hữu</option>
+                    <option value="visiting" className="bg-slate-900">Giáo viên Thỉnh giảng</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleOpenCreateTeacherModal}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs transition-all flex items-center gap-1.5 shadow-lg shadow-amber-500/20"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Thêm Giáo Viên Mới</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Summary KPI Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Đơn Giá Tiết Trung Bình</span>
+                <div className="text-lg font-extrabold font-mono text-amber-400 mt-1">
+                  {formatVND(
+                    Math.round(
+                      store.teachers.reduce((sum, t) => sum + (t.default_rate_per_period || 150000), 0) /
+                        Math.max(1, store.teachers.length)
+                    )
+                  )}
+                  <span className="text-xs font-normal text-slate-400"> / tiết</span>
+                </div>
+                <span className="text-[11px] text-slate-500 mt-0.5 block">1 tiết ngoại khóa = 45 phút</span>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Định Mức Ca Chuẩn (90 Phút)</span>
+                <div className="text-lg font-extrabold font-mono text-emerald-400 mt-1">
+                  2 Tiết / Buổi
+                </div>
+                <span className="text-[11px] text-slate-500 mt-0.5 block">
+                  Quy đổi tự động khi chấm công Sổ điểm danh
+                </span>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Nhân Sự Cơ Hữu / Thỉnh Giảng</span>
+                <div className="text-lg font-extrabold font-mono text-cyan-400 mt-1">
+                  {store.teachers.filter(t => (t.type || t.teacher_type) === 'permanent').length} Cơ hữu &bull;{' '}
+                  {store.teachers.filter(t => (t.type || t.teacher_type) === 'visiting').length} Thỉnh giảng
+                </div>
+                <span className="text-[11px] text-slate-500 mt-0.5 block">Phân bổ tại 2 cơ sở PMH &amp; Phú Lâm</span>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Kiểm Soát Nhật Ký Thù Lao</span>
+                <div className="text-lg font-extrabold font-mono text-purple-300 mt-1">
+                  {rateAuditLogs.length} Bản Ghi Audit
+                </div>
+                <span className="text-[11px] text-slate-500 mt-0.5 block">Lưu vết 100% lịch sử đổi đơn giá tiết</span>
+              </div>
+            </div>
+
+            {/* Table of Teachers & Hourly/Period Rates */}
+            <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
+              <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <DollarSign className="w-4 h-4 text-amber-400" />
+                    <span>Bảng Danh Sách Giáo Viên &amp; Định Mức Thù Lao Theo Tiết</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    Bấm <strong>"Sửa nhanh"</strong> để đổi nhanh đơn giá tiết ngay trên dòng hoặc <strong>"Cấu hình chi tiết"</strong> để thiết lập đơn giá riêng theo môn và tài khoản ngân hàng.
+                  </p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
+                    <tr>
+                      <th className="py-3.5 px-4">Mã &amp; Họ Tên Giáo Viên</th>
+                      <th className="py-3.5 px-4">Phân Loại</th>
+                      <th className="py-3.5 px-4">Cơ Sở Chính</th>
+                      <th className="py-3.5 px-4 text-center">Số Tiết / Buổi</th>
+                      <th className="py-3.5 px-4">Đơn Giá / Tiết</th>
+                      <th className="py-3.5 px-4">Thù Lao / Buổi Quy Đổi</th>
+                      <th className="py-3.5 px-4">Đơn Giá Môn Đặc Thù &amp; Cuối Tuần</th>
+                      <th className="py-3.5 px-4">Tài Khoản Nhận Lương</th>
+                      <th className="py-3.5 px-4 text-right">Thao Tác</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {filteredTeachers.map((teacher, idx) => {
+                      const isInline = inlineEditingTeacherId === teacher.id;
+                      const periods = teacher.periods_per_session || 2;
+                      const ratePerPeriod =
+                        teacher.default_rate_per_period ||
+                        Math.round((teacher.fixed_rate_per_session || 300000) / periods);
+                      const sessionEquivalent = ratePerPeriod * periods;
+                      const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
+                      const isPerm = (teacher.type || teacher.teacher_type) === 'permanent';
+
+                      return (
+                        <tr key={teacher.id} className="hover:bg-slate-800/30 transition-colors">
+                          {/* 1. Mã & Họ tên GV */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 font-extrabold text-xs shrink-0">
+                                {teacher.name.split(' ').pop()?.charAt(0) || 'G'}
+                              </div>
+                              <div>
+                                <div className="font-mono text-[10px] font-bold text-amber-400">
+                                  {teacher.code || `GV-PMH-00${idx + 1}`}
+                                </div>
+                                <div className="font-bold text-white text-sm">{teacher.name}</div>
+                                <div className="text-[10px] text-slate-500">{teacher.phone} &bull; {teacher.email}</div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 2. Phân loại */}
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 ${
+                              isPerm
+                                ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+                                : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                            }`}>
+                              {isPerm ? 'Cơ hữu (Permanent)' : 'Thỉnh giảng (Visiting)'}
+                            </span>
+                          </td>
+
+                          {/* 3. Cơ sở */}
+                          <td className="py-3.5 px-4">
+                            <span className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 font-semibold text-[11px]">
+                              {campusObj ? `${campusObj.code} - ${campusObj.name.split('(')[0].trim()}` : 'PMH - Phú Mỹ Hưng'}
+                            </span>
+                          </td>
+
+                          {/* 4. Số tiết/buổi */}
+                          <td className="py-3.5 px-4 text-center">
+                            {isInline ? (
+                              <input
+                                type="number"
+                                min={1}
+                                max={6}
+                                value={inlinePeriodsPerSession}
+                                onChange={(e) => setInlinePeriodsPerSession(Math.max(1, Number(e.target.value)))}
+                                className="w-16 px-2 py-1 rounded-lg bg-slate-950 border border-amber-500 text-white font-mono text-center font-bold text-xs"
+                              />
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 font-mono font-bold text-white">
+                                {periods} tiết/buổi
+                              </span>
+                            )}
+                          </td>
+
+                          {/* 5. Đơn giá/tiết */}
+                          <td className="py-3.5 px-4">
+                            {isInline ? (
+                              <div className="space-y-1.5 min-w-[200px]">
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    step={5000}
+                                    value={inlinePeriodRate}
+                                    onChange={(e) => setInlinePeriodRate(Number(e.target.value))}
+                                    className="w-32 px-2.5 py-1 rounded-lg bg-slate-950 border border-amber-500 text-amber-300 font-mono font-bold text-xs"
+                                  />
+                                  <span className="text-[10px] text-slate-400">đ/tiết</span>
+                                </div>
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  {[120000, 150000, 200000, 250000].map(preset => (
+                                    <button
+                                      key={preset}
+                                      type="button"
+                                      onClick={() => setInlinePeriodRate(preset)}
+                                      className={`px-1.5 py-0.5 rounded text-[9px] font-mono border transition-colors ${
+                                        inlinePeriodRate === preset
+                                          ? 'bg-amber-500 text-slate-950 border-amber-400 font-bold'
+                                          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                                      }`}
+                                    >
+                                      {preset / 1000}K
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="font-mono font-extrabold text-amber-400 text-sm">
+                                {formatVND(ratePerPeriod)}
+                                <span className="text-[10px] text-slate-400 font-normal"> / tiết</span>
+                              </div>
+                            )}
+                          </td>
+
+                          {/* 6. Thù lao/buổi quy đổi */}
+                          <td className="py-3.5 px-4">
+                            <div className="font-mono font-extrabold text-emerald-400 text-sm">
+                              {formatVND(isInline ? inlinePeriodRate * inlinePeriodsPerSession : sessionEquivalent)}
+                              <span className="text-[10px] text-slate-400 font-normal"> / buổi</span>
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              = {isInline ? inlinePeriodsPerSession : periods} tiết &times; {formatVND(isInline ? inlinePeriodRate : ratePerPeriod)}
+                            </div>
+                          </td>
+
+                          {/* 7. Đơn giá riêng theo môn & Hệ số cuối tuần */}
+                          <td className="py-3.5 px-4">
+                            <div className="space-y-1">
+                              {teacher.custom_subject_rates && teacher.custom_subject_rates.length > 0 ? (
+                                teacher.custom_subject_rates.map(cr => {
+                                  const sub = store.subjects.find(s => s.id === cr.subject_id);
+                                  return (
+                                    <div key={cr.subject_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-mono mr-1">
+                                      <span>{sub?.code || cr.subject_id}:</span>
+                                      <strong>{formatVND(cr.rate_per_period)}/tiết</strong>
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <span className="text-[11px] text-slate-500">Áp dụng chuẩn mọi môn</span>
+                              )}
+                              {teacher.weekend_multiplier && teacher.weekend_multiplier > 1 && (
+                                <div className="text-[10px] text-cyan-400 font-semibold">
+                                  ⚡ Phụ cấp T7/CN: Hệ số x{teacher.weekend_multiplier} (+{Math.round((teacher.weekend_multiplier - 1) * 100)}%)
+                                </div>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 8. Tài khoản nhận lương */}
+                          <td className="py-3.5 px-4">
+                            {teacher.bank_account?.account_number ? (
+                              <div className="text-[11px]">
+                                <div className="font-bold text-slate-200">{teacher.bank_account.bank_name}</div>
+                                <div className="font-mono text-amber-300">{teacher.bank_account.account_number}</div>
+                                <div className="text-[9px] text-slate-500 uppercase">{teacher.bank_account.account_holder}</div>
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-slate-500 italic">Chưa cập nhật TK</span>
+                            )}
+                          </td>
+
+                          {/* 9. Thao tác */}
+                          <td className="py-3.5 px-4 text-right">
+                            {isInline ? (
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveInlineTeacherRate(teacher)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center gap-1 shadow-sm"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>Lưu</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setInlineEditingTeacherId(null)}
+                                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setInlineEditingTeacherId(teacher.id);
+                                    setInlinePeriodRate(ratePerPeriod);
+                                    setInlinePeriodsPerSession(periods);
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold text-[11px] transition-colors"
+                                  title="Chỉnh sửa nhanh đơn giá tiết trực tiếp trên dòng"
+                                >
+                                  Sửa nhanh
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditTeacherRateModal(teacher)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-[11px] flex items-center gap-1 transition-colors"
+                                  title="Mở cấu hình chi tiết đơn giá theo môn, phụ cấp cuối tuần & tài khoản ngân hàng"
+                                >
+                                  <Sliders className="w-3.5 h-3.5" />
+                                  <span>Cấu hình chi tiết</span>
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Recent Teacher Rate & Payroll Audit Trail */}
+            <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-bold text-white flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span>Nhật Ký Kiểm Toán Thay Đổi Định Mức Thù Lao &amp; Quyết Toán Gần Đây</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('audit_logs')}
+                  className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1"
+                >
+                  <span>Xem toàn bộ Audit Logs</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {rateAuditLogs.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 text-center">
+                  Chưa có biến động thay đổi định mức thù lao nào trong phiên làm việc này. Hãy thử chỉnh sửa đơn giá tiết ở bảng trên để kiểm chứng Audit Log tự động.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {rateAuditLogs.map(log => (
+                    <div key={log.id} className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono text-[10px] font-bold">
+                            {log.action}
+                          </span>
+                          <strong className="text-white">{log.target_entity}</strong>
+                        </div>
+                        <p className="text-slate-300 text-[11px]">{log.description}</p>
+                      </div>
+                      <div className="text-right text-[10px] text-slate-500 font-mono shrink-0">
+                        <div>{log.full_name} ({log.user_role})</div>
+                        <div>{log.timestamp.replace('T', ' ').slice(0, 19)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL CẤU HÌNH CHI TIẾT ĐỊNH MỨC THÙ LAO GIÁO VIÊN */}
+      {(editingTeacherModal || isCreatingTeacher) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto">
+          <div className="w-full max-w-2xl rounded-3xl bg-[#0F172A] border border-amber-500/40 p-6 shadow-2xl space-y-5 my-8 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                  <GraduationCap className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-white">
+                    {isCreatingTeacher ? 'Thêm Mới Giáo Viên & Cấu Hình Thù Lao' : `Cấu Hình Định Mức Thù Lao: ${editingTeacherModal?.name}`}
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Thiết lập đơn giá tiết chuẩn, phụ cấp ca cuối tuần, đơn giá môn đặc thù &amp; tài khoản ngân hàng nhận lương
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTeacherModal(null);
+                  setIsCreatingTeacher(false);
+                }}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveTeacherModal} className="space-y-4 text-xs">
+              {/* Khối 1: Thông tin định danh & Phân loại nhân sự */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900/80 p-4 rounded-2xl border border-slate-800">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Mã Giáo Viên *</label>
+                  <input
+                    type="text"
+                    value={teacherForm.code}
+                    onChange={(e) => setTeacherForm(prev => ({ ...prev, code: e.target.value }))}
+                    placeholder="VD: GV-PMH-001"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-slate-300 font-semibold mb-1">Họ và Tên Giáo Viên *</label>
+                  <input
+                    type="text"
+                    value={teacherForm.name}
+                    onChange={(e) => setTeacherForm(prev => ({ ...prev, name: e.target.value }))}
+                    placeholder="VD: ThS. Đỗ Thu Hương"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Phân loại nhân sự</label>
+                  <select
+                    value={teacherForm.teacher_type}
+                    onChange={(e) => setTeacherForm(prev => ({ ...prev, teacher_type: e.target.value as 'permanent' | 'visiting' }))}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="permanent">Giáo viên Cơ hữu (Permanent)</option>
+                    <option value="visiting">Giáo viên Thỉnh giảng (Visiting)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Cơ sở hoạt động chính</label>
+                  <select
+                    value={teacherForm.campus_id}
+                    onChange={(e) => setTeacherForm(prev => ({ ...prev, campus_id: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="camp_pmh">Cơ sở Phú Mỹ Hưng (PMH)</option>
+                    <option value="camp_pl">Cơ sở Phú Lâm (PL)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Số điện thoại</label>
+                  <input
+                    type="text"
+                    value={teacherForm.phone}
+                    onChange={(e) => setTeacherForm(prev => ({ ...prev, phone: e.target.value }))}
+                    placeholder="0908 554 433"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* Khối 2: Cấu hình Đơn giá Tiết & Quy đổi Buổi */}
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                    <DollarSign className="w-4 h-4" />
+                    <span>Định Mức Thù Lao Chuẩn Theo Tiết (Hourly / Period Rate)</span>
+                  </span>
+                  <span className="font-mono text-xs font-extrabold text-emerald-400">
+                    Quy đổi: {formatVND(teacherForm.default_rate_per_period * teacherForm.periods_per_session)} / buổi ({teacherForm.periods_per_session} tiết)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Đơn giá chuẩn 1 tiết (VNĐ) *</label>
+                    <input
+                      type="number"
+                      step={5000}
+                      min={10000}
+                      value={teacherForm.default_rate_per_period}
+                      onChange={(e) => setTeacherForm(prev => ({ ...prev, default_rate_per_period: Number(e.target.value) }))}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-amber-500/60 text-amber-300 font-mono text-sm font-extrabold focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Số tiết / buổi chuẩn *</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={6}
+                      value={teacherForm.periods_per_session}
+                      onChange={(e) => setTeacherForm(prev => ({ ...prev, periods_per_session: Math.max(1, Number(e.target.value)) }))}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm font-bold focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Hệ số phụ cấp Cuối tuần (T7/CN)</label>
+                    <select
+                      value={teacherForm.weekend_multiplier}
+                      onChange={(e) => setTeacherForm(prev => ({ ...prev, weekend_multiplier: Number(e.target.value) }))}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-cyan-300 font-mono font-bold focus:outline-none focus:border-cyan-500"
+                    >
+                      <option value={1.0}>x1.0 (Không phụ cấp)</option>
+                      <option value={1.1}>x1.1 (+10% ca cuối tuần)</option>
+                      <option value={1.2}>x1.2 (+20% ca cuối tuần)</option>
+                      <option value={1.5}>x1.5 (+50% ca cuối tuần)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Quick Rate Presets */}
+                <div className="flex items-center gap-2 flex-wrap pt-1">
+                  <span className="text-[11px] text-slate-400">Chọn nhanh mức chuẩn:</span>
+                  {[120000, 150000, 200000, 250000].map(preset => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setTeacherForm(prev => ({ ...prev, default_rate_per_period: preset }))}
+                      className={`px-2.5 py-1 rounded-lg font-mono text-[11px] border transition-all ${
+                        teacherForm.default_rate_per_period === preset
+                          ? 'bg-amber-500 text-slate-950 font-extrabold border-amber-400'
+                          : 'bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/40'
+                      }`}
+                    >
+                      {formatVND(preset)}/tiết ({formatVND(preset * teacherForm.periods_per_session)}/buổi)
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Khối 3: Đơn giá tiết riêng theo đặc thù môn học */}
+              <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-purple-300 text-xs">
+                    Đơn Giá Tiết Riêng Theo Đặc Thù Môn Học (Tùy chọn)
+                  </span>
+                  <span className="text-[10px] text-slate-400">Nếu để trống = Áp dụng đơn giá chuẩn ở trên</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {store.subjects.map(sub => {
+                    const existing = teacherForm.custom_subject_rates.find(r => r.subject_id === sub.id);
+                    return (
+                      <div key={sub.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                        <div className="font-bold text-slate-200 text-[11px] truncate">{sub.name}</div>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            step={5000}
+                            placeholder={`${teacherForm.default_rate_per_period}`}
+                            value={existing?.rate_per_period || ''}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setTeacherForm(prev => {
+                                const others = prev.custom_subject_rates.filter(r => r.subject_id !== sub.id);
+                                if (val > 0) {
+                                  return { ...prev, custom_subject_rates: [...others, { subject_id: sub.id, rate_per_period: val }] };
+                                }
+                                return { ...prev, custom_subject_rates: others };
+                              });
+                            }}
+                            className="w-full px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-purple-300 font-mono text-xs focus:outline-none focus:border-purple-500"
+                          />
+                          <span className="text-[10px] text-slate-500 shrink-0">đ/tiết</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Khối 4: Tài khoản Ngân hàng nhận thù lao VietQR */}
+              <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2.5">
+                <div className="font-bold text-cyan-300 text-xs">
+                  Thông Tin Tài Khoản Ngân Hàng Nhận Quyết Toán Thù Lao (Tích hợp VietQR)
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">Ngân hàng thụ hưởng</label>
+                    <select
+                      value={teacherForm.bank_name}
+                      onChange={(e) => setTeacherForm(prev => ({ ...prev, bank_name: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs"
+                    >
+                      <option value="Vietcombank">Vietcombank</option>
+                      <option value="BIDV">BIDV</option>
+                      <option value="Techcombank">Techcombank</option>
+                      <option value="MBBank">MBBank</option>
+                      <option value="ACB">ACB</option>
+                      <option value="VietinBank">VietinBank</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">Số tài khoản</label>
+                    <input
+                      type="text"
+                      value={teacherForm.account_number}
+                      onChange={(e) => setTeacherForm(prev => ({ ...prev, account_number: e.target.value }))}
+                      placeholder="0181009988776"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-amber-300 font-mono font-bold text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">Chủ tài khoản (In hoa không dấu)</label>
+                    <input
+                      type="text"
+                      value={teacherForm.account_holder}
+                      onChange={(e) => setTeacherForm(prev => ({ ...prev, account_holder: e.target.value.toUpperCase() }))}
+                      placeholder="DO THU HUONG"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs uppercase"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingTeacherModal(null);
+                    setIsCreatingTeacher(false);
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs"
+                >
+                  Hủy Bỏ
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-amber-500/20 flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Lưu Cấu Hình &amp; Ghi Audit Log</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* SECTION 7: NHẬT KÝ KIỂM TOÁN & LỊCH SỬ THAO TÁC */}
       {activeSection === 'audit_logs' && (
         <AuditLogsTab
@@ -4237,3 +5207,4 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     </div>
   );
 };
+
