@@ -1,4 +1,10 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { SupabaseClient } from '@supabase/supabase-js';
+import {
+  getSupabaseClient,
+  getResolvedSupabaseConfig,
+  isValidSupabaseAnonJwt,
+  supabase,
+} from '../supabaseClient';
 import {
   AppStore,
   Campus,
@@ -665,44 +671,17 @@ export interface TableHealthStatus {
  * Lấy cấu hình Supabase hiện hành từ tham số truyền vào, localStorage hoặc biến môi trường
  */
 export function resolveSupabaseCredentials(urlInput?: string, anonKeyInput?: string): { url: string; anonKey: string } {
-  const cleanInputUrl = (urlInput || '').trim();
-  const cleanInputKey = (anonKeyInput || '').trim();
-  if (cleanInputUrl && cleanInputKey && cleanInputUrl.startsWith('http')) {
-    return { url: cleanInputUrl.replace(/\/+$/, ''), anonKey: cleanInputKey };
-  }
-
-  try {
-    const rawCfg = localStorage.getItem('royal_supabase_config');
-    if (rawCfg) {
-      const parsed = JSON.parse(rawCfg);
-      if (parsed.url && parsed.anonKey && String(parsed.url).startsWith('http')) {
-        return { url: String(parsed.url).trim().replace(/\/+$/, ''), anonKey: String(parsed.anonKey).trim() };
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  const envUrl = ((import.meta as any).env?.VITE_SUPABASE_URL || '').trim();
-  const envKey = ((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
-  if (envUrl && envKey && envUrl.startsWith('http') && !envUrl.includes('your-project-id')) {
-    return { url: envUrl.replace(/\/+$/, ''), anonKey: envKey };
-  }
-
-  return { url: cleanInputUrl, anonKey: cleanInputKey };
+  return getResolvedSupabaseConfig(urlInput, anonKeyInput);
 }
 
+/**
+ * Trả về Singleton SupabaseClient duy nhất (ngăn chặn lỗi Multiple GoTrueClient instances)
+ */
 export function createSupabaseClientInstance(urlInput?: string, anonKeyInput?: string): SupabaseClient | null {
-  const { url, anonKey } = resolveSupabaseCredentials(urlInput, anonKeyInput);
-  if (!url || !anonKey || !url.startsWith('http')) return null;
-  try {
-    return createClient(url, anonKey, {
-      auth: { persistSession: false },
-    });
-  } catch {
-    return null;
-  }
+  return getSupabaseClient(urlInput, anonKeyInput);
 }
+
+export { getSupabaseClient, isValidSupabaseAnonJwt, supabase };
 
 /**
  * Kiểm tra toàn diện kết nối CSDL Supabase (REST API, Auth Key, Storage Bucket & Độ trễ)

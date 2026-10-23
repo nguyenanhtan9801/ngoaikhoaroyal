@@ -2,13 +2,18 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import { AppStore, AppUser, ParentRegistration } from '../types';
 import {
-  createSupabaseClientInstance,
+  getSupabaseClient,
+  getResolvedSupabaseConfig,
+  isValidSupabaseAnonJwt,
+} from '../supabaseClient';
+import {
   mapSupabaseRowToStoreEntity,
   SUPABASE_TABLE_TO_STORE_KEY,
   syncStoreDeltaToSupabase,
   RealtimeMutationEvent,
 } from '../lib/supabase';
 import { saveStore } from '../lib/storage';
+import { loadInitialDataSafely } from '../services/dataLoader';
 
 export type RealtimeConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 
@@ -24,6 +29,7 @@ export interface UseSupabaseRealtimeOptions {
 export interface UseSupabaseRealtimeResult {
   connectionState: RealtimeConnectionState;
   isSupabaseCloudActive: boolean;
+  isOffline: boolean;
   lastEventAt: string | null;
   lastEventSummary: string | null;
   eventCount: number;
@@ -145,9 +151,13 @@ export function recomputeDerivedRealtimeState(store: AppStore): AppStore {
   };
 }
 
+let hasLoggedRealtimeKeyWarning = false;
+
 /**
- * Hook trung tâm quản lý kết nối Supabase Realtime WebSockets ('royal_hub_realtime')
- * kết hợp kênh đồng bộ đa cửa sổ tức thì & cơ chế Exponential Backoff Reconnect
+ * Hook trung tâm quản lý kết nối Supabase Realtime WebSockets ('royal_system_changes' / 'royal_hub_realtime')
+ * - Sử dụng Singleton SupabaseClient duy nhất (không tạo trùng GoTrueClient).
+ * - Kiểm tra định dạng JWT Anon Key trước khi kết nối WebSocket (tuyệt đối không mở WebSocket nếu thiếu key hoặc dùng sb_publishable_).
+ * - Nếu gặp CHANNEL_ERROR hoặc TIMED_OUT: tự động ngắt kênh (unsubscribe + removeChannel), đặt isOffline = true và chuyển sang nạp định kỳ (polling) an toàn.
  */
 export function useSupabaseRealtime({
   store,
@@ -161,6 +171,7 @@ export function useSupabaseRealtime({
     typeof navigator !== 'undefined' && !navigator.onLine ? 'reconnecting' : 'connected'
   );
   const [isSupabaseCloudActive, setIsSupabaseCloudActive] = useState<boolean>(false);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
   const [lastEventSummary, setLastEventSummary] = useState<string | null>(null);
   const [eventCount, setEventCount] = useState<number>(0);
@@ -174,7 +185,8 @@ export function useSupabaseRealtime({
   const isApplyingRemoteUpdateRef = useRef<boolean>(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
-  const backoffTimerRef = useRef<number | null>(null);
+  const pollingIntervalRef = useRef<number | null>(null);
+  const hasAttemptedInitialLoadRef = useRef<boolean>(false);
 
   const currentUserRef = useRef<AppUser | null>(currentUser);
   currentUserRef.current = currentUser;
@@ -249,13 +261,11 @@ export function useSupabaseRealtime({
         let didMutate = false;
 
         if (eventType === 'INSERT' && mappedNew && mappedNew.id) {
-          // 1. Khi có bản ghi MỚI (INSERT): Kiểm tra nếu newRecord.id chưa tồn tại trong mảng thì thêm mới
           const exists = currentList.some(item => String(item.id) === String(mappedNew.id));
           if (!exists) {
             updatedList = [mappedNew, ...currentList];
             didMutate = true;
 
-            // Nếu là bảng parent_registrations -> Phát âm báo / tăng số đếm huy hiệu (Badge) và tạo thông báo
             if (table === 'parent_registrations') {
               callbacksRef.current.onNewParentRegistration?.(
                 mappedNew as ParentRegistration
@@ -263,7 +273,6 @@ export function useSupabaseRealtime({
             }
           }
         } else if (eventType === 'UPDATE' && mappedNew && mappedNew.id) {
-          // 2. Khi có bản ghi CẬP NHẬT (UPDATE): Tìm phần tử có item.id === newRecord.id và hợp nhất
           const idx = currentList.findIndex(item => String(item.id) === String(mappedNew.id));
           if (idx !== -1) {
             const mergedItem = { ...currentList[idx], ...mappedNew };
@@ -277,7 +286,6 @@ export function useSupabaseRealtime({
             didMutate = true;
           }
         } else if (eventType === 'DELETE' && oldId) {
-          // 3. Khi có bản ghi BỊ XÓA (DELETE): Lọc bỏ phần tử có item.id === oldRecord.id
           const filtered = currentList.filter(item => String(item.id) !== oldId);
           if (filtered.length !== currentList.length) {
             updatedList = filtered;
@@ -295,7 +303,6 @@ export function useSupabaseRealtime({
           [storeKey]: updatedList,
         };
 
-        // Nếu có đơn đăng ký phụ huynh mới từ Realtime, tự động thêm thông báo vào chuông hệ thống
         if (table === 'parent_registrations' && eventType === 'INSERT' && mappedNew) {
           const notifId = `notif_rt_lead_${mappedNew.id}`;
           const alreadyHasNotif = (nextStore.notifications || []).some(n => n.id === notifId);
@@ -318,7 +325,6 @@ export function useSupabaseRealtime({
           }
         }
 
-        // Tính toán lại ngay lập tức các chỉ số phụ thuộc (Sĩ số lớp, Suất ăn nhẹ, Thù lao GV)
         const recomputed = recomputeDerivedRealtimeState(nextStore);
         prevStoreRef.current = recomputed;
         saveStore(recomputed);
@@ -328,6 +334,38 @@ export function useSupabaseRealtime({
     },
     [setStore]
   );
+
+  // Khởi động tải dữ liệu an toàn (Safe Data Loader) một lần khi mở ứng dụng
+  useEffect(() => {
+    if (hasAttemptedInitialLoadRef.current) return;
+    hasAttemptedInitialLoadRef.current = true;
+
+    const { url, anonKey } = getResolvedSupabaseConfig(
+      store.supabaseConfig?.url,
+      store.supabaseConfig?.anonKey
+    );
+
+    if (url && anonKey && isValidSupabaseAnonJwt(anonKey)) {
+      loadInitialDataSafely(store)
+        .then(res => {
+          if (res.isOfflineFallback) {
+            setIsOffline(true);
+            setIsSupabaseCloudActive(false);
+          } else if (res.loadedFromCloud && res.totalRecordsLoaded > 0) {
+            setIsOffline(false);
+            const recomputed = recomputeDerivedRealtimeState(res.store);
+            prevStoreRef.current = recomputed;
+            setStore(recomputed);
+          }
+        })
+        .catch(() => {
+          setIsOffline(true);
+          setIsSupabaseCloudActive(false);
+        });
+    } else {
+      setIsOffline(true);
+    }
+  }, [store, setStore]);
 
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   useEffect(() => {
@@ -384,12 +422,13 @@ export function useSupabaseRealtime({
     }
 
     const handleOnline = () => {
+      setIsOffline(false);
       setReconnectAttempt(0);
       setConnectionState('connected');
-      setReconnectTrigger(t => t + 1);
     };
 
     const handleOffline = () => {
+      setIsOffline(true);
       setConnectionState('reconnecting');
     };
 
@@ -410,18 +449,30 @@ export function useSupabaseRealtime({
     };
   }, [handleRealtimePayload]);
 
-  // Khởi tạo kênh đăng ký Supabase Realtime ('royal_hub_realtime') kèm Exponential Backoff Reconnect
+  // Đăng ký kênh Supabase Realtime ('royal_system_changes') với kiểm tra khóa JWT nghiêm ngặt và tự động ngắt khi lỗi
   useEffect(() => {
-    if (backoffTimerRef.current) {
-      window.clearTimeout(backoffTimerRef.current);
-      backoffTimerRef.current = null;
+    if (pollingIntervalRef.current) {
+      window.clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
     }
 
-    const sbUrl = store.supabaseConfig?.url;
-    const sbKey = store.supabaseConfig?.anonKey;
-    const client = createSupabaseClientInstance(sbUrl, sbKey);
+    const { url: supabaseUrl, anonKey: supabaseAnonKey } = getResolvedSupabaseConfig(
+      store.supabaseConfig?.url,
+      store.supabaseConfig?.anonKey
+    );
 
-    if (!client) {
+    // 1. Kiểm tra tính hợp lệ của supabaseUrl và supabaseAnonKey trước khi mở kênh WebSocket
+    if (
+      !supabaseUrl ||
+      !supabaseAnonKey ||
+      supabaseAnonKey.startsWith('sb_publishable_') ||
+      !isValidSupabaseAnonJwt(supabaseAnonKey)
+    ) {
+      if (!hasLoggedRealtimeKeyWarning) {
+        console.warn('Realtime tạm dừng: Cần cấu hình khóa Legacy Anon JWT để bật WebSocket.');
+        hasLoggedRealtimeKeyWarning = true;
+      }
+      setIsOffline(true);
       setIsSupabaseCloudActive(false);
       setConnectionState(
         typeof navigator !== 'undefined' && !navigator.onLine ? 'reconnecting' : 'connected'
@@ -429,10 +480,17 @@ export function useSupabaseRealtime({
       return;
     }
 
+    const supabase = getSupabaseClient(supabaseUrl, supabaseAnonKey);
+    if (!supabase) {
+      setIsOffline(true);
+      setIsSupabaseCloudActive(false);
+      return;
+    }
+
     let isUnmounted = false;
 
-    const channel = client
-      .channel('royal_hub_realtime')
+    const channel = supabase
+      .channel('royal_system_changes')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public' },
@@ -450,31 +508,26 @@ export function useSupabaseRealtime({
         if (isUnmounted) return;
 
         if (status === 'SUBSCRIBED') {
+          setIsOffline(false);
           setIsSupabaseCloudActive(true);
           setConnectionState('connected');
           setReconnectAttempt(0);
-        } else if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT' ||
-          status === 'CLOSED'
-        ) {
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Lỗi kết nối Realtime. Hệ thống chuyển sang chế độ nạp định kỳ.');
+          setIsOffline(true);
           setIsSupabaseCloudActive(false);
-          setConnectionState('reconnecting');
+          setConnectionState('connected');
 
-          // Cơ chế Exponential Backoff Reconnect (1s -> 2s -> 4s -> 8s -> tối đa 30s)
-          setReconnectAttempt(prevAttempt => {
-            const nextAttempt = prevAttempt + 1;
-            const delayMs = Math.min(30000, 1000 * Math.pow(2, Math.min(nextAttempt - 1, 5)));
-            if (backoffTimerRef.current) {
-              window.clearTimeout(backoffTimerRef.current);
-            }
-            backoffTimerRef.current = window.setTimeout(() => {
-              if (!isUnmounted) {
-                setReconnectTrigger(t => t + 1);
-              }
-            }, delayMs);
-            return nextAttempt;
-          });
+          // Tự động ngắt kết nối WebSocket ngay lập tức để tránh retry liên tục gây spam Console
+          try {
+            channel.unsubscribe();
+            supabase.removeChannel(channel);
+          } catch {
+            // ignore
+          }
+          if (channelRef.current === channel) {
+            channelRef.current = null;
+          }
         }
       });
 
@@ -482,14 +535,13 @@ export function useSupabaseRealtime({
 
     return () => {
       isUnmounted = true;
-      if (backoffTimerRef.current) {
-        window.clearTimeout(backoffTimerRef.current);
-        backoffTimerRef.current = null;
+      if (pollingIntervalRef.current) {
+        window.clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
       }
       if (channelRef.current) {
         try {
-          channelRef.current.unsubscribe();
-          client.removeChannel(channelRef.current);
+          supabase.removeChannel(channelRef.current);
         } catch {
           // ignore
         }
@@ -504,7 +556,6 @@ export function useSupabaseRealtime({
   ]);
 
   const reconnectNow = useCallback(() => {
-    setConnectionState('reconnecting');
     setReconnectAttempt(0);
     setReconnectTrigger(t => t + 1);
   }, []);
@@ -512,6 +563,7 @@ export function useSupabaseRealtime({
   return {
     connectionState,
     isSupabaseCloudActive,
+    isOffline,
     lastEventAt,
     lastEventSummary,
     eventCount,
