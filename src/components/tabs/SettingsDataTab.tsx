@@ -1173,21 +1173,23 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [sbCheckDetails, setSbCheckDetails] = useState<SupabaseConnectionCheckResult | null>(null);
   const [tableHealthList, setTableHealthList] = useState<TableHealthStatus[]>(() =>
     ROYAL_STANDARDIZED_10_TABLES.map((spec) => ({
-      order: spec.order,
+      index: spec.index,
       sheetName: spec.sheetName,
-      sqlTable: spec.sqlTable,
+      tableName: spec.tableName,
       storeKey: spec.storeKey,
-      displayName: spec.displayName,
+      titleVN: spec.titleVN,
       category: spec.category,
       primaryKey: spec.primaryKey,
+      uniqueKey: spec.uniqueKey,
       foreignKeys: spec.foreignKeys,
       localCount: Array.isArray((store as any)[spec.storeKey]) ? (store as any)[spec.storeKey].length : 0,
       remoteCount: null,
       status: 'local_only',
-      message: 'Đang lưu trữ chuẩn hóa tại Local Store (3NF OK).',
-      lastCheckedAt: new Date().toISOString(),
-      integrityPassed: true,
+      latencyMs: null,
+      integrityValid: true,
       integrityIssues: [],
+      statusLabel: 'Chuẩn hóa Local (Chờ kết nối Cloud)',
+      message: 'Đang lưu trữ chuẩn hóa tại Local Store (3NF OK).',
     }))
   );
   const [sbTesting, setSbTesting] = useState<boolean>(false);
@@ -1443,7 +1445,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       const connRes = await verifySupabaseConnection(targetUrl, targetKey);
       setSbCheckDetails(connRes);
       setSbLatency(connRes.latencyMs);
-      setSbHasBucket(connRes.hasBucket);
+      setSbHasBucket(connRes.hasStorageBucket);
       setSbConnected(connRes.connected);
 
       const health = await inspectAllDatabaseTables(
@@ -1455,7 +1457,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       setSbInspectingTables(false);
 
       const syncedCount = health.filter(h => h.status === 'synced').length;
-      const missingCount = health.filter(h => h.status === 'missing_table').length;
+      const missingCount = health.filter(h => h.status === 'table_missing').length;
 
       if (connRes.connected) {
         showToast(
@@ -1470,7 +1472,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       const health = await inspectAllDatabaseTables(store, '', '');
       setTableHealthList(health);
       setSbInspectingTables(false);
-      const validTables = health.filter(h => h.integrityPassed).length;
+      const validTables = health.filter(h => h.integrityValid).length;
       showToast(
         `Đã kiểm tra trạng thái 10 bảng Local Store: ${validTables}/10 bảng đạt chuẩn toàn vẹn khóa ngoại 3NF.`,
         'info',
@@ -1485,7 +1487,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     const result = await verifySupabaseConnection(sbUrl, sbKey);
     setSbCheckDetails(result);
     setSbLatency(result.latencyMs);
-    setSbHasBucket(result.hasBucket);
+    setSbHasBucket(result.hasStorageBucket);
     setSbConnected(result.connected);
 
     onUpdateStore(prev => ({
@@ -1532,7 +1534,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     setSbSyncProgress(5);
     setSbSyncTable('Khởi tạo tiến trình đồng bộ 10 bảng...');
 
-    const pushResult = await pushAllTablesToSupabase(store, sbUrl, sbKey, (progress, tableName) => {
+    const pushResult = await pushAllTablesToSupabase(store, sbUrl, sbKey, (tableName, progress) => {
       setSbSyncProgress(progress);
       setSbSyncTable(tableName);
     });
@@ -1542,9 +1544,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     setSbSyncing(false);
 
     if (pushResult.success) {
-      showToast(pushResult.summary, 'success', { title: 'Đồng Bộ 10 Bảng Lên Supabase Thành Công' });
+      showToast(pushResult.message, 'success', { title: 'Đồng Bộ 10 Bảng Lên Supabase Thành Công' });
     } else {
-      showToast(pushResult.summary, 'warning', { title: 'Đồng Bộ Hoàn Tất Có Cảnh Báo' });
+      showToast(pushResult.message, 'warning', { title: 'Đồng Bộ Hoàn Tất Có Cảnh Báo' });
     }
   };
 
@@ -1582,16 +1584,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       showToast('Vui lòng nhập Supabase Project URL và Anon Key để đẩy bảng lên Cloud.', 'error');
       return;
     }
-    setSbPushingTable(spec.sqlTable);
-    const res = await pushSingleTableToSupabase(store, spec, sbUrl, sbKey);
+    setSbPushingTable(spec.tableName);
+    const res = await pushSingleTableToSupabase(spec.tableName, store, sbUrl, sbKey);
     const health = await inspectAllDatabaseTables(store, sbUrl, sbKey);
     setTableHealthList(health);
     setSbPushingTable(null);
 
     if (res.success) {
-      showToast(res.message, 'success', { title: `Đồng bộ bảng ${spec.sqlTable}` });
+      showToast(res.message, 'success', { title: `Đồng bộ bảng ${spec.tableName}` });
     } else {
-      showToast(res.message, 'error', { title: `Lỗi đồng bộ bảng ${spec.sqlTable}` });
+      showToast(res.message, 'error', { title: `Lỗi đồng bộ bảng ${spec.tableName}` });
     }
   };
 
@@ -4648,7 +4650,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 return (
                   <div key={spec.sheetName} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 flex flex-col justify-between">
                     <span className="text-[10px] font-mono text-amber-400 font-bold truncate">{spec.sheetName}</span>
-                    <span className="text-[11px] text-slate-300 truncate mt-0.5">{spec.displayName}</span>
+                    <span className="text-[11px] text-slate-300 truncate mt-0.5">{spec.titleVN}</span>
                     <span className={`text-xs font-mono font-extrabold mt-1 ${count === 0 ? 'text-slate-500' : 'text-emerald-400'}`}>
                       {count} bản ghi
                     </span>
@@ -4844,10 +4846,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-[11px] font-mono font-extrabold text-amber-400 truncate">{spec.sheetName}</span>
                         <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[9px] font-mono text-cyan-300 border border-slate-700">
-                          {spec.sqlTable}
+                          {spec.tableName}
                         </span>
                       </div>
-                      <div className="text-xs text-white font-bold">{spec.displayName}</div>
+                      <div className="text-xs text-white font-bold">{spec.titleVN}</div>
                       <div className="text-[10px] text-slate-400 leading-relaxed line-clamp-2">{spec.description}</div>
                     </div>
 
@@ -5097,27 +5099,27 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <div>
                     <div className="text-[10px] text-slate-400">REST API Endpoint</div>
                     <div className="font-bold text-white mt-0.5">
-                      {sbCheckDetails ? (sbCheckDetails.restApiReachable ? 'Hoạt động (200 OK)' : 'Chưa kết nối') : sbConnected ? 'Đã kết nối' : 'Chờ cấu hình'}
+                      {sbCheckDetails ? (sbCheckDetails.restApiOk ? 'Hoạt động (200 OK)' : 'Chưa kết nối') : sbConnected ? 'Đã kết nối' : 'Chờ cấu hình'}
                     </div>
                   </div>
-                  <span className={`w-2.5 h-2.5 rounded-full ${sbCheckDetails?.restApiReachable || sbConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  <span className={`w-2.5 h-2.5 rounded-full ${sbCheckDetails?.restApiOk || sbConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
                   <div>
                     <div className="text-[10px] text-slate-400">Xác Thực Anon Key</div>
                     <div className="font-bold text-white mt-0.5">
-                      {sbCheckDetails ? (sbCheckDetails.authValid ? 'Hợp lệ (RLS Ready)' : 'Chưa xác thực') : sbConnected ? 'Hợp lệ' : 'Chờ kiểm tra'}
+                      {sbCheckDetails ? (sbCheckDetails.authKeyValid ? 'Hợp lệ (RLS Ready)' : 'Chưa xác thực') : sbConnected ? 'Hợp lệ' : 'Chờ kiểm tra'}
                     </div>
                   </div>
-                  <span className={`w-2.5 h-2.5 rounded-full ${sbCheckDetails?.authValid || sbConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                  <span className={`w-2.5 h-2.5 rounded-full ${sbCheckDetails?.authKeyValid || sbConnected ? 'bg-emerald-400' : 'bg-slate-600'}`} />
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
                   <div>
                     <div className="text-[10px] text-slate-400">Toàn Vẹn 3NF (PK/FK)</div>
                     <div className="font-bold text-emerald-400 mt-0.5">
-                      {tableHealthList.filter(t => t.integrityPassed).length}/10 Bảng Đạt Chuẩn
+                      {tableHealthList.filter(t => t.integrityValid).length}/10 Bảng Đạt Chuẩn
                     </div>
                   </div>
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
@@ -5284,9 +5286,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/70">
-                    {tableHealthList.map((tb) => {
-                      const spec = ROYAL_STANDARDIZED_10_TABLES.find(s => s.sqlTable === tb.sqlTable)!;
-                      const isPushingThis = sbPushingTable === tb.sqlTable;
+                    {tableHealthList.map((tb, idx) => {
+                      const spec = ROYAL_STANDARDIZED_10_TABLES.find(
+                        s => s.sheetName === tb.sheetName || s.tableName === tb.tableName
+                      );
+                      const isPushingThis = sbPushingTable === tb.tableName;
 
                       let badgeStyle = 'bg-slate-800 text-slate-300 border-slate-700';
                       let badgeLabel = 'Chuẩn hóa Local';
@@ -5296,7 +5300,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       } else if (tb.status === 'out_of_sync') {
                         badgeStyle = 'bg-amber-500/20 text-amber-300 border-amber-500/30';
                         badgeLabel = '⚡ Lệch số bản ghi';
-                      } else if (tb.status === 'missing_table') {
+                      } else if (tb.status === 'table_missing') {
                         badgeStyle = 'bg-rose-500/20 text-rose-300 border-rose-500/30';
                         badgeLabel = '✕ Chưa tạo bảng SQL';
                       } else if (tb.status === 'rls_blocked' || tb.status === 'error') {
@@ -5305,18 +5309,18 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       }
 
                       return (
-                        <tr key={tb.sqlTable} className="hover:bg-slate-900/50 transition-colors">
+                        <tr key={tb.sheetName || tb.tableName || `tbl_${idx}`} className="hover:bg-slate-900/50 transition-colors">
                           <td className="py-3 px-3 font-mono font-bold text-slate-500">
-                            {String(tb.order).padStart(2, '0')}
+                            {tb.index || String(idx + 1).padStart(2, '0')}
                           </td>
                           <td className="py-3 px-3 font-mono font-bold text-amber-400 whitespace-nowrap">
                             {tb.sheetName}
                           </td>
                           <td className="py-3 px-3 font-mono text-cyan-300 whitespace-nowrap">
-                            {tb.sqlTable}
+                            {tb.tableName}
                           </td>
                           <td className="py-3 px-3">
-                            <div className="font-bold text-white">{tb.displayName}</div>
+                            <div className="font-bold text-white">{tb.titleVN}</div>
                             <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                               PK: {tb.primaryKey}
                               {tb.foreignKeys.length > 0 ? ` • FK: ${tb.foreignKeys.join(', ')}` : ' • Bảng danh mục gốc'}
@@ -5333,7 +5337,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             )}
                           </td>
                           <td className="py-3 px-3 text-center">
-                            {tb.integrityPassed ? (
+                            {tb.integrityValid ? (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                                 <CheckCircle2 className="w-3 h-3" />
                                 3NF OK
@@ -5357,13 +5361,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             </div>
                           </td>
                           <td className="py-3 px-3 text-right whitespace-nowrap">
-                            { spec && (
+                            {spec && (
                               <button
                                 type="button"
                                 onClick={() => handlePushSingleTable(spec)}
                                 disabled={isPushingThis || !sbUrl.trim() || !sbKey.trim()}
                                 className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white text-[10px] font-bold border border-slate-700 transition-all disabled:opacity-40 cursor-pointer"
-                                title={`Đẩy bảng ${tb.sqlTable} lên Supabase`}
+                                title={`Đẩy bảng ${tb.tableName} lên Supabase`}
                               >
                                 {isPushingThis ? 'Đang đẩy...' : 'Đẩy bảng ↑'}
                               </button>
