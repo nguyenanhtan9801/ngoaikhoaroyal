@@ -34,10 +34,11 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
     code: '',
     name: '',
     category_code: 'SPORTS',
+    category_id: '',
     standard_duration: '90 phút',
-    standard_sessions: 24,
-    standard_course_fee: 3990000,
-    standard_session_rate: 166250,
+    standard_sessions: 16,
+    standard_course_fee: 2600000,
+    standard_session_rate: 162500,
     description: '',
   });
 
@@ -46,13 +47,16 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
 
   useEffect(() => {
     if (editingSubject) {
-      const sNum = editingSubject.standard_sessions || 24;
-      const fee = editingSubject.standard_course_fee || 3990000;
+      const sNum = editingSubject.standard_sessions || 16;
+      const fee = editingSubject.standard_course_fee || 2600000;
       const rate = editingSubject.standard_session_rate || (sNum > 0 ? Math.ceil(fee / sNum) : 0);
+      const catCode = editingSubject.category_code || 'SPORTS';
+      const matched = categories.find(c => c.code === catCode || c.id === editingSubject.category_id);
       setFormData({
         code: editingSubject.code || '',
         name: editingSubject.name || '',
-        category_code: editingSubject.category_code || 'SPORTS',
+        category_code: catCode,
+        category_id: matched?.id || editingSubject.category_id || '',
         standard_duration: editingSubject.standard_duration || '90 phút',
         standard_sessions: sNum,
         standard_course_fee: fee,
@@ -61,14 +65,16 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
       });
     } else {
       const defaultCat = categories[0]?.code || 'SPORTS';
+      const matched = categories.find(c => c.code === defaultCat);
       setFormData({
         code: '',
         name: '',
         category_code: defaultCat,
+        category_id: matched?.id || '',
         standard_duration: '90 phút',
-        standard_sessions: 24,
-        standard_course_fee: 3990000,
-        standard_session_rate: 166250,
+        standard_sessions: 16,
+        standard_course_fee: 2600000,
+        standard_session_rate: 162500,
         description: '',
       });
     }
@@ -100,7 +106,7 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
 
   const handleFeeChange = (fee: number) => {
     const validFee = Math.max(0, fee);
-    const sNum = Math.max(1, formData.standard_sessions || 24);
+    const sNum = Math.max(1, formData.standard_sessions || 16);
     const rate = Math.ceil(validFee / sNum);
     setFormData(prev => ({
       ...prev,
@@ -130,53 +136,72 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
       return;
     }
 
-    const durationNum = parseInt(formData.standard_duration) || 90;
-    const sessionsNum = parseInt(String(formData.standard_sessions)) || 24;
-    const feeNum = Number(formData.standard_course_fee) || 3600000;
-    const rateNum = sessionsNum > 0 ? Math.ceil(feeNum / sessionsNum) : 0;
-
-    const matchedCategory = categories.find(
-      c => c.code.toUpperCase() === formData.category_code.toUpperCase()
+    // Tìm object phân loại đã chọn từ danh sách categories
+    const selectedCat = categories.find(
+      (c) => c.code === formData.category_code || c.id === formData.category_id
     );
-    const categoryName = matchedCategory ? matchedCategory.name : 'Thể thao';
+
+    const durationNum = parseInt(formData.standard_duration) || 90;
+    const sessionsNum = parseInt(String(formData.standard_sessions)) || 16;
+    const courseFee = Number(formData.standard_course_fee) || 2600000;
+    const sessionRate = sessionsNum > 0 ? Math.ceil(courseFee / sessionsNum) : 0;
     const subId = editingSubject?.id || `sub_${cleanCode.toLowerCase()}`;
 
-    const newSubjectRecord = {
+    const payload: any = {
       id: subId,
       code: cleanCode,
       name: cleanName,
-      category: categoryName,
-      category_code: formData.category_code || 'SPORTS',
-      category_id: matchedCategory?.id,
+      category: selectedCat?.name || 'Thể Thao',
+      category_code: selectedCat?.code || 'SPORTS',
       standard_duration: `${durationNum} phút`,
-      duration_minutes: durationNum,
       standard_sessions: sessionsNum,
-      standard_course_fee: feeNum,
-      standard_session_rate: rateNum,
+      standard_course_fee: courseFee,
+      standard_session_rate: sessionRate,
       description: formData.description || '',
-      status: 'active',
       is_active: true,
       updated_at: new Date().toISOString(),
     };
+
+    // Nếu có ID của category thì gắn vào
+    if (selectedCat?.id) {
+      payload.category_id = selectedCat.id;
+    }
 
     setIsSubmitting(true);
 
     try {
       const client = getSupabaseClient() || supabase;
       if (client) {
-        const { error } = await client
+        let { data, error } = await client
           .from('subjects')
-          .upsert([newSubjectRecord], { onConflict: 'code' })
+          .upsert([payload], { onConflict: 'code' })
           .select();
 
+        // Tự động xử lý nếu schema cache báo lỗi cột category_id
+        if (error && (error.message.includes('category_id') || error.message.includes('schema cache') || error.code === 'PGRST204')) {
+          console.warn('Supabase báo lỗi schema cache với category_id, tự động thử lại mà không gửi category_id:', error.message);
+          const safePayload = { ...payload };
+          delete safePayload.category_id;
+
+          const retryResult = await client
+            .from('subjects')
+            .upsert([safePayload], { onConflict: 'code' })
+            .select();
+
+          data = retryResult.data;
+          error = retryResult.error;
+        }
+
         if (error) {
-          console.error('[CreateSubjectModal] Supabase error:', error);
+          console.error('Lỗi tạo môn học:', error);
           setErrorMsg('Lỗi tạo môn học: ' + error.message);
+          alert('Lỗi tạo môn học: ' + error.message);
           setIsSubmitting(false);
           return;
         }
       }
 
+      alert('Đã thêm môn học thành công vào CSDL!');
       showToast(
         editingSubject
           ? `Đã cập nhật môn học "${cleanName}" (${cleanCode}) thành công!`
@@ -189,14 +214,14 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
         id: subId,
         code: cleanCode,
         name: cleanName,
-        category: categoryName,
-        category_code: formData.category_code || 'SPORTS',
-        category_id: matchedCategory?.id,
+        category: selectedCat?.name || 'Thể Thao',
+        category_code: selectedCat?.code || 'SPORTS',
+        category_id: selectedCat?.id,
         standard_duration: `${durationNum} phút`,
         duration_minutes: durationNum,
         standard_sessions: sessionsNum,
-        standard_course_fee: feeNum,
-        standard_session_rate: rateNum,
+        standard_course_fee: courseFee,
+        standard_session_rate: sessionRate,
         description: formData.description || '',
         is_active: true,
       };
@@ -206,6 +231,7 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
     } catch (err: any) {
       console.error('[CreateSubjectModal] Unexpected error:', err);
       setErrorMsg('Lỗi bất ngờ khi lưu môn học: ' + (err?.message || 'Không xác định'));
+      alert('Lỗi bất ngờ khi lưu môn học: ' + (err?.message || 'Không xác định'));
     } finally {
       setIsSubmitting(false);
     }
@@ -280,7 +306,15 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
               </label>
               <select
                 value={formData.category_code}
-                onChange={(e) => setFormData({ ...formData, category_code: e.target.value })}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const cat = categories.find(c => c.code === val || c.id === val);
+                  setFormData({
+                    ...formData,
+                    category_code: cat?.code || val,
+                    category_id: cat?.id || '',
+                  });
+                }}
                 className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-white font-semibold focus:outline-none focus:border-amber-500"
                 required
               >

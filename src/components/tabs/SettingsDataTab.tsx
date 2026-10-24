@@ -529,7 +529,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // 4 Nhóm phân loại môn cốt lõi chuẩn hóa toàn trường (SPORTS, TECH, ART, SKILLS)
   const defaultSubjectCategories: SubjectCategory[] = [
     {
-      id: 'cat_sports',
+      id: '7943c6c7-f8dd-42b7-93a5-44e41192434e',
       code: 'SPORTS',
       name: 'Thể Thao & Vận Động',
       color: 'amber',
@@ -539,7 +539,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       order: 1,
     },
     {
-      id: 'cat_tech',
+      id: '36a477e3-4137-48f4-9a2d-5793d19d015f',
       code: 'TECH',
       name: 'Công Nghệ & Sáng Tạo',
       color: 'cyan',
@@ -549,7 +549,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       order: 2,
     },
     {
-      id: 'cat_art',
+      id: 'ab22a577-2898-4533-b79b-81460fa81a7e',
       code: 'ART',
       name: 'Nghệ Thuật & Hội Họa',
       color: 'purple',
@@ -559,7 +559,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       order: 3,
     },
     {
-      id: 'cat_skills',
+      id: 'cab2ed8f-617f-4b79-a003-9920d3701f85',
       code: 'SKILLS',
       name: 'Kỹ Năng Sống & Sinh Tồn',
       color: 'rose',
@@ -1088,7 +1088,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       // 1. Cập nhật trực tiếp lên Supabase
       if (client) {
         try {
-          await client.from('subjects').upsert({
+          const editPayload: any = {
             id: editingSubject.id,
             code: cleanCode,
             name: cleanName,
@@ -1101,7 +1101,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             description: subjectFormData.description || '',
             is_active: editingSubject.is_active !== false,
             updated_at: new Date().toISOString(),
-          });
+          };
+          if (matchedCategory?.id) {
+            editPayload.category_id = matchedCategory.id;
+          }
+
+          let { error } = await client.from('subjects').upsert(editPayload, { onConflict: 'code' }).select();
+          if (error && (error.message.includes('category_id') || error.code === 'PGRST204')) {
+            delete editPayload.category_id;
+            await client.from('subjects').upsert(editPayload, { onConflict: 'code' }).select();
+          }
         } catch (err) {
           console.warn('Lỗi Supabase khi lưu subjects:', err);
         }
@@ -1148,7 +1157,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       // 1. Thêm mới trực tiếp lên Supabase
       if (client) {
         try {
-          await client.from('subjects').upsert({
+          const insertPayload: any = {
             id: newSubId,
             code: cleanCode,
             name: cleanName,
@@ -1161,7 +1170,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             description: subjectFormData.description || '',
             is_active: true,
             updated_at: new Date().toISOString(),
-          });
+          };
+          if (matchedCategory?.id) {
+            insertPayload.category_id = matchedCategory.id;
+          }
+
+          let { error } = await client.from('subjects').upsert(insertPayload, { onConflict: 'code' }).select();
+          if (error && (error.message.includes('category_id') || error.code === 'PGRST204')) {
+            delete insertPayload.category_id;
+            await client.from('subjects').upsert(insertPayload, { onConflict: 'code' }).select();
+          }
         } catch (err) {
           console.warn('Lỗi Supabase khi thêm subjects:', err);
         }
