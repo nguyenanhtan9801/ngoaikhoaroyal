@@ -106,6 +106,8 @@ import {
 } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
+import { CreateSubjectModal } from '../modals/CreateSubjectModal';
+import { ImportSubjectsModal } from '../modals/ImportSubjectsModal';
 
 
 interface SettingsDataTabProps {
@@ -929,6 +931,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<string>('all');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState<string>('');
   const [showSubjectModal, setShowSubjectModal] = useState<boolean>(false);
+  const [showImportSubjectsModal, setShowImportSubjectsModal] = useState<boolean>(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [subjectFormData, setSubjectFormData] = useState({
     code: '',
@@ -2534,10 +2537,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     onViewModeChange={setSubjectsViewMode}
                   />
 
+                  {/* Import Excel / CSV Button */}
+                  <button
+                    onClick={() => setShowImportSubjectsModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-600/20 transition-all shrink-0 cursor-pointer"
+                    title="Nhập môn học hàng loạt từ file Excel hoặc CSV"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>📥 Nhập Excel / CSV</span>
+                  </button>
+
                   {/* Add Subject Button */}
                   <button
                     onClick={handleOpenAddSubject}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>+ Thêm Môn Học Mới</span>
@@ -2741,7 +2754,35 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 </div>
               )}
 
-              {filteredSubjects.length === 0 && (
+              {store.subjects.length === 0 ? (
+                <div className="p-12 text-center rounded-3xl bg-slate-900/60 border border-dashed border-amber-500/30 text-slate-300 space-y-4 shadow-xl">
+                  <div className="w-16 h-16 rounded-3xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
+                    <School className="w-8 h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-base font-extrabold text-white">Chưa có môn học nào trong CSDL</h4>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto">
+                      Bấm <strong className="text-amber-400">'+ Thêm Môn Học Mới'</strong> hoặc <strong className="text-emerald-400">'📥 Nhập Excel / CSV'</strong> để bắt đầu thiết lập danh mục môn học toàn trường.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                    <button
+                      onClick={handleOpenAddSubject}
+                      className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 flex items-center gap-2 transition-all cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>+ Thêm Môn Học Mới</span>
+                    </button>
+                    <button
+                      onClick={() => setShowImportSubjectsModal(true)}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/20 flex items-center gap-2 transition-all cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>📥 Nhập Excel / CSV</span>
+                    </button>
+                  </div>
+                </div>
+              ) : filteredSubjects.length === 0 ? (
                 <div className="p-8 text-center rounded-2xl bg-slate-900/50 border border-slate-800 text-slate-400 space-y-2">
                   <p className="text-sm font-semibold">Không tìm thấy môn học nào phù hợp với bộ lọc.</p>
                   <button
@@ -2754,7 +2795,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     Xóa bộ lọc tìm kiếm
                   </button>
                 </div>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -4536,225 +4577,104 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       )}
 
       {/* CREATE / EDIT SUBJECT MODAL */}
-      {showSubjectModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
-                <School className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-base font-extrabold text-white">
-                  {editingSubject ? 'Cập Nhật Môn Học' : 'Thêm Môn Học Mới Vào Danh Mục'}
-                </h3>
-                <p className="text-xs text-slate-400">Danh mục Môn học cấp Trung Tâm toàn trường Royal School.</p>
-              </div>
-            </div>
+      <CreateSubjectModal
+        isOpen={showSubjectModal}
+        onClose={() => {
+          setShowSubjectModal(false);
+          setEditingSubject(null);
+        }}
+        categories={categoriesList}
+        editingSubject={editingSubject}
+        existingSubjects={store.subjects}
+        onSuccess={(savedSubject) => {
+          onUpdateStore(prev => {
+            const existingIdx = prev.subjects.findIndex(
+              s => s.id === savedSubject.id || s.code.toUpperCase() === savedSubject.code.toUpperCase()
+            );
+            let updatedSubjects: Subject[];
+            if (existingIdx >= 0) {
+              updatedSubjects = prev.subjects.map((s, idx) => (idx === existingIdx ? savedSubject : s));
+            } else {
+              updatedSubjects = [...prev.subjects, savedSubject];
+            }
 
-            <form onSubmit={handleSaveSubject} className="space-y-3.5 text-xs">
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-1">
-                  <label className="block text-slate-400 font-medium mb-1">Mã môn *</label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={10}
-                    value={subjectFormData.code}
-                    onChange={(e) => setSubjectFormData({ ...subjectFormData, code: e.target.value.toUpperCase() })}
-                    placeholder="VD: BASK"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
-                  />
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-slate-400 font-medium mb-1">Phân loại môn *</label>
-                  <select
-                    value={subjectFormData.category_code}
-                    onChange={(e) => {
-                      const selectedCat = categoriesList.find(c => c.code === e.target.value);
-                      setSubjectFormData({
-                        ...subjectFormData,
-                        category_code: e.target.value,
-                        category: selectedCat ? selectedCat.name : e.target.value,
-                      });
-                    }}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-amber-500"
-                    required
-                  >
-                    <option value="">-- Chọn Phân Loại Môn --</option>
-                    {categoriesList.filter(c => c.status === 'active').map((cat) => (
-                      <option key={cat.code} value={cat.code}>
-                        {cat.name} ({cat.code})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+            const existingTsKeys = new Set(prev.termSubjects.map(ts => `${ts.term_id}_${ts.subject_id}`));
+            const newTermConfigs: TermSubjectConfig[] = [];
+            prev.terms.forEach(t => {
+              const key = `${t.id}_${savedSubject.id}`;
+              if (!existingTsKeys.has(key)) {
+                newTermConfigs.push({
+                  id: `ts_${t.id}_${savedSubject.id}`,
+                  term_id: t.id,
+                  subject_id: savedSubject.id,
+                  is_active: true,
+                  standard_sessions: savedSubject.standard_sessions || 24,
+                  standard_course_fee: savedSubject.standard_course_fee || 3600000,
+                  standard_session_rate:
+                    savedSubject.standard_session_rate ||
+                    Math.ceil((savedSubject.standard_course_fee || 3600000) / (savedSubject.standard_sessions || 24)),
+                  discount_type: 'none',
+                  discount_value: 0,
+                  notes: `${savedSubject.name} - Khóa ${t.name}`,
+                });
+              }
+            });
 
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Tên môn học *</label>
-                <input
-                  type="text"
-                  required
-                  value={subjectFormData.name}
-                  onChange={(e) => setSubjectFormData({ ...subjectFormData, name: e.target.value })}
-                  placeholder="VD: Bóng rổ Hoàng Gia"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
-                />
-              </div>
+            return {
+              ...prev,
+              subjects: updatedSubjects,
+              termSubjects: [...prev.termSubjects, ...newTermConfigs],
+            };
+          });
+        }}
+      />
 
-              {/* SỐ BUỔI CHUẨN KÈM NÚT CHỌN NHANH 12, 16, 20, 24 BUỔI */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="block text-slate-400 font-medium">Số buổi chuẩn *</label>
-                  <div className="flex items-center gap-1">
-                    <span className="text-[10px] text-slate-500 mr-1">Chọn nhanh:</span>
-                    {[12, 16, 20, 24].map(sNum => (
-                      <button
-                        type="button"
-                        key={sNum}
-                        onClick={() => {
-                          const newRate = Math.ceil((subjectFormData.standard_course_fee || 0) / sNum);
-                          setSubjectFormData({
-                            ...subjectFormData,
-                            standard_sessions: sNum,
-                            standard_session_rate: newRate,
-                          });
-                        }}
-                        className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold transition-all ${
-                          subjectFormData.standard_sessions === sNum
-                            ? 'bg-amber-500 text-slate-950 shadow-sm'
-                            : 'bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500'
-                        }`}
-                      >
-                        {sNum}b
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  required
-                  value={subjectFormData.standard_sessions}
-                  onChange={(e) => {
-                    const sNum = Number(e.target.value) || 1;
-                    const newRate = Math.ceil((subjectFormData.standard_course_fee || 0) / Math.max(1, sNum));
-                    setSubjectFormData({
-                      ...subjectFormData,
-                      standard_sessions: sNum,
-                      standard_session_rate: newRate,
-                    });
-                  }}
-                  placeholder="VD: 16 hoặc 24"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
-                />
-              </div>
+      {/* IMPORT SUBJECTS FROM EXCEL / CSV MODAL */}
+      <ImportSubjectsModal
+        isOpen={showImportSubjectsModal}
+        onClose={() => setShowImportSubjectsModal(false)}
+        categories={categoriesList}
+        existingSubjects={store.subjects}
+        onSuccess={(importedSubjects) => {
+          onUpdateStore(prev => {
+            const subjectMap = new Map<string, Subject>();
+            prev.subjects.forEach(s => subjectMap.set(s.code.toUpperCase(), s));
+            importedSubjects.forEach(s => subjectMap.set(s.code.toUpperCase(), s));
+            const updatedSubjects = Array.from(subjectMap.values());
 
-              {/* HỌC PHÍ CHUẨN CẢ KHÓA & ĐƠN GIÁ BUỔI TỰ ĐỘNG */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">Học phí chuẩn cả khóa (VNĐ) *</label>
-                  <input
-                    type="number"
-                    step={50000}
-                    min={0}
-                    required
-                    value={subjectFormData.standard_course_fee}
-                    onChange={(e) => {
-                      const feeNum = Number(e.target.value) || 0;
-                      const sNum = Math.max(1, Number(subjectFormData.standard_sessions) || 24);
-                      const newRate = Math.ceil(feeNum / sNum);
-                      setSubjectFormData({
-                        ...subjectFormData,
-                        standard_course_fee: feeNum,
-                        standard_session_rate: newRate,
-                      });
-                    }}
-                    placeholder="VD: 3990000"
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-400 font-mono font-bold focus:outline-none focus:border-amber-500"
-                  />
-                  <span className="text-[10px] text-slate-500 mt-0.5 block">
-                    {formatVND(subjectFormData.standard_course_fee || 0)}
-                  </span>
-                </div>
+            const existingTsKeys = new Set(prev.termSubjects.map(ts => `${ts.term_id}_${ts.subject_id}`));
+            const newTermConfigs: TermSubjectConfig[] = [];
 
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">Đơn giá buổi tự động</label>
-                  <div className="w-full px-3 py-2 rounded-xl bg-slate-950/80 border border-slate-800 text-emerald-400 font-mono font-bold flex items-center justify-between">
-                    <span>
-                      {formatVND(Math.ceil((subjectFormData.standard_course_fee || 0) / Math.max(1, subjectFormData.standard_sessions || 24)))} / b
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-sans font-normal">(Làm tròn)</span>
-                  </div>
-                  <span className="text-[10px] text-slate-500 mt-0.5 block">
-                    = Học phí / {subjectFormData.standard_sessions || 24} buổi
-                  </span>
-                </div>
-              </div>
+            importedSubjects.forEach(s => {
+              prev.terms.forEach(t => {
+                const key = `${t.id}_${s.id}`;
+                if (!existingTsKeys.has(key)) {
+                  newTermConfigs.push({
+                    id: `ts_${t.id}_${s.id}`,
+                    term_id: t.id,
+                    subject_id: s.id,
+                    is_active: true,
+                    standard_sessions: s.standard_sessions || 24,
+                    standard_course_fee: s.standard_course_fee || 3600000,
+                    standard_session_rate:
+                      s.standard_session_rate ||
+                      Math.ceil((s.standard_course_fee || 3600000) / (s.standard_sessions || 24)),
+                    discount_type: 'none',
+                    discount_value: 0,
+                    notes: `${s.name} - Khóa ${t.name}`,
+                  });
+                }
+              });
+            });
 
-              {/* THỜI LƯỢNG CHUẨN MỖI BUỔI */}
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Thời lượng chuẩn mỗi buổi</label>
-                <input
-                  type="text"
-                  value={subjectFormData.standard_duration}
-                  onChange={(e) => setSubjectFormData({ ...subjectFormData, standard_duration: e.target.value })}
-                  placeholder="VD: 90 phút"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-medium focus:outline-none focus:border-amber-500"
-                />
-                <div className="grid grid-cols-4 gap-1.5 mt-1.5">
-                  {['45 phút', '60 phút', '75 phút', '90 phút'].map(dur => (
-                    <button
-                      type="button"
-                      key={dur}
-                      onClick={() => setSubjectFormData({ ...subjectFormData, standard_duration: dur })}
-                      className={`py-1 px-2 rounded-lg text-center text-xs font-medium transition-all ${
-                        subjectFormData.standard_duration === dur
-                          ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
-                          : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {dur}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Mô tả chương trình đào tạo</label>
-                <textarea
-                  rows={3}
-                  value={subjectFormData.description}
-                  onChange={(e) => setSubjectFormData({ ...subjectFormData, description: e.target.value })}
-                  placeholder="Tóm tắt mục tiêu môn học, giáo trình hoặc trang thiết bị yêu cầu..."
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowSubjectModal(false);
-                    setEditingSubject(null);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold"
-                >
-                  Hủy
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20 flex items-center gap-1.5"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>{editingSubject ? 'Lưu Thay Đổi' : 'Thêm Môn Học'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            return {
+              ...prev,
+              subjects: updatedSubjects,
+              termSubjects: [...prev.termSubjects, ...newTermConfigs],
+            };
+          });
+        }}
+      />
 
       {/* CREATE / EDIT SUBJECT CATEGORY MODAL */}
       {showCategoryModal && (

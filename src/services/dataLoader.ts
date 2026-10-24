@@ -210,32 +210,31 @@ export async function loadInitialDataSafely(
         const { data, error } = await client.from(item.tableName).select('*');
         if (error) {
           console.warn(`[SafeLoader] Bảng ${item.tableName} không nạp được (${error.message}), giữ dữ liệu cục bộ.`);
-          return { tableName: item.tableName, storeKey: item.storeKey, data: [] };
+          return { tableName: item.tableName, storeKey: item.storeKey, data: [], success: false };
         }
         return {
           tableName: item.tableName,
           storeKey: item.storeKey,
           data: Array.isArray(data) ? data : [],
+          success: true,
         };
       } catch (err: any) {
         console.warn(`[SafeLoader] Exception khi đọc bảng ${item.tableName}:`, err?.message || err);
-        return { tableName: item.tableName, storeKey: item.storeKey, data: [] };
+        return { tableName: item.tableName, storeKey: item.storeKey, data: [], success: false };
       }
     });
 
     const settledResults = await Promise.allSettled(fetchPromises);
 
     settledResults.forEach(res => {
-      if (res.status === 'fulfilled' && res.value && Array.isArray(res.value.data) && res.value.data.length > 0) {
+      if (res.status === 'fulfilled' && res.value && res.value.success) {
         const { tableName, storeKey, data } = res.value;
         const mappedRows = data
           .map(row => mapSupabaseRowToStoreEntity(tableName, row))
           .filter(Boolean);
 
-        if (mappedRows.length > 0) {
-          (nextStore as any)[storeKey] = mappedRows;
-          totalRecordsLoaded += mappedRows.length;
-        }
+        (nextStore as any)[storeKey] = mappedRows;
+        totalRecordsLoaded += mappedRows.length;
       }
     });
 
