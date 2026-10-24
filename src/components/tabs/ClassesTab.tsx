@@ -29,6 +29,7 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateClassModal } from '../modals/CreateClassModal';
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
+import { ScheduleCalendarView } from './ScheduleCalendarView';
 
 export interface ScheduleCalculationResult {
   actualSessions: number;      // Số buổi thực tế diễn ra trong khóa
@@ -137,7 +138,7 @@ interface ClassesTabProps {
   onSelectTermId?: (id: string) => void;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSelectClassForAttendance: (cls: ExtracurricularClass) => void;
-  initialTab?: 'classes' | 'time_slots';
+  initialTab?: 'classes' | 'calendar' | 'time_slots';
 }
 
 export const ClassesTab: React.FC<ClassesTabProps> = ({
@@ -152,7 +153,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onSelectClassForAttendance,
   initialTab = 'classes',
 }) => {
-  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'classes' | 'calendar' | 'time_slots'>(initialTab);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
@@ -709,7 +710,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         </div>
       )}
 
-      {/* Sub-tab Navigation: Classes vs Time Slots */}
+      {/* Sub-tab Navigation: Classes vs Calendar vs Time Slots */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
         <div className="flex items-center gap-2">
           <button
@@ -723,6 +724,19 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
           >
             <Calendar className="w-3.5 h-3.5" />
             <span>Danh Sách Lớp Ngoại Khóa ({store.classes.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('calendar')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'calendar'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Lịch Học Tháng (Lưới Tháng)</span>
           </button>
 
           <button
@@ -742,15 +756,23 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         {activeTab === 'classes' && (
           <button
             type="button"
-            onClick={() => setActiveTab('time_slots')}
-            className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors"
+            onClick={() => setActiveTab('calendar')}
+            className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors cursor-pointer"
           >
-            <span>Quản lý ca &amp; thời gian học &rarr;</span>
+            <span>Xem lưới lịch học tháng &rarr;</span>
           </button>
         )}
       </div>
 
-      {activeTab === 'time_slots' ? (
+      {activeTab === 'calendar' ? (
+        <ScheduleCalendarView
+          store={store}
+          currentRole={currentRole}
+          selectedCampusId={selectedCampusId}
+          selectedTermId={selectedTermId}
+          onSelectClassForAttendance={(cls) => onSelectClassForAttendance(cls)}
+        />
+      ) : activeTab === 'time_slots' ? (
         <TimeSlotsManager store={store} onUpdateStore={onUpdateStore} />
       ) : (
         <>
