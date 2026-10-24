@@ -11,6 +11,8 @@ import {
   Save, 
   ShieldAlert, 
   CheckCircle2, 
+  CheckCircle,
+  PauseCircle,
   Radio, 
   MessageSquare, 
   Database,
@@ -973,6 +975,119 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       }, { onConflict: 'term_id,subject_id' });
     } catch (err) {
       console.warn('Lỗi Supabase khi upsert term_subjects:', err);
+    }
+  };
+
+  const [isTogglingAllSubjects, setIsTogglingAllSubjects] = useState<boolean>(false);
+
+  // Bật hoặc tắt toàn bộ môn học cho khóa hiện tại
+  const handleToggleAllSubjects = async (enableAll: boolean) => {
+    if (!selectedConfigTermId) return;
+
+    const currentTerm = store.terms.find(t => t.id === selectedConfigTermId);
+    const currentTermName = currentTerm ? currentTerm.name : 'khóa học đang chọn';
+
+    if (isTermClosed(selectedConfigTermId, store)) {
+      alert(`Khóa học "${currentTermName}" đã đóng. Cấu hình môn học đang ở chế độ chỉ xem.`);
+      return;
+    }
+
+    const confirmMsg = enableAll
+      ? `Bạn có chắc muốn MỞ DẠY TẤT CẢ môn học cho ${currentTermName}?`
+      : `Bạn có chắc muốn TẠM TẮT TẤT CẢ môn học cho ${currentTermName}?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    setIsTogglingAllSubjects(true);
+
+    // 1. Cập nhật state tức thì trên UI
+    const updatedTermConfigs: TermSubjectConfig[] = store.subjects.map((subject) => {
+      const existing = store.termSubjects.find(
+        (ts) => ts.term_id === selectedConfigTermId && (ts.subject_id === subject.id || (ts as any).subject_code === subject.code)
+      );
+
+      const standardSessions = existing?.standard_sessions ?? subject.standard_sessions ?? 24;
+      const standardFee = existing?.standard_course_fee ?? (existing as any)?.total_fee ?? subject.standard_course_fee ?? 3600000;
+      const ceilRate = standardSessions > 0 ? Math.ceil(standardFee / standardSessions) : 0;
+      const noteVal = existing?.notes || '';
+
+      return {
+        id: existing?.id || `ts_${selectedConfigTermId}_${subject.id}`,
+        term_id: selectedConfigTermId,
+        subject_id: subject.id,
+        is_active: enableAll,
+        standard_sessions: standardSessions,
+        standard_course_fee: standardFee,
+        standard_session_rate: ceilRate,
+        notes: noteVal,
+      };
+    });
+
+    onUpdateStore((prev) => {
+      const otherTermSubjects = prev.termSubjects.filter((ts) => ts.term_id !== selectedConfigTermId);
+      return {
+        ...prev,
+        termSubjects: [...otherTermSubjects, ...updatedTermConfigs],
+      };
+    });
+
+    // 2. Đồng bộ hàng loạt xuống bảng term_subjects trên Supabase
+    try {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        const upsertPayload = updatedTermConfigs.map((item) => ({
+          id: item.id,
+          term_id: item.term_id,
+          subject_id: item.subject_id,
+          standard_sessions: item.standard_sessions || 24,
+          total_fee: item.standard_course_fee || 3600000,
+          standard_course_fee: item.standard_course_fee || 3600000,
+          standard_session_rate: item.standard_session_rate || 0,
+          is_active: enableAll,
+          notes: item.notes || '',
+          updated_at: new Date().toISOString(),
+        }));
+
+        let { error } = await client
+          .from('term_subjects')
+          .upsert(upsertPayload, { onConflict: 'term_id,subject_id' });
+
+        if (error && error.message) {
+          console.warn('Thử lại upsert term_subjects với định dạng tương thích:', error.message);
+          const compatPayload = updatedTermConfigs.map((item) => ({
+            term_id: item.term_id,
+            subject_id: item.subject_id,
+            standard_sessions: item.standard_sessions || 24,
+            total_fee: item.standard_course_fee || 3600000,
+            is_active: enableAll,
+            term_note: item.notes || '',
+          }));
+          const fallbackRes = await client
+            .from('term_subjects')
+            .upsert(compatPayload, { onConflict: 'term_id,subject_id' });
+          error = fallbackRes.error;
+        }
+
+        if (error) {
+          console.error('Lỗi cập nhật trạng thái hàng loạt:', error);
+          alert('Không thể lưu trạng thái: ' + error.message);
+          setIsTogglingAllSubjects(false);
+          return;
+        }
+      }
+
+      showToast(
+        enableAll
+          ? `Đã MỞ DẠY TẤT CẢ ${store.subjects.length} môn học cho ${currentTermName} thành công!`
+          : `Đã TẠM TẮT TẤT CẢ ${store.subjects.length} môn học cho ${currentTermName} thành công!`,
+        'success',
+        { title: 'Cấu hình môn học khóa' }
+      );
+    } catch (err: any) {
+      console.error('Lỗi toggle all subjects:', err);
+      alert('Không thể cập nhật trạng thái: ' + (err.message || 'Lỗi kết nối'));
+    } finally {
+      setIsTogglingAllSubjects(false);
     }
   };
 
@@ -3060,20 +3175,54 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   </div>
                 </div>
 
-                {/* Term Selector */}
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 font-semibold whitespace-nowrap">Đang xem khóa:</span>
-                  <select
-                    value={selectedConfigTermId}
-                    onChange={(e) => setSelectedConfigTermId(e.target.value)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-amber-400 text-xs font-bold focus:outline-none"
-                  >
-                    {store.terms.map(t => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} ({t.status === 'closed' ? 'Đã đóng' : t.status === 'open_enrollment' ? 'Tuyển sinh' : 'Dự thảo'})
-                      </option>
-                    ))}
-                  </select>
+                {/* Term Selector & Quick Action Toolbar */}
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 font-semibold whitespace-nowrap">Đang xem khóa:</span>
+                    <select
+                      value={selectedConfigTermId}
+                      onChange={(e) => setSelectedConfigTermId(e.target.value)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-amber-400 text-xs font-bold focus:outline-none"
+                    >
+                      {store.terms.map(t => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.status === 'closed' ? 'Đã đóng' : t.status === 'open_enrollment' ? 'Tuyển sinh' : 'Dự thảo'})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Nút "🟢 Mở Dạy Tất Cả" */}
+                    <button
+                      disabled={isTermClosed(selectedConfigTermId, store) || isTogglingAllSubjects}
+                      onClick={() => handleToggleAllSubjects(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30 font-bold text-xs shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                      title="Mở dạy toàn bộ danh mục môn học cho khóa này"
+                    >
+                      {isTogglingAllSubjects ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle className="w-3.5 h-3.5" />
+                      )}
+                      <span>🟢 Mở Dạy Tất Cả</span>
+                    </button>
+
+                    {/* Nút "⚪ Tạm Tắt Tất Cả" */}
+                    <button
+                      disabled={isTermClosed(selectedConfigTermId, store) || isTogglingAllSubjects}
+                      onClick={() => handleToggleAllSubjects(false)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 font-bold text-xs shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                      title="Tạm tắt toàn bộ danh mục môn học trong khóa này"
+                    >
+                      {isTogglingAllSubjects ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <PauseCircle className="w-3.5 h-3.5" />
+                      )}
+                      <span>⚪ Tạm Tắt Tất Cả</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
