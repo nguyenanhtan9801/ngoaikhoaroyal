@@ -43,6 +43,7 @@ import {
   formatDaysListLabel,
   formatStudentScheduleLabel,
   getDefaultClassStartDate,
+  countSessionsBetweenDates,
   calculateRemainingSessions,
   calculateClassProratedPricing,
   getCampusPricingForClass,
@@ -460,6 +461,96 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     setShowAddModal(true);
   };
 
+  // Helper to compute initial start date respecting selectedClass start_date & end_date
+  const computeInitialClassStartDate = (
+    cls: ExtracurricularClass,
+    days: string[]
+  ): string => {
+    const term = store.terms?.find(t => t.id === cls.term_id);
+    const classStart = cls.start_date || term?.start_date || '2026-09-01';
+    const classEnd = cls.end_date || term?.end_date || '2026-12-25';
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    let resultDate: string;
+    if (todayStr < classStart) {
+      resultDate = classStart;
+    } else if (todayStr > classEnd) {
+      resultDate = classEnd;
+    } else {
+      // todayStr is between classStart and classEnd
+      const nextSession = getDefaultClassStartDate(cls, store, todayStr, days);
+      if (nextSession < classStart) resultDate = classStart;
+      else if (nextSession > classEnd) resultDate = classEnd;
+      else resultDate = nextSession;
+    }
+    return resultDate;
+  };
+
+  // Helper to calculate sessions for a given date, class, and enrolled days
+  const calculateSessionsForDate = (
+    dateStr: string,
+    cls: ExtracurricularClass,
+    days: string[]
+  ): number => {
+    const term = store.terms?.find(t => t.id === cls.term_id);
+    const classStart = cls.start_date || term?.start_date || '2026-09-01';
+    const classEnd = cls.end_date || term?.end_date || '2026-12-25';
+
+    const sub = store.subjects.find(s => String(s.id) === String(cls.subject_id) || s.code === (cls as any).subject_code);
+    const totalStandardSessions = cls.standard_sessions || sub?.standard_sessions || cls.total_sessions || 16;
+    const clsDays = Array.isArray(cls.days_of_week) && cls.days_of_week.length > 0
+      ? cls.days_of_week
+      : (Array.isArray((cls as any).schedule_days) && (cls as any).schedule_days.length > 0
+          ? (cls as any).schedule_days
+          : getClassDaysOfWeek(cls, store));
+    const effectiveDays = days && days.length > 0 ? days : (clsDays.length > 0 ? clsDays : ['T2', 'T4']);
+    const classDaysCount = Math.max(1, clsDays.length);
+    const formulaSessions = Math.max(1, Math.round((totalStandardSessions * effectiveDays.length) / classDaysCount));
+
+    if (!dateStr || dateStr <= classStart) {
+      return formulaSessions;
+    }
+
+    // Đếm số buổi thực học rơi vào các thứ trong tuần được chọn từ dateStr đến classEnd
+    const remaining = countSessionsBetweenDates(dateStr, classEnd, effectiveDays);
+    return Math.max(1, Math.min(formulaSessions, remaining));
+  };
+
+  // Helper to handle date changes with automatic prorating
+  const handleStartDateChange = (
+    newDate: string,
+    cls?: ExtracurricularClass,
+    days?: string[]
+  ) => {
+    setEnrollStartDate(newDate);
+    setTrialSessionDate(newDate);
+    setEnrollmentError(null);
+
+    const activeCls = cls || store.classes.find(c => String(c.id) === String(selectedClassId));
+    if (!activeCls) return;
+
+    const activeDays = days || enrolledDaysOfWeek;
+    const newSessions = calculateSessionsForDate(newDate, activeCls, activeDays);
+    setRegisteredSessions(newSessions);
+    setIsManualSessionOverride(false);
+  };
+
+  // Helper for "Ca kế tiếp" button
+  const handleNextSessionClick = (currentCls: ExtracurricularClass, effectiveDays: string[]) => {
+    const term = store.terms?.find(t => t.id === currentCls.term_id);
+    const classStart = currentCls.start_date || term?.start_date || '2026-09-01';
+    const classEnd = currentCls.end_date || term?.end_date || '2026-12-25';
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    const baseRef = todayStr < classStart ? classStart : todayStr;
+    let nextDate = getDefaultClassStartDate(currentCls, store, baseRef, effectiveDays);
+
+    if (nextDate < classStart) nextDate = classStart;
+    if (nextDate > classEnd) nextDate = classEnd;
+
+    handleStartDateChange(nextDate, currentCls, effectiveDays);
+  };
+
   // Helper to configure modal fields when a class is selected
   const handleSelectClass = (cls: ExtracurricularClass) => {
     setSelectedClassId(cls.id);
@@ -469,15 +560,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           ? (cls as any).schedule_days
           : getClassDaysOfWeek(cls, store));
     const effectiveDays = clsDays.length > 0 ? clsDays : ['T2', 'T4'];
-    const defStart = getDefaultClassStartDate(cls, store, undefined, effectiveDays);
-    const sub = store.subjects.find(s => String(s.id) === String(cls.subject_id) || s.code === (cls as any).subject_code);
-    const subTotal = cls.standard_sessions || sub?.standard_sessions || cls.total_sessions || 16;
+    const defStart = computeInitialClassStartDate(cls, effectiveDays);
+    const sessions = calculateSessionsForDate(defStart, cls, effectiveDays);
+
     setEnrolledDaysOfWeek([...effectiveDays]);
     setEnrollStartDate(defStart);
     setTrialSessionDate(defStart);
-    setRegisteredSessions(subTotal);
+    setRegisteredSessions(sessions);
     setIsManualSessionOverride(false);
   };
+
 
   // Open Class Enrollment Modal with duplicate checks (Only active enrollments block selection)
   const handleOpenEnrollModal = async (student: Student) => {
@@ -588,8 +680,60 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       const standardSessionRate = cls.price_per_session || (cls as any)?.session_rate || subject?.standard_session_rate || (subject?.standard_course_fee && Stotal ? Math.ceil(subject.standard_course_fee / Stotal) : 150000);
       const totalFee = isTrialMode ? 0 : calculatedSessions * standardSessionRate;
 
-      const startDate = enrollStartDate || getDefaultClassStartDate(cls, store, undefined, effectiveDays);
+      const startDate = enrollStartDate || (cls ? computeInitialClassStartDate(cls, effectiveDays) : '');
       const trialDate = trialSessionDate || startDate;
+
+      if (!startDate) {
+        alert('Vui lòng chọn ngày bắt đầu học!');
+        showToast('Vui lòng chọn ngày bắt đầu học!', 'error');
+        setEnrollmentError('Vui lòng chọn ngày bắt đầu học!');
+        setIsSubmittingEnrollment(false);
+        return;
+      }
+
+      if (cls.start_date && startDate < cls.start_date) {
+        const msg = `Ngày bắt đầu học không hợp lệ! Lớp học này chỉ mở từ ngày ${formatDateVN(cls.start_date)}.`;
+        alert(msg);
+        showToast(msg, 'error');
+        setEnrollmentError(msg);
+        setIsSubmittingEnrollment(false);
+        return;
+      }
+
+      if (cls.end_date && startDate > cls.end_date) {
+        const msg = `Ngày bắt đầu học không hợp lệ! Lớp học này kết thúc vào ngày ${formatDateVN(cls.end_date)}.`;
+        alert(msg);
+        showToast(msg, 'error');
+        setEnrollmentError(msg);
+        setIsSubmittingEnrollment(false);
+        return;
+      }
+
+      if (isTrialMode) {
+        if (!trialDate) {
+          alert('Vui lòng chọn ngày học thử!');
+          showToast('Vui lòng chọn ngày học thử!', 'error');
+          setEnrollmentError('Vui lòng chọn ngày học thử!');
+          setIsSubmittingEnrollment(false);
+          return;
+        }
+        if (cls.start_date && trialDate < cls.start_date) {
+          const msg = `Ngày học thử không hợp lệ! Lớp học này chỉ mở từ ngày ${formatDateVN(cls.start_date)}.`;
+          alert(msg);
+          showToast(msg, 'error');
+          setEnrollmentError(msg);
+          setIsSubmittingEnrollment(false);
+          return;
+        }
+        if (cls.end_date && trialDate > cls.end_date) {
+          const msg = `Ngày học thử không hợp lệ! Lớp học này kết thúc vào ngày ${formatDateVN(cls.end_date)}.`;
+          alert(msg);
+          showToast(msg, 'error');
+          setEnrollmentError(msg);
+          setIsSubmittingEnrollment(false);
+          return;
+        }
+      }
 
       const enrollmentId = `ENR-${Date.now()}`;
 
@@ -1823,7 +1967,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         const sessionRate = currentCls?.price_per_session || (currentCls as any)?.session_rate || subject?.standard_session_rate || (subject?.standard_course_fee && totalStandardSessions ? Math.ceil(subject.standard_course_fee / totalStandardSessions) : 150000);
         const totalTuition = isTrialMode ? 0 : (calculatedSessions * sessionRate);
 
-        const currentStart = enrollStartDate || (currentCls ? getDefaultClassStartDate(currentCls, store, undefined, effectiveDays) : new Date().toISOString().split('T')[0]);
+        const currentStart = enrollStartDate || (currentCls ? computeInitialClassStartDate(currentCls, effectiveDays) : new Date().toISOString().split('T')[0]);
         const currentTrialDate = trialSessionDate || currentStart;
 
         return (
@@ -2085,10 +2229,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           <input
                             type="date"
                             value={currentTrialDate}
-                            onChange={(e) => setTrialSessionDate(e.target.value)}
+                            min={currentCls.start_date}
+                            max={currentCls.end_date}
+                            onChange={(e) => {
+                              setTrialSessionDate(e.target.value);
+                              setEnrollStartDate(e.target.value);
+                            }}
                             disabled={isCurrentClassAlreadyEnrolled}
-                            className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-purple-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-purple-400"
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-purple-500 text-xs font-mono font-bold"
+                            required
                           />
+                          {(currentCls.start_date || currentCls.end_date) && (
+                            <p className="text-xs text-amber-400/80 mt-1">
+                              Thời gian lớp mở: {formatDateVN(currentCls.start_date)} đến {formatDateVN(currentCls.end_date)}
+                            </p>
+                          )}
                         </div>
 
                         <div className="p-2.5 rounded-xl bg-slate-900/80 border border-purple-500/20 space-y-1.5 text-xs">
@@ -2124,8 +2279,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                 type="button"
                                 onClick={() => {
                                   setEnrolledDaysOfWeek([...totalClassDays]);
-                                  const fullSessions = Math.max(1, Math.round((totalStandardSessions * totalClassDays.length) / classDaysCount));
-                                  setRegisteredSessions(fullSessions);
+                                  const nextSessions = calculateSessionsForDate(currentStart, currentCls, totalClassDays);
+                                  setRegisteredSessions(nextSessions);
                                   setIsManualSessionOverride(false);
                                 }}
                                 className="text-[10px] text-amber-300 underline font-semibold"
@@ -2162,7 +2317,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         nextDays = totalClassDays.filter((d: string) => d === dayCode || effectiveDays.includes(d));
                                       }
                                       setEnrolledDaysOfWeek(nextDays);
-                                      const nextSessions = Math.max(1, Math.round((totalStandardSessions * nextDays.length) / classDaysCount));
+                                      const nextSessions = calculateSessionsForDate(currentStart, currentCls, nextDays);
                                       setRegisteredSessions(nextSessions);
                                       setIsManualSessionOverride(false);
                                     }}
@@ -2196,12 +2351,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  const nextD = getDefaultClassStartDate(currentCls, store, undefined, effectiveDays);
-                                  setEnrollStartDate(nextD);
-                                  setTrialSessionDate(nextD);
-                                  setIsManualSessionOverride(false);
-                                }}
+                                onClick={() => handleNextSessionClick(currentCls, effectiveDays)}
                                 className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-500/30 text-[10px] font-semibold"
                               >
                                 Ca kế tiếp
@@ -2211,13 +2361,18 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           <input
                             type="date"
                             value={currentStart}
-                            onChange={(e) => {
-                              setEnrollStartDate(e.target.value);
-                              setTrialSessionDate(e.target.value);
-                            }}
+                            min={currentCls.start_date}
+                            max={currentCls.end_date}
+                            onChange={(e) => handleStartDateChange(e.target.value, currentCls, effectiveDays)}
                             disabled={isCurrentClassAlreadyEnrolled}
-                            className="w-full px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400"
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white font-mono text-xs focus:outline-none focus:border-amber-500"
+                            required
                           />
+                          {(currentCls.start_date || currentCls.end_date) && (
+                            <p className="text-xs text-amber-400/80 mt-1">
+                              Thời gian lớp mở: {formatDateVN(currentCls.start_date)} đến {formatDateVN(currentCls.end_date)}
+                            </p>
+                          )}
                         </div>
 
                         {/* Bảng tính toán buổi và tỷ lệ */}

@@ -909,7 +909,7 @@ export function calculateCeilSessionRate(finalPrice: number, totalSessions: numb
   return Math.ceil(finalPrice / totalSessions / 1000) * 1000;
 }
 
-const JS_DAY_TO_VN_CODE: Record<number, string> = {
+export const JS_DAY_TO_VN_CODE: Record<number, string> = {
   0: 'CN',
   1: 'T2',
   2: 'T3',
@@ -1029,13 +1029,13 @@ export function getDefaultClassStartDate(
   enrolledDaysOfWeek?: string[]
 ): string {
   const term = store.terms?.find(t => t.id === classItem.term_id);
-  const termStart = term?.start_date || '2026-09-01';
-  const termEnd = term?.end_date || '2026-12-25';
+  const classStart = classItem.start_date || term?.start_date || '2026-09-01';
+  const classEnd = classItem.end_date || term?.end_date || '2026-12-25';
   const todayStr = referenceDateStr || new Date().toISOString().split('T')[0];
 
   let baseDateStr = todayStr;
-  if (baseDateStr < termStart) baseDateStr = termStart;
-  if (baseDateStr > termEnd) baseDateStr = termStart;
+  if (baseDateStr < classStart) baseDateStr = classStart;
+  if (baseDateStr > classEnd) baseDateStr = classStart;
 
   const classDays = getClassDaysOfWeek(classItem, store);
   const activeDays =
@@ -1045,7 +1045,7 @@ export function getDefaultClassStartDate(
   const targetDays = activeDays.length > 0 ? activeDays : classDays;
 
   const startCursor = new Date(`${baseDateStr}T00:00:00`);
-  const endCursor = new Date(`${termEnd}T00:00:00`);
+  const endCursor = new Date(`${classEnd}T00:00:00`);
 
   if (!isNaN(startCursor.getTime()) && !isNaN(endCursor.getTime())) {
     const cursor = new Date(startCursor);
@@ -1063,6 +1063,32 @@ export function getDefaultClassStartDate(
 
   return baseDateStr;
 }
+
+/**
+ * Đếm số buổi thực học từ startDate đến endDate dựa trên các thứ trong tuần được chọn
+ */
+export function countSessionsBetweenDates(
+  startDateStr: string,
+  endDateStr: string,
+  enrolledDays: string[]
+): number {
+  if (!startDateStr || !endDateStr || !enrolledDays || enrolledDays.length === 0) return 0;
+  const start = new Date(`${startDateStr}T00:00:00`);
+  const end = new Date(`${endDateStr}T00:00:00`);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) return 0;
+
+  let count = 0;
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    const vnDay = JS_DAY_TO_VN_CODE[cursor.getDay()];
+    if (enrolledDays.includes(vnDay)) {
+      count++;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return count;
+}
+
 
 export interface RemainingSessionsResult {
   totalSessions: number;
