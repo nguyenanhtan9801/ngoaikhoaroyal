@@ -714,3 +714,5 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
     </div>
   );
 };
+
+export default ScheduleCalendarView;

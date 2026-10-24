@@ -201,6 +201,7 @@ export async function loadInitialDataSafely(
       { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
       { tableName: 'subject_categories', storeKey: 'subjectCategories' },
       { tableName: 'time_slots', storeKey: 'timeSlots' },
+      { tableName: 'term_subjects', storeKey: 'termSubjects' },
     ];
 
     // Nạp song song độc lập từng bảng với Promise.allSettled

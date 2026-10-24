@@ -29,6 +29,7 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateClassModal } from '../modals/CreateClassModal';
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
+import { ScheduleCalendarView } from './ScheduleCalendarView';
 
 export interface ScheduleCalculationResult {
   actualSessions: number;      // Số buổi thực tế diễn ra trong khóa
@@ -137,7 +138,7 @@ interface ClassesTabProps {
   onSelectTermId?: (id: string) => void;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSelectClassForAttendance: (cls: ExtracurricularClass) => void;
-  initialTab?: 'classes' | 'time_slots';
+  initialTab?: 'classes' | 'time_slots' | 'monthly_schedule';
 }
 
 export const ClassesTab: React.FC<ClassesTabProps> = ({
@@ -152,7 +153,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onSelectClassForAttendance,
   initialTab = 'classes',
 }) => {
-  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots' | 'monthly_schedule'>(initialTab);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
@@ -737,21 +738,42 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             <Clock className="w-3.5 h-3.5" />
             <span>Quản Lý Khung Giờ Học ({store.timeSlots?.length || 0})</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('monthly_schedule')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'monthly_schedule'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Calendar className="w-3.5 h-3.5" />
+            <span>Lịch Học Dạng Tháng</span>
+          </button>
         </div>
 
         {activeTab === 'classes' && (
           <button
             type="button"
-            onClick={() => setActiveTab('time_slots')}
+            onClick={() => setActiveTab('monthly_schedule')}
             className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors"
           >
-            <span>Quản lý ca &amp; thời gian học &rarr;</span>
+            <span>Xem lịch học dạng tháng &rarr;</span>
           </button>
         )}
       </div>
 
       {activeTab === 'time_slots' ? (
         <TimeSlotsManager store={store} onUpdateStore={onUpdateStore} />
+      ) : activeTab === 'monthly_schedule' ? (
+        <ScheduleCalendarView
+          store={store}
+          currentRole={currentRole}
+          selectedCampusId={localCampusId}
+          selectedTermId={localTermId}
+          onSelectClassForAttendance={(cls) => onSelectClassForAttendance(cls)}
+        />
       ) : (
         <>
           {/* Top Header */}

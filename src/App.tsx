@@ -4,6 +4,7 @@ import { CompactHeaderToolbar } from './components/CompactHeaderToolbar';
 import { OverviewKpiTab } from './components/tabs/OverviewKpiTab';
 import { StudentsTab } from './components/tabs/StudentsTab';
 import { ClassesTab } from './components/tabs/ClassesTab';
+import { ScheduleCalendarView } from './components/tabs/ScheduleCalendarView';
 import { AttendanceTab } from './components/tabs/AttendanceTab';
 import { SnacksTab } from './components/tabs/SnacksTab';
 import { MakeupCreditsTab } from './components/tabs/MakeupCreditsTab';
@@ -675,16 +676,17 @@ export default function App() {
           )}
 
           {currentRoute === 'sub_schedule' && (
-            <ClassesTab
+            <ScheduleCalendarView
               store={store}
               currentRole={currentRole}
               selectedCampusId={selectedCampusId}
               selectedTermId={selectedTermId}
-              onUpdateStore={updateStore}
-              initialTab="time_slots"
               onSelectClassForAttendance={(cls: ExtracurricularClass) => {
                 setFocusedClass(cls);
                 setCurrentRoute('sub_attendance');
+              }}
+              onNavigateToSnacks={() => {
+                setCurrentRoute('sub_snacks');
               }}
             />
           )}

@@ -16,7 +16,9 @@ const listeners: Set<ToastListener> = new Set();
 
 const notifyListeners = () => {
   const snapshot = [...toastsState];
-  listeners.forEach(listener => listener(snapshot));
+  queueMicrotask(() => {
+    listeners.forEach(listener => listener(snapshot));
+  });
 };
 
 export const dismissToast = (id: string) => {
@@ -64,7 +66,9 @@ export const showToast = (
 
 export const subscribeToasts = (listener: ToastListener): (() => void) => {
   listeners.add(listener);
-  listener([...toastsState]);
+  queueMicrotask(() => {
+    listener([...toastsState]);
+  });
   return () => {
     listeners.delete(listener);
   };

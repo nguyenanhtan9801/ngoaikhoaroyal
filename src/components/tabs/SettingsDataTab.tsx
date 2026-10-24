@@ -967,7 +967,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         is_active: isActive,
         notes: notes || '',
         updated_at: new Date().toISOString(),
-      });
+      }, { onConflict: 'term_id,subject_id' });
     } catch (err) {
       console.warn('Lỗi Supabase khi upsert term_subjects:', err);
     }
@@ -2704,7 +2704,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               </span>
                             </td>
                             <td className="py-3 px-4 text-center font-mono">
-                              <span className="text-amber-400 font-semibold">{subject.standard_sessions || 24} buổi</span>
+                              <span className="px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
+                                {subject.standard_sessions || 24} buổi
+                              </span>
                             </td>
                             <td className="py-3 px-4 text-center font-mono">
                               <span className="text-amber-400 font-bold">{activeTermsCount}</span>
@@ -3043,13 +3045,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     <tbody className="divide-y divide-slate-800/60">
                       {store.subjects.map(subject => {
                         const termConfig = store.termSubjects.find(
-                          ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
+                          ts => ts.term_id === selectedConfigTermId && (ts.subject_id === subject.id || (ts as any).subject_code === subject.code)
                         );
 
-                        const isActive = termConfig ? termConfig.is_active : false;
+                        const isActive = termConfig ? termConfig.is_active : true;
                         const standardSessions = termConfig?.standard_sessions ?? subject.standard_sessions ?? 24;
-                        const standardFee = termConfig ? termConfig.standard_course_fee : 3600000;
-                        const ceilRate = Math.ceil(standardFee / Math.max(1, standardSessions));
+                        const standardFee = termConfig?.standard_course_fee ?? (termConfig as any)?.total_fee ?? subject.standard_course_fee ?? 3600000;
+                        const ceilRate = standardSessions > 0 ? Math.ceil(standardFee / standardSessions) : 0;
                         const isClosed = isTermClosed(selectedConfigTermId, store);
 
                         return (
