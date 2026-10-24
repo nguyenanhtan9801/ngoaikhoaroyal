@@ -12,7 +12,6 @@ import { ParentPortalTab } from './components/tabs/ParentPortalTab';
 import { SettingsDataTab } from './components/tabs/SettingsDataTab';
 import { AuditLogsTab } from './components/tabs/AuditLogsTab';
 import { UserManagementTab } from './components/tabs/UserManagementTab';
-import { ScheduleCalendarView } from './components/tabs/ScheduleCalendarView';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
@@ -669,22 +668,6 @@ export default function App() {
               onUpdateStore={updateStore}
               initialSection="pricing"
               initialSubTab="matrix"
-            />
-          )}
-
-          {currentRoute === 'sub_calendar' && (
-            <ScheduleCalendarView
-              store={store}
-              currentRole={currentRole}
-              selectedCampusId={selectedCampusId}
-              selectedTermId={selectedTermId}
-              onSelectClassForAttendance={(cls) => {
-                setFocusedClass(cls);
-                setCurrentRoute('sub_attendance');
-              }}
-              onNavigateToSnacks={() => {
-                setCurrentRoute('sub_snacks');
-              }}
             />
           )}
 

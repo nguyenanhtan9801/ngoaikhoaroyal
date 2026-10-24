@@ -2704,9 +2704,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               </span>
                             </td>
                             <td className="py-3 px-4 text-center font-mono">
-                              <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 font-bold text-xs border border-amber-500/30">
-                                {subject.standard_sessions || 24} buổi
-                              </span>
+                              <span className="text-amber-400 font-semibold">{subject.standard_sessions || 24} buổi</span>
                             </td>
                             <td className="py-3 px-4 text-center font-mono">
                               <span className="text-amber-400 font-bold">{activeTermsCount}</span>
@@ -3049,12 +3047,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                         );
 
                         const isActive = termConfig ? termConfig.is_active : false;
-                        const standardSessions = (termConfig && Number(termConfig.standard_sessions) > 0)
-                          ? Number(termConfig.standard_sessions)
-                          : (subject.standard_sessions ? Number(subject.standard_sessions) : 24);
-                        const standardFee = (termConfig && Number(termConfig.standard_course_fee) > 0)
-                          ? Number(termConfig.standard_course_fee)
-                          : ((termConfig as any)?.total_fee || subject.standard_course_fee || 3990000);
+                        const standardSessions = termConfig?.standard_sessions ?? subject.standard_sessions ?? 24;
+                        const standardFee = termConfig ? termConfig.standard_course_fee : 3600000;
                         const ceilRate = Math.ceil(standardFee / Math.max(1, standardSessions));
                         const isClosed = isTermClosed(selectedConfigTermId, store);
 

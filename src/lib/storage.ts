@@ -491,22 +491,8 @@ export function loadStore(): AppStore {
       campuses: Array.isArray(parsed.campuses) ? parsed.campuses : initial.campuses,
       terms,
       subjectCategories,
-      subjects: (() => {
-        const storedList = Array.isArray(parsed.subjects) ? parsed.subjects : [];
-        const existingCodes = new Set(storedList.map((s: any) => s.code?.toUpperCase()));
-        const missingFromInitial = initial.subjects.filter(
-          (s) => !existingCodes.has(s.code?.toUpperCase())
-        );
-        return [...storedList, ...missingFromInitial].map(normalizeSubjectRecord);
-      })(),
-      termSubjects: (() => {
-        const storedList = Array.isArray(parsed.termSubjects) ? parsed.termSubjects : [];
-        const existingKeys = new Set(storedList.map((ts: any) => `${ts.term_id}_${ts.subject_id}`));
-        const missingFromInitial = initial.termSubjects.filter(
-          (ts) => !existingKeys.has(`${ts.term_id}_${ts.subject_id}`)
-        );
-        return [...storedList, ...missingFromInitial];
-      })(),
+      subjects: (Array.isArray(parsed.subjects) ? parsed.subjects : initial.subjects).map(normalizeSubjectRecord),
+      termSubjects,
       campusPricings,
       facilities: Array.isArray(parsed.facilities) ? parsed.facilities : initial.facilities,
       timeSlots,

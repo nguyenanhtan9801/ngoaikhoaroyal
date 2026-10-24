@@ -1,55 +1,57 @@
-export type ToastType = 'success' | 'error' | 'warning' | 'info';
-
-export interface ToastOptions {
-  title?: string;
-  duration?: number;
-  id?: string;
-}
+export type ToastType = 'success' | 'warning' | 'error' | 'info';
 
 export interface ToastItem {
   id: string;
   type: ToastType;
-  message: string;
   title?: string;
-  duration: number;
-  timestamp: number;
+  message: string;
+  duration?: number;
+  createdAt: number;
 }
 
-type ToastSubscriber = (toasts: ToastItem[]) => void;
+type ToastListener = (toasts: ToastItem[]) => void;
 
-let toasts: ToastItem[] = [];
-const subscribers: Set<ToastSubscriber> = new Set();
+let toastsState: ToastItem[] = [];
+const listeners: Set<ToastListener> = new Set();
 
-function notifySubscribers() {
-  subscribers.forEach((callback) => {
-    try {
-      callback([...toasts]);
-    } catch {
-      // noop
-    }
-  });
-}
+const notifyListeners = () => {
+  const snapshot = [...toastsState];
+  listeners.forEach(listener => listener(snapshot));
+};
 
-export function showToast(
+export const dismissToast = (id: string) => {
+  toastsState = toastsState.filter(t => t.id !== id);
+  notifyListeners();
+};
+
+export const showToast = (
   message: string,
-  type: ToastType = 'info',
-  options?: ToastOptions
-): string {
-  const id = options?.id || `toast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const duration = options?.duration ?? (type === 'error' ? 5000 : 3500);
+  type: ToastType = 'success',
+  options?: { title?: string; duration?: number }
+) => {
+  const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const duration = options?.duration ?? 3800;
+
+  // Auto-detect title if not provided
+  const defaultTitles: Record<ToastType, string> = {
+    success: 'Thao tác thành công',
+    warning: 'Lưu ý hệ thống',
+    error: 'Không thể thực hiện',
+    info: 'Thông báo hệ thống',
+  };
 
   const newToast: ToastItem = {
     id,
     type,
+    title: options?.title || defaultTitles[type],
     message,
-    title: options?.title,
     duration,
-    timestamp: Date.now(),
+    createdAt: Date.now(),
   };
 
-  // Giữ tối đa 5 toast cùng lúc trên màn hình
-  toasts = [newToast, ...toasts.slice(0, 4)];
-  notifySubscribers();
+  // Keep max 4 visible toasts at once in bottom-right stack
+  toastsState = [...toastsState.slice(-3), newToast];
+  notifyListeners();
 
   if (duration > 0) {
     setTimeout(() => {
@@ -58,17 +60,12 @@ export function showToast(
   }
 
   return id;
-}
+};
 
-export function dismissToast(id: string) {
-  toasts = toasts.filter((t) => t.id !== id);
-  notifySubscribers();
-}
-
-export function subscribeToast(callback: ToastSubscriber): () => void {
-  subscribers.add(callback);
-  callback([...toasts]);
+export const subscribeToasts = (listener: ToastListener): (() => void) => {
+  listeners.add(listener);
+  listener([...toastsState]);
   return () => {
-    subscribers.delete(callback);
+    listeners.delete(listener);
   };
-}
+};
