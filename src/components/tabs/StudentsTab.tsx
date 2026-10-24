@@ -24,7 +24,8 @@ import {
   X,
   Save,
   ExternalLink,
-  Calendar
+  Calendar,
+  BookOpen
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -221,6 +222,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
   // Enrollment Modal State
   const [selectedClassId, setSelectedClassId] = useState('');
+  const [selectedEnrollSubjectId, setSelectedEnrollSubjectId] = useState<string>('all');
   const [enrolledDaysOfWeek, setEnrolledDaysOfWeek] = useState<string[]>([]);
   const [enrollStartDate, setEnrollStartDate] = useState('');
   const [trialSessionDate, setTrialSessionDate] = useState('');
@@ -458,39 +460,87 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     setShowAddModal(true);
   };
 
-  // Open Class Enrollment Modal with duplicate checks (Only active enrollments block selection)
-  const handleOpenEnrollModal = (student: Student) => {
-    const studentActiveEnrolledClassIds = new Set(
-      store.enrollments
-        .filter(e => e.student_id === student.id && e.status === 'active')
-        .map(e => e.class_id)
-    );
-    // Find first class student has NOT active-enrolled in yet
-    const firstAvailable = store.classes.find(c => !studentActiveEnrolledClassIds.has(c.id));
+  // Helper to configure modal fields when a class is selected
+  const handleSelectClass = (cls: ExtracurricularClass) => {
+    setSelectedClassId(cls.id);
+    const clsDays = Array.isArray(cls.days_of_week) && cls.days_of_week.length > 0
+      ? cls.days_of_week
+      : (Array.isArray((cls as any).schedule_days) && (cls as any).schedule_days.length > 0
+          ? (cls as any).schedule_days
+          : getClassDaysOfWeek(cls, store));
+    const effectiveDays = clsDays.length > 0 ? clsDays : ['T2', 'T4'];
+    const defStart = getDefaultClassStartDate(cls, store, undefined, effectiveDays);
+    const sub = store.subjects.find(s => String(s.id) === String(cls.subject_id) || s.code === (cls as any).subject_code);
+    const subTotal = cls.standard_sessions || sub?.standard_sessions || cls.total_sessions || 16;
+    setEnrolledDaysOfWeek([...effectiveDays]);
+    setEnrollStartDate(defStart);
+    setTrialSessionDate(defStart);
+    setRegisteredSessions(subTotal);
+    setIsManualSessionOverride(false);
+  };
 
-    if (firstAvailable) {
-      const clsDays = getClassDaysOfWeek(firstAvailable, store);
-      const defStart = getDefaultClassStartDate(firstAvailable, store, undefined, clsDays);
-      const sub = store.subjects.find(s => s.id === firstAvailable.subject_id || s.code === (firstAvailable as any).subject_code);
-      const Stotal = sub?.standard_sessions || firstAvailable.total_sessions || 24;
-      setSelectedClassId(firstAvailable.id);
-      setEnrolledDaysOfWeek([...clsDays]);
-      setEnrollStartDate(defStart);
-      setTrialSessionDate(defStart);
-      setRegisteredSessions(Stotal);
-      setIsManualSessionOverride(false);
-      setEnrollmentError(null);
+  // Open Class Enrollment Modal with duplicate checks (Only active enrollments block selection)
+  const handleOpenEnrollModal = async (student: Student) => {
+    // Safety check: If store.classes is empty, try loading fresh classes from Supabase
+    if (store.classes.length === 0) {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        try {
+          const { data: clsData } = await client.from('extracurricular_classes').select('*');
+          if (Array.isArray(clsData) && clsData.length > 0) {
+            const mappedClasses = clsData.map(r => ({
+              id: r.id,
+              name: r.name,
+              code: r.code || r.id,
+              term_id: r.term_id,
+              campus_id: r.campus_id,
+              subject_id: r.subject_id,
+              facility_id: r.facility_id || 'fac_01',
+              time_slot_id: r.time_slot_id || 'slot_after_01',
+              time_slot: r.time_slot || '',
+              days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : (typeof r.days_of_week === 'string' ? JSON.parse(r.days_of_week) : ['T2', 'T4']),
+              start_date: r.start_date,
+              end_date: r.end_date,
+              primary_teacher_id: r.primary_teacher_id || r.teacher_id,
+              max_students: r.max_students || 25,
+              total_sessions: r.total_sessions || 24,
+              full_course_fee: r.full_course_fee || 3990000,
+              price_per_session: r.price_per_session || 166250,
+              status: r.status || 'active',
+            }));
+            onUpdateStore(prev => ({
+              ...prev,
+              classes: mappedClasses,
+            }));
+          }
+        } catch (e) {
+          console.warn('Lỗi nạp classes dự phòng:', e);
+        }
+      }
+    }
+
+    const enrolledClassIds = store.enrollments
+      .filter((e) => String(e.student_id) === String(student.id) && e.status === 'active')
+      .map((e) => String(e.class_id));
+
+    const availableClasses = store.classes.filter((cls) => !enrolledClassIds.includes(String(cls.id)));
+
+    setSelectedEnrollSubjectId('all');
+    setEnrollmentError(null);
+    setIsTrialMode(false);
+
+    if (availableClasses.length > 0) {
+      const firstAvailable = availableClasses[0];
+      handleSelectClass(firstAvailable);
     } else {
       setSelectedClassId('');
       setEnrolledDaysOfWeek([]);
       const today = new Date().toISOString().split('T')[0];
       setEnrollStartDate(today);
       setTrialSessionDate(today);
-      setRegisteredSessions(24);
+      setRegisteredSessions(16);
       setIsManualSessionOverride(false);
-      setEnrollmentError('Học viên này đã ghi danh vào tất cả các lớp học hiện có trong hệ thống!');
     }
-    setIsTrialMode(false);
     setEnrollingStudent(student);
   };
 
@@ -501,7 +551,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       setEnrollmentError('Vui lòng chọn lớp học để ghi danh!');
       return;
     }
-    const cls = store.classes.find(c => c.id === selectedClassId);
+    const cls = store.classes.find(c => String(c.id) === String(selectedClassId));
     if (!cls) {
       setEnrollmentError('Không tìm thấy thông tin lớp học được chọn!');
       return;
@@ -509,7 +559,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     // Business Rule 1 & 2: Check if student is already active in this class
     const isAlreadyEnrolled = store.enrollments.some(
-      e => e.student_id === enrollingStudent.id && e.class_id === cls.id && e.status === 'active'
+      e => String(e.student_id) === String(enrollingStudent.id) && String(e.class_id) === String(cls.id) && e.status === 'active'
     );
     if (isAlreadyEnrolled) {
       setEnrollmentError(`Học viên này đã được ghi danh vào lớp "${cls.name}". Không thể đăng ký trùng lặp!`);
@@ -520,24 +570,28 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     setIsSubmittingEnrollment(true);
 
     try {
-      const totalClassDays = getClassDaysOfWeek(cls, store);
+      const totalClassDays = Array.isArray(cls.days_of_week) && cls.days_of_week.length > 0
+        ? cls.days_of_week
+        : (Array.isArray((cls as any).schedule_days) && (cls as any).schedule_days.length > 0
+            ? (cls as any).schedule_days
+            : getClassDaysOfWeek(cls, store));
+      const classDaysCount = Math.max(1, totalClassDays.length);
       const selectedDays = enrolledDaysOfWeek.filter(d => totalClassDays.includes(d));
-      const effectiveDays = selectedDays.length > 0 ? selectedDays : totalClassDays;
-      const isPartial = effectiveDays.length < totalClassDays.length;
+      const effectiveDays = selectedDays.length > 0 ? selectedDays : (totalClassDays.length > 0 ? totalClassDays : ['T2', 'T4']);
+      const isPartial = effectiveDays.length < classDaysCount;
 
-      const subject = store.subjects.find(s => s.id === cls.subject_id || s.code === (cls as any).subject_code);
-      const Stotal = subject?.standard_sessions || cls.total_sessions || 24;
-      const Dtotal = Math.max(1, totalClassDays.length);
-      const formulaSessions = Math.max(1, Math.round((Stotal * effectiveDays.length) / Dtotal));
+      const subject = store.subjects.find(s => String(s.id) === String(cls.subject_id) || s.code === (cls as any).subject_code);
+      const Stotal = cls.standard_sessions || subject?.standard_sessions || cls.total_sessions || 16;
+      const formulaSessions = Math.max(1, Math.round((Stotal * effectiveDays.length) / classDaysCount));
       const calculatedSessions = isTrialMode ? 1 : (isManualSessionOverride ? registeredSessions : formulaSessions);
 
-      const standardSessionRate = cls.price_per_session || subject?.standard_session_rate || (subject?.standard_course_fee && Stotal ? Math.ceil(subject.standard_course_fee / Stotal) : 150000);
+      const standardSessionRate = cls.price_per_session || (cls as any)?.session_rate || subject?.standard_session_rate || (subject?.standard_course_fee && Stotal ? Math.ceil(subject.standard_course_fee / Stotal) : 150000);
       const totalFee = isTrialMode ? 0 : calculatedSessions * standardSessionRate;
 
       const startDate = enrollStartDate || getDefaultClassStartDate(cls, store, undefined, effectiveDays);
       const trialDate = trialSessionDate || startDate;
 
-      const enrollmentId = `ENR-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const enrollmentId = `ENR-${Date.now()}`;
 
       const payload = {
         id: enrollmentId,
@@ -545,12 +599,12 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         class_id: cls.id,
         registered_sessions: isTrialMode ? 1 : calculatedSessions,
         enrolled_days_of_week: isTrialMode ? [] : effectiveDays,
-        is_partial_schedule: isTrialMode ? false : (effectiveDays.length < totalClassDays.length),
+        is_partial_schedule: isTrialMode ? false : isPartial,
         is_trial: isTrialMode,
         trial_session_date: isTrialMode ? trialDate : null,
         trial_attended: false,
         status: 'active',
-        joined_date: new Date().toISOString().split('T')[0]
+        joined_date: startDate
       };
 
       // Ghi trực tiếp vào bảng public.enrollments trên Supabase
@@ -1723,30 +1777,51 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       {/* Class Enrollment Modal */}
       {enrollingStudent && (() => {
         // Enforce Unique Constraint: Only active enrollments block new enrollment
-        const studentActiveEnrolledClassIds = new Set(
-          store.enrollments
-            .filter(e => e.student_id === enrollingStudent.id && e.status === 'active')
-            .map(e => e.class_id)
-        );
-        const isCurrentClassAlreadyEnrolled = studentActiveEnrolledClassIds.has(selectedClassId);
-        const isAllClassesEnrolled = store.classes.length > 0 && studentActiveEnrolledClassIds.size >= store.classes.length;
-        const currentSelectedClass = store.classes.find(cl => cl.id === selectedClassId);
+        const enrolledClassIds = store.enrollments
+          .filter((e) => String(e.student_id) === String(enrollingStudent.id) && e.status === 'active')
+          .map((e) => String(e.class_id));
 
-        // Compute dynamic values for current class
+        // Danh sách lớp còn lại có thể ghi danh:
+        const availableClasses = store.classes.filter((cls) => !enrolledClassIds.includes(String(cls.id)));
+
+        // Lọc theo môn học nếu người dùng chọn môn ở Dropdown 1:
+        const filteredAvailableClasses = selectedEnrollSubjectId === 'all'
+          ? availableClasses
+          : availableClasses.filter(c => String(c.subject_id) === String(selectedEnrollSubjectId) || (c as any).subject_code === String(selectedEnrollSubjectId));
+
+        const filteredClassesToDisplay = selectedEnrollSubjectId === 'all'
+          ? store.classes
+          : store.classes.filter(c => String(c.subject_id) === String(selectedEnrollSubjectId) || (c as any).subject_code === String(selectedEnrollSubjectId));
+
+        const isCurrentClassAlreadyEnrolled = Boolean(selectedClassId && enrolledClassIds.includes(String(selectedClassId)));
+        const currentSelectedClass = store.classes.find(cl => String(cl.id) === String(selectedClassId));
         const currentCls = currentSelectedClass;
-        const totalClassDays = currentCls ? getClassDaysOfWeek(currentCls, store) : [];
-        const activeDays = enrolledDaysOfWeek.length > 0 ? enrolledDaysOfWeek.filter(d => totalClassDays.includes(d)) : totalClassDays;
-        const effectiveDays = activeDays.length > 0 ? activeDays : totalClassDays;
-        const isPartial = effectiveDays.length < totalClassDays.length;
 
-        const subject = currentCls ? store.subjects.find(s => s.id === currentCls.subject_id || s.code === (currentCls as any).subject_code) : undefined;
-        const Stotal = subject?.standard_sessions || currentCls?.total_sessions || 24;
-        const Dtotal = Math.max(1, totalClassDays.length);
-        const formulaSessions = Math.max(1, Math.round((Stotal * effectiveDays.length) / Dtotal));
+        // Subject information
+        const subject = currentCls ? store.subjects.find(s => String(s.id) === String(currentCls.subject_id) || s.code === (currentCls as any).subject_code) : undefined;
+
+        // Total schedule days of the class
+        const totalClassDays: string[] = currentCls 
+          ? (Array.isArray(currentCls.days_of_week) && currentCls.days_of_week.length > 0
+              ? currentCls.days_of_week
+              : (Array.isArray((currentCls as any).schedule_days) && (currentCls as any).schedule_days.length > 0
+                  ? (currentCls as any).schedule_days
+                  : getClassDaysOfWeek(currentCls, store)))
+          : [];
+        const classDaysCount = Math.max(1, totalClassDays.length);
+
+        const activeDays = enrolledDaysOfWeek.length > 0 ? enrolledDaysOfWeek.filter(d => totalClassDays.includes(d)) : totalClassDays;
+        const effectiveDays = activeDays.length > 0 ? activeDays : (totalClassDays.length > 0 ? totalClassDays : ['T2', 'T4']);
+        const isPartial = effectiveDays.length < classDaysCount;
+
+        // Sessions calculation
+        const totalStandardSessions = currentCls?.standard_sessions || subject?.standard_sessions || currentCls?.total_sessions || 16;
+        const formulaSessions = Math.max(1, Math.round((totalStandardSessions * effectiveDays.length) / classDaysCount));
         const calculatedSessions = isTrialMode ? 1 : (isManualSessionOverride ? registeredSessions : formulaSessions);
 
-        const standardSessionRate = currentCls?.price_per_session || subject?.standard_session_rate || (subject?.standard_course_fee && Stotal ? Math.ceil(subject.standard_course_fee / Stotal) : 150000);
-        const totalFee = isTrialMode ? 0 : calculatedSessions * standardSessionRate;
+        // Rate & Tuition calculation
+        const sessionRate = currentCls?.price_per_session || (currentCls as any)?.session_rate || subject?.standard_session_rate || (subject?.standard_course_fee && totalStandardSessions ? Math.ceil(subject.standard_course_fee / totalStandardSessions) : 150000);
+        const totalTuition = isTrialMode ? 0 : (calculatedSessions * sessionRate);
 
         const currentStart = enrollStartDate || (currentCls ? getDefaultClassStartDate(currentCls, store, undefined, effectiveDays) : new Date().toISOString().split('T')[0]);
         const currentTrialDate = trialSessionDate || currentStart;
@@ -1776,19 +1851,28 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   Học sinh: <strong className="text-white">{enrollingStudent.name}</strong> ({enrollingStudent.code})
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono text-[10px]">
-                  Đang học {studentActiveEnrolledClassIds.size} lớp
+                  Đang học {enrolledClassIds.length} lớp
                 </span>
               </div>
 
-              {/* Duplicate Enrollment Error Alert */}
-              {enrollmentError && (
-                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2 animate-fadeIn">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <span className="font-medium leading-relaxed">{enrollmentError}</span>
+              {/* Thông báo hợp lý: Chỉ hiển thị khi classes.length > 0 và availableClasses.length === 0 */}
+              {store.classes.length > 0 && availableClasses.length === 0 && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Học sinh này đã tham gia tất cả các lớp học hiện có trong hệ thống!</span>
                 </div>
               )}
 
-              {isCurrentClassAlreadyEnrolled && !enrollmentError && currentSelectedClass && (
+              {/* Thông báo khi hệ thống chưa có lớp nào */}
+              {store.classes.length === 0 && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Chưa có lớp học nào được tạo trong hệ thống. Vui lòng tạo lớp học trong mục "Quản Lý Lớp Học" trước khi ghi danh.</span>
+                </div>
+              )}
+
+              {/* Lỗi chọn trùng lớp đã ghi danh */}
+              {isCurrentClassAlreadyEnrolled && currentSelectedClass && (
                 <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2 animate-fadeIn">
                   <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                   <span className="font-medium leading-relaxed">
@@ -1797,53 +1881,115 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </div>
               )}
 
-              {isAllClassesEnrolled && (
-                <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span>Học sinh này đã ghi danh vào tất cả các lớp học hiện có trong hệ thống!</span>
+              {/* Thông báo lỗi thao tác nếu có */}
+              {enrollmentError && !enrollmentError.includes('tất cả các lớp') && (
+                <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-start gap-2 animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{enrollmentError}</span>
                 </div>
               )}
 
               <div className="space-y-3.5 text-xs">
-                {/* 1. Chọn Lớp Học */}
+                {/* 1. Cấp độ 1: Chọn Môn Học (Dropdown 1) */}
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">
-                    Chọn lớp học mở <span className="text-slate-500">(Lớp đang theo học sẽ bị vô hiệu hóa)</span>
+                  <label className="block text-slate-400 font-medium mb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                      <span>1. Chọn môn học:</span>
+                    </span>
+                    {selectedEnrollSubjectId !== 'all' && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedEnrollSubjectId('all')}
+                        className="text-[10px] text-amber-300 hover:underline"
+                      >
+                        Xem tất cả môn ({store.subjects.length})
+                      </button>
+                    )}
+                  </label>
+                  <select
+                    value={selectedEnrollSubjectId}
+                    onChange={(e) => {
+                      const subId = e.target.value;
+                      setSelectedEnrollSubjectId(subId);
+                      const matching = subId === 'all'
+                        ? availableClasses
+                        : availableClasses.filter(c => String(c.subject_id) === String(subId) || (c as any).subject_code === String(subId));
+                      if (matching.length > 0) {
+                        handleSelectClass(matching[0]);
+                      } else {
+                        const anyMatching = subId === 'all'
+                          ? store.classes
+                          : store.classes.filter(c => String(c.subject_id) === String(subId) || (c as any).subject_code === String(subId));
+                        if (anyMatching.length > 0) {
+                          handleSelectClass(anyMatching[0]);
+                        } else {
+                          setSelectedClassId('');
+                        }
+                      }
+                    }}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500 transition-colors"
+                  >
+                    <option value="all">-- Tất cả môn học ({store.subjects.length} môn) --</option>
+                    {store.subjects.map(s => {
+                      const openCount = availableClasses.filter(c => String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)).length;
+                      return (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.code}) - Chuẩn {s.standard_sessions || 24}b &bull; {s.standard_duration || '90p'} [{openCount} lớp mở]
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* 2. Cấp độ 2: Chọn Lớp Học Cụ Thể (Dropdown 2) */}
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <GraduationCap className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>2. Chọn lớp học cụ thể <span className="text-rose-400">*</span>:</span>
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      ({filteredClassesToDisplay.length} lớp{selectedEnrollSubjectId !== 'all' ? ' theo môn' : ''})
+                    </span>
                   </label>
                   <select
                     value={selectedClassId}
                     onChange={(e) => {
                       const classId = e.target.value;
                       setSelectedClassId(classId);
-                      const isEnrolled = studentActiveEnrolledClassIds.has(classId);
-                      const c = store.classes.find(cl => cl.id === classId);
+                      const isEnrolled = enrolledClassIds.includes(String(classId));
+                      const c = store.classes.find(cl => String(cl.id) === String(classId));
                       if (isEnrolled && c) {
                         setEnrollmentError(`Học viên này đã được ghi danh vào lớp "${c.name}". Không thể đăng ký trùng lặp!`);
                       } else {
                         setEnrollmentError(null);
                       }
                       if (c) {
-                        const clsDays = getClassDaysOfWeek(c, store);
-                        const defStart = getDefaultClassStartDate(c, store, undefined, clsDays);
-                        const sub = store.subjects.find(s => s.id === c.subject_id || s.code === (c as any).subject_code);
-                        const subTotal = sub?.standard_sessions || c.total_sessions || 24;
-                        setEnrolledDaysOfWeek([...clsDays]);
-                        setEnrollStartDate(defStart);
-                        setTrialSessionDate(defStart);
-                        setRegisteredSessions(subTotal);
-                        setIsManualSessionOverride(false);
+                        handleSelectClass(c);
                       }
                     }}
-                    className={`w-full px-3 py-2 rounded-xl bg-slate-900 border text-white focus:outline-none transition-colors ${
-                      isCurrentClassAlreadyEnrolled || enrollmentError
+                    className={`w-full px-3 py-2 rounded-xl bg-slate-900 border text-white font-semibold focus:outline-none transition-colors ${
+                      isCurrentClassAlreadyEnrolled || (enrollmentError && !enrollmentError.includes('tất cả các lớp'))
                         ? 'border-rose-500/60 focus:border-rose-500' 
                         : 'border-slate-700 focus:border-amber-500'
                     }`}
                   >
                     <option value="" disabled>-- Chọn lớp học cần ghi danh --</option>
-                    {store.classes.map(c => {
-                      const isEnrolled = studentActiveEnrolledClassIds.has(c.id);
-                      const campusPrice = getCampusPricingForClass(c, store);
+                    {filteredClassesToDisplay.map(c => {
+                      const isEnrolled = enrolledClassIds.includes(String(c.id));
+                      const campus = store.campuses.find(cp => cp.id === c.campus_id);
+                      const teacher = store.teachers.find(t => t.id === c.primary_teacher_id);
+                      const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
+                        ? c.days_of_week
+                        : (Array.isArray((c as any).schedule_days) && (c as any).schedule_days.length > 0
+                            ? (c as any).schedule_days
+                            : getClassDaysOfWeek(c, store));
+                      const campusLabel = campus ? campus.name.split('-')[0].trim() : (c.campus_id || '').toUpperCase();
+                      const teacherLabel = teacher ? teacher.name : 'Chưa phân công GV';
+                      const timeStr = c.time_slot || (c as any).time_slots || '';
+                      const daysLabel = clsDays.join(', ');
+
                       return (
                         <option 
                           key={c.id} 
@@ -1851,14 +1997,36 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           disabled={isEnrolled}
                           className={isEnrolled ? 'text-slate-500 bg-slate-900 font-normal italic' : 'text-white bg-slate-900 font-semibold'}
                         >
-                          {c.name} [{campusPrice.campusCode}] {isEnrolled ? '⛔ [ĐÃ GHI DANH - KHÔNG THỂ CHỌN TRÙNG]' : ` - Đơn giá: ${formatVND(campusPrice.sessionRate)}/buổi`}
+                          {c.name} &bull; [{campusLabel}] &bull; Thứ: [{daysLabel}] {timeStr ? `(${timeStr})` : ''} &bull; GV: {teacherLabel} {isEnrolled ? '⛔ [ĐÃ GHI DANH]' : ''}
                         </option>
                       );
                     })}
                   </select>
                 </div>
 
-                {/* 2. Lựa chọn "Học Chính Thức" vs "Học Thử 1 Buổi Đầu" */}
+                {/* 3. Tự Động Hiển Thị Chi Tiết Môn & Đơn Giá Chuẩn Khi Đã Chọn Lớp */}
+                {currentCls && (
+                  <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs animate-fadeIn">
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] text-slate-400 block font-medium">Tên môn học</span>
+                      <span className="font-bold text-white truncate block">{subject?.name || currentCls.name}</span>
+                    </div>
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] text-slate-400 block font-medium">Thời lượng chuẩn</span>
+                      <span className="font-semibold text-cyan-300 block">{subject?.standard_duration || '90 phút'}</span>
+                    </div>
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] text-slate-400 block font-medium">Số buổi chuẩn (S_total)</span>
+                      <span className="font-mono font-bold text-amber-400 block">{totalStandardSessions} buổi</span>
+                    </div>
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] text-slate-400 block font-medium">Đơn giá buổi (R)</span>
+                      <span className="font-mono font-bold text-emerald-400 block">{formatVND(sessionRate)}/b</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* 4. Lựa chọn "Học Chính Thức" vs "Học Thử 1 Buổi Đầu" */}
                 <div className="space-y-1.5">
                   <label className="block text-slate-400 font-medium">
                     Hình thức nhập học môn này <span className="text-rose-400">*</span>:
@@ -1895,7 +2063,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   </div>
                 </div>
 
-                {/* 3. Chi tiết theo hình thức đã chọn */}
+                {/* 5. Chi tiết cấu hình theo hình thức đã chọn */}
                 {currentCls && (
                   <div className="space-y-3">
                     {isTrialMode ? (
@@ -1918,7 +2086,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             type="date"
                             value={currentTrialDate}
                             onChange={(e) => setTrialSessionDate(e.target.value)}
-                            disabled={isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
+                            disabled={isCurrentClassAlreadyEnrolled}
                             className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-purple-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-purple-400"
                           />
                         </div>
@@ -1956,7 +2124,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                 type="button"
                                 onClick={() => {
                                   setEnrolledDaysOfWeek([...totalClassDays]);
-                                  const fullSessions = Math.max(1, Math.round((Stotal * totalClassDays.length) / Dtotal));
+                                  const fullSessions = Math.max(1, Math.round((totalStandardSessions * totalClassDays.length) / classDaysCount));
                                   setRegisteredSessions(fullSessions);
                                   setIsManualSessionOverride(false);
                                 }}
@@ -1968,7 +2136,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           </div>
 
                           <div className="flex items-center gap-2 flex-wrap pt-0.5">
-                            {totalClassDays.map(dayCode => {
+                            {totalClassDays.map((dayCode: string) => {
                               const isChecked = effectiveDays.includes(dayCode);
                               return (
                                 <label
@@ -1989,12 +2157,12 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                           showToast('Học sinh phải đăng ký ít nhất 1 buổi học trong tuần!', 'warning');
                                           return;
                                         }
-                                        nextDays = effectiveDays.filter(d => d !== dayCode);
+                                        nextDays = effectiveDays.filter((d: string) => d !== dayCode);
                                       } else {
-                                        nextDays = totalClassDays.filter(d => d === dayCode || effectiveDays.includes(d));
+                                        nextDays = totalClassDays.filter((d: string) => d === dayCode || effectiveDays.includes(d));
                                       }
                                       setEnrolledDaysOfWeek(nextDays);
-                                      const nextSessions = Math.max(1, Math.round((Stotal * nextDays.length) / Dtotal));
+                                      const nextSessions = Math.max(1, Math.round((totalStandardSessions * nextDays.length) / classDaysCount));
                                       setRegisteredSessions(nextSessions);
                                       setIsManualSessionOverride(false);
                                     }}
@@ -2008,7 +2176,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
                           <div className="flex items-center justify-between text-[10px] pt-1 text-slate-400">
                             <span className="text-amber-300 font-semibold">
-                              Lịch học: [{effectiveDays.join(', ')}] ({effectiveDays.length}/{totalClassDays.length} buổi/tuần)
+                              Lịch học: [{effectiveDays.join(', ')}] ({effectiveDays.length}/{classDaysCount} buổi/tuần)
                             </span>
                             {isPartial ? (
                               <span className="text-amber-400 font-medium">Bán phần: is_partial_schedule = true</span>
@@ -2047,21 +2215,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               setEnrollStartDate(e.target.value);
                               setTrialSessionDate(e.target.value);
                             }}
-                            disabled={isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
+                            disabled={isCurrentClassAlreadyEnrolled}
                             className="w-full px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400"
                           />
                         </div>
 
-                        {/* Bảng tính toán buổi và học phí */}
+                        {/* Bảng tính toán buổi và tỷ lệ */}
                         <div className="grid grid-cols-3 gap-2 pt-1 text-center">
                           <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                             <div className="text-[9px] text-slate-400 uppercase font-semibold">Chuẩn môn (S_total)</div>
-                            <div className="font-mono font-bold text-white text-xs mt-0.5">{Stotal} buổi</div>
+                            <div className="font-mono font-bold text-white text-xs mt-0.5">{totalStandardSessions} buổi</div>
                           </div>
                           <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                             <div className="text-[9px] text-slate-400 uppercase font-semibold">Tỷ lệ ngày chọn</div>
                             <div className="font-mono font-bold text-xs mt-0.5 text-amber-300">
-                              {effectiveDays.length}/{totalClassDays.length} ngày
+                              {effectiveDays.length}/{classDaysCount} ngày
                             </div>
                           </div>
                           <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/40">
@@ -2073,7 +2241,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         {/* Điều chỉnh thủ công nếu cần */}
                         <div className="flex items-center justify-between pt-1">
                           <span className="text-[11px] text-slate-400">
-                            Điều chỉnh thủ công số buổi:
+                            Số buổi thực học (tùy chỉnh nếu vào trễ / học bù):
                             {isManualSessionOverride && (
                               <button
                                 type="button"
@@ -2083,43 +2251,52 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                 }}
                                 className="ml-1.5 text-[10px] text-amber-300 underline"
                               >
-                                Tự động theo công thức ({formulaSessions}b)
+                                Về công thức ({formulaSessions}b)
                               </button>
                             )}
                           </span>
                           <input
                             type="number"
                             min={1}
-                            max={Stotal}
+                            max={totalStandardSessions}
                             value={calculatedSessions}
                             onChange={(e) => {
-                              const val = Math.min(Stotal, Math.max(1, Number(e.target.value) || 1));
+                              const val = Math.min(totalStandardSessions, Math.max(1, Number(e.target.value) || 1));
                               setRegisteredSessions(val);
                               setIsManualSessionOverride(true);
                             }}
-                            disabled={isCurrentClassAlreadyEnrolled || isAllClassesEnrolled}
+                            disabled={isCurrentClassAlreadyEnrolled}
                             className="w-20 px-2.5 py-1 rounded-lg bg-slate-900 border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs text-center focus:outline-none"
                           />
                         </div>
 
                         {/* Bảng tóm tắt học phí động */}
-                        <div className="p-3 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-1.5 text-xs">
+                        <div className="p-3 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-2 text-xs">
                           <div className="flex justify-between text-slate-400">
                             <span>Lịch học của lớp:</span>
-                            <span className="font-mono text-slate-200">[{totalClassDays.join(', ')}] ({Stotal} buổi)</span>
+                            <span className="font-mono text-slate-200">[{totalClassDays.join(', ')}] ({totalStandardSessions} buổi)</span>
                           </div>
                           <div className="flex justify-between text-slate-400">
                             <span>Đơn giá buổi (standard_session_rate):</span>
-                            <span className="font-mono font-bold text-white">{formatVND(standardSessionRate)}/buổi</span>
+                            <span className="font-mono font-bold text-white">{formatVND(sessionRate)}/buổi</span>
                           </div>
                           <div className="flex justify-between text-slate-400">
                             <span>Công thức tính số buổi:</span>
-                            <span className="font-mono text-amber-300">{Stotal} × ({effectiveDays.length}/{totalClassDays.length}) = {calculatedSessions} buổi</span>
+                            <span className="font-mono text-amber-300">
+                              {totalStandardSessions} × ({effectiveDays.length}/{classDaysCount}) = {formulaSessions} buổi
+                              {isManualSessionOverride ? ` (Tùy chỉnh: ${calculatedSessions}b)` : ''}
+                            </span>
+                          </div>
+                          <div className="flex justify-between items-center text-slate-300 pt-1 border-t border-slate-800">
+                            <span className="font-semibold text-slate-300">Công thức tính học phí:</span>
+                            <span className="font-mono font-bold text-amber-300">
+                              {calculatedSessions} buổi × {formatVND(sessionRate)}/b
+                            </span>
                           </div>
                           <div className="flex justify-between items-center text-emerald-400 font-bold border-t border-slate-800 pt-1.5 text-sm">
                             <span>Tổng tiền học phí:</span>
                             <span className="font-mono font-black text-base">
-                              {calculatedSessions}b × {formatVND(standardSessionRate)} = {formatVND(totalFee)}
+                              {formatVND(totalTuition)}
                             </span>
                           </div>
                         </div>
@@ -2145,7 +2322,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 <button
                   type="button"
                   onClick={handleConfirmEnrollment}
-                  disabled={!selectedClassId || isCurrentClassAlreadyEnrolled || isAllClassesEnrolled || !!enrollmentError || isSubmittingEnrollment}
+                  disabled={
+                    !selectedClassId || 
+                    isCurrentClassAlreadyEnrolled || 
+                    (store.classes.length > 0 && availableClasses.length === 0) || 
+                    store.classes.length === 0 || 
+                    (!!enrollmentError && !enrollmentError.includes('tất cả các lớp')) || 
+                    isSubmittingEnrollment
+                  }
                   className={`px-4 py-2.5 rounded-xl text-xs font-bold shadow-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                     isTrialMode
                       ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-purple-500/20'
@@ -2157,7 +2341,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   ) : isTrialMode ? (
                     <span>Xác Nhận Đăng Ký Học Thử (1 buổi - Miễn phí)</span>
                   ) : (
-                    <span>Xác Nhận Ghi Danh ({calculatedSessions} buổi - {formatVND(totalFee)})</span>
+                    <span>Xác Nhận Ghi Danh ({calculatedSessions} buổi - {formatVND(totalTuition)})</span>
                   )}
                 </button>
               </div>
