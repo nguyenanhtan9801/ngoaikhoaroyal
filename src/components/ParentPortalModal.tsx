@@ -25,8 +25,10 @@ import {
   ShieldAlert,
   Lock,
   LogIn,
-  LogOut
+  LogOut,
+  RefreshCw
 } from 'lucide-react';
+import { supabase, getSupabaseClient } from '@/supabaseClient';
 import { AppStore, formatVND, getEffectivePrice, matchLeadWithDatabase } from '../lib/storage';
 import { formatCapitalizedName } from '../lib/formatters';
 import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser } from '../types';
@@ -44,6 +46,7 @@ interface ParentPortalModalProps {
   currentUser?: AppUser | null;
   onOpenAdminLogin?: () => void;
   onLogout?: () => void;
+  onRegistrationSuccess?: () => void;
 }
 
 export const TIME_SLOT_OPTIONS = [
@@ -91,7 +94,11 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   currentUser,
   onOpenAdminLogin,
   onLogout,
+  onRegistrationSuccess,
 }) => {
+  // Trạng thái gửi đơn vào Supabase
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   // Check role authorization for "Xem hồ sơ tiếp nhận"
   // CHỈ HIỆN CHO NHÂN SỰ ĐƯỢC PHÂN CÔNG LÀ TUYỂN SINH, GIÁO VỤ HOẶC ADMIN
   const isAuthorizedStaff = Boolean(
@@ -299,9 +306,11 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
   };
 
-  // Handle Form Submit
-  const handleRegisterSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Handle Form Submit / Gửi Đơn Đăng Ký Tuyển Sinh vào CSDL Supabase
+  const handleSubmitRegistration = async (e?: React.FormEvent) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     const errors: { [key: string]: string } = {};
 
     if (!regForm.student_name.trim()) {
@@ -324,10 +333,87 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
     setFormErrors({});
 
+    // Tạo mã đăng ký ngẫu nhiên chuẩn Royal School
     const currentYear = new Date().getFullYear();
-    const leadCode = `REG-${currentYear}-${Date.now().toString().slice(-6)}`;
+    const regCode = `REG-${currentYear}-${Math.floor(100000 + Math.random() * 900000)}`;
     const campus = selectedCampus;
     const term = selectedTerm;
+
+    // Chuẩn bị dữ liệu danh sách môn học đã chọn kèm khung giờ
+    const formattedSubjects = detailedSelectedSubjects.map((sub: any) => ({
+      subject_id: sub.subjectId || sub.id,
+      subject_code: sub.subject?.code || sub.subjectId,
+      subject_name: sub.subject?.name || 'Môn ngoại khóa',
+      category: sub.subject?.category_code || sub.subject?.category || 'Ngoại khóa',
+      time_slot: sub.timeSlotLabel || sub.selected_time_slot || sub.timeSlot || 'Sau giờ chính khóa (16:45 - 18:15)',
+      fee: sub.fee || sub.standard_course_fee || 3990000
+    }));
+
+    const subjectNamesList = formattedSubjects.map(s => s.subject_name).join(', ');
+
+    const discountPolicy = regForm.is_royal_student
+      ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
+      : `Học sinh Ngoài trường / Vãng lai (${detailedSelectedSubjects.length} môn - Không áp dụng suất bánh sữa)`;
+
+    const campusIdShort = (regForm.desired_campus_id || 'camp_pmh').replace(/^camp_/, '') || 'pmh';
+
+    const payload = {
+      reg_code: regCode,
+      student_name: regForm.student_name.trim(),
+      student_dob: regForm.student_dob || null,
+      student_grade: regForm.student_grade || 'Lớp 3 - Tiểu học',
+      student_type: regForm.is_royal_student ? 'royal' : 'external', // 'royal' | 'external'
+      medical_notes: regForm.medical_notes?.trim() || 'Bình thường',
+      parent_name: regForm.parent_name.trim(),
+      parent_phone: regForm.parent_phone.trim(),
+      parent_email: regForm.parent_email?.trim() || '',
+      campus_id: campusIdShort, // 'pmh' | 'pl'
+      term_name: term?.name || 'KHÓA HỌC 1 (Đang mở tuyển sinh)',
+      selected_subjects: formattedSubjects,
+      total_estimated_fee: finalTotalAmount || 0,
+      parent_notes: regForm.notes?.trim() || '',
+      status: 'pending', // Trạng thái mặc định: Chờ xử lý
+      submitted_at: new Date().toISOString()
+    };
+
+    let insertedId = `preg_${Date.now()}`;
+
+    try {
+      setIsSubmitting(true);
+      const client = supabase || getSupabaseClient();
+      if (client) {
+        const { data, error } = await client
+          .from('parent_registrations')
+          .insert([payload])
+          .select();
+
+        if (error) {
+          console.error('Lỗi Supabase khi lưu đơn:', error);
+          alert('Không thể lưu đơn đăng ký: ' + error.message);
+          setIsSubmitting(false);
+          return;
+        }
+
+        if (data && data[0] && data[0].id) {
+          insertedId = data[0].id;
+        }
+      }
+
+      // Hiển thị thông báo thành công và chuyển sang màn hình xác nhận / đóng modal
+      alert(`Đăng ký thành công! Mã tiếp nhận của bé là: ${regCode}`);
+      
+      // Gọi callback reload danh sách nếu đang mở trong giao diện quản trị
+      if (typeof onRegistrationSuccess === 'function') {
+        onRegistrationSuccess();
+      }
+    } catch (err: any) {
+      console.error('Lỗi ngoại lệ:', err);
+      alert('Không thể lưu đơn đăng ký: ' + (err?.message || 'Lỗi không xác định'));
+      setIsSubmitting(false);
+      return;
+    } finally {
+      setIsSubmitting(false);
+    }
 
     const registeredSubjectItems: RegisteredSubjectItem[] = detailedSelectedSubjects.map(item => ({
       subject_id: item.subjectId,
@@ -337,33 +423,38 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       estimated_fee: item.fee,
     }));
 
-    const subjectNamesList = registeredSubjectItems.map(s => s.subject_name).join(', ');
-
-    const discountPolicy = regForm.is_royal_student
-      ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
-      : `Học sinh Ngoài trường / Vãng lai (${detailedSelectedSubjects.length} môn - Không áp dụng suất bánh sữa)`;
-
     const draftLead: ParentRegistration = {
-      id: `preg_${Date.now()}`,
-      registration_code: leadCode,
+      id: insertedId,
+      registration_code: regCode,
+      code: regCode,
+      reg_code: regCode,
       parent_name: regForm.parent_name.trim(),
       parent_phone: regForm.parent_phone.trim(),
       parent_email: regForm.parent_email.trim() || undefined,
       student_name: regForm.student_name.trim(),
       student_dob: regForm.student_dob,
+      dob: regForm.student_dob,
       student_grade: regForm.student_grade,
+      student_type: regForm.is_royal_student ? 'royal' : 'external',
       desired_campus_id: regForm.desired_campus_id,
+      campus_id: campusIdShort,
       desired_term_id: regForm.desired_term_id,
+      term_name: payload.term_name,
       desired_subject_id: selectedSubjectConfigs[0]?.subjectId || '',
       desired_time_slot_type: selectedSubjectConfigs[0]?.timeSlot === 'after_school' ? 'after_school' : 'weekend',
       registered_subjects: registeredSubjectItems,
+      selected_subjects: formattedSubjects,
       is_royal_student: regForm.is_royal_student,
-      medical_notes: regForm.medical_notes.trim() || undefined,
-      notes: regForm.notes.trim() || undefined,
+      is_royal: regForm.is_royal_student,
+      medical_notes: payload.medical_notes,
+      notes: payload.parent_notes,
+      parent_notes: payload.parent_notes,
       estimated_fee: finalTotalAmount,
+      total_estimated_fee: finalTotalAmount,
       discount_policy: discountPolicy,
       status: 'pending',
-      created_at: new Date().toISOString(),
+      created_at: payload.submitted_at,
+      submitted_at: payload.submitted_at,
     };
 
     const matchRes = matchLeadWithDatabase(draftLead, store);
@@ -375,7 +466,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     // Live sync to store
     onUpdateStore(prev => ({
       ...prev,
-      parentRegistrations: [newLead, ...prev.parentRegistrations],
+      parentRegistrations: [newLead, ...prev.parentRegistrations.filter(r => r.id !== newLead.id)],
       notifications: [
         {
           id: `notif_lead_${Date.now()}`,
@@ -395,7 +486,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }));
 
     const summary: ParentRegistrationSummary = {
-      leadCode,
+      leadCode: regCode,
       parentName: regForm.parent_name.trim(),
       parentPhone: regForm.parent_phone.trim(),
       parentEmail: regForm.parent_email.trim() || undefined,
@@ -430,6 +521,8 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       }
     }, 50);
   };
+
+  const handleRegisterSubmit = handleSubmitRegistration;
 
   // Reset form and transition back to 'form' step for registering another child
   const handleRegisterAnotherChild = () => {
@@ -1247,16 +1340,32 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                 <div className="pt-2">
                   <button
                     type="submit"
-                    disabled={selectedSubjectConfigs.length === 0}
-                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 disabled:opacity-50 text-slate-950 font-black text-sm tracking-wide shadow-xl shadow-amber-500/25 flex items-center justify-center gap-2 transition-all transform active:scale-[0.99]"
+                    disabled={selectedSubjectConfigs.length === 0 || isSubmitting}
+                    onClick={(e) => {
+                      // Hỗ trợ submit trực tiếp
+                      if (e.currentTarget.form === null) {
+                        e.preventDefault();
+                        handleSubmitRegistration();
+                      }
+                    }}
+                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 disabled:opacity-50 text-slate-950 font-black text-sm tracking-wide shadow-xl shadow-amber-500/25 flex items-center justify-center gap-2 transition-all transform active:scale-[0.99] cursor-pointer"
                   >
-                    <Send className="w-4 h-4 text-slate-950" />
-                    <span>
-                      GỬI ĐƠN ĐĂNG KÝ {selectedSubjectConfigs.length > 0 ? `${selectedSubjectConfigs.length} MÔN HỌC` : 'MÔN HỌC'} CHO BÉ NGAY
-                    </span>
+                    {isSubmitting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 text-slate-950 animate-spin" />
+                        <span>ĐANG GỬI ĐƠN VÀO HỆ THỐNG SUPABASE...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4 text-slate-950" />
+                        <span>
+                          GỬI ĐƠN ĐĂNG KÝ {selectedSubjectConfigs.length > 0 ? `${selectedSubjectConfigs.length} MÔN HỌC` : 'MÔN HỌC'} CHO BÉ NGAY
+                        </span>
+                      </>
+                    )}
                   </button>
                   <p className="text-center text-[11px] text-slate-500 mt-2">
-                    Sau khi phụ huynh gửi đơn đăng ký, Ban Học vụ & Tuyển sinh Royal School sẽ liên hệ xác nhận thời khóa biểu và xếp lớp cho bé.
+                    Sau khi phụ huynh gửi đơn đăng ký, dữ liệu sẽ được lưu trực tiếp vào CSDL tuyển sinh của trường và thông báo tức thì đến Ban Tuyển Sinh.
                   </p>
                 </div>
 

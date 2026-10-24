@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Users, 
   Send, 
@@ -31,6 +31,8 @@ import {
   Building2,
   User
 } from 'lucide-react';
+import { supabase, getSupabaseClient } from '@/supabaseClient';
+import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
 import { 
   AppStore, 
   generateStudentCode, 
@@ -107,6 +109,57 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const [editingLeadContact, setEditingLeadContact] = useState<ParentRegistration | null>(null);
   const [contactNoteInput, setContactNoteInput] = useState<string>('');
   const [contactStatusInput, setContactStatusInput] = useState<'pending' | 'contacted' | 'partially_enrolled' | 'canceled'>('contacted');
+
+  // Trạng thái đồng bộ CSDL Tuyển sinh trực tiếp từ Supabase
+  const [isRefreshingFromSupabase, setIsRefreshingFromSupabase] = useState(false);
+  const [lastSupabaseSyncTime, setLastSupabaseSyncTime] = useState<string | null>(null);
+
+  const fetchLeadsFromSupabase = async (showSuccessToast = false) => {
+    try {
+      setIsRefreshingFromSupabase(true);
+      const client = supabase || getSupabaseClient();
+      if (!client) {
+        setIsRefreshingFromSupabase(false);
+        return;
+      }
+
+      const { data, error } = await client
+        .from('parent_registrations')
+        .select('*')
+        .order('submitted_at', { ascending: false });
+
+      if (error) {
+        console.error('Lỗi Supabase khi tải parent_registrations:', error);
+        if (showSuccessToast) {
+          showToast('Không thể tải từ Supabase: ' + error.message, 'error');
+        }
+        return;
+      }
+
+      if (data && Array.isArray(data)) {
+        const mappedRecords: ParentRegistration[] = data.map((row: any) =>
+          mapSupabaseRowToStoreEntity('parent_registrations', row)
+        );
+
+        onUpdateStore(prev => ({
+          ...prev,
+          parentRegistrations: mappedRecords,
+        }));
+        setLastSupabaseSyncTime(new Date().toLocaleTimeString('vi-VN'));
+        if (showSuccessToast) {
+          showToast(`Đã đồng bộ ${mappedRecords.length} hồ sơ từ CSDL Supabase!`, 'success');
+        }
+      }
+    } catch (err: any) {
+      console.error('Lỗi khi tải parent_registrations:', err);
+    } finally {
+      setIsRefreshingFromSupabase(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLeadsFromSupabase(false);
+  }, []);
 
   const handleCopyShareLink = () => {
     try {
@@ -186,20 +239,22 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     // Check subject filter against both primary and multi-subject list
     if (subjectFilter !== 'all') {
       const matchPrimary = lead.desired_subject_id === subjectFilter;
-      const matchMulti = lead.registered_subjects?.some(s => s.subject_id === subjectFilter);
+      const list = lead.selected_subjects || lead.registered_subjects || [];
+      const matchMulti = list.some((s: any) => (s.subject_id || s.id) === subjectFilter);
       if (!matchPrimary && !matchMulti) return false;
     }
 
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
-      const codeMatch = lead.registration_code?.toLowerCase().includes(q);
-      const parentMatch = lead.parent_name.toLowerCase().includes(q);
-      const phoneMatch = lead.parent_phone.includes(q);
-      const studentMatch = lead.student_name.toLowerCase().includes(q);
+      const codeMatch = (lead.reg_code || lead.registration_code || lead.code)?.toLowerCase().includes(q);
+      const parentMatch = lead.parent_name?.toLowerCase().includes(q);
+      const phoneMatch = lead.parent_phone?.includes(q);
+      const studentMatch = lead.student_name?.toLowerCase().includes(q);
       const subject = store.subjects.find(s => s.id === lead.desired_subject_id);
-      const subjectMatch = subject?.name.toLowerCase().includes(q);
-      const multiSubMatch = lead.registered_subjects?.some(s => s.subject_name?.toLowerCase().includes(q));
-      return codeMatch || parentMatch || phoneMatch || studentMatch || subjectMatch || multiSubMatch;
+      const subjectMatch = subject?.name?.toLowerCase().includes(q);
+      const list = lead.selected_subjects || lead.registered_subjects || [];
+      const multiSubMatch = list.some((s: any) => (s.subject_name || s.name)?.toLowerCase().includes(q));
+      return Boolean(codeMatch || parentMatch || phoneMatch || studentMatch || subjectMatch || multiSubMatch);
     }
 
     return true;
@@ -207,16 +262,28 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
   // Helper to extract registered subjects for any lead (standardized with Campus pricing)
   const getSubjectsForLead = (lead: ParentRegistration) => {
+    const rawList = (lead.selected_subjects && lead.selected_subjects.length > 0)
+      ? lead.selected_subjects
+      : (lead.registered_subjects && lead.registered_subjects.length > 0)
+      ? lead.registered_subjects
+      : [];
+
     const termId = lead.desired_term_id || store.terms[0]?.id || 'term_fall_2026';
-    if (lead.registered_subjects && lead.registered_subjects.length > 0) {
-      return lead.registered_subjects.map(item => {
-        const eff = getEffectivePrice(termId, lead.desired_campus_id, item.subject_id, store);
+    if (rawList.length > 0) {
+      return rawList.map((item: any) => {
+        const subId = item.subject_id || item.id;
+        const subObj = store.subjects.find(s => s.id === subId);
+        const eff = getEffectivePrice(termId, lead.desired_campus_id, subId, store);
         return {
-          ...item,
-          estimated_fee: eff.course_fee || item.estimated_fee || 3990000,
+          subject_id: subId,
+          subject_name: item.subject_name || item.name || subObj?.name || 'Môn ngoại khóa',
+          time_slot: item.time_slot || 'after_school',
+          time_slot_label: item.time_slot_label || item.time_slot || 'Sau giờ chính khóa (16:45 - 18:15)',
+          estimated_fee: Number(item.fee ?? item.estimated_fee ?? eff.course_fee) || 3990000,
         };
       });
     }
+
     const subject = store.subjects.find(s => s.id === lead.desired_subject_id);
     const eff = getEffectivePrice(termId, lead.desired_campus_id, lead.desired_subject_id, store);
     return [
@@ -225,7 +292,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         subject_name: subject?.name || 'Môn ngoại khóa',
         time_slot: lead.desired_time_slot_type,
         time_slot_label: lead.desired_time_slot_type === 'after_school' ? 'Sau giờ chính khóa (16:45 - 18:15)' : 'Cuối tuần (Thứ 7 - CN)',
-        estimated_fee: eff.course_fee || lead.estimated_fee || 3990000,
+        estimated_fee: Number(eff.course_fee || lead.total_estimated_fee || lead.estimated_fee) || 3990000,
       }
     ];
   };
@@ -1220,6 +1287,20 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Nút Làm Mới từ CSDL Supabase */}
+          <button
+            onClick={() => fetchLeadsFromSupabase(true)}
+            disabled={isRefreshingFromSupabase}
+            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer disabled:opacity-50"
+            title="Tải lại danh sách đơn đăng ký trực tiếp từ bảng parent_registrations trên Supabase"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isRefreshingFromSupabase ? 'animate-spin' : ''}`} />
+            <span>{isRefreshingFromSupabase ? 'Đang tải...' : 'Làm Mới Supabase'}</span>
+            {lastSupabaseSyncTime && (
+              <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">({lastSupabaseSyncTime})</span>
+            )}
+          </button>
+
           {/* Nút Sao Chép Link Đăng Ký */}
           <button
             onClick={handleCopyShareLink}
@@ -1615,72 +1696,63 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                     </div>
 
                     {/* Multi-subject list */}
-                    {lead.registered_subjects && lead.registered_subjects.length > 0 ? (
-                      <div className="space-y-1.5 p-2.5 rounded-2xl bg-slate-950/80 border border-slate-800">
-                        <div className="text-[11px] font-bold text-amber-300 flex items-center justify-between">
-                          <span>Môn học đăng ký ({lead.registered_subjects.length} môn):</span>
-                          {lead.estimated_fee && (
-                            <span className="font-mono text-emerald-400 font-bold">{formatVND(lead.estimated_fee)}</span>
-                          )}
-                        </div>
-                        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
-                          {lead.registered_subjects.map((subItem, idx) => {
-                            const assignedClassForSub = store.classes.find(
-                              c => c.subject_id === subItem.subject_id && lead.assigned_class_ids?.includes(c.id)
-                            );
-                            const alreadyEnrolledInDb = matchRes.enrolledClasses.find(
-                              c => c.subject_id === subItem.subject_id
-                            );
+                    {(() => {
+                      const subs = getSubjectsForLead(lead);
+                      const totalFee = Number(lead.total_estimated_fee ?? lead.estimated_fee) || subs.reduce((sum, s) => sum + (s.estimated_fee || 0), 0);
+                      return (
+                        <div className="space-y-1.5 p-2.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                          <div className="text-[11px] font-bold text-amber-300 flex items-center justify-between">
+                            <span>Môn học đăng ký ({subs.length} môn):</span>
+                            {totalFee > 0 && (
+                              <span className="font-mono text-emerald-400 font-bold">{formatVND(totalFee)}</span>
+                            )}
+                          </div>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+                            {subs.map((subItem, idx) => {
+                              const assignedClassForSub = store.classes.find(
+                                c => c.subject_id === subItem.subject_id && lead.assigned_class_ids?.includes(c.id)
+                              );
+                              const alreadyEnrolledInDb = matchRes.enrolledClasses.find(
+                                c => c.subject_id === subItem.subject_id
+                              );
 
-                            return (
-                              <div key={idx} className="p-2 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1 text-[11px]">
-                                <div className="flex items-center justify-between">
-                                  <div className="font-bold text-white">{subItem.subject_name}</div>
-                                  <span className="font-mono text-emerald-400 text-[10px] font-semibold">
-                                    {formatVND(subItem.estimated_fee)}
-                                  </span>
-                                </div>
-                                <div className="flex items-center justify-between flex-wrap gap-1 text-[10px]">
-                                  <div className="text-slate-400 flex items-center gap-1">
-                                    <Clock className="w-2.5 h-2.5 text-amber-400" />
-                                    <span>{subItem.time_slot_label}</span>
+                              return (
+                                <div key={idx} className="p-2 rounded-xl bg-slate-900 border border-slate-800/80 space-y-1 text-[11px]">
+                                  <div className="flex items-center justify-between">
+                                    <div className="font-bold text-white">{subItem.subject_name}</div>
+                                    <span className="font-mono text-emerald-400 text-[10px] font-semibold">
+                                      {formatVND(subItem.estimated_fee)}
+                                    </span>
                                   </div>
-                                  {assignedClassForSub ? (
-                                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1">
-                                      <Check className="w-2.5 h-2.5 text-emerald-400" />
-                                      <span>Đã xếp: {assignedClassForSub.name}</span>
-                                    </span>
-                                  ) : alreadyEnrolledInDb ? (
-                                    <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold flex items-center gap-1">
-                                      <Check className="w-2.5 h-2.5 text-teal-400" />
-                                      <span>Đã học: {alreadyEnrolledInDb.name}</span>
-                                    </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold flex items-center gap-1">
+                                  <div className="flex items-center justify-between flex-wrap gap-1 text-[10px]">
+                                    <div className="text-slate-400 flex items-center gap-1">
                                       <Clock className="w-2.5 h-2.5 text-amber-400" />
-                                      <span>Chờ xếp lớp</span>
-                                    </span>
-                                  )}
+                                      <span>{subItem.time_slot_label}</span>
+                                    </div>
+                                    {assignedClassForSub ? (
+                                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1">
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span>Đã xếp: {assignedClassForSub.name}</span>
+                                      </span>
+                                    ) : alreadyEnrolledInDb ? (
+                                      <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold flex items-center gap-1">
+                                        <Check className="w-2.5 h-2.5 text-teal-400" />
+                                        <span>Đã học: {alreadyEnrolledInDb.name}</span>
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold flex items-center gap-1">
+                                        <Clock className="w-2.5 h-2.5 text-amber-400" />
+                                        <span>Chờ xếp lớp</span>
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-400">Môn đăng ký:</span>
-                          <span className="font-bold text-amber-300">{subject?.name || 'Môn ngoại khóa'}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-400">Khung giờ:</span>
-                          <span className="text-slate-300">
-                            {lead.desired_time_slot_type === 'after_school' ? 'Sau giờ học (16:45 - 18:15)' : 'Cuối tuần'}
-                          </span>
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     <div className="flex items-center justify-between text-[11px] pt-1">
                       <span className="text-slate-400">Suất bánh sữa 16:30:</span>
@@ -1919,26 +1991,32 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
                       {/* 3. Môn Học */}
                       <td className="py-3 px-4">
-                        {lead.registered_subjects && lead.registered_subjects.length > 0 ? (
-                          <div className="space-y-1">
-                            <span className="font-bold text-amber-300">{lead.registered_subjects.length} môn:</span>
-                            <div className="text-[11px] text-slate-300">
-                              {lead.registered_subjects.map(s => s.subject_name).join(', ')}
+                        {(() => {
+                          const subs = getSubjectsForLead(lead);
+                          const totalFee = Number(lead.total_estimated_fee ?? lead.estimated_fee) || subs.reduce((sum, s) => sum + (s.estimated_fee || 0), 0);
+                          return (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold text-[10px]">
+                                  {subs.length} môn đăng ký
+                                </span>
+                                {totalFee > 0 && (
+                                  <span className="font-mono text-emerald-400 font-bold text-[11px]">
+                                    {formatVND(totalFee)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-slate-300 font-medium">
+                                {subs.map(s => s.subject_name).join(', ')}
+                              </div>
+                              {matchRes.enrolledClasses.length > 0 && (
+                                <div className="text-[10px] text-teal-300 font-semibold mt-0.5">
+                                  Đang học: {matchRes.enrolledClasses.map(c => c.name).join(', ')}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ) : (
-                          <div>
-                            <div className="font-bold text-amber-300">{subject?.name}</div>
-                            <div className="text-[10px] text-slate-400">
-                              {lead.desired_time_slot_type === 'after_school' ? 'Sau giờ học' : 'Cuối tuần'}
-                            </div>
-                          </div>
-                        )}
-                        {matchRes.enrolledClasses.length > 0 && (
-                          <div className="text-[10px] text-teal-300 font-semibold mt-1">
-                            Đang học: {matchRes.enrolledClasses.map(c => c.name).join(', ')}
-                          </div>
-                        )}
+                          );
+                        })()}
                       </td>
 
                       {/* 4. Cơ Sở */}

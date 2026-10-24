@@ -447,6 +447,9 @@ export default function App() {
           onClose={() => {}}
           onUpdateStore={updateStore}
           onOpenAdminLogin={() => setIsLoginModalOpen(true)}
+          onRegistrationSuccess={() => {
+            showToast('Đơn đăng ký mới đã được lưu thành công vào CSDL Supabase!', 'success');
+          }}
         />
 
         <LoginPortalModal

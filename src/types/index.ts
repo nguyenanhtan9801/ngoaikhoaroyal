@@ -537,6 +537,7 @@ export interface ParentRegistration {
   id: string;
   registration_code?: string;
   code?: string; // alias for registration_code
+  reg_code?: string; // Supabase column name
   parent_name: string;
   parent_phone: string;
   parent_email?: string;
@@ -544,21 +545,26 @@ export interface ParentRegistration {
   student_dob: string;
   dob?: string; // alias for student_dob
   student_grade?: string;
+  student_type?: 'royal' | 'external';
   current_school?: string; // current school of student
   current_class?: string; // alias for regular class
   desired_campus_id: string;
   campus_id?: string; // alias for desired_campus_id
   desired_term_id?: string;
+  term_name?: string;
   desired_subject_id: string; // Primary subject for backward compat
   preferred_subject_id?: string; // alias for desired_subject_id
   desired_time_slot_type: 'after_school' | 'weekend';
   preferred_time_slot_id?: string; // alias
   registered_subjects?: RegisteredSubjectItem[]; // Multi-subject registrations with separate time slots
+  selected_subjects?: any[]; // Multi-subject registrations JSON column in Supabase
   is_royal_student: boolean;
   is_royal?: boolean; // alias for is_royal_student
   medical_notes?: string;
   notes?: string;
+  parent_notes?: string;
   estimated_fee?: number;
+  total_estimated_fee?: number;
   discount_policy?: string;
   status: 'pending' | 'contacted' | 'enrolled' | 'partially_enrolled' | 'canceled';
   contact_notes?: string;
@@ -574,6 +580,7 @@ export interface ParentRegistration {
   attachment_url?: string;        // Link chứng từ đính kèm (giấy khai sinh, học bạ) trên Google Drive
   attachment_stored_at?: string;  // Vị trí lưu trữ Google Drive: 03_DonTuyenSinh
   created_at: string;
+  submitted_at?: string;
 }
 
 export interface SystemNotification {
