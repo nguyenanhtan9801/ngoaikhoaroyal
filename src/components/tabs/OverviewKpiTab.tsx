@@ -423,13 +423,6 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
               </div>
             </div>
           </div>
-
-          <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-            <span>Tiết kiệm chống lãng phí:</span>
-            <span className="text-emerald-400 font-bold font-mono">
-              {formatVND(snacksReturned * 35000)}
-            </span>
-          </div>
         </div>
 
       </div>
