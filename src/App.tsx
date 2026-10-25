@@ -24,15 +24,18 @@ import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, vali
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
-import { safeStorage } from './supabaseClient';
+import { safeStorage, supabase } from './supabaseClient';
 
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
 
-  // User Authentication State (Persists across F5 via safeStorage)
+  // User Authentication State (Persists across F5 via safeStorage unless explicitly logged out)
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
     try {
-      const stored = safeStorage.getItem('royal_current_user');
+      if (safeStorage.getItem('royal_logged_out') === 'true') {
+        return null;
+      }
+      const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
       if (stored) {
         return JSON.parse(stored);
       }
@@ -40,25 +43,30 @@ export default function App() {
       // noop
     }
     const initialStore = loadStore();
-    return initialStore.users[0] || {
-      id: 'usr_admin',
-      username: 'admin',
-      password: '123',
-      full_name: 'ThS. Nguyễn Hoàng Long',
-      department: 'Ban Giám Hiệu & Quản Trị Hệ Thống',
-      email: 'admin@royalschool.edu.vn',
-      phone: '0908 112 233',
-      role: 'super_admin',
-      campus_id: 'all',
-      status: 'active',
-      created_at: '2026-08-01',
-    };
+    return initialStore.users[0] || null;
+  });
+
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      if (safeStorage.getItem('royal_logged_out') === 'true') {
+        return false;
+      }
+      const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
+      if (stored) return true;
+    } catch {
+      // noop
+    }
+    const initialStore = loadStore();
+    return Boolean(initialStore.users[0]);
   });
 
   // Set currentRole based on currentUser if logged in
   const [currentRole, setCurrentRole] = useState<UserRole>(() => {
     try {
-      const stored = safeStorage.getItem('royal_current_user');
+      if (safeStorage.getItem('royal_logged_out') === 'true') {
+        return 'super_admin';
+      }
+      const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
       if (stored) {
         const u = JSON.parse(stored);
         if (u && u.role) return u.role;
@@ -71,9 +79,12 @@ export default function App() {
 
   const handleLoginSuccess = (user: AppUser) => {
     setCurrentUser(user);
+    setIsAuthenticated(true);
     setCurrentRole(user.role);
     try {
+      safeStorage.removeItem('royal_logged_out');
       safeStorage.setItem('royal_current_user', JSON.stringify(user));
+      safeStorage.setItem('royal_auth_user', JSON.stringify(user));
       safeStorage.setItem('royal_auth_session', JSON.stringify(user));
     } catch {
       // noop
@@ -102,7 +113,16 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      // 1. Đăng xuất khỏi Supabase Auth (nếu có dùng)
+      if (supabase && supabase.auth) {
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.warn('Lỗi signOut Supabase:', err);
+    }
+
     if (currentUser) {
       const logoutRecord = createAuditRecord(
         'AUTH_LOGOUT',
@@ -114,16 +134,27 @@ export default function App() {
       );
       updateStore(prev => appendAuditLog(prev, logoutRecord));
     }
+
+    // 2. Reset toàn bộ state người dùng
     setCurrentUser(null);
+    setIsAuthenticated(false);
+
+    // 3. Xóa sạch mọi key lưu trữ phiên đăng nhập cục bộ
     try {
-      safeStorage.removeItem('royal_current_user');
-      safeStorage.removeItem('royal_auth_session');
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        window.sessionStorage.removeItem('royal_current_user');
-      }
+      localStorage.removeItem('royal_auth_user');
+      localStorage.removeItem('royal_token');
+      localStorage.removeItem('sb-access-token');
+      localStorage.removeItem('sb-refresh-token');
+      localStorage.removeItem('royal_current_user');
+      localStorage.removeItem('royal_auth_session');
+      localStorage.setItem('royal_logged_out', 'true');
+      sessionStorage.clear();
     } catch {
       // noop
     }
+
+    // 4. Mở modal đăng nhập bắt buộc và khóa màn hình Dashboard
+    setIsLoginModalOpen(true);
   };
   
   // Current active navigation route (handled via top navbar dropdowns and direct links)
@@ -435,60 +466,7 @@ export default function App() {
     });
   };
 
-  // 1. PUBLIC ENTRYPOINT: If user is not logged in, show Public Parent Portal directly with "Đăng Nhập Quản Trị" button
-  if (!currentUser) {
-    return (
-      <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans tracking-[-0.011em] antialiased">
-        <ParentPortalModal
-          store={store}
-          isOpen={true}
-          isStandalonePage={true}
-          currentRole={currentRole}
-          currentUser={null}
-          onClose={() => {}}
-          onUpdateStore={updateStore}
-          onOpenAdminLogin={() => setIsLoginModalOpen(true)}
-          onRegistrationSuccess={() => {
-            showToast('Đơn đăng ký mới đã được lưu thành công vào CSDL Supabase!', 'success');
-          }}
-        />
-
-        <LoginPortalModal
-          isOpen={isLoginModalOpen}
-          onClose={() => setIsLoginModalOpen(false)}
-          currentRole={currentRole}
-          onChangeRole={(role) => {
-            setCurrentRole(role);
-            const defaultUser: AppUser = {
-              id: `usr_${role}`,
-              username: `${role}_staff`,
-              password: '123',
-              full_name: 'Cán bộ Royal School',
-              department: 'Phòng Đào Tạo & Quản Trị',
-              email: `${role}@royalschool.edu.vn`,
-              phone: '0908 123 456',
-              role,
-              campus_id: 'all',
-              status: 'active',
-              created_at: '2026-08-01',
-            };
-            const user = store.users.find(u => u.role === role) || defaultUser;
-            handleLoginSuccess(user);
-          }}
-          store={store}
-          currentParentStudent={currentParentStudent}
-          onSetParentStudent={setCurrentParentStudent}
-          onOpenParentPortalWithStudent={(st) => {
-            setCurrentParentStudent(st);
-            setIsParentPortalOpen(true);
-          }}
-        />
-        <ToastContainer />
-      </div>
-    );
-  }
-
-  // 2. STANDALONE PORTAL (if explicitly opened via ?portal=parent while logged in)
+  // 1. STANDALONE PORTAL (if explicitly opened via ?portal=parent while logged in or guest)
   if (isStandalonePortal) {
     return (
       <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans tracking-[-0.011em] antialiased">
@@ -516,6 +494,7 @@ export default function App() {
           }}
           onLogout={handleLogout}
           onUpdateStore={updateStore}
+          onOpenAdminLogin={() => setIsLoginModalOpen(true)}
           onNavigateToAdminLeads={() => {
             try {
               const url = new URL(window.location.href);
@@ -539,25 +518,15 @@ export default function App() {
           isOpen={isLoginModalOpen}
           onClose={() => setIsLoginModalOpen(false)}
           currentRole={currentRole}
-          onChangeRole={(role) => {
-            setCurrentRole(role);
-            const defaultUser: AppUser = {
-              id: `usr_${role}`,
-              username: `${role}_staff`,
-              password: '123',
-              full_name: 'Cán bộ Royal School',
-              department: 'Phòng Đào Tạo & Quản Trị',
-              email: `${role}@royalschool.edu.vn`,
-              phone: '0908 123 456',
-              role,
-              campus_id: 'all',
-              status: 'active',
-              created_at: '2026-08-01',
-            };
-            const user = store.users.find(u => u.role === role) || defaultUser;
-            handleLoginSuccess(user);
-          }}
+          onChangeRole={setCurrentRole}
           store={store}
+          currentUser={currentUser}
+          setCurrentUser={setCurrentUser}
+          isAuthenticated={isAuthenticated}
+          setIsAuthenticated={setIsAuthenticated}
+          onLogout={handleLogout}
+          onUpdateStore={updateStore}
+          onLoginSuccess={handleLoginSuccess}
           currentParentStudent={currentParentStudent}
           onSetParentStudent={setCurrentParentStudent}
           onOpenParentPortalWithStudent={(st) => {
@@ -565,6 +534,44 @@ export default function App() {
             setIsParentPortalOpen(true);
           }}
         />
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  // 2. RÀNG BUỘC BẢO VỆ ROUTE (PROTECTED ROUTE): Nếu chưa đăng nhập (!currentUser hoặc !isAuthenticated)
+  // Tuyệt đối không render nội dung Dashboard ("Tổng Quan Hiệu Suất & Thống Kê")
+  // Luôn hiển thị màn hình Khóa hoặc Modal Đăng Nhập toàn màn hình (không thể tắt bằng nút X khi chưa có phiên đăng nhập hợp lệ).
+  if (!currentUser || !isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col items-center justify-center font-sans tracking-[-0.011em] antialiased relative overflow-hidden select-none p-4">
+        {/* Nền đồ họa Hoàng Gia & hiệu ứng ánh sáng bảo mật */}
+        <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top,rgba(245,158,11,0.12),transparent_70%)]" />
+        <div className="absolute -top-40 -left-40 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
+
+        <LoginPortalModal
+          isOpen={true}
+          forceUnclosable={true}
+          onClose={() => {}}
+          currentRole={currentRole}
+          onChangeRole={setCurrentRole}
+          store={store}
+          currentUser={null}
+          setCurrentUser={setCurrentUser}
+          isAuthenticated={false}
+          setIsAuthenticated={setIsAuthenticated}
+          onLogout={handleLogout}
+          onUpdateStore={updateStore}
+          onLoginSuccess={handleLoginSuccess}
+          currentParentStudent={currentParentStudent}
+          onSetParentStudent={setCurrentParentStudent}
+          onOpenParentPortalWithStudent={(st) => {
+            setCurrentParentStudent(st);
+            setIsParentPortalOpen(true);
+          }}
+        />
+
         <ToastContainer />
       </div>
     );
@@ -879,6 +886,10 @@ export default function App() {
         onChangeRole={setCurrentRole}
         store={store}
         currentUser={currentUser}
+        setCurrentUser={setCurrentUser}
+        isAuthenticated={isAuthenticated}
+        setIsAuthenticated={setIsAuthenticated}
+        onLogout={handleLogout}
         onUpdateStore={updateStore}
         onLoginSuccess={handleLoginSuccess}
         currentParentStudent={currentParentStudent}

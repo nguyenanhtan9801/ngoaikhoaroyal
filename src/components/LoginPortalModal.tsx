@@ -21,6 +21,7 @@ import { UserRole, Student, AppUser } from '../types';
 import { AppStore, createAuditRecord, appendAuditLog, handleLoginProcess, getRoleLabelVN } from '../lib/storage';
 import { RoyalLogo } from './RoyalLogo';
 import { showToast } from '../lib/toast';
+import { supabase } from '../supabaseClient';
 
 interface LoginPortalModalProps {
   isOpen: boolean;
@@ -29,11 +30,16 @@ interface LoginPortalModalProps {
   onChangeRole: (role: UserRole) => void;
   store: AppStore;
   currentUser?: AppUser | null;
+  setCurrentUser?: (user: AppUser | null) => void;
+  isAuthenticated?: boolean;
+  setIsAuthenticated?: (auth: boolean) => void;
+  onLogout?: () => void;
   onUpdateStore?: (updater: (prev: AppStore) => AppStore) => void;
   onLoginSuccess?: (user: AppUser) => void;
   onOpenParentPortalWithStudent?: (student: Student) => void;
   currentParentStudent?: Student | null;
   onSetParentStudent?: (student: Student | null) => void;
+  forceUnclosable?: boolean;
 }
 
 export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
@@ -43,22 +49,33 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   onChangeRole,
   store,
   currentUser,
+  setCurrentUser,
+  isAuthenticated,
+  setIsAuthenticated,
+  onLogout,
   onUpdateStore,
   onLoginSuccess,
   onOpenParentPortalWithStudent,
   currentParentStudent,
   onSetParentStudent,
+  forceUnclosable,
 }) => {
   const [activeTab, setActiveTab] = useState<'staff' | 'parent'>('staff');
   
-  // Staff Credentials Form State
-  const [staffUsername, setStaffUsername] = useState('admin');
+  // Staff Credentials Form State (cleared when logged out)
+  const [staffUsername, setStaffUsername] = useState(currentUser?.username || 'admin');
   const [staffPassword, setStaffPassword] = useState('123456');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isStaffSubmitting, setIsStaffSubmitting] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffHelpVisible, setStaffHelpVisible] = useState(false);
+
+  const handleQuickFill = (u: string, p: string) => {
+    setStaffUsername(u);
+    setStaffPassword(p);
+    setStaffError(null);
+  };
 
   // Parent Form State
   const [parentPhone, setParentPhone] = useState('');
@@ -266,14 +283,69 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
     }, 350);
   };
 
-  const handleLogout = () => {
-    onChangeRole('super_admin');
-    if (onSetParentStudent) onSetParentStudent(null);
-    onClose();
+  const handleLogout = async () => {
+    try {
+      // 1. Đăng xuất khỏi Supabase Auth (nếu có dùng)
+      if (supabase && supabase.auth) {
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.warn('Lỗi signOut Supabase:', err);
+    }
+
+    // 2. Xóa sạch mọi key lưu trữ phiên đăng nhập cục bộ
+    try {
+      localStorage.removeItem('royal_auth_user');
+      localStorage.removeItem('royal_token');
+      localStorage.removeItem('sb-access-token');
+      localStorage.removeItem('sb-refresh-token');
+      localStorage.removeItem('royal_current_user');
+      localStorage.removeItem('royal_auth_session');
+      localStorage.setItem('royal_logged_out', 'true');
+      sessionStorage.clear();
+    } catch {
+      // noop
+    }
+
+    // 3. Reset toàn bộ state người dùng
+    if (typeof setCurrentUser === 'function') {
+      setCurrentUser(null);
+    }
+    if (typeof setIsAuthenticated === 'function') {
+      setIsAuthenticated(false);
+    }
+    if (typeof onLogout === 'function') {
+      onLogout();
+    }
+    if (onSetParentStudent) {
+      onSetParentStudent(null);
+    }
+
+    // 4. Reset form đăng nhập về rỗng
+    setStaffUsername('');
+    setStaffPassword('');
+    setParentPhone('');
+    setParentOtp('');
+    setStaffError(null);
+    setParentError(null);
+    setParentWarning(null);
+    setLoginSuccess(null);
+
+    showToast('Đã đăng xuất phiên làm việc thành công!', 'info');
+
+    // 5. Nếu đang ở trang Dashboard, điều hướng bắt buộc về trạng thái Chưa đăng nhập (khóa toàn bộ màn hình Dashboard)
+    // Tuyệt đối không gọi onClose() để lộ trang chủ phía sau.
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn"
+      onClick={() => {
+        if (currentUser && !forceUnclosable) {
+          onClose();
+        }
+      }}
+    >
       {/* Background radial glow */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_40%,rgba(245,158,11,0.08),transparent_65%)]" />
 
@@ -296,13 +368,16 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {currentUser && !forceUnclosable && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
+              title="Đóng cửa sổ"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {/* Tab Selection */}
@@ -434,7 +509,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
               <button
                 type="submit"
                 disabled={isStaffSubmitting}
-                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold text-xs transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold text-xs transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 cursor-pointer"
               >
                 {isStaffSubmitting ? (
                   <>
@@ -448,6 +523,48 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                   </>
                 )}
               </button>
+
+              {/* Tài Khoản Kiểm Thử Nhanh */}
+              <div className="pt-3 border-t border-slate-800/70 space-y-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Tài Khoản Kiểm Thử Nhanh (1-click điền):</span>
+                </span>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickFill('admin', '123456')}
+                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-amber-500/30 hover:border-amber-500/60 text-left transition-all"
+                  >
+                    <div className="font-bold text-amber-400">admin / 123456</div>
+                    <div className="text-[10px] text-slate-400">Super Admin</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickFill('tuyensinh', 'tuyensinh@123')}
+                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-cyan-500/30 hover:border-cyan-500/60 text-left transition-all"
+                  >
+                    <div className="font-bold text-cyan-400">tuyensinh / 123</div>
+                    <div className="text-[10px] text-slate-400">Tuyển sinh</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickFill('ketoan', 'ketoan@123')}
+                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-emerald-500/30 hover:border-emerald-500/60 text-left transition-all"
+                  >
+                    <div className="font-bold text-emerald-400">ketoan / 123</div>
+                    <div className="text-[10px] text-slate-400">Kế toán</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickFill('giaovien', 'gv@123')}
+                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-purple-500/30 hover:border-purple-500/60 text-left transition-all"
+                  >
+                    <div className="font-bold text-purple-400">giaovien / 123</div>
+                    <div className="text-[10px] text-slate-400">Giáo viên</div>
+                  </button>
+                </div>
+              </div>
             </form>
           )}
 
@@ -537,25 +654,21 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
           )}
         </div>
 
-        {/* Modal Footer */}
-        <div className="p-4 border-t border-slate-800/80 bg-slate-950/80 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-          <div className="text-slate-400 flex items-center gap-2">
-            <span>Phiên làm việc:</span>
-            <strong className="text-amber-400 font-mono">
-              {currentParentStudent ? `PH Bé ${currentParentStudent.name}` : currentRole}
-            </strong>
+        {/* Chân Modal Đăng Nhập */}
+        <div className="flex items-center justify-between pt-4 border-t border-slate-800 text-xs text-slate-400 p-4 bg-slate-950/80">
+          <div>
+            Phiên làm việc: <span className="text-amber-400 font-semibold">{currentUser?.username || 'Chưa đăng nhập'}</span>
           </div>
-
-          <div className="flex items-center gap-3">
+          
+          {currentUser && (
             <button
               type="button"
               onClick={handleLogout}
-              className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold transition-colors flex items-center gap-1.5"
+              className="flex items-center gap-1.5 px-3 py-1 rounded bg-slate-800 text-slate-300 hover:bg-rose-500/20 hover:text-rose-400 border border-slate-700 transition-colors"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Đăng Xuất</span>
+              <span>[→ Đăng Xuất]</span>
             </button>
-          </div>
+          )}
         </div>
 
         {/* Security & Support Info */}
