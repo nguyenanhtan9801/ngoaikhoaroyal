@@ -18,7 +18,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { UserRole, Student, AppUser } from '../types';
-import { AppStore, createAuditRecord, appendAuditLog, handleLoginProcess, getRoleLabelVN } from '../lib/storage';
+import { AppStore, createAuditRecord, appendAuditLog, handleLoginProcess, getRoleLabelVN, getDefaultPermissionsForRole } from '../lib/storage';
 import { RoyalLogo } from './RoyalLogo';
 import { showToast } from '../lib/toast';
 import { supabase } from '../supabaseClient';
@@ -63,19 +63,13 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
   const [activeTab, setActiveTab] = useState<'staff' | 'parent'>('staff');
   
   // Staff Credentials Form State (cleared when logged out)
-  const [staffUsername, setStaffUsername] = useState(currentUser?.username || 'admin');
-  const [staffPassword, setStaffPassword] = useState('123456');
+  const [staffUsername, setStaffUsername] = useState(currentUser?.username || '');
+  const [staffPassword, setStaffPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [isStaffSubmitting, setIsStaffSubmitting] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffHelpVisible, setStaffHelpVisible] = useState(false);
-
-  const handleQuickFill = (u: string, p: string) => {
-    setStaffUsername(u);
-    setStaffPassword(p);
-    setStaffError(null);
-  };
 
   // Parent Form State
   const [parentPhone, setParentPhone] = useState('');
@@ -108,109 +102,170 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
     setStaffError(null);
     setIsStaffSubmitting(true);
 
-    const cleanUname = staffUsername.trim().toLowerCase();
-    const cleanPass = staffPassword.trim();
+    try {
+      const inputIdentifier = staffUsername.trim().toLowerCase();
+      const cleanPassword = staffPassword.trim();
 
-    if (!cleanUname) {
-      setStaffError('Vui lòng nhập Tên đăng nhập hoặc Email công vụ.');
-      setIsStaffSubmitting(false);
-      return;
-    }
-
-    if (!cleanPass) {
-      setStaffError('Vui lòng nhập Mật khẩu bảo mật.');
-      setIsStaffSubmitting(false);
-      return;
-    }
-
-    const result = await handleLoginProcess(cleanUname, cleanPass, store);
-
-    if (!result.success || !result.user) {
-      if (result.errorToast) {
-        showToast(result.errorToast, result.reason === 'locked' ? 'warning' : 'error');
-        setStaffError(result.errorToast);
+      if (!inputIdentifier) {
+        setStaffError('Vui lòng nhập Tên đăng nhập hoặc Email công vụ.');
+        setIsStaffSubmitting(false);
+        return;
       }
 
+      if (!cleanPassword) {
+        setStaffError('Vui lòng nhập Mật khẩu truy cập.');
+        setIsStaffSubmitting(false);
+        return;
+      }
+
+      let user: any = null;
+
+      // 1. TÌM TÀI KHOẢN TRỰC TIẾP TỪ BẢNG app_users TRÊN SUPABASE
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('app_users')
+            .select('*')
+            .or(`username.ilike.${inputIdentifier},email.ilike.${inputIdentifier}`)
+            .eq('status', 'active')
+            .maybeSingle();
+
+          if (!error && data) {
+            user = data;
+          } else if (error) {
+            console.warn('Supabase app_users query note:', error.message);
+          }
+        } catch (sbErr) {
+          console.warn('Lỗi kết nối bảng app_users:', sbErr);
+        }
+      }
+
+      // Fallback kiểm tra danh sách nội bộ nếu Supabase offline hoặc chưa hoàn tất đồng bộ
+      if (!user && store?.users) {
+        const local = store.users.find(
+          u => (u.username && u.username.toLowerCase() === inputIdentifier) ||
+               (u.email && u.email.toLowerCase() === inputIdentifier)
+        );
+        if (local && local.status === 'active') {
+          user = local;
+        }
+      }
+
+      if (!user) {
+        setStaffError('Tài khoản hoặc email không tồn tại trong hệ thống.');
+        setIsStaffSubmitting(false);
+        return;
+      }
+
+      // Kiểm tra mật khẩu (hỗ trợ so sánh trực tiếp password_hash hoặc password)
+      const expectedPassword = user.password_hash || user.password || '';
+      if (expectedPassword && expectedPassword !== cleanPassword) {
+        setStaffError('Mật khẩu truy cập không chính xác. Vui lòng kiểm tra lại.');
+        setIsStaffSubmitting(false);
+        return;
+      }
+
+      // Đăng nhập thành công: Lưu session vào localStorage
+      const nowIso = new Date().toISOString();
+      const sessionUser: AppUser = {
+        id: user.id,
+        username: user.username,
+        password: user.password || '',
+        password_hash: user.password_hash || '',
+        email: user.email || `${user.username}@royal.edu.vn`,
+        full_name: user.full_name || user.name || user.username,
+        role: user.role || 'teacher',
+        campus_id: user.campus_id || 'all',
+        department: user.department || 'Ban Quản Trị & Học Vụ',
+        permissions: user.permissions || getDefaultPermissionsForRole(user.role),
+        status: user.status || 'active',
+        created_at: user.created_at || nowIso,
+        last_login: nowIso,
+        phone: user.phone || '',
+        avatar_url: user.avatar_url,
+      };
+
+      try {
+        localStorage.setItem('royal_auth_user', JSON.stringify(sessionUser));
+        localStorage.setItem('royal_current_user', JSON.stringify(sessionUser));
+        localStorage.setItem('royal_auth_session', JSON.stringify(sessionUser));
+        localStorage.removeItem('royal_logged_out');
+      } catch {
+        // noop
+      }
+
+      if (typeof setCurrentUser === 'function') {
+        setCurrentUser(sessionUser);
+      }
+      if (typeof setIsAuthenticated === 'function') {
+        setIsAuthenticated(true);
+      }
+
+      // Cập nhật thời điểm last_login lên Supabase
+      if (supabase && user.id) {
+        try {
+          await supabase
+            .from('app_users')
+            .update({ last_login: nowIso })
+            .eq('id', user.id);
+        } catch {
+          // noop
+        }
+      }
+
+      // Ghi log kiểm toán đăng nhập
       if (onUpdateStore) {
-        const failLog = createAuditRecord(
-          'AUTH_LOGIN_FAILED',
+        const log = createAuditRecord(
+          'AUTH_LOGIN_SUCCESS',
           'AUTH',
           'Hệ thống Xác thực',
-          result.reason === 'locked'
-            ? `Chặn đăng nhập: Tài khoản "${cleanUname}" đang bị khóa (status = locked)`
-            : result.reason === 'wrong_password'
-            ? `Đăng nhập thất bại: Sai mật khẩu truy cập cho tài khoản "${cleanUname}"`
-            : `Đăng nhập thất bại: Tài khoản "${cleanUname}" không tồn tại trên hệ thống`,
-          result.user || null,
+          `Nhân sự ${sessionUser.full_name} (@${sessionUser.username}) đăng nhập thành công với vai trò ${getRoleLabelVN(sessionUser.role, sessionUser)}`,
+          sessionUser,
           {
-            target_id: cleanUname,
+            target_id: sessionUser.username,
             details: {
               ip_address: '192.168.1.45',
-              status: 'failed',
-              after: { reason: result.reason || 'failed', attempted_username: cleanUname },
+              status: 'success',
+              after: {
+                role: sessionUser.role,
+                full_name: sessionUser.full_name,
+                campus_id: sessionUser.campus_id,
+                last_login: sessionUser.last_login,
+              },
             },
           }
         );
-        onUpdateStore(prev => appendAuditLog(prev, failLog));
+
+        onUpdateStore(prev => ({
+          ...appendAuditLog(prev, log),
+          users: prev.users.map(u =>
+            u.id === sessionUser.id || u.username === sessionUser.username
+              ? { ...u, last_login: nowIso }
+              : u
+          ),
+        }));
       }
 
+      if (onSetParentStudent) onSetParentStudent(null);
+      showToast(`✓ Chào mừng ${sessionUser.full_name} đã đăng nhập thành công!`, 'success');
+      setLoginSuccess(`Chào mừng ${sessionUser.full_name}! Đang chuyển hướng...`);
       setIsStaffSubmitting(false);
-      return;
+
+      if (onLoginSuccess) {
+        onLoginSuccess(sessionUser);
+      } else {
+        onChangeRole(sessionUser.role);
+      }
+
+      setTimeout(() => {
+        setLoginSuccess(null);
+        onClose();
+      }, 400);
+    } catch (err: any) {
+      console.error('Lỗi đăng nhập:', err);
+      setStaffError('Đã có lỗi xảy ra trong quá trình xác thực: ' + (err?.message || 'Lỗi không xác định'));
+      setIsStaffSubmitting(false);
     }
-
-    const authenticatedUser = result.user;
-
-    if (onUpdateStore) {
-      const log = createAuditRecord(
-        'AUTH_LOGIN_SUCCESS',
-        'AUTH',
-        authenticatedUser.is_root ? 'Hệ thống Xác thực (Root Emergency Bypass)' : 'Hệ thống Xác thực',
-        authenticatedUser.is_root
-          ? `Quản trị tối cao ${authenticatedUser.full_name} (@overadmin) đăng nhập khẩn cấp với toàn quyền hệ thống (*)`
-          : `Nhân sự ${authenticatedUser.full_name} (@${authenticatedUser.username}) đăng nhập thành công với vai trò ${getRoleLabelVN(authenticatedUser.role, authenticatedUser)}`,
-        authenticatedUser,
-        {
-          target_id: authenticatedUser.username,
-          details: {
-            ip_address: '192.168.1.45',
-            status: 'success',
-            after: {
-              role: authenticatedUser.role,
-              full_name: authenticatedUser.full_name,
-              campus_id: authenticatedUser.campus_id,
-              last_login: authenticatedUser.last_login,
-            },
-          },
-        }
-      );
-
-      onUpdateStore(prev => ({
-        ...appendAuditLog(prev, log),
-        users: prev.users.map(u =>
-          u.id === authenticatedUser.id || u.username === authenticatedUser.username
-            ? { ...u, last_login: authenticatedUser.last_login }
-            : u
-        ),
-      }));
-    }
-
-    if (onLoginSuccess) {
-      onLoginSuccess(authenticatedUser);
-    } else {
-      onChangeRole(authenticatedUser.role);
-    }
-
-    if (onSetParentStudent) onSetParentStudent(null);
-    if (result.successToast) {
-      showToast(result.successToast, 'success');
-      setLoginSuccess(result.successToast);
-    }
-    setIsStaffSubmitting(false);
-
-    setTimeout(() => {
-      setLoginSuccess(null);
-      onClose();
-    }, 600);
   };
 
   const handleParentPhoneLogin = (e: React.FormEvent) => {
@@ -359,9 +414,9 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
             <RoyalLogo size="md" />
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-extrabold text-base text-white tracking-wide">CỔNG XÁC THỰC &amp; ĐĂNG NHẬP</h3>
+                <h3 className="font-extrabold text-base text-white tracking-wide">CỔNG XÁC THỰC NỘI BỘ</h3>
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-extrabold tracking-wider uppercase">
-                  Royal Auth
+                  ROYAL IDENTITY
                 </span>
               </div>
               <p className="text-xs text-slate-400">Trường Song Ngữ Quốc Tế Hoàng Gia (Royal School)</p>
@@ -439,7 +494,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                     <span>Hỗ Trợ Tài Khoản &amp; Khôi Phục Mật Khẩu</span>
                   </div>
                   <p>
-                    Vui lòng liên hệ <strong>Phòng CNTT &amp; Quản Trị Hệ Thống</strong> hoặc Hotline: <strong>(028) 7101 6669</strong> (Nhánh 104) để được cấp lại mật khẩu truy cập nội bộ.
+                    Vui lòng liên hệ <strong>Phòng CNTT &amp; Học Vụ</strong> hoặc Hotline: <strong>(028) 7101 6669</strong> để được cấp lại mật khẩu truy cập nội bộ.
                   </p>
                 </div>
               )}
@@ -455,9 +510,10 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                       type="text"
                       value={staffUsername}
                       onChange={e => { setStaffUsername(e.target.value); setStaffError(null); }}
-                      placeholder="VD: admin, ketoan, tuyensinh..."
-                      className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors"
+                      placeholder="Ví dụ: ntp.hanh hoặc ntp.hanh@royal.edu.vn"
+                      className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors placeholder:text-slate-500"
                       autoFocus
+                      required
                     />
                   </div>
                 </div>
@@ -472,13 +528,15 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                       type={showPassword ? 'text' : 'password'}
                       value={staffPassword}
                       onChange={e => { setStaffPassword(e.target.value); setStaffError(null); }}
-                      placeholder="Mật khẩu tài khoản (Mặc định: 123456)"
-                      className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors"
+                      placeholder="Nhập mật khẩu của bạn"
+                      className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors placeholder:text-slate-500"
+                      required
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-3 top-2.5 p-0.5 text-slate-500 hover:text-slate-300 transition-colors"
+                      title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
                     >
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
@@ -491,7 +549,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                       type="checkbox"
                       checked={rememberMe}
                       onChange={e => setRememberMe(e.target.checked)}
-                      className="w-3.5 h-3.5 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-0 focus:outline-none"
+                      className="w-3.5 h-3.5 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-0 focus:outline-none accent-amber-500"
                     />
                     <span>Ghi nhớ phiên đăng nhập</span>
                   </label>
@@ -499,9 +557,10 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setStaffHelpVisible(!staffHelpVisible)}
-                    className="text-amber-400 hover:text-amber-300 font-semibold transition-colors"
+                    title="Vui lòng liên hệ Phòng CNTT &amp; Học Vụ"
+                    className="text-amber-400 hover:text-amber-300 font-semibold transition-colors flex items-center gap-1 group relative"
                   >
-                    Quên mật khẩu?
+                    <span>Quên mật khẩu?</span>
                   </button>
                 </div>
               </div>
@@ -509,7 +568,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
               <button
                 type="submit"
                 disabled={isStaffSubmitting}
-                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold text-xs transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 font-bold text-xs transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
               >
                 {isStaffSubmitting ? (
                   <>
@@ -519,52 +578,10 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                 ) : (
                   <>
                     <LogIn className="w-4 h-4 text-slate-950" />
-                    <span>Đăng Nhập Cổng Nội Bộ</span>
+                    <span>→] Đăng Nhập Cổng Nội Bộ</span>
                   </>
                 )}
               </button>
-
-              {/* Tài Khoản Kiểm Thử Nhanh */}
-              <div className="pt-3 border-t border-slate-800/70 space-y-2">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Tài Khoản Kiểm Thử Nhanh (1-click điền):</span>
-                </span>
-                <div className="grid grid-cols-2 gap-2 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => handleQuickFill('admin', '123456')}
-                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-amber-500/30 hover:border-amber-500/60 text-left transition-all"
-                  >
-                    <div className="font-bold text-amber-400">admin / 123456</div>
-                    <div className="text-[10px] text-slate-400">Super Admin</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickFill('tuyensinh', 'tuyensinh@123')}
-                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-cyan-500/30 hover:border-cyan-500/60 text-left transition-all"
-                  >
-                    <div className="font-bold text-cyan-400">tuyensinh / 123</div>
-                    <div className="text-[10px] text-slate-400">Tuyển sinh</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickFill('ketoan', 'ketoan@123')}
-                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-emerald-500/30 hover:border-emerald-500/60 text-left transition-all"
-                  >
-                    <div className="font-bold text-emerald-400">ketoan / 123</div>
-                    <div className="text-[10px] text-slate-400">Kế toán</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickFill('giaovien', 'gv@123')}
-                    className="p-2 rounded-xl bg-slate-950 hover:bg-slate-900 border border-purple-500/30 hover:border-purple-500/60 text-left transition-all"
-                  >
-                    <div className="font-bold text-purple-400">giaovien / 123</div>
-                    <div className="text-[10px] text-slate-400">Giáo viên</div>
-                  </button>
-                </div>
-              </div>
             </form>
           )}
 

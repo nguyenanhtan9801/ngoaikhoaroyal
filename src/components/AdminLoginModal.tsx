@@ -130,12 +130,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
     onClose();
   };
 
-  const handleQuickFill = (u: string, p: string) => {
-    setUsername(u);
-    setPassword(p);
-    setErrorMessage(null);
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
       <div className="w-full max-w-md rounded-3xl bg-[#0B0F19] border border-amber-500/35 shadow-2xl overflow-hidden text-slate-100 font-sans">
@@ -240,55 +234,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
               <span>ĐĂNG NHẬP QUẢN TRỊ</span>
             </button>
           </form>
-
-          {/* Quick Demo Accounts Selection */}
-          <div className="pt-4 border-t border-slate-800/80 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                <span>Tài Khoản Mẫu Kiểm Thử Nhanh:</span>
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-[11px]">
-              <button
-                type="button"
-                onClick={() => handleQuickFill('admin', '123456')}
-                className="p-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 border border-amber-500/30 hover:border-amber-500/60 text-left transition-all group"
-              >
-                <div className="font-bold text-amber-400 group-hover:text-amber-300">admin / 123456</div>
-                <div className="text-[10px] text-slate-400">Super Admin (Toàn quyền)</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('tuyensinh', 'tuyensinh@123')}
-                className="p-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 border border-cyan-500/30 hover:border-cyan-500/60 text-left transition-all group"
-              >
-                <div className="font-bold text-cyan-400 group-hover:text-cyan-300">tuyensinh / tuyensinh@123</div>
-                <div className="text-[10px] text-slate-400">Chuyên viên Tuyển sinh</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('ketoan', 'ketoan@123')}
-                className="p-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 border border-emerald-500/30 hover:border-emerald-500/60 text-left transition-all group"
-              >
-                <div className="font-bold text-emerald-400 group-hover:text-emerald-300">ketoan / ketoan@123</div>
-                <div className="text-[10px] text-slate-400">Học vụ kiêm Kế toán</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickFill('giaovien', 'gv@123')}
-                className="p-2.5 rounded-xl bg-slate-950 hover:bg-slate-900 border border-purple-500/30 hover:border-purple-500/60 text-left transition-all group"
-              >
-                <div className="font-bold text-purple-400 group-hover:text-purple-300">giaovien / gv@123</div>
-                <div className="text-[10px] text-slate-400">Giáo viên (Bóng rổ)</div>
-              </button>
-            </div>
-          </div>
-
         </div>
 
         {/* Footer */}
