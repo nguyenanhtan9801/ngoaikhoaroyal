@@ -3210,12 +3210,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                           <label className="block text-[10px] text-slate-400 font-medium mb-1">Chuyển trạng thái vòng đời:</label>
                           <select
                             value={term.status}
-                            onChange={(e) => {
+                            onChange={async (e) => {
                               const newStatus = e.target.value as TermStatus;
                               if (newStatus === 'closed') {
                                 const ok = window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn ĐÓNG khóa học "${term.name}"? Toàn bộ lớp học, điểm danh và ghi danh của khóa sẽ bị khóa chỉnh sửa.`);
                                 if (!ok) return;
                               }
+                              const isActive = newStatus === 'open_enrollment' || newStatus === 'in_progress';
                               onUpdateStore(prev => ({
                                 ...prev,
                                 terms: prev.terms.map(t => 
@@ -3223,11 +3224,31 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                     ? { 
                                         ...t, 
                                         status: newStatus,
-                                        is_active: newStatus === 'open_enrollment' || newStatus === 'in_progress'
+                                        is_active: isActive
                                       } 
                                     : t
                                 ),
                               }));
+
+                              try {
+                                const client = getSupabaseClient() || supabase;
+                                if (client) {
+                                  await client.from('academic_terms').upsert({
+                                    id: term.id,
+                                    code: term.code || term.id,
+                                    name: term.name.trim(),
+                                    academic_year: term.academic_year || '2026-2027',
+                                    start_date: term.start_date,
+                                    end_date: term.end_date,
+                                    is_active: isActive,
+                                    status: newStatus,
+                                    description: term.description || '',
+                                    updated_at: new Date().toISOString()
+                                  }, { onConflict: 'id' });
+                                }
+                              } catch (err) {
+                                console.warn('Lỗi cập nhật trạng thái khóa lên Supabase:', err);
+                              }
                             }}
                             className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-amber-500"
                           >
@@ -4408,7 +4429,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </div>
 
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 if (!cloneFormData.code || !cloneFormData.name) return;
 
@@ -4416,6 +4437,27 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 onUpdateStore(() => updatedStore);
                 setSelectedConfigTermId(newTermId);
                 setShowCloneModal(false);
+
+                try {
+                  const client = getSupabaseClient() || supabase;
+                  if (client) {
+                    await client.from('academic_terms').upsert({
+                      id: newTermId,
+                      code: cloneFormData.code.trim().toUpperCase(),
+                      name: cloneFormData.name.trim(),
+                      academic_year: cloneFormData.academic_year || '2026-2027',
+                      start_date: cloneFormData.start_date,
+                      end_date: cloneFormData.end_date,
+                      is_active: cloneFormData.status === 'open_enrollment' || cloneFormData.status === 'in_progress',
+                      status: cloneFormData.status || 'draft',
+                      description: cloneFormData.description || '',
+                      updated_at: new Date().toISOString()
+                    }, { onConflict: 'id' });
+                  }
+                } catch (err) {
+                  console.warn('Lỗi lưu khóa nhân bản lên Supabase:', err);
+                }
+
                 alert(`Đã nhân bản thành công khóa mới: "${cloneFormData.name}" (${cloneFormData.code}) với đầy đủ cấu hình môn học và biểu phí!`);
               }}
               className="space-y-3.5 text-xs"
@@ -4542,10 +4584,43 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
             </div>
 
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 if (!termFormData.code || !termFormData.name) return;
 
+                const termId = editingTerm ? editingTerm.id : (termFormData.code ? `term_${termFormData.code.toLowerCase().replace(/[^a-z0-9_]/g, '_')}` : `term_${Date.now()}`);
+                const isActive = termFormData.status === 'open_enrollment' || termFormData.status === 'in_progress';
+                const termPayload = {
+                  id: termId,
+                  code: termFormData.code.trim().toUpperCase(),
+                  name: termFormData.name.trim(),
+                  academic_year: termFormData.academic_year || '2026-2027',
+                  start_date: termFormData.start_date,
+                  end_date: termFormData.end_date,
+                  is_active: isActive,
+                  status: termFormData.status || 'recruiting',
+                  description: termFormData.description || '',
+                  updated_at: new Date().toISOString()
+                };
+
+                // 1. Direct upsert to Supabase academic_terms
+                try {
+                  const client = getSupabaseClient() || supabase;
+                  if (client) {
+                    const { error: termError } = await client
+                      .from('academic_terms')
+                      .upsert(termPayload, { onConflict: 'id' });
+                    if (termError) {
+                      console.error('Lỗi khi lưu khóa học lên Supabase:', termError);
+                      alert('Không thể lưu khóa học lên Supabase: ' + termError.message);
+                      return;
+                    }
+                  }
+                } catch (err: any) {
+                  console.warn('Lỗi kết nối khi lưu khóa học:', err);
+                }
+
+                // 2. Update store
                 if (editingTerm) {
                   onUpdateStore(prev => ({
                     ...prev,
@@ -4554,23 +4629,25 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                         ? { 
                             ...t, 
                             ...termFormData,
-                            is_active: termFormData.status === 'open_enrollment' || termFormData.status === 'in_progress',
+                            code: termFormData.code.trim().toUpperCase(),
+                            name: termFormData.name.trim(),
+                            is_active: isActive,
                           } 
                         : t
                     ),
                   }));
                 } else {
-                  const newTermId = `term_${Date.now()}`;
                   const newTerm: AcademicTerm = {
-                    id: newTermId,
+                    id: termId,
                     ...termFormData,
-                    is_active: termFormData.status === 'open_enrollment' || termFormData.status === 'in_progress',
+                    code: termFormData.code.trim().toUpperCase(),
+                    name: termFormData.name.trim(),
+                    is_active: isActive,
                   };
 
-                  // Auto-create default term subjects for all subjects
                   const defaultTermSubjects: TermSubjectConfig[] = store.subjects.map(s => ({
-                    id: `ts_${newTermId}_${s.id}`,
-                    term_id: newTermId,
+                    id: `ts_${termId}_${s.id}`,
+                    term_id: termId,
                     subject_id: s.id,
                     is_active: true,
                     standard_sessions: 24,
@@ -4583,9 +4660,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     terms: [...prev.terms, newTerm],
                     termSubjects: [...prev.termSubjects, ...defaultTermSubjects],
                   }));
-                  setSelectedConfigTermId(newTermId);
+                  setSelectedConfigTermId(termId);
                 }
 
+                showToast(
+                  editingTerm
+                    ? `Đã cập nhật khóa học "${termFormData.name}" thành công vào CSDL!`
+                    : `Đã tạo mới khóa học "${termFormData.name}" (${termFormData.code}) thành công vào CSDL!`,
+                  'success'
+                );
                 setShowTermModal(false);
                 setEditingTerm(null);
               }}

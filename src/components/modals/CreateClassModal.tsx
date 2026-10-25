@@ -27,6 +27,7 @@ import {
   createAuditRecord, 
   appendAuditLog 
 } from '../../lib/storage';
+import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 
 interface CreateClassModalProps {
@@ -125,6 +126,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     editingClass?.is_cross_term ? 'spanning' : 'spanning'
   );
   const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Active Primary Term
   const primaryTerm = useMemo(() => {
@@ -332,7 +334,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   }, [store.classes, store.facilities, store.teachers, formData, editingClass]);
 
   // Form Submission
-  const handleSaveClass = (e: React.FormEvent) => {
+  const handleSaveClass = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formData.name.trim()) {
@@ -345,80 +347,187 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       return;
     }
 
-    const isCrossSpanning = scheduleAnalysis.isCrossTerm && crossTermMode === 'spanning' && !!nextSpanningTerm;
-    const finalTotalSessions = scheduleAnalysis.effectiveTotalSessions;
-    const finalFee = scheduleAnalysis.effectiveFee;
-    const finalEndDate = scheduleAnalysis.projectedEndDate;
+    setIsSaving(true);
+    try {
+      const client = getSupabaseClient() || supabase;
 
-    const termDistribution = isCrossSpanning
-      ? {
-          primary_term_sessions: scheduleAnalysis.primaryCount,
-          spanning_term_sessions: scheduleAnalysis.spanningCount,
+      const isCrossSpanning = scheduleAnalysis.isCrossTerm && crossTermMode === 'spanning' && !!nextSpanningTerm;
+      const finalTotalSessions = scheduleAnalysis.effectiveTotalSessions;
+      const finalFee = scheduleAnalysis.effectiveFee;
+      const finalEndDate = scheduleAnalysis.projectedEndDate;
+
+      const termDistribution = isCrossSpanning
+        ? {
+            primary_term_sessions: scheduleAnalysis.primaryCount,
+            spanning_term_sessions: scheduleAnalysis.spanningCount,
+          }
+        : {
+            primary_term_sessions: scheduleAnalysis.primaryCount,
+            spanning_term_sessions: 0,
+          };
+
+      const targetClassId = editingClass ? editingClass.id : `cls_${Date.now()}`;
+      const cleanCampusId = formData.campus_id === 'pmh' 
+        ? 'camp_pmh' 
+        : formData.campus_id === 'pl' 
+        ? 'camp_pl' 
+        : (formData.campus_id || 'camp_pmh');
+
+      // 1. Kiểm tra và đảm bảo term_id đã có trong academic_terms để không vi phạm foreign key 23503
+      if (client && formData.term_id) {
+        const { data: termExists } = await client
+          .from('academic_terms')
+          .select('id')
+          .eq('id', formData.term_id)
+          .maybeSingle();
+
+        if (!termExists) {
+          const primaryTermObj = store.terms?.find(t => t.id === formData.term_id);
+          await client.from('academic_terms').upsert({
+            id: formData.term_id,
+            code: primaryTermObj?.code || formData.term_id,
+            name: primaryTermObj?.name || formData.term_id,
+            academic_year: primaryTermObj?.academic_year || '2026-2027',
+            start_date: primaryTermObj?.start_date || formData.start_date || '2026-10-26',
+            end_date: primaryTermObj?.end_date || '2027-02-01',
+            is_active: true,
+            status: primaryTermObj?.status || 'open_enrollment',
+            description: primaryTermObj?.description || '',
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'id' });
         }
-      : {
-          primary_term_sessions: scheduleAnalysis.primaryCount,
-          spanning_term_sessions: 0,
+
+        // Nếu là lớp liên khóa spanning, đảm bảo spanning_term_id cũng tồn tại
+        if (isCrossSpanning && nextSpanningTerm?.id) {
+          const { data: spanTermExists } = await client
+            .from('academic_terms')
+            .select('id')
+            .eq('id', nextSpanningTerm.id)
+            .maybeSingle();
+
+          if (!spanTermExists) {
+            await client.from('academic_terms').upsert({
+              id: nextSpanningTerm.id,
+              code: nextSpanningTerm.code || nextSpanningTerm.id,
+              name: nextSpanningTerm.name || nextSpanningTerm.id,
+              academic_year: nextSpanningTerm.academic_year || '2026-2027',
+              start_date: nextSpanningTerm.start_date || '2027-01-01',
+              end_date: nextSpanningTerm.end_date || '2027-05-30',
+              is_active: true,
+              status: nextSpanningTerm.status || 'draft',
+              description: nextSpanningTerm.description || '',
+              updated_at: new Date().toISOString()
+            }, { onConflict: 'id' });
+          }
+        }
+      }
+
+      // 2. Đảm bảo teacher_id hợp lệ nếu có chỉ định giáo viên (tránh lỗi FK teachers_id_fkey)
+      let validatedTeacherId: string | null = formData.primary_teacher_id || null;
+      if (client && validatedTeacherId) {
+        const { data: teacherRow } = await client
+          .from('teachers')
+          .select('id')
+          .eq('id', validatedTeacherId)
+          .maybeSingle();
+
+        if (!teacherRow) {
+          const tObj = store.teachers?.find(t => t.id === validatedTeacherId);
+          if (tObj) {
+            const { error: tErr } = await client.from('teachers').upsert({
+              id: tObj.id,
+              code: tObj.code || tObj.id,
+              name: tObj.name,
+              phone: tObj.phone || '',
+              email: tObj.email || '',
+              campus_id: cleanCampusId,
+              type: tObj.type || 'permanent',
+              teacher_type: tObj.teacher_type || 'permanent',
+              fixed_rate_per_session: tObj.fixed_rate_per_session || 300000,
+              default_rate_per_period: tObj.default_rate_per_period || 150000,
+              periods_per_session: tObj.periods_per_session || 2,
+              status: tObj.status || 'active',
+              updated_at: new Date().toISOString()
+            }, { onConflict: 'id' });
+            if (tErr) validatedTeacherId = null;
+          } else {
+            validatedTeacherId = null;
+          }
+        }
+      }
+
+      const savedClass: ExtracurricularClass = {
+        id: targetClassId,
+        name: formData.name.trim(),
+        code: editingClass?.code || `CL-${cleanCampusId === 'camp_pl' ? 'PL' : 'PMH'}-${Date.now().toString().slice(-4)}`,
+        term_id: formData.term_id,
+        spanning_term_id: isCrossSpanning ? nextSpanningTerm?.id : undefined,
+        is_cross_term: isCrossSpanning,
+        term_distribution: termDistribution,
+        campus_id: cleanCampusId,
+        subject_id: formData.subject_id,
+        facility_id: formData.facility_id,
+        time_slot_id: formData.time_slot_id,
+        days_of_week: formData.days_of_week,
+        start_date: formData.start_date,
+        end_date: finalEndDate,
+        standard_sessions: standardSessions,
+        primary_teacher_id: validatedTeacherId || '',
+        max_students: formData.max_students,
+        total_sessions: finalTotalSessions,
+        full_course_fee: finalFee,
+        tuition_fee: finalFee,
+        price_per_session: sessionRate,
+        status: editingClass?.status || 'active',
+        allow_over_quota: formData.allow_over_quota,
+      };
+
+      // 3. Chèn hoặc cập nhật lớp học vào extracurricular_classes trên Supabase
+      if (client) {
+        const classPayload = {
+          id: targetClassId,
+          code: savedClass.code,
+          name: savedClass.name,
+          term_id: savedClass.term_id,
+          spanning_term_id: savedClass.spanning_term_id || null,
+          is_cross_term: Boolean(savedClass.is_cross_term),
+          term_distribution: savedClass.term_distribution || null,
+          campus_id: cleanCampusId,
+          subject_id: savedClass.subject_id,
+          facility_id: savedClass.facility_id || 'Nhà thi đấu',
+          time_slot_id: savedClass.time_slot_id || '',
+          days_of_week: savedClass.days_of_week,
+          start_date: savedClass.start_date,
+          end_date: savedClass.end_date,
+          primary_teacher_id: validatedTeacherId,
+          max_students: Number(savedClass.max_students) || 15,
+          total_sessions: Number(savedClass.total_sessions) || 24,
+          full_course_fee: Number(savedClass.full_course_fee) || 3990000,
+          price_per_session: Number(savedClass.price_per_session) || 166250,
+          status: savedClass.status || 'active',
+          allow_over_quota: Boolean(savedClass.allow_over_quota),
+          updated_at: new Date().toISOString()
         };
 
-    const targetClassId = editingClass ? editingClass.id : `cls_${Date.now()}`;
+        const { error: classUpsertError } = await client
+          .from('extracurricular_classes')
+          .upsert([classPayload], { onConflict: 'id' });
 
-    const savedClass: ExtracurricularClass = {
-      id: targetClassId,
-      name: formData.name.trim(),
-      code: editingClass?.code || `CL-${formData.campus_id === 'camp_pl' ? 'PL' : 'PMH'}-${Date.now().toString().slice(-4)}`,
-      term_id: formData.term_id,
-      spanning_term_id: isCrossSpanning ? nextSpanningTerm?.id : undefined,
-      is_cross_term: isCrossSpanning,
-      term_distribution: termDistribution,
-      campus_id: formData.campus_id,
-      subject_id: formData.subject_id,
-      facility_id: formData.facility_id,
-      time_slot_id: formData.time_slot_id,
-      days_of_week: formData.days_of_week,
-      start_date: formData.start_date,
-      end_date: finalEndDate,
-      standard_sessions: standardSessions,
-      primary_teacher_id: formData.primary_teacher_id,
-      max_students: formData.max_students,
-      total_sessions: finalTotalSessions,
-      full_course_fee: finalFee,
-      tuition_fee: finalFee,
-      price_per_session: sessionRate,
-      status: editingClass?.status || 'active',
-      allow_over_quota: formData.allow_over_quota,
-    };
+        if (classUpsertError) {
+          throw classUpsertError;
+        }
+      }
 
-    // Generate Session Records with correct term_id
-    const generatedSessions: ClassSession[] = [];
-
-    // Phase 1: Primary Term Sessions
-    scheduleAnalysis.primaryDates.forEach((dateStr, idx) => {
-      generatedSessions.push({
-        id: `ses_${targetClassId}_${idx + 1}`,
-        class_id: targetClassId,
-        term_id: formData.term_id, // Gắn đúng Khóa gốc
-        session_date: dateStr,
-        session_number: idx + 1,
-        actual_teacher_id: formData.primary_teacher_id,
-        is_substitute: false,
-        snacks_allocated: 0,
-        snacks_consumed: 0,
-        snacks_returned: 0,
-        status: 'scheduled',
-      });
-    });
-
-    // Phase 2: Spanning Term Sessions (if cross-term spanning selected)
-    if (isCrossSpanning && nextSpanningTerm) {
-      scheduleAnalysis.spanningDates.forEach((dateStr, idx) => {
-        const sessionNum = scheduleAnalysis.primaryCount + idx + 1;
+      // 4. Generate Session Records with correct term_id
+      const generatedSessions: ClassSession[] = [];
+      scheduleAnalysis.primaryDates.forEach((dateStr, idx) => {
         generatedSessions.push({
-          id: `ses_${targetClassId}_${sessionNum}`,
+          id: `ses_${targetClassId}_${idx + 1}`,
           class_id: targetClassId,
-          term_id: nextSpanningTerm.id, // Gắn đúng Khóa chuyển tiếp
+          term_id: formData.term_id,
           session_date: dateStr,
-          session_number: sessionNum,
-          actual_teacher_id: formData.primary_teacher_id,
+          session_number: idx + 1,
+          actual_teacher_id: validatedTeacherId || '',
           is_substitute: false,
           snacks_allocated: 0,
           snacks_consumed: 0,
@@ -426,69 +535,92 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
           status: 'scheduled',
         });
       });
-    }
 
-    onUpdateStore(prev => {
-      let updatedClasses: ExtracurricularClass[];
-      let updatedSessions: ClassSession[];
-
-      if (editingClass) {
-        updatedClasses = prev.classes.map(c => c.id === editingClass.id ? savedClass : c);
-        // Retain completed sessions, replace scheduled sessions
-        const existingSessions = prev.sessions.filter(s => s.class_id === editingClass.id);
-        const completedSessions = existingSessions.filter(s => s.status === 'completed');
-        const otherSessions = prev.sessions.filter(s => s.class_id !== editingClass.id);
-        
-        // Only add new sessions that aren't already completed
-        const completedDates = new Set(completedSessions.map(s => s.session_date));
-        const newSchedSessions = generatedSessions.filter(s => !completedDates.has(s.session_date));
-
-        updatedSessions = [...otherSessions, ...completedSessions, ...newSchedSessions];
-      } else {
-        updatedClasses = [savedClass, ...prev.classes];
-        updatedSessions = [...prev.sessions, ...generatedSessions];
+      if (isCrossSpanning && nextSpanningTerm) {
+        scheduleAnalysis.spanningDates.forEach((dateStr, idx) => {
+          const sessionNum = scheduleAnalysis.primaryCount + idx + 1;
+          generatedSessions.push({
+            id: `ses_${targetClassId}_${sessionNum}`,
+            class_id: targetClassId,
+            term_id: nextSpanningTerm.id,
+            session_date: dateStr,
+            session_number: sessionNum,
+            actual_teacher_id: validatedTeacherId || '',
+            is_substitute: false,
+            snacks_allocated: 0,
+            snacks_consumed: 0,
+            snacks_returned: 0,
+            status: 'scheduled',
+          });
+        });
       }
 
-      const auditLog = createAuditRecord(
-        editingClass ? 'CLASS_UPDATE' : 'CLASS_CREATE',
-        'ACADEMIC',
-        'Lớp Ngoại Khóa',
-        editingClass
-          ? `Cập nhật lớp: ${savedClass.name} (${savedClass.is_cross_term ? 'Lớp liên khóa' : 'Lớp chuẩn'}), ${savedClass.total_sessions} buổi, Học phí: ${formatVND(savedClass.full_course_fee)}`
-          : `Tạo mới lớp: ${savedClass.name} (${savedClass.is_cross_term ? `Lớp liên khóa: ${savedClass.term_distribution?.primary_term_sessions}b ${primaryTerm?.name} + ${savedClass.term_distribution?.spanning_term_sessions}b ${nextSpanningTerm?.name}` : 'Lớp chuẩn'}), ${savedClass.total_sessions} buổi`,
-        null,
-        {
-          target_id: savedClass.id,
-          details: {
-            class_id: savedClass.id,
-            name: savedClass.name,
-            term_id: savedClass.term_id,
-            spanning_term_id: savedClass.spanning_term_id,
-            is_cross_term: savedClass.is_cross_term,
-            term_distribution: savedClass.term_distribution,
-            total_sessions: savedClass.total_sessions,
-            full_course_fee: savedClass.full_course_fee,
-          }
+      // 5. Cập nhật state UI và Local Store
+      onUpdateStore(prev => {
+        let updatedClasses: ExtracurricularClass[];
+        let updatedSessions: ClassSession[];
+
+        if (editingClass) {
+          updatedClasses = prev.classes.map(c => c.id === editingClass.id ? savedClass : c);
+          const existingSessions = prev.sessions.filter(s => s.class_id === editingClass.id);
+          const completedSessions = existingSessions.filter(s => s.status === 'completed');
+          const otherSessions = prev.sessions.filter(s => s.class_id !== editingClass.id);
+          
+          const completedDates = new Set(completedSessions.map(s => s.session_date));
+          const newSchedSessions = generatedSessions.filter(s => !completedDates.has(s.session_date));
+
+          updatedSessions = [...otherSessions, ...completedSessions, ...newSchedSessions];
+        } else {
+          updatedClasses = [savedClass, ...prev.classes];
+          updatedSessions = [...prev.sessions, ...generatedSessions];
         }
+
+        const auditLog = createAuditRecord(
+          editingClass ? 'CLASS_UPDATE' : 'CLASS_CREATE',
+          'ACADEMIC',
+          'Lớp Ngoại Khóa',
+          editingClass
+            ? `Cập nhật lớp: ${savedClass.name} (${savedClass.is_cross_term ? 'Lớp liên khóa' : 'Lớp chuẩn'}), ${savedClass.total_sessions} buổi, Học phí: ${formatVND(savedClass.full_course_fee)}`
+            : `Tạo mới lớp: ${savedClass.name} (${savedClass.is_cross_term ? `Lớp liên khóa: ${savedClass.term_distribution?.primary_term_sessions}b ${primaryTerm?.name} + ${savedClass.term_distribution?.spanning_term_sessions}b ${nextSpanningTerm?.name}` : 'Lớp chuẩn'}), ${savedClass.total_sessions} buổi`,
+          null,
+          {
+            target_id: savedClass.id,
+            details: {
+              class_id: savedClass.id,
+              name: savedClass.name,
+              term_id: savedClass.term_id,
+              spanning_term_id: savedClass.spanning_term_id,
+              is_cross_term: savedClass.is_cross_term,
+              term_distribution: savedClass.term_distribution,
+              total_sessions: savedClass.total_sessions,
+              full_course_fee: savedClass.full_course_fee,
+            }
+          }
+        );
+
+        return appendAuditLog({
+          ...prev,
+          classes: updatedClasses,
+          sessions: updatedSessions,
+        }, auditLog);
+      });
+
+      showToast(
+        editingClass
+          ? `Đã cập nhật lớp "${savedClass.name}" thành công vào CSDL Supabase!`
+          : `Đã mở mới lớp "${savedClass.name}" (${savedClass.total_sessions} buổi) thành công vào CSDL Supabase!`,
+        'success',
+        { title: editingClass ? 'Cập nhật lớp' : 'Mở lớp thành công' }
       );
 
-      return appendAuditLog({
-        ...prev,
-        classes: updatedClasses,
-        sessions: updatedSessions,
-      }, auditLog);
-    });
-
-    showToast(
-      editingClass
-        ? `Đã cập nhật lớp "${savedClass.name}" thành công!`
-        : `Đã mở mới lớp "${savedClass.name}" (${savedClass.total_sessions} buổi) thành công!`,
-      'success',
-      { title: editingClass ? 'Cập nhật lớp' : 'Mở lớp thành công' }
-    );
-
-    onSuccess?.(savedClass);
-    onClose();
+      onSuccess?.(savedClass);
+      onClose();
+    } catch (err: any) {
+      console.error('Lỗi khi lưu lớp học:', err);
+      alert('Không thể lưu lớp học vào CSDL Supabase: ' + (err.message || String(err)));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -1011,10 +1143,11 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
 
               <button
                 type="submit"
-                className="flex-1 sm:flex-none px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+                disabled={isSaving}
+                className="flex-1 sm:flex-none px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 cursor-pointer"
               >
-                <Save className="w-4 h-4" />
-                <span>{editingClass ? 'Lưu Thay Đổi' : 'Xác Nhận Mở Lớp'}</span>
+                {isSaving ? <Sparkles className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                <span>{isSaving ? 'Đang lưu vào CSDL...' : editingClass ? 'Lưu Thay Đổi' : 'Xác Nhận Mở Lớp'}</span>
               </button>
             </div>
           </div>

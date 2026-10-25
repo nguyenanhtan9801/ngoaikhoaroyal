@@ -24,6 +24,7 @@ import {
   Globe
 } from 'lucide-react';
 import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN } from '../../lib/storage';
+import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
@@ -190,6 +191,62 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       setLocalSearchQuery(searchQuery);
     }
   }, [searchQuery]);
+
+  // Auto-fetch latest classes from Supabase
+  useEffect(() => {
+    let cancelled = false;
+    const fetchClassesFromCloud = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data: remoteClasses, error } = await client.from('extracurricular_classes').select('*');
+        if (!error && Array.isArray(remoteClasses) && !cancelled) {
+          onUpdateStore(prev => {
+            const mappedClasses: ExtracurricularClass[] = remoteClasses.map((r: any): ExtracurricularClass => ({
+              id: r.id,
+              code: r.code || r.id,
+              name: r.name,
+              term_id: r.term_id,
+              spanning_term_id: r.spanning_term_id || undefined,
+              is_cross_term: Boolean(r.is_cross_term),
+              term_distribution: r.term_distribution || undefined,
+              campus_id: r.campus_id,
+              subject_id: r.subject_id,
+              facility_id: r.facility_id || '',
+              time_slot_id: r.time_slot_id || '',
+              days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+              start_date: r.start_date || undefined,
+              end_date: r.end_date || undefined,
+              primary_teacher_id: r.primary_teacher_id || '',
+              max_students: Number(r.max_students) || 25,
+              total_sessions: Number(r.total_sessions) || 24,
+              full_course_fee: Number(r.full_course_fee) || 0,
+              price_per_session: Number(r.price_per_session) || 0,
+              status: r.status || 'active',
+              allow_over_quota: Boolean(r.allow_over_quota),
+            }));
+
+            if (mappedClasses.length === 0) return prev;
+
+            const map = new Map<string, ExtracurricularClass>();
+            prev.classes.forEach(c => map.set(c.id, c));
+            mappedClasses.forEach(c => map.set(c.id, c));
+
+            return {
+              ...prev,
+              classes: Array.from(map.values()),
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Lỗi auto-fetch classes:', err);
+      }
+    };
+    fetchClassesFromCloud();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleCampusChange = (newCampusId: string) => {
     setLocalCampusId(newCampusId);
