@@ -1491,14 +1491,12 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
     case 'term_subjects':
       return (store.termSubjects || []).map(ts => ({
         id: ts.id || `ts_${ts.term_id}_${ts.subject_id}`,
-        term_id: ts.term_id,
-        subject_id: ts.subject_id,
-        is_active: ts.is_active !== false,
-        standard_sessions: ts.standard_sessions || 24,
-        total_fee: ts.standard_course_fee || 3600000,
-        standard_course_fee: ts.standard_course_fee || 3600000,
-        standard_session_rate: ts.standard_session_rate || Math.ceil((ts.standard_course_fee || 3600000) / (ts.standard_sessions || 24)),
-        notes: ts.notes || '',
+        term_id: String(ts.term_id),
+        subject_id: String(ts.subject_id),
+        standard_sessions: Number(ts.standard_sessions || 24),
+        total_fee: Number(ts.standard_course_fee || (ts as any).total_fee || 3600000),
+        is_active: ts.is_active === true,
+        term_note: ts.notes || (ts as any).term_note || '',
         updated_at: new Date().toISOString(),
       }));
 
@@ -1816,16 +1814,16 @@ export async function pullAllTablesFromSupabase(
     if (Array.isArray(termSubData) && termSubData.length > 0) {
       nextStore.termSubjects = termSubData.map((r: any): TermSubjectConfig => ({
         id: r.id || `ts_${r.term_id}_${r.subject_id}`,
-        term_id: r.term_id,
-        subject_id: r.subject_id,
-        standard_sessions: r.standard_sessions ? Number(r.standard_sessions) : 24,
-        standard_course_fee: Number(r.standard_course_fee ?? r.total_fee ?? 3600000),
-        standard_session_rate: Number(r.standard_session_rate ?? Math.ceil(Number(r.standard_course_fee ?? r.total_fee ?? 3600000) / Math.max(1, Number(r.standard_sessions || 24)))),
-        is_active: r.is_active !== false,
+        term_id: String(r.term_id),
+        subject_id: String(r.subject_id),
+        standard_sessions: Number(r.standard_sessions) > 0 ? Number(r.standard_sessions) : 24,
+        standard_course_fee: Number(r.total_fee ?? r.standard_course_fee ?? 3600000),
+        standard_session_rate: Math.ceil(Number(r.total_fee ?? r.standard_course_fee ?? 3600000) / Math.max(1, Number(r.standard_sessions || 24))),
+        is_active: Boolean(r.is_active === true || r.is_active === 1 || r.is_active === 'true'),
         discount_type: r.discount_type || 'none',
         discount_value: Number(r.discount_value) || 0,
         discount_reason: r.discount_reason || '',
-        notes: r.notes || '',
+        notes: r.term_note || r.notes || '',
       }));
       totalPulled += termSubData.length;
     }
@@ -2224,9 +2222,9 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         : Math.ceil(tFee / Math.max(1, tSessions));
       return {
         id: r.id || `ts_${r.term_id}_${r.subject_id}`,
-        term_id: r.term_id,
-        subject_id: r.subject_id,
-        is_active: r.is_active !== false,
+        term_id: String(r.term_id),
+        subject_id: String(r.subject_id),
+        is_active: Boolean(r.is_active === true || r.is_active === 1 || r.is_active === 'true'),
         standard_sessions: tSessions,
         standard_course_fee: tFee,
         standard_session_rate: tRate,

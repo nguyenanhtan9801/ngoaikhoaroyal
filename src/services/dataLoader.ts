@@ -233,8 +233,12 @@ export async function loadInitialDataSafely(
           .map(row => mapSupabaseRowToStoreEntity(tableName, row))
           .filter(Boolean);
 
-        (nextStore as any)[storeKey] = mappedRows;
-        totalRecordsLoaded += mappedRows.length;
+        if (mappedRows.length > 0) {
+          (nextStore as any)[storeKey] = mappedRows;
+          totalRecordsLoaded += mappedRows.length;
+        } else if (Array.isArray((fallbackStore as any)[storeKey]) && (fallbackStore as any)[storeKey].length > 0) {
+          (nextStore as any)[storeKey] = (fallbackStore as any)[storeKey];
+        }
       }
     });
 

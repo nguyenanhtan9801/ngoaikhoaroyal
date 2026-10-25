@@ -960,19 +960,22 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     try {
       const validSessions = Math.max(1, Number(sessions) || 24);
       const validFee = Math.max(0, Number(fee) || 0);
-      const rate = Math.ceil(validFee / validSessions);
-      await client.from('term_subjects').upsert({
+      const payload = {
         id: `ts_${termId}_${subjectId}`,
-        term_id: termId,
-        subject_id: subjectId,
+        term_id: String(termId),
+        subject_id: String(subjectId),
         standard_sessions: validSessions,
         total_fee: validFee,
-        standard_course_fee: validFee,
-        standard_session_rate: rate,
         is_active: isActive,
-        notes: notes || '',
+        term_note: notes || '',
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'term_id,subject_id' });
+      };
+      const { error } = await client
+        .from('term_subjects')
+        .upsert(payload, { onConflict: 'term_id,subject_id' });
+      if (error) {
+        console.error('Lỗi Supabase khi upsert term_subjects:', error);
+      }
     } catch (err) {
       console.warn('Lỗi Supabase khi upsert term_subjects:', err);
     }
@@ -980,11 +983,81 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
   const [isTogglingAllSubjects, setIsTogglingAllSubjects] = useState<boolean>(false);
 
+  // Bật/tắt kích hoạt 1 môn học và lưu trực tiếp xuống Supabase
+  const handleToggleSubject = async (subject: Subject) => {
+    if (!selectedConfigTermId) return;
+    if (isTermClosed(selectedConfigTermId, store)) {
+      alert('Khóa học này đã đóng. Cấu hình môn học đang ở chế độ chỉ xem.');
+      return;
+    }
+
+    const existing = store.termSubjects.find(
+      ts => String(ts.term_id) === String(selectedConfigTermId) && (String(ts.subject_id) === String(subject.id) || (ts as any).subject_code === subject.code)
+    );
+
+    const isActive = existing ? Boolean(existing.is_active) : false;
+    const newActiveState = !isActive;
+    const standardSessions = Number(existing?.standard_sessions || subject.standard_sessions || 16);
+    const standardFee = Number(existing?.standard_course_fee || (existing as any)?.total_fee || subject.standard_course_fee || 3600000);
+    const ceilRate = standardSessions > 0 ? Math.ceil(standardFee / standardSessions) : 0;
+    const noteVal = existing?.notes || '';
+
+    const newConfig: TermSubjectConfig = {
+      id: existing?.id || `ts_${selectedConfigTermId}_${subject.id}`,
+      term_id: String(selectedConfigTermId),
+      subject_id: String(subject.id),
+      is_active: newActiveState,
+      standard_sessions: standardSessions,
+      standard_course_fee: standardFee,
+      standard_session_rate: ceilRate,
+      notes: noteVal,
+    };
+
+    // 1. Cập nhật state UI ngay lập tức
+    onUpdateStore(prev => {
+      const otherConfigs = prev.termSubjects.filter(
+        ts => !(String(ts.term_id) === String(selectedConfigTermId) && String(ts.subject_id) === String(subject.id))
+      );
+      return {
+        ...prev,
+        termSubjects: [...otherConfigs, newConfig],
+      };
+    });
+
+    // 2. Lưu trực tiếp xuống Supabase
+    try {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        const payload = {
+          id: `ts_${selectedConfigTermId}_${subject.id}`,
+          term_id: String(selectedConfigTermId),
+          subject_id: String(subject.id),
+          standard_sessions: Number(standardSessions),
+          total_fee: Number(standardFee),
+          is_active: newActiveState,
+          term_note: noteVal,
+          updated_at: new Date().toISOString()
+        };
+
+        const { error } = await client
+          .from('term_subjects')
+          .upsert(payload, { onConflict: 'term_id,subject_id' });
+
+        if (error) {
+          console.error('Lỗi lưu kích hoạt môn học:', error);
+          alert('Không thể lưu trạng thái môn: ' + error.message);
+        }
+      }
+    } catch (err: any) {
+      console.error('Exception khi lưu kích hoạt môn học:', err);
+    }
+  };
+
   // Bật hoặc tắt toàn bộ môn học cho khóa hiện tại
   const handleToggleAllSubjects = async (enableAll: boolean) => {
     if (!selectedConfigTermId) return;
 
-    const currentTerm = store.terms.find(t => t.id === selectedConfigTermId);
+    const currentTerm = store.terms.find(t => String(t.id) === String(selectedConfigTermId));
     const currentTermName = currentTerm ? currentTerm.name : 'khóa học đang chọn';
 
     if (isTermClosed(selectedConfigTermId, store)) {
@@ -1003,18 +1076,18 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     // 1. Cập nhật state tức thì trên UI
     const updatedTermConfigs: TermSubjectConfig[] = store.subjects.map((subject) => {
       const existing = store.termSubjects.find(
-        (ts) => ts.term_id === selectedConfigTermId && (ts.subject_id === subject.id || (ts as any).subject_code === subject.code)
+        (ts) => String(ts.term_id) === String(selectedConfigTermId) && (String(ts.subject_id) === String(subject.id) || (ts as any).subject_code === subject.code)
       );
 
-      const standardSessions = existing?.standard_sessions ?? subject.standard_sessions ?? 24;
-      const standardFee = existing?.standard_course_fee ?? (existing as any)?.total_fee ?? subject.standard_course_fee ?? 3600000;
+      const standardSessions = Number(existing?.standard_sessions || subject.standard_sessions || 16);
+      const standardFee = Number(existing?.standard_course_fee || (existing as any)?.total_fee || subject.standard_course_fee || 3600000);
       const ceilRate = standardSessions > 0 ? Math.ceil(standardFee / standardSessions) : 0;
       const noteVal = existing?.notes || '';
 
       return {
         id: existing?.id || `ts_${selectedConfigTermId}_${subject.id}`,
-        term_id: selectedConfigTermId,
-        subject_id: subject.id,
+        term_id: String(selectedConfigTermId),
+        subject_id: String(subject.id),
         is_active: enableAll,
         standard_sessions: standardSessions,
         standard_course_fee: standardFee,
@@ -1024,7 +1097,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     });
 
     onUpdateStore((prev) => {
-      const otherTermSubjects = prev.termSubjects.filter((ts) => ts.term_id !== selectedConfigTermId);
+      const otherTermSubjects = prev.termSubjects.filter((ts) => String(ts.term_id) !== String(selectedConfigTermId));
       return {
         ...prev,
         termSubjects: [...otherTermSubjects, ...updatedTermConfigs],
@@ -1036,41 +1109,23 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       const client = getSupabaseClient() || supabase;
       if (client) {
         const upsertPayload = updatedTermConfigs.map((item) => ({
-          id: item.id,
-          term_id: item.term_id,
-          subject_id: item.subject_id,
-          standard_sessions: item.standard_sessions || 24,
-          total_fee: item.standard_course_fee || 3600000,
-          standard_course_fee: item.standard_course_fee || 3600000,
-          standard_session_rate: item.standard_session_rate || 0,
+          id: `ts_${selectedConfigTermId}_${item.subject_id}`,
+          term_id: String(selectedConfigTermId),
+          subject_id: String(item.subject_id),
+          standard_sessions: Number(item.standard_sessions || 16),
+          total_fee: Number(item.standard_course_fee || 3600000),
           is_active: enableAll,
-          notes: item.notes || '',
+          term_note: item.notes || '',
           updated_at: new Date().toISOString(),
         }));
 
-        let { error } = await client
+        const { error } = await client
           .from('term_subjects')
           .upsert(upsertPayload, { onConflict: 'term_id,subject_id' });
 
-        if (error && error.message) {
-          console.warn('Thử lại upsert term_subjects với định dạng tương thích:', error.message);
-          const compatPayload = updatedTermConfigs.map((item) => ({
-            term_id: item.term_id,
-            subject_id: item.subject_id,
-            standard_sessions: item.standard_sessions || 24,
-            total_fee: item.standard_course_fee || 3600000,
-            is_active: enableAll,
-            term_note: item.notes || '',
-          }));
-          const fallbackRes = await client
-            .from('term_subjects')
-            .upsert(compatPayload, { onConflict: 'term_id,subject_id' });
-          error = fallbackRes.error;
-        }
-
         if (error) {
-          console.error('Lỗi cập nhật trạng thái hàng loạt:', error);
-          alert('Không thể lưu trạng thái: ' + error.message);
+          console.error('Lỗi khi cập nhật tất cả:', error);
+          alert('Lỗi lưu Supabase: ' + error.message);
           setIsTogglingAllSubjects(false);
           return;
         }
@@ -1090,6 +1145,91 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       setIsTogglingAllSubjects(false);
     }
   };
+
+  // Nạp danh sách term_subjects từ Supabase khi chọn khóa hoặc khi vào subtab
+  useEffect(() => {
+    let cancelled = false;
+    const fetchTermSubjectsFromCloud = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client || !selectedConfigTermId) return;
+
+      try {
+        const query = hierarchySubTab === 'terms'
+          ? client.from('term_subjects').select('*')
+          : client.from('term_subjects').select('*').eq('term_id', String(selectedConfigTermId));
+
+        const { data: termConfigs, error } = await query;
+
+        if (!error && Array.isArray(termConfigs) && !cancelled) {
+          onUpdateStore((prev) => {
+            const mappedRows: TermSubjectConfig[] = termConfigs.map((r: any) => ({
+              id: r.id || `ts_${r.term_id}_${r.subject_id}`,
+              term_id: String(r.term_id),
+              subject_id: String(r.subject_id),
+              standard_sessions: Number(r.standard_sessions) || 24,
+              standard_course_fee: Number(r.total_fee ?? r.standard_course_fee ?? 3600000),
+              standard_session_rate: Math.ceil(Number(r.total_fee ?? r.standard_course_fee ?? 3600000) / Math.max(1, Number(r.standard_sessions || 24))),
+              is_active: Boolean(r.is_active === true || r.is_active === 1 || r.is_active === 'true'),
+              notes: r.term_note || r.notes || '',
+            }));
+
+            if (hierarchySubTab === 'terms') {
+              const map = new Map<string, TermSubjectConfig>();
+              prev.termSubjects.forEach(ts => map.set(`${ts.term_id}_${ts.subject_id}`, ts));
+              mappedRows.forEach(ts => map.set(`${ts.term_id}_${ts.subject_id}`, ts));
+              return {
+                ...prev,
+                termSubjects: Array.from(map.values()),
+              };
+            }
+
+            const remoteMap = new Map<string, TermSubjectConfig>();
+            mappedRows.forEach((r) => {
+              remoteMap.set(r.subject_id, r);
+            });
+
+            const otherTermSubjects = prev.termSubjects.filter(
+              (ts) => String(ts.term_id) !== String(selectedConfigTermId)
+            );
+
+            const currentTermSubjects: TermSubjectConfig[] = prev.subjects.map((s) => {
+              const remote = remoteMap.get(String(s.id));
+              if (remote) return remote;
+              const localExisting = prev.termSubjects.find(
+                (ts) => String(ts.term_id) === String(selectedConfigTermId) && String(ts.subject_id) === String(s.id)
+              );
+              if (localExisting) return localExisting;
+              return {
+                id: `ts_${selectedConfigTermId}_${s.id}`,
+                term_id: String(selectedConfigTermId),
+                subject_id: String(s.id),
+                standard_sessions: Number(s.standard_sessions || 24),
+                standard_course_fee: Number(s.standard_course_fee || 3600000),
+                standard_session_rate: Math.ceil(Number(s.standard_course_fee || 3600000) / Math.max(1, Number(s.standard_sessions || 24))),
+                is_active: false,
+                notes: '',
+              };
+            });
+
+            return {
+              ...prev,
+              termSubjects: [...otherTermSubjects, ...currentTermSubjects],
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Lỗi tải term_subjects từ Cloud:', err);
+      }
+    };
+
+    if (hierarchySubTab === 'term_subjects' || hierarchySubTab === 'terms') {
+      fetchTermSubjectsFromCloud();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedConfigTermId, hierarchySubTab]);
 
   const handleOpenAddSubject = (presetCategory?: string | React.MouseEvent) => {
     let defaultCatObj = categoriesList[0];
@@ -2993,8 +3133,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               {/* Terms Cards Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {store.terms.map(term => {
-                  const termClasses = store.classes.filter(c => c.term_id === term.id);
-                  const activeSubjectsCount = store.termSubjects.filter(ts => ts.term_id === term.id && ts.is_active).length;
+                  const termClasses = store.classes.filter(c => String(c.term_id) === String(term.id));
+                  const activeSubjectsCount = store.termSubjects.filter(
+                    (ts) => String(ts.term_id) === String(term.id) && ts.is_active === true
+                  ).length;
                   const isClosed = term.status === 'closed';
 
                   const statusConfig = {
@@ -3253,10 +3395,10 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     <tbody className="divide-y divide-slate-800/60">
                       {store.subjects.map(subject => {
                         const termConfig = store.termSubjects.find(
-                          ts => ts.term_id === selectedConfigTermId && (ts.subject_id === subject.id || (ts as any).subject_code === subject.code)
+                          ts => String(ts.term_id) === String(selectedConfigTermId) && (String(ts.subject_id) === String(subject.id) || (ts as any).subject_code === subject.code)
                         );
 
-                        const isActive = termConfig ? termConfig.is_active : true;
+                        const isActive = termConfig ? Boolean(termConfig.is_active) : false;
                         const standardSessions = termConfig?.standard_sessions ?? subject.standard_sessions ?? 24;
                         const standardFee = termConfig?.standard_course_fee ?? (termConfig as any)?.total_fee ?? subject.standard_course_fee ?? 3600000;
                         const ceilRate = standardSessions > 0 ? Math.ceil(standardFee / standardSessions) : 0;
@@ -3268,46 +3410,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <td className="py-3 px-4">
                               <button
                                 disabled={isClosed}
-                                onClick={async () => {
-                                  if (isClosed) return;
-                                  const newActive = !isActive;
-                                  onUpdateStore(prev => {
-                                    const existing = prev.termSubjects.find(
-                                      ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
-                                    );
-                                    if (existing) {
-                                      return {
-                                        ...prev,
-                                        termSubjects: prev.termSubjects.map(ts => 
-                                          ts.id === existing.id ? { ...ts, is_active: newActive } : ts
-                                        ),
-                                      };
-                                    } else {
-                                      const newConfig: TermSubjectConfig = {
-                                        id: `ts_${selectedConfigTermId}_${subject.id}`,
-                                        term_id: selectedConfigTermId,
-                                        subject_id: subject.id,
-                                        is_active: newActive,
-                                        standard_sessions: standardSessions,
-                                        standard_course_fee: standardFee,
-                                        standard_session_rate: ceilRate,
-                                      };
-                                      return {
-                                        ...prev,
-                                        termSubjects: [...prev.termSubjects, newConfig],
-                                      };
-                                    }
-                                  });
-
-                                  await syncTermSubjectToSupabase(
-                                    selectedConfigTermId,
-                                    subject.id,
-                                    standardSessions,
-                                    standardFee,
-                                    newActive,
-                                    termConfig?.notes
-                                  );
-                                }}
+                                onClick={() => handleToggleSubject(subject)}
                                 className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all flex items-center gap-1.5 ${
                                   isActive
                                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
