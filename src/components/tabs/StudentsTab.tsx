@@ -451,6 +451,52 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     setShowAddModal(true);
   };
 
+  // Delete Student along with related enrollments, invoices, and attendance records
+  const handleDeleteStudent = async (student: Student) => {
+    const confirmMsg = `Bạn có chắc chắn muốn xóa học sinh "${student.name}" (Mã: ${student.code})? Mọi dữ liệu ghi danh và hóa đơn liên quan sẽ bị xóa vĩnh viễn!`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        // 1. Xóa các hóa đơn học phí liên quan
+        const { error: invErr } = await client.from('tuition_invoices').delete().eq('student_id', student.id);
+        if (invErr) console.warn('Lỗi xóa tuition_invoices trên Supabase:', invErr);
+
+        // 2. Xóa các bản ghi ghi danh
+        const { error: enrErr } = await client.from('enrollments').delete().eq('student_id', student.id);
+        if (enrErr) console.warn('Lỗi xóa enrollments trên Supabase:', enrErr);
+
+        // 3. Xóa các bản ghi điểm danh
+        await client.from('attendance_records').delete().eq('student_id', student.id);
+
+        // 4. Xóa các phiếu bảo lưu
+        await client.from('credit_notes').delete().eq('student_id', student.id);
+
+        // 5. Xóa học sinh khỏi bảng students
+        const { error } = await client.from('students').delete().eq('id', student.id);
+        if (error) throw error;
+      }
+
+      // Cập nhật State toàn cục
+      onUpdateStore(prev => ({
+        ...prev,
+        students: prev.students.filter(s => s.id !== student.id),
+        enrollments: prev.enrollments.filter(e => e.student_id !== student.id),
+        invoices: prev.invoices.filter(inv => inv.student_id !== student.id),
+        attendance: prev.attendance.filter(att => att.student_id !== student.id),
+        makeupCredits: (prev.makeupCredits || []).filter(mc => mc.student_id !== student.id),
+      }));
+
+      showToast(`Đã xóa hồ sơ học sinh ${student.name} (${student.code}) thành công!`, 'success', {
+        title: 'Xóa hồ sơ học sinh'
+      });
+    } catch (err: any) {
+      console.error('Lỗi khi xóa học sinh:', err);
+      alert('Lỗi khi xóa học sinh: ' + (err.message || String(err)));
+    }
+  };
+
   // Open Class Enrollment Modal
   const handleOpenEnrollModal = async (student: Student) => {
     // Safety check: If store.classes is empty, try loading fresh classes from Supabase
@@ -988,6 +1034,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           >
                             + Lớp
                           </button>
+                          <button
+                            onClick={() => handleDeleteStudent(student)}
+                            className="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors"
+                            title={`Xóa vĩnh viễn hồ sơ học sinh ${student.name} (${student.code})`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1238,6 +1291,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       title="Ghi danh vào lớp học mới"
                     >
                       + Xếp Lớp
+                    </button>
+                    <button
+                      onClick={() => handleDeleteStudent(student)}
+                      className="p-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors"
+                      title={`Xóa vĩnh viễn hồ sơ học sinh ${student.name} (${student.code})`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>

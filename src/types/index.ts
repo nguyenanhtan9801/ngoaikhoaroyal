@@ -388,7 +388,7 @@ export interface TuitionInvoice {
   net_payable: number;
   paid_amount: number;
   outstanding_amount: number;
-  payment_status: 'paid' | 'partial' | 'unpaid' | 'cancelled';
+  payment_status: 'paid' | 'partial' | 'unpaid' | 'cancelled' | 'trial_pending';
   due_date: string;
   vietqr_url?: string;
   payment_reference?: string;

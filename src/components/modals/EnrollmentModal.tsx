@@ -347,8 +347,51 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
         }
       }
 
-      // 2. Tạo đối tượng Enrollment cho Local Store
+      // 2. Lưu hóa đơn trực tiếp vào bảng public.tuition_invoices trên Supabase
+      const invoiceId = `inv_${Date.now()}`;
+      const invoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      const grossAmount = isTrialMode ? 0 : totalTuition;
+      const todayStr = new Date().toISOString().split('T')[0];
+      const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
+      const totalStd = selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 24;
       const scheduleLabel = formatStudentScheduleLabel(selectedDays, totalClassDays);
+      const proratedNote = isPartial
+        ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${effectiveSessions} buổi x ${formatVND(rate)}/buổi)`
+        : `Học phí môn ${subShortName}: ${effectiveSessions}/${totalStd} buổi (${formatDaysListLabel(totalClassDays)})`;
+      const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+
+      const invoicePayload = {
+        id: invoiceId,
+        invoice_code: invoiceCode,
+        student_id: enrollingStudent.id,
+        class_id: selectedClass.id,
+        registered_sessions: isTrialMode ? 1 : effectiveSessions,
+        total_class_sessions: totalStd,
+        session_rate: isTrialMode ? 0 : rate,
+        gross_amount: grossAmount,
+        credit_deducted: 0,
+        discount_amount: 0,
+        net_payable: grossAmount,
+        paid_amount: 0,
+        outstanding_amount: grossAmount,
+        payment_status: isTrialMode ? 'trial_pending' : 'unpaid',
+        due_date: dueDate,
+        payment_history: [],
+        created_at: todayStr,
+        updated_at: new Date().toISOString()
+      };
+
+      if (client) {
+        const { error: invError } = await client.from('tuition_invoices').insert([invoicePayload]);
+        if (invError) {
+          console.error('Lỗi khi lưu tuition_invoice vào Supabase:', invError);
+          showToast('Cảnh báo lưu hóa đơn: ' + invError.message, 'warning');
+        } else {
+          console.log('✅ Đã tạo hóa đơn học phí trên Supabase:', invoiceCode);
+        }
+      }
+
+      // 3. Tạo đối tượng Enrollment & TuitionInvoice cho Local Store
       const newEnrollment: Enrollment = {
         id: enrollmentId,
         student_id: enrollingStudent.id,
@@ -366,37 +409,30 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
           : undefined,
       };
 
-      // 3. Tạo hóa đơn học phí tách biệt
-      const todayStr = new Date().toISOString().split('T')[0];
-      const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
-      const totalStd = selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 16;
-      const proratedNote = isPartial
-        ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${effectiveSessions} buổi x ${formatVND(rate)}/buổi)`
-        : `Học phí môn ${subShortName}: ${effectiveSessions}/${totalStd} buổi (${formatDaysListLabel(totalClassDays)})`;
-
       const newInvoice: TuitionInvoice = {
-        id: `inv_${Date.now()}`,
-        invoice_code: `INV-${new Date().getFullYear()}-${String(store.invoices.length + 1).padStart(4, '0')}`,
+        id: invoiceId,
+        invoice_code: invoiceCode,
         student_id: enrollingStudent.id,
         class_id: selectedClass.id,
-        gross_amount: totalTuition,
+        gross_amount: grossAmount,
         discount_amount: 0,
         credit_deducted: 0,
-        net_payable: totalTuition,
+        net_payable: grossAmount,
         paid_amount: 0,
-        outstanding_amount: totalTuition,
-        payment_status: 'unpaid',
-        due_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+        outstanding_amount: grossAmount,
+        payment_status: isTrialMode ? 'trial_pending' : 'unpaid',
+        due_date: dueDate,
         is_trial_pending: isTrialMode,
         trial_fee: 0,
-        registered_sessions: effectiveSessions,
+        registered_sessions: isTrialMode ? 1 : effectiveSessions,
         total_class_sessions: totalStd,
-        session_rate: rate,
+        session_rate: isTrialMode ? 0 : rate,
         start_date: startDate,
         enrolled_days_of_week: isTrialMode ? [] : selectedDays,
         is_partial_schedule: isPartial,
         is_prorated: isPartial,
         prorated_note: proratedNote,
+        payment_history: [],
         created_at: todayStr,
       };
 
@@ -408,16 +444,16 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
         return {
           ...prev,
           enrollments: cleanEnrollments,
-          invoices: [...prev.invoices, newInvoice],
+          invoices: [newInvoice, ...(prev.invoices || []).filter(i => i.id !== invoiceId)],
         };
       });
 
       showToast(
         isTrialMode
-          ? `Đã đăng ký học thử 1 buổi môn "${selectedClass.name}" cho học sinh ${enrollingStudent.name} (Miễn phí)!`
-          : `Đã ghi danh lớp "${selectedClass.name}" cho học sinh ${enrollingStudent.name} (${effectiveSessions} buổi - ${new Intl.NumberFormat('vi-VN').format(totalTuition)} đ)!`,
+          ? `Ghi danh thành công! Đã đăng ký học thử 1 buổi (Mã HĐ: ${invoiceCode})`
+          : `Ghi danh thành công! Đã tạo hóa đơn: ${invoiceCode} (${formatVND(grossAmount)})`,
         'success',
-        { title: isTrialMode ? 'Đăng ký học thử thành công' : 'Ghi danh lớp ngoại khóa thành công' }
+        { title: isTrialMode ? 'Đăng ký học thử thành công' : 'Ghi danh & Tạo hóa đơn thành công' }
       );
 
       onSuccess?.(newEnrollment);

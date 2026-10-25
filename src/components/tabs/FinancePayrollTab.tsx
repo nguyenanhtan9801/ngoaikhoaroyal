@@ -38,6 +38,8 @@ import { TuitionInvoice, Teacher, TeacherAttendanceRecord, ExtracurricularClass,
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
+import { supabase, getSupabaseClient } from '../../supabaseClient';
+import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
 
 interface FinancePayrollTabProps {
   store: AppStore;
@@ -69,6 +71,44 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const [payrollViewMode, setPayrollViewMode] = useState<ViewMode>('table');
   const [transferViewMode, setTransferViewMode] = useState<ViewMode>('table');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid' | 'trial_pending' | 'cancelled'>('all');
+  // Invoices Scope Filters: default to 'all' to ensure newly created invoices in any term are visible
+  const [invoiceTermFilter, setInvoiceTermFilter] = useState<string>('all');
+  const [invoiceCampusFilter, setInvoiceCampusFilter] = useState<string>(selectedCampusId || 'all');
+  const [isRefreshingInvoices, setIsRefreshingInvoices] = useState(false);
+
+  // Fetch invoices directly from Supabase to guarantee real-time sync
+  const fetchInvoicesFromSupabase = async () => {
+    const client = getSupabaseClient() || supabase;
+    if (!client) return;
+    try {
+      setIsRefreshingInvoices(true);
+      const { data, error } = await client
+        .from('tuition_invoices')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.warn('Lỗi fetch tuition_invoices từ Supabase:', error);
+        return;
+      }
+
+      if (Array.isArray(data)) {
+        const mappedInvoices = data.map((r: any) => mapSupabaseRowToStoreEntity('tuition_invoices', r));
+        onUpdateStore((prev) => ({
+          ...prev,
+          invoices: mappedInvoices,
+        }));
+      }
+    } catch (err: any) {
+      console.warn('Exception khi fetch tuition_invoices:', err);
+    } finally {
+      setIsRefreshingInvoices(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchInvoicesFromSupabase();
+  }, []);
 
   React.useEffect(() => {
     if (initialSection) {
@@ -323,11 +363,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       const cls = store.classes.find(c => c.id === inv.class_id);
       const student = store.students.find(s => s.id === inv.student_id);
 
-      // 1. Lọc theo Cơ sở
-      const matchCampus = selectedCampusId === 'all' || cls?.campus_id === selectedCampusId;
+      // 1. Lọc theo Cơ sở (hỗ trợ 'all' hoặc cơ sở được chọn)
+      const matchCampus = invoiceCampusFilter === 'all' || cls?.campus_id === invoiceCampusFilter;
 
-      // 2. Lọc theo Niên khóa
-      const matchTerm = selectedTermId === 'all' || cls?.term_id === selectedTermId;
+      // 2. Lọc theo Niên khóa (hỗ trợ 'all' hoặc khóa được chọn)
+      const matchTerm = invoiceTermFilter === 'all' || cls?.term_id === invoiceTermFilter;
 
       // 3. Lọc theo từ khóa tìm kiếm
       const query = (searchQuery || '').trim().toLowerCase();
@@ -339,7 +379,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
       return Boolean(matchCampus && matchTerm && matchQuery);
     });
-  }, [store.invoices, store.classes, store.students, selectedCampusId, selectedTermId, searchQuery]);
+  }, [store.invoices, store.classes, store.students, invoiceCampusFilter, invoiceTermFilter, searchQuery]);
 
   // 2. Filtered invoices by status sub-filter
   const filteredInvoices = useMemo(() => {
@@ -828,18 +868,57 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               <p className="text-[11px] text-slate-400 mt-0.5">
                 Mỗi lớp/môn học có hóa đơn và mã VietQR Napas247 riêng biệt. Kế toán xác nhận gạch nợ thủ công.
               </p>
-              <div className="flex items-center gap-2 mt-2 flex-wrap">
-                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Phạm vi đối soát:</span>
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                  Khóa: {store.terms.find(t => t.id === selectedTermId)?.name || 'Tất cả niên khóa'}
-                </span>
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-sky-500/10 text-sky-300 border border-sky-500/20">
-                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
-                  Cơ sở: {store.campuses.find(c => c.id === selectedCampusId)?.name || 'Tất cả cơ sở'}
-                </span>
+              <div className="flex items-center gap-2.5 mt-2.5 flex-wrap">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Phạm vi đối soát:</span>
+                
+                {/* Dropdown Bộ lọc Khóa học */}
+                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-1 rounded-xl border border-amber-500/30">
+                  <span className="text-[11px] text-amber-400 font-bold whitespace-nowrap">Khóa:</span>
+                  <select
+                    value={invoiceTermFilter}
+                    onChange={(e) => setInvoiceTermFilter(e.target.value)}
+                    className="bg-transparent text-amber-300 text-xs font-bold focus:outline-none cursor-pointer"
+                  >
+                    <option value="all" className="bg-slate-900 text-amber-300">-- Tất cả các khóa ({store.terms.length}) --</option>
+                    {store.terms.map(t => (
+                      <option key={t.id} value={t.id} className="bg-slate-900 text-white font-medium">
+                        {t.name} ({t.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Dropdown Bộ lọc Cơ sở */}
+                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-1 rounded-xl border border-sky-500/30">
+                  <span className="text-[11px] text-sky-400 font-bold whitespace-nowrap">Cơ sở:</span>
+                  <select
+                    value={invoiceCampusFilter}
+                    onChange={(e) => setInvoiceCampusFilter(e.target.value)}
+                    className="bg-transparent text-sky-300 text-xs font-bold focus:outline-none cursor-pointer"
+                  >
+                    <option value="all" className="bg-slate-900 text-sky-300">-- Tất cả cơ sở --</option>
+                    {store.campuses.map(c => (
+                      <option key={c.id} value={c.id} className="bg-slate-900 text-white font-medium">
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Nút Làm Mới từ Supabase */}
+                <button
+                  type="button"
+                  onClick={fetchInvoicesFromSupabase}
+                  disabled={isRefreshingInvoices}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+                  title="Nạp lại danh sách hóa đơn mới nhất từ CSDL Supabase"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isRefreshingInvoices ? 'animate-spin' : ''}`} />
+                  <span>{isRefreshingInvoices ? 'Đang nạp...' : 'Nạp CSDL'}</span>
+                </button>
+
                 {searchQuery && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
                     Từ khóa: &quot;{searchQuery}&quot;
                   </span>
                 )}
