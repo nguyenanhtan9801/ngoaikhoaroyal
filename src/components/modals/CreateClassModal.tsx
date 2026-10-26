@@ -53,15 +53,105 @@ const WEEKDAYS = [
   { code: 'CN', label: 'Chủ Nhật' },
 ];
 
-const DAY_MAPPING: Record<string, number> = {
+export const DAY_INDEX: Record<string, number> = {
   'CN': 0, 'T2': 1, 'T3': 2, 'T4': 3, 'T5': 4, 'T6': 5, 'T7': 6
 };
 
-function toLocalDateStr(d: Date): string {
+export const DAY_MAPPING = DAY_INDEX;
+
+export function toLocalDateStr(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+export interface ExactScheduleResult {
+  phase1Sessions: number;
+  phase2Sessions: number;
+  totalSessions: number;
+  endDate: string;
+  phase1Dates: string[];
+  phase2Dates: string[];
+  allSessionDates: string[];
+}
+
+/**
+ * Thuật toán duyệt lịch học thực tế từng ngày (Calendar Stepping Loop)
+ * Bắt đầu từ startDateStr, duyệt từng ngày đến khi đủ totalSessionsTarget (VD: 20 buổi),
+ * bỏ qua ngày nghỉ lễ, phân định chính xác phase1Sessions (trong khóa gốc) và phase2Sessions (liên khóa).
+ */
+export function calculateExactSchedule(
+  startDateStr: string,
+  totalSessionsTarget: number, // VD: 20
+  selectedDayCodes: string[],  // VD: ['T2', 'T4']
+  term1EndDateStr: string,     // VD: '2026-10-11'
+  campusId: string,
+  holidays: Holiday[]
+): ExactScheduleResult {
+  const allowedDays = selectedDayCodes.map(d => DAY_INDEX[d]).filter(v => v !== undefined);
+  if (!startDateStr || allowedDays.length === 0 || totalSessionsTarget <= 0) {
+    return {
+      phase1Sessions: 0,
+      phase2Sessions: 0,
+      totalSessions: 0,
+      endDate: startDateStr || '',
+      phase1Dates: [],
+      phase2Dates: [],
+      allSessionDates: [],
+    };
+  }
+
+  const cur = new Date(`${startDateStr}T00:00:00`);
+  cur.setHours(0, 0, 0, 0);
+
+  const term1End = new Date(term1EndDateStr ? `${term1EndDateStr}T23:59:59` : '2099-12-31T23:59:59');
+
+  let phase1Sessions = 0;
+  let phase2Sessions = 0;
+  let totalCount = 0;
+  let finalEndDate = startDateStr;
+  const phase1Dates: string[] = [];
+  const phase2Dates: string[] = [];
+  const allSessionDates: string[] = [];
+
+  let loopSafety = 0;
+  const MAX_DAYS_CHECK = 1000;
+
+  while (totalCount < totalSessionsTarget && loopSafety < MAX_DAYS_CHECK) {
+    loopSafety++;
+    // Kiểm tra nếu là ngày trong tuần hợp lệ (ví dụ Thứ 2, Thứ 4)
+    // Và không trùng ngày nghỉ lễ của campus
+    const dayOfWeek = cur.getDay();
+    const isHoliday = isDateInHoliday(cur, holidays, campusId);
+
+    if (allowedDays.includes(dayOfWeek) && !isHoliday) {
+      totalCount++;
+      finalEndDate = toLocalDateStr(cur);
+      allSessionDates.push(finalEndDate);
+
+      if (cur <= term1End) {
+        phase1Sessions++;
+        phase1Dates.push(finalEndDate);
+      } else {
+        phase2Sessions++;
+        phase2Dates.push(finalEndDate);
+      }
+    }
+
+    // Tăng từng ngày một
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  return {
+    phase1Sessions,
+    phase2Sessions,
+    totalSessions: totalCount,
+    endDate: finalEndDate,
+    phase1Dates,
+    phase2Dates,
+    allSessionDates,
+  };
 }
 
 const formatDaysDisplay = (days: string[]): string => {
@@ -142,7 +232,21 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       return sortedTerms[currentIndex + 1];
     }
     // Fallback: look for term with start_date >= primaryTerm.end_date
-    return sortedTerms.find(t => t.id !== primaryTerm.id && (t.start_date || '') >= (primaryTerm.end_date || ''));
+    const found = sortedTerms.find(t => t.id !== primaryTerm.id && (t.start_date || '') >= (primaryTerm.end_date || ''));
+    if (found) return found;
+
+    // Fallback synthetic term so spanning term information and database sync never fail
+    return {
+      id: `term_spanning_${primaryTerm.id}`,
+      code: `TERM-NEXT`,
+      name: `Khóa Kế Tiếp`,
+      academic_year: primaryTerm.academic_year || '2026-2027',
+      start_date: primaryTerm.end_date || '2026-10-12',
+      end_date: '2027-06-30',
+      is_active: true,
+      status: 'draft' as const,
+      description: 'Khóa học kế tiếp tự động liên kết',
+    };
   }, [sortedTerms, primaryTerm]);
 
   // Active Subject Pricing
@@ -283,9 +387,14 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   // CROSS-TERM & SCHEDULE TIMELINE CALCULATION ENGINE
   // =========================================================================
   const scheduleAnalysis = useMemo(() => {
-    const activeDayNumbers = formData.days_of_week.map(d => DAY_MAPPING[d]).filter(n => n !== undefined);
+    const activeDayCodes = formData.days_of_week;
     
-    if (!formData.start_date || activeDayNumbers.length !== 2 || !primaryTerm) {
+    // Đảm bảo học phí trọn khóa chuẩn (VD: 4.500.000 đ cho 20 buổi)
+    const fullCourseFee = (effectivePricing.course_fee && effectivePricing.total_sessions === standardSessions)
+      ? Number(effectivePricing.course_fee)
+      : standardSessions * sessionRate;
+
+    if (!formData.start_date || activeDayCodes.length !== 2 || !primaryTerm) {
       return {
         isCrossTerm: false,
         primaryCount: 0,
@@ -296,76 +405,48 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
         spanningEndDate: '',
         primaryEndDate: '',
         effectiveTotalSessions: standardSessions,
-        effectiveFee: standardSessions * sessionRate,
+        effectiveFee: fullCourseFee,
       };
     }
 
-    const startDate = new Date(`${formData.start_date}T00:00:00`);
-    const primaryTermEndDate = new Date(`${primaryTerm.end_date}T00:00:00`);
+    // 1. Chạy thuật toán Calendar Stepping Loop duyệt lịch thực tế từng ngày
+    // Bắt đầu từ startDate đến khi gom đủ 20 buổi hợp lệ (loại trừ ngày nghỉ lễ)
+    const scheduleResult = calculateExactSchedule(
+      formData.start_date,
+      standardSessions,
+      activeDayCodes,
+      primaryTerm.end_date || '2099-12-31',
+      formData.campus_id,
+      holidaysList
+    );
 
-    // 1. Calculate Primary Term sessions (loại trừ ngày nghỉ lễ đang active)
-    const primaryDates: string[] = [];
-    const cur1 = new Date(startDate);
-    while (primaryDates.length < standardSessions && cur1 <= primaryTermEndDate) {
-      if (
-        activeDayNumbers.includes(cur1.getDay()) &&
-        !isDateInHoliday(cur1, holidaysList, formData.campus_id)
-      ) {
-        primaryDates.push(toLocalDateStr(cur1));
-      }
-      cur1.setDate(cur1.getDate() + 1);
-    }
-
-    const primaryCount = primaryDates.length;
-    const isCrossTerm = primaryCount < standardSessions;
+    const primaryCount = scheduleResult.phase1Sessions;
+    const spanningCount = scheduleResult.phase2Sessions;
+    const primaryDates = scheduleResult.phase1Dates;
+    const spanningDates = scheduleResult.phase2Dates;
+    const isCrossTerm = spanningCount > 0;
     const primaryEndDate = primaryDates.length > 0 ? primaryDates[primaryDates.length - 1] : formData.start_date;
+    const spanningEndDate = scheduleResult.endDate;
 
-    // 2. If cross-term is needed, calculate Spanning Term sessions
-    const spanningDates: string[] = [];
-    let spanningEndDate = primaryEndDate;
-
-    if (isCrossTerm && nextSpanningTerm) {
-      const remainingNeeded = standardSessions - primaryCount;
-      // Start in next term (either nextTerm.start_date or day after primaryTerm ends)
-      const nextTermStart = new Date(`${nextSpanningTerm.start_date}T00:00:00`);
-      const nextTermEnd = new Date(`${nextSpanningTerm.end_date}T00:00:00`);
-      const cur2 = new Date(nextTermStart);
-
-      while (spanningDates.length < remainingNeeded && cur2 <= nextTermEnd) {
-        if (
-          activeDayNumbers.includes(cur2.getDay()) &&
-          !isDateInHoliday(cur2, holidaysList, formData.campus_id)
-        ) {
-          spanningDates.push(toLocalDateStr(cur2));
-        }
-        cur2.setDate(cur2.getDate() + 1);
-      }
-      if (spanningDates.length > 0) {
-        spanningEndDate = spanningDates[spanningDates.length - 1];
-      }
-    }
-
-    const spanningCount = spanningDates.length;
-
-    // Determine final effective sessions & fee based on crossTermMode
     let effectiveTotalSessions = standardSessions;
-    let effectiveFee = standardSessions * sessionRate;
-    let finalEndDate = primaryEndDate;
+    let effectiveFee = fullCourseFee;
+    let finalEndDate = spanningEndDate;
 
     if (isCrossTerm) {
-      if (crossTermMode === 'spanning' && nextSpanningTerm) {
-        effectiveTotalSessions = primaryCount + spanningCount;
-        effectiveFee = effectiveTotalSessions * sessionRate;
+      if (crossTermMode === 'spanning') {
+        // Vắt sang khóa sau: gom đủ targetSessions (VD: 20 buổi: 3b GĐ 1 + 17b GĐ 2, phí đủ 4.500.000 đ)
+        effectiveTotalSessions = scheduleResult.totalSessions;
+        effectiveFee = fullCourseFee;
         finalEndDate = spanningEndDate;
       } else {
-        // Truncate mode
+        // Cắt ngắn theo khóa hiện tại: chỉ học phase1Sessions (VD: 3 buổi)
         effectiveTotalSessions = primaryCount;
         effectiveFee = primaryCount * sessionRate;
         finalEndDate = primaryEndDate;
       }
     } else {
       effectiveTotalSessions = primaryCount;
-      effectiveFee = primaryCount * sessionRate;
+      effectiveFee = fullCourseFee;
       finalEndDate = primaryEndDate;
     }
 
@@ -381,7 +462,18 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       effectiveTotalSessions,
       effectiveFee,
     };
-  }, [formData.start_date, formData.days_of_week, formData.campus_id, primaryTerm, nextSpanningTerm, standardSessions, sessionRate, crossTermMode, holidaysList]);
+  }, [
+    formData.start_date,
+    formData.days_of_week,
+    formData.campus_id,
+    primaryTerm,
+    standardSessions,
+    sessionRate,
+    effectivePricing.course_fee,
+    effectivePricing.total_sessions,
+    crossTermMode,
+    holidaysList,
+  ]);
 
   // Conflict Checking
   const formConflicts = useMemo(() => {
@@ -1100,7 +1192,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                     </div>
 
                     <div className="p-2 rounded-lg bg-indigo-900/30 border border-indigo-500/30 text-[10px] text-indigo-200">
-                      ✓ Giữ nguyên đủ <strong>{standardSessions} buổi</strong> &amp; học phí gốc <strong>{formatVND(standardSessions * sessionRate)}</strong>. Kết thúc: <span className="font-mono text-white font-bold">{formatDateVN(scheduleAnalysis.spanningEndDate)}</span>.
+                      ✓ Giữ nguyên đủ <strong>{scheduleAnalysis.effectiveTotalSessions} buổi</strong> &amp; học phí gốc <strong>{formatVND(scheduleAnalysis.effectiveFee)}</strong>. Kết thúc: <span className="font-mono text-white font-bold">{formatDateVN(scheduleAnalysis.spanningEndDate)}</span>.
                     </div>
                   </div>
 

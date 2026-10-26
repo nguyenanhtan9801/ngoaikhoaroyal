@@ -29,10 +29,12 @@ import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
-import { CreateClassModal } from '../modals/CreateClassModal';
+import { CreateClassModal, calculateExactSchedule, DAY_INDEX } from '../modals/CreateClassModal';
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
 import { FacilityManagementView } from '../classes/FacilityManagementView';
 import { ScheduleCalendarView } from './ScheduleCalendarView';
+
+export { calculateExactSchedule, DAY_INDEX };
 
 export interface ScheduleCalculationResult {
   actualSessions: number;      // Số buổi thực tế diễn ra trong khóa
@@ -56,49 +58,21 @@ export function calculateClassTimeline(
   termEndDateStr: string,      // Ngày kết thúc khóa (VD: 2026-12-25)
   pricePerSession: number      // Đơn giá 1 buổi (Ceil)
 ): ScheduleCalculationResult {
-  const dayMapping: Record<string, number> = {
-    'CN': 0, 'T2': 1, 'T3': 2, 'T4': 3, 'T5': 4, 'T6': 5, 'T7': 6
-  };
-  const activeDayNumbers = daysOfWeek
-    .map(d => dayMapping[d])
-    .filter(n => n !== undefined);
-
-  if (!startDateStr || !termEndDateStr || activeDayNumbers.length === 0 || targetSessions <= 0) {
-    return {
-      actualSessions: 0,
-      endDate: startDateStr || termEndDateStr || '',
-      isTruncatedByTerm: true,
-      calculatedFee: 0,
-      sessionDates: [],
-    };
-  }
-
-  const currentDate = new Date(`${startDateStr}T00:00:00`);
-  const termEndDate = new Date(`${termEndDateStr}T00:00:00`);
-
-  let sessionCount = 0;
-  let lastSessionDate = new Date(`${startDateStr}T00:00:00`);
-  const sessionDates: string[] = [];
-
-  while (sessionCount < targetSessions && currentDate <= termEndDate) {
-    if (activeDayNumbers.includes(currentDate.getDay())) {
-      sessionCount++;
-      lastSessionDate = new Date(currentDate);
-      sessionDates.push(toLocalDateStr(currentDate));
-    }
-    // Tăng thêm 1 ngày
-    currentDate.setDate(currentDate.getDate() + 1);
-  }
-
-  const isTruncated = sessionCount < targetSessions;
-  const calculatedFee = sessionCount * pricePerSession;
+  const result = calculateExactSchedule(
+    startDateStr,
+    targetSessions,
+    daysOfWeek,
+    termEndDateStr,
+    '',
+    []
+  );
 
   return {
-    actualSessions: sessionCount,
-    endDate: toLocalDateStr(lastSessionDate),
-    isTruncatedByTerm: isTruncated,
-    calculatedFee: calculatedFee,
-    sessionDates,
+    actualSessions: result.phase1Sessions,
+    endDate: result.phase1Dates.length > 0 ? result.phase1Dates[result.phase1Dates.length - 1] : (startDateStr || termEndDateStr),
+    isTruncatedByTerm: result.phase1Sessions < targetSessions,
+    calculatedFee: result.phase1Sessions * pricePerSession,
+    sessionDates: result.phase1Dates,
   };
 }
 
