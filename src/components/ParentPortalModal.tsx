@@ -32,6 +32,7 @@ import { AppStore, formatVND, getEffectivePrice, matchLeadWithDatabase } from '.
 import { formatCapitalizedName } from '../lib/formatters';
 import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
+import { DatePickerVN } from './common/DatePickerVN';
 
 interface ParentPortalModalProps {
   store: AppStore;
@@ -977,13 +978,13 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
                   <div>
                     <label className="block text-slate-300 font-semibold mb-1">
-                      Ngày tháng năm sinh của bé
+                      Ngày tháng năm sinh của bé (DD/MM/YYYY)
                     </label>
-                    <input
-                      type="date"
+                    <DatePickerVN
                       value={regForm.student_dob}
-                      onChange={(e) => setRegForm({ ...regForm, student_dob: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-amber-500"
+                      onChange={(val) => setRegForm({ ...regForm, student_dob: val })}
+                      className="bg-slate-950 border-slate-800 py-2.5"
+                      placeholder="DD/MM/YYYY"
                     />
                   </div>
 

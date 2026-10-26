@@ -18,6 +18,7 @@ import {
 import { AppState } from '../../services/storage';
 import { Student, ParentRegistration } from '../../types';
 import { formatCapitalizedName } from '../../lib/formatters';
+import { DatePickerVN } from '../common/DatePickerVN';
 
 interface StudentManagementProps {
   state: AppState;
@@ -514,12 +515,12 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Ngày sinh</label>
-                  <input
-                    type="date"
-                    value={newStudent.dob}
-                    onChange={(e) => setNewStudent({ ...newStudent, dob: e.target.value })}
-                    className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
+                  <label className="block text-slate-400 font-semibold mb-1">Ngày sinh (DD/MM/YYYY)</label>
+                  <DatePickerVN
+                    value={newStudent.dob || ''}
+                    onChange={(val) => setNewStudent({ ...newStudent, dob: val })}
+                    placeholder="DD/MM/YYYY"
+                    className="bg-[#0B0F19]"
                   />
                 </div>
                 <div>

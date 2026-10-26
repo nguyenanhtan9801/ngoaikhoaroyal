@@ -21,6 +21,7 @@ import {
 } from '../../lib/storage';
 import { showToast } from '../../lib/toast';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
+import { DatePickerVN } from '../common/DatePickerVN';
 
 // Ánh xạ thứ sang chỉ số ngày trong JavaScript Date (0 = Chủ Nhật, 1 = Thứ 2, ..., 6 = Thứ 7)
 export const DAY_MAP: Record<string, number> = {
@@ -766,18 +767,17 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                       </span>
                       <span className="text-[10px] text-purple-300 font-mono">Ca gần nhất: {formatDate(startDate)}</span>
                     </label>
-                    <input
-                      type="date"
+                    <DatePickerVN
                       value={trialSessionDate || startDate}
                       min={selectedClass.start_date}
                       max={selectedClass.end_date}
-                      onChange={(e) => {
-                        handleStartDateInputChange(e.target.value);
+                      onChange={(newDate) => {
+                        handleStartDateInputChange(newDate);
                       }}
-                      onBlur={handleStartDateBlur}
                       disabled={isCurrentClassAlreadyEnrolled}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-purple-500 text-xs font-mono font-bold"
+                      placeholder="DD/MM/YYYY"
                       required
+                      className="py-2.5 font-bold"
                     />
                     {(selectedClass.start_date || selectedClass.end_date) && (
                       <p className="text-xs text-amber-400/80 mt-1">
@@ -878,11 +878,11 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                   </div>
 
                   {/* 1. Ràng Buộc Triệt Để Thuộc Tính min và max Cho Ô Input Date */}
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <label className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
                         <Calendar className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Ngày bắt đầu học chính thức <span className="text-rose-400">*</span>:</span>
+                        <span>📅 Ngày bắt đầu học chính thức (Ngày/Tháng/Năm) *:</span>
                       </label>
                       <button
                         type="button"
@@ -893,16 +893,15 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                       </button>
                     </div>
 
-                    <input
-                      type="date"
+                    <DatePickerVN
                       value={startDate}
                       min={selectedClass.start_date}
                       max={selectedClass.end_date}
-                      onChange={(e) => handleStartDateInputChange(e.target.value)}
-                      onBlur={handleStartDateBlur}
+                      onChange={(newDate) => handleStartDateInputChange(newDate)}
                       disabled={isCurrentClassAlreadyEnrolled}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white font-mono text-xs focus:outline-none focus:border-amber-500"
+                      placeholder="30/09/2026"
                       required
+                      className="py-2.5 font-bold"
                     />
                     {(selectedClass.start_date || selectedClass.end_date) && (
                       <p className="text-xs text-amber-400/80 mt-1">

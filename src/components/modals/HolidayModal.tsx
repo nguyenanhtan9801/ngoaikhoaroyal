@@ -11,6 +11,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Holiday } from '../../types';
+import { DatePickerVN } from '../common/DatePickerVN';
 
 interface HolidayModalProps {
   isOpen: boolean;
@@ -196,25 +197,25 @@ export const HolidayModal: React.FC<HolidayModalProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Từ ngày *</label>
-                <input
-                  type="date"
+                <label className="block text-slate-400 font-semibold mb-1">Từ ngày (DD/MM/YYYY) *</label>
+                <DatePickerVN
                   required
                   value={startDate}
-                  onChange={(e) => handleStartDateChange(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-amber-500"
+                  onChange={handleStartDateChange}
+                  className="bg-slate-950 font-bold"
+                  placeholder="DD/MM/YYYY"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Đến ngày *</label>
-                <input
-                  type="date"
+                <label className="block text-slate-400 font-semibold mb-1">Đến ngày (DD/MM/YYYY) *</label>
+                <DatePickerVN
                   required
                   min={startDate}
                   value={endDate}
-                  onChange={(e) => handleEndDateChange(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono font-bold focus:outline-none focus:border-amber-500"
+                  onChange={handleEndDateChange}
+                  className="bg-slate-950 font-bold"
+                  placeholder="DD/MM/YYYY"
                 />
               </div>
             </div>

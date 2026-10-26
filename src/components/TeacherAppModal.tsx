@@ -17,6 +17,7 @@ import {
 import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek } from '../lib/storage';
 import { Teacher, ExtracurricularClass, Student, AttendanceRecord, ClassSession } from '../types';
 import { RoyalLogo } from './RoyalLogo';
+import { DatePickerVN } from './common/DatePickerVN';
 
 interface TeacherAppModalProps {
   store: AppStore;
@@ -280,12 +281,12 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Ngày buổi dạy:</label>
-            <input
-              type="date"
+            <label className="block text-[10px] text-slate-400 uppercase font-bold mb-1">Ngày buổi dạy (DD/MM/YYYY):</label>
+            <DatePickerVN
               value={sessionDate}
-              onChange={(e) => setSessionDate(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
+              onChange={(val) => setSessionDate(val)}
+              className="bg-slate-950 font-bold"
+              placeholder="DD/MM/YYYY"
             />
           </div>
         </div>

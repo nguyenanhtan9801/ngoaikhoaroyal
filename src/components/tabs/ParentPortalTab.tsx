@@ -57,6 +57,7 @@ import {
 import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice, AppUser } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
+import { DatePickerVN } from '../common/DatePickerVN';
 
 interface ParentPortalTabProps {
   store: AppStore;
@@ -3424,14 +3425,12 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                       </p>
                                     </div>
 
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <input
-                                        type="date"
+                                    <div className="flex items-center gap-2 flex-wrap min-w-[200px]">
+                                      <DatePickerVN
                                         min={autoSessionInfo.termStartDate}
                                         max={autoSessionInfo.termEndDate}
                                         value={currentStartDate}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
+                                        onChange={(val) => {
                                           setSubjectStartDates(prev => ({
                                             ...prev,
                                             [sub.subject_id]: val,
@@ -3441,7 +3440,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                             [sub.subject_id]: undefined,
                                           }));
                                         }}
-                                        className="px-3 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-white font-mono text-xs font-bold focus:outline-none focus:border-amber-400"
+                                        placeholder="DD/MM/YYYY"
+                                        className="py-1.5 border-amber-500/40 font-bold"
                                       />
 
                                       <button

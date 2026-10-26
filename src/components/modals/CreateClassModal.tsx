@@ -30,6 +30,7 @@ import {
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { isDateInHoliday } from './EnrollmentModal';
+import { DatePickerVN } from '../common/DatePickerVN';
 
 interface CreateClassModalProps {
   isOpen: boolean;
@@ -1118,18 +1119,18 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
             {/* Date Input */}
             <div>
               <label className="block text-slate-200 font-bold mb-1.5 flex items-center justify-between">
-                <span>Ngày bắt đầu mở lớp *</span>
+                <span>Ngày bắt đầu mở lớp (DD/MM/YYYY) *</span>
                 <span className="text-[10px] text-slate-400">
                   Khóa gốc: {primaryTerm?.name}
                 </span>
               </label>
-              <input
-                type="date"
-                required
-                min={primaryTerm?.start_date}
+              <DatePickerVN
                 value={formData.start_date}
-                onChange={(e) => setFormData(prev => ({ ...prev, start_date: e.target.value }))}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 text-white font-mono text-xs font-bold border border-slate-700 focus:outline-none focus:border-cyan-500"
+                min={primaryTerm?.start_date}
+                onChange={(newDate) => setFormData(prev => ({ ...prev, start_date: newDate }))}
+                placeholder="DD/MM/YYYY"
+                required
+                className="bg-slate-950 font-bold"
               />
             </div>
 

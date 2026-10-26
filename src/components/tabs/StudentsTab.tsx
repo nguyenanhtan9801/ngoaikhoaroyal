@@ -56,6 +56,7 @@ import { RoyalLogo } from '../RoyalLogo';
 import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { EnrollmentModal } from '../modals/EnrollmentModal';
+import { DatePickerVN } from '../common/DatePickerVN';
 
 interface StudentsTabProps {
   store: AppStore;
@@ -1412,12 +1413,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Ngày sinh</label>
-                  <input
-                    type="date"
+                  <label className="block text-slate-400 font-medium mb-1">Ngày sinh (DD/MM/YYYY)</label>
+                  <DatePickerVN
                     value={formData.dob}
-                    onChange={(e) => setFormData({ ...formData, dob: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                    onChange={(val) => setFormData({ ...formData, dob: val })}
+                    placeholder="DD/MM/YYYY"
                   />
                 </div>
                 <div>
