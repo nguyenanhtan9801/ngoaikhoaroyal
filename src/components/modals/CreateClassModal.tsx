@@ -159,16 +159,62 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     return store.subjects.filter(s => activeIds.has(s.id));
   }, [store.termSubjects, store.subjects, formData.term_id]);
 
-  // Campus Facilities: Chỉ nạp các phòng thuộc đúng campus_id đã chọn
-  const campusFacilities = useMemo(() => {
-    return store.facilities.filter(f => f.campus_id === formData.campus_id);
-  }, [store.facilities, formData.campus_id]);
+  // Fetch Danh Sách Phòng Học Theo Cơ Sở (campus_id) trực tiếp từ bảng public.facilities trên Supabase
+  const [facilityList, setFacilityList] = useState<any[]>([]);
+  const selectedCampusId = formData.campus_id;
+  const selectedFacilityId = formData.facility_id;
+  const setSelectedFacilityId = (id: string) => {
+    setFormData(prev => ({ ...prev, facility_id: id }));
+  };
+
+  useEffect(() => {
+    const fetchFacilitiesByCampus = async () => {
+      if (!selectedCampusId) return;
+
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+
+      // Chuẩn hóa campusId (nếu nhận 'pmh' hoặc 'camp_pmh')
+      const campusTarget = selectedCampusId.startsWith('camp_')
+        ? selectedCampusId
+        : `camp_${selectedCampusId}`;
+
+      const { data, error } = await client
+        .from('facilities')
+        .select('*')
+        .eq('campus_id', campusTarget)
+        .eq('is_locked', false) // Chỉ lấy các phòng đang mở, không bị khóa bảo trì
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Lỗi tải danh mục phòng học:', error);
+        return;
+      }
+
+      if (data) {
+        setFacilityList(data);
+        onUpdateStore(prev => {
+          const otherFacilities = (prev.facilities || []).filter(f => f.campus_id !== campusTarget);
+          return {
+            ...prev,
+            facilities: [...otherFacilities, ...data],
+          };
+        });
+        // Mặc định chọn phòng đầu tiên nếu chưa chọn hoặc phòng cũ không thuộc cơ sở mới
+        const hasSelectedInCampus = data.some((f: any) => f.id === selectedFacilityId);
+        if (data.length > 0 && (!selectedFacilityId || !hasSelectedInCampus)) {
+          setSelectedFacilityId(data[0].id);
+        }
+      }
+    };
+
+    fetchFacilitiesByCampus();
+  }, [selectedCampusId]);
 
   // Handle Cascading Changes
   const handleCascadingChange = (newTermId: string, newCampusId: string, newSubjId: string) => {
     const termObj = store.terms.find(t => t.id === newTermId) || store.terms[0];
-    const newFacilities = store.facilities.filter(f => f.campus_id === newCampusId);
-    const firstUnlockedFacility = newFacilities.find(f => !f.is_locked) || newFacilities[0];
+    const isCampusChanged = newCampusId !== formData.campus_id;
     
     // Auto generate suggested class name
     const subj = store.subjects.find(s => s.id === newSubjId);
@@ -180,7 +226,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       term_id: newTermId,
       campus_id: newCampusId,
       subject_id: newSubjId,
-      facility_id: firstUnlockedFacility?.id || prev.facility_id,
+      facility_id: isCampusChanged ? '' : prev.facility_id,
       start_date: termObj?.start_date || prev.start_date,
       name: editingClass ? prev.name : suggestedName,
     }));
@@ -322,7 +368,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       if (overlapDays.length === 0) return;
 
       if (cls.facility_id === formData.facility_id) {
-        const fac = store.facilities.find(f => f.id === cls.facility_id);
+        const fac = facilityList.find(f => f.id === cls.facility_id) || store.facilities.find(f => f.id === cls.facility_id);
         conflicts.push(`Sân/phòng "${fac?.name}" đã có lớp "${cls.name}" hoạt động vào thứ [${overlapDays.join(', ')}]`);
       }
       if (cls.primary_teacher_id === formData.primary_teacher_id) {
@@ -332,7 +378,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     });
 
     return conflicts;
-  }, [store.classes, store.facilities, store.teachers, formData, editingClass]);
+  }, [store.classes, store.facilities, facilityList, store.teachers, formData, editingClass]);
 
   // Form Submission
   const handleSaveClass = async (e: React.FormEvent) => {
@@ -348,7 +394,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       return;
     }
 
-    const chosenFacility = store.facilities.find(f => f.id === formData.facility_id);
+    const chosenFacility = facilityList.find(f => f.id === formData.facility_id) || store.facilities.find(f => f.id === formData.facility_id);
     if (chosenFacility && chosenFacility.is_locked) {
       showToast(`Phòng học "${chosenFacility.name}" đang bị KHÓA (BẢO TRÌ). Vui lòng chọn phòng học khác!`, 'error');
       return;
@@ -825,21 +871,18 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                 Phòng học / Sân bãi ({store.campuses.find(c => c.id === formData.campus_id)?.code}):
               </label>
               <select
-                value={formData.facility_id}
-                onChange={(e) => setFormData({ ...formData, facility_id: e.target.value })}
+                value={selectedFacilityId}
+                onChange={(e) => setSelectedFacilityId(e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-medium"
               >
-                {campusFacilities.length === 0 ? (
+                {facilityList.length === 0 ? (
                   <option value="" disabled>Không có phòng học nào tại cơ sở này</option>
                 ) : (
-                  campusFacilities.map(f => {
-                    const isLocked = Boolean(f.is_locked);
+                  facilityList.map((f: any) => {
                     const roomCode = f.code || f.id;
                     return (
-                      <option key={f.id} value={f.id} disabled={isLocked}>
-                        {isLocked
-                          ? `🔒 [Đang Khóa - Bảo Trì] ${f.name} (${roomCode})`
-                          : `✓ ${f.name} (${roomCode} • Sức chứa: ${f.capacity || 30} HS)`}
+                      <option key={f.id} value={f.id}>
+                        ✓ {f.name} ({roomCode} • Sức chứa: {f.capacity || 30} HS)
                       </option>
                     );
                   })

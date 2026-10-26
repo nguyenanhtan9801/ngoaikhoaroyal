@@ -31,7 +31,6 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateClassModal } from '../modals/CreateClassModal';
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
-import { FacilityManagementView } from '../classes/FacilityManagementView';
 import { ScheduleCalendarView } from './ScheduleCalendarView';
 
 export interface ScheduleCalculationResult {
@@ -141,7 +140,7 @@ interface ClassesTabProps {
   onSelectTermId?: (id: string) => void;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSelectClassForAttendance: (cls: ExtracurricularClass) => void;
-  initialTab?: 'classes' | 'time_slots' | 'facilities' | 'monthly_schedule';
+  initialTab?: 'classes' | 'time_slots' | 'monthly_schedule';
 }
 
 export const ClassesTab: React.FC<ClassesTabProps> = ({
@@ -156,7 +155,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onSelectClassForAttendance,
   initialTab = 'classes',
 }) => {
-  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots' | 'facilities' | 'monthly_schedule'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots' | 'monthly_schedule'>(initialTab);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
@@ -194,54 +193,65 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     }
   }, [searchQuery]);
 
-  // Auto-fetch latest classes from Supabase
+  // Auto-fetch latest classes and facilities from Supabase
   useEffect(() => {
     let cancelled = false;
     const fetchClassesFromCloud = async () => {
       const client = getSupabaseClient() || supabase;
       if (!client) return;
       try {
-        const { data: remoteClasses, error } = await client.from('extracurricular_classes').select('*');
-        if (!error && Array.isArray(remoteClasses) && !cancelled) {
+        const [classesRes, facilitiesRes] = await Promise.all([
+          client.from('extracurricular_classes').select('*'),
+          client.from('facilities').select('*').order('name', { ascending: true }),
+        ]);
+
+        if (!cancelled) {
           onUpdateStore(prev => {
-            const mappedClasses: ExtracurricularClass[] = remoteClasses.map((r: any): ExtracurricularClass => ({
-              id: r.id,
-              code: r.code || r.id,
-              name: r.name,
-              term_id: r.term_id,
-              spanning_term_id: r.spanning_term_id || undefined,
-              is_cross_term: Boolean(r.is_cross_term),
-              term_distribution: r.term_distribution || undefined,
-              campus_id: r.campus_id,
-              subject_id: r.subject_id,
-              facility_id: r.facility_id || '',
-              time_slot_id: r.time_slot_id || '',
-              days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
-              start_date: r.start_date || undefined,
-              end_date: r.end_date || undefined,
-              primary_teacher_id: r.primary_teacher_id || '',
-              max_students: Number(r.max_students) || 25,
-              total_sessions: Number(r.total_sessions) || 24,
-              full_course_fee: Number(r.full_course_fee) || 0,
-              price_per_session: Number(r.price_per_session) || 0,
-              status: r.status || 'active',
-              allow_over_quota: Boolean(r.allow_over_quota),
-            }));
+            let nextClasses = prev.classes;
+            if (!classesRes.error && Array.isArray(classesRes.data) && classesRes.data.length > 0) {
+              const mappedClasses: ExtracurricularClass[] = classesRes.data.map((r: any): ExtracurricularClass => ({
+                id: r.id,
+                code: r.code || r.id,
+                name: r.name,
+                term_id: r.term_id,
+                spanning_term_id: r.spanning_term_id || undefined,
+                is_cross_term: Boolean(r.is_cross_term),
+                term_distribution: r.term_distribution || undefined,
+                campus_id: r.campus_id,
+                subject_id: r.subject_id,
+                facility_id: r.facility_id || '',
+                time_slot_id: r.time_slot_id || '',
+                days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+                start_date: r.start_date || undefined,
+                end_date: r.end_date || undefined,
+                primary_teacher_id: r.primary_teacher_id || '',
+                max_students: Number(r.max_students) || 25,
+                total_sessions: Number(r.total_sessions) || 24,
+                full_course_fee: Number(r.full_course_fee) || 0,
+                price_per_session: Number(r.price_per_session) || 0,
+                status: r.status || 'active',
+                allow_over_quota: Boolean(r.allow_over_quota),
+              }));
 
-            if (mappedClasses.length === 0) return prev;
+              const map = new Map<string, ExtracurricularClass>();
+              prev.classes.forEach(c => map.set(c.id, c));
+              mappedClasses.forEach(c => map.set(c.id, c));
+              nextClasses = Array.from(map.values());
+            }
 
-            const map = new Map<string, ExtracurricularClass>();
-            prev.classes.forEach(c => map.set(c.id, c));
-            mappedClasses.forEach(c => map.set(c.id, c));
+            const nextFacilities = (!facilitiesRes.error && Array.isArray(facilitiesRes.data) && facilitiesRes.data.length > 0)
+              ? facilitiesRes.data
+              : prev.facilities;
 
             return {
               ...prev,
-              classes: Array.from(map.values()),
+              classes: nextClasses,
+              facilities: nextFacilities,
             };
           });
         }
       } catch (err) {
-        console.warn('Lỗi auto-fetch classes:', err);
+        console.warn('Lỗi auto-fetch classes & facilities:', err);
       }
     };
     fetchClassesFromCloud();
@@ -887,19 +897,6 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
           <button
             type="button"
-            onClick={() => setActiveTab('facilities')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
-              activeTab === 'facilities'
-                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-            }`}
-          >
-            <Building2 className="w-3.5 h-3.5" />
-            <span>Quản Lý Phòng Học &amp; Sân ({store.facilities?.length || 0})</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => setActiveTab('monthly_schedule')}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
               activeTab === 'monthly_schedule'
@@ -925,13 +922,6 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
       {activeTab === 'time_slots' ? (
         <TimeSlotsManager store={store} onUpdateStore={onUpdateStore} />
-      ) : activeTab === 'facilities' ? (
-        <FacilityManagementView
-          store={store}
-          currentRole={currentRole}
-          selectedCampusId={localCampusId}
-          onUpdateStore={onUpdateStore}
-        />
       ) : activeTab === 'monthly_schedule' ? (
         <ScheduleCalendarView
           store={store}

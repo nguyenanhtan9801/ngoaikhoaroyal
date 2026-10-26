@@ -116,6 +116,9 @@ export const initialSubjects: Subject[] = [
     name: 'Bơi Lội Hoàng Gia (Royal Swimming)',
     category: 'Thể Thao & Vận Động',
     standard_duration: '90 phút',
+    standard_sessions: 24,
+    standard_course_fee: 3990000,
+    standard_session_rate: 166250,
     description: 'Kỹ năng bơi lội an toàn chuẩn Olympic, rèn luyện thể lực và phản xạ sinh tồn dưới nước.',
   },
   {
@@ -124,6 +127,9 @@ export const initialSubjects: Subject[] = [
     name: 'Bóng Rổ Phát Triển Chiều Cao (Royal Basketball)',
     category: 'Thể Thao & Vận Động',
     standard_duration: '90 phút',
+    standard_sessions: 24,
+    standard_course_fee: 3240000,
+    standard_session_rate: 135000,
     description: 'Tập luyện nâng cao thể lực, phát triển chiều cao vượt trội và tinh thần đồng đội NBA.',
   },
   {
@@ -132,6 +138,9 @@ export const initialSubjects: Subject[] = [
     name: 'Lập Trình & Robotics VEX IQ (STEM AI)',
     category: 'Công Nghệ & Sáng Tạo',
     standard_duration: '90 phút',
+    standard_sessions: 20,
+    standard_course_fee: 4500000,
+    standard_session_rate: 225000,
     description: 'Tư duy thuật toán, chế tạo robot thi đấu quốc tế và ứng dụng trí tuệ nhân tạo.',
   },
 ];

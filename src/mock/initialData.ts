@@ -71,49 +71,70 @@ export const initialSubjects: Subject[] = [
     code: 'BASKETBALL',
     name: 'Bóng rổ Hoàng Gia (Royal Basketball Elite)',
     category: 'Thể thao',
-    standard_duration: '90 phút'
+    standard_duration: '90 phút',
+    standard_sessions: 16,
+    standard_course_fee: 3200000,
+    standard_session_rate: 200000
   },
   {
     id: 'sub-sw',
     code: 'SWIMMING',
     name: 'Bơi lội Thủy Tinh (Dolphin Swimming Club)',
     category: 'Thể thao',
-    standard_duration: '90 phút'
+    standard_duration: '90 phút',
+    standard_sessions: 16,
+    standard_course_fee: 4000000,
+    standard_session_rate: 250000
   },
   {
     id: 'sub-pn',
     code: 'PIANO',
     name: 'Piano Cổ Điển & Phím Nghệ Thuật',
     category: 'Nghệ thuật',
-    standard_duration: '60 phút'
+    standard_duration: '60 phút',
+    standard_sessions: 16,
+    standard_course_fee: 4000000,
+    standard_session_rate: 250000
   },
   {
     id: 'sub-art',
     code: 'FINE_ARTS',
     name: 'Hội Họa & Mỹ Thuật Đương Đại (Creative Arts)',
     category: 'Nghệ thuật',
-    standard_duration: '90 phút'
+    standard_duration: '90 phút',
+    standard_sessions: 16,
+    standard_course_fee: 3200000,
+    standard_session_rate: 200000
   },
   {
     id: 'sub-rob',
     code: 'ROBOTICS_AI',
     name: 'Lập Trình Robotics & Trí Tuệ Nhân Tạo STEM',
     category: 'Học thuật',
-    standard_duration: '90 phút'
+    standard_duration: '90 phút',
+    standard_sessions: 16,
+    standard_course_fee: 4000000,
+    standard_session_rate: 250000
   },
   {
     id: 'sub-ch',
     code: 'CHESS',
     name: 'Cờ Vua Tư Duy Chiến Thuật (Royal Chess)',
     category: 'Học thuật',
-    standard_duration: '90 phút'
+    standard_duration: '90 phút',
+    standard_sessions: 16,
+    standard_course_fee: 3200000,
+    standard_session_rate: 200000
   },
   {
     id: 'sub-drm',
     code: 'ENG_DRAMA',
     name: 'Kịch Nghệ & Hùng Biện Tiếng Anh (English Drama)',
     category: 'Ngôn ngữ',
-    standard_duration: '90 phút'
+    standard_duration: '90 phút',
+    standard_sessions: 16,
+    standard_course_fee: 3990000,
+    standard_session_rate: 249375
   }
 ];
 

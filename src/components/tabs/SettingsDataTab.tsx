@@ -1231,6 +1231,50 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     };
   }, [selectedConfigTermId, hierarchySubTab]);
 
+  // Nạp danh sách subjects từ bảng public.subjects trên Supabase để đồng bộ standard_course_fee và standard_session_rate
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSubjectsFromCloud = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data: remoteSubjects, error } = await client.from('subjects').select('*');
+        if (!error && Array.isArray(remoteSubjects) && remoteSubjects.length > 0 && !cancelled) {
+          onUpdateStore((prev) => {
+            const mappedSubjects: Subject[] = remoteSubjects.map((r: any): Subject => {
+              const courseFee = Number(r.standard_course_fee || 0);
+              const sessions = Number(r.standard_sessions || 16);
+              const sessionRate = Number(r.standard_session_rate) || (sessions > 0 && courseFee > 0 ? Math.round(courseFee / sessions) : 0);
+              return {
+                id: String(r.id),
+                code: String(r.code || r.id).toUpperCase(),
+                name: String(r.name || ''),
+                category: (r.category || 'Thể thao') as Subject['category'],
+                category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
+                standard_duration: r.standard_duration || '90 phút',
+                standard_sessions: sessions,
+                standard_course_fee: courseFee,
+                standard_session_rate: sessionRate,
+                description: r.description || '',
+              };
+            });
+            return {
+              ...prev,
+              subjects: mappedSubjects,
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Lỗi tải subjects từ Supabase:', err);
+      }
+    };
+
+    fetchSubjectsFromCloud();
+    return () => {
+      cancelled = true;
+    };
+  }, [hierarchySubTab]);
+
   const handleOpenAddSubject = (presetCategory?: string | React.MouseEvent) => {
     let defaultCatObj = categoriesList[0];
     if (typeof presetCategory === 'string' && presetCategory) {
@@ -2885,7 +2929,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                                 {subject.standard_duration || '90 phút'}
                               </span>
                               <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono font-bold text-[10px]">
-                                {subject.standard_sessions || 24} buổi
+                                {Number(subject.standard_sessions || 16)} buổi
                               </span>
                             </div>
                             {subject.description ? (
@@ -2898,6 +2942,37 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               </p>
                             )}
                           </div>
+
+                          {/* Học phí khóa & Đơn giá buổi trên Card */}
+                          {(() => {
+                            const cFee = Number(subject.standard_course_fee || 0);
+                            const cSessions = Number(subject.standard_sessions || 16);
+                            const cRate = Number(subject.standard_session_rate) || (cSessions > 0 ? Math.round(cFee / cSessions) : 0);
+                            return (
+                              <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800/80 grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Học phí khóa</span>
+                                  {cFee > 0 ? (
+                                    <strong className="text-amber-300 font-mono text-xs">
+                                      {new Intl.NumberFormat('vi-VN').format(cFee)} đ
+                                    </strong>
+                                  ) : (
+                                    <span className="text-slate-500 text-[11px] italic">Chưa thiết lập</span>
+                                  )}
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block">Đơn giá buổi</span>
+                                  {cRate > 0 ? (
+                                    <strong className="text-emerald-400 font-mono text-xs">
+                                      {new Intl.NumberFormat('vi-VN').format(cRate)} đ/b
+                                    </strong>
+                                  ) : (
+                                    <span className="text-slate-500 text-[11px] italic">--</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800/80 grid grid-cols-2 gap-2 text-center text-xs">
                             <div>
@@ -2945,64 +3020,91 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 /* Table View */
                 <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-[#111827]/90 shadow-xl">
                   <table className="w-full text-left border-collapse text-xs">
+                    {/* Table Header */}
                     <thead>
-                      <tr className="border-b border-slate-800 bg-slate-900/90 text-slate-400 text-[11px] uppercase tracking-wider font-semibold">
-                        <th className="py-3 px-4">Mã Môn</th>
-                        <th className="py-3 px-4">Tên Môn Học & Nội Dung</th>
-                        <th className="py-3 px-4">Phân Loại</th>
-                        <th className="py-3 px-4">Thời Lượng Chuẩn</th>
-                        <th className="py-3 px-4 text-center">Số Buổi Chuẩn</th>
-                        <th className="py-3 px-4 text-center">Khóa Đang Kích Hoạt</th>
-                        <th className="py-3 px-4 text-center">Lớp Học Mở</th>
-                        <th className="py-3 px-4 text-right">Thao Tác</th>
+                      <tr className="border-b border-slate-800 bg-slate-900/90 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                        <th className="py-3 px-4 text-left">MÃ MÔN</th>
+                        <th className="py-3 px-4 text-left">TÊN MÔN HỌC &amp; NỘI DUNG</th>
+                        <th className="py-3 px-4 text-center">PHÂN LOẠI</th>
+                        <th className="py-3 px-4 text-center">THỜI LƯỢNG CHUẨN</th>
+                        <th className="py-3 px-4 text-center">SỐ BUỔI CHUẨN</th>
+
+                        {/* 2 Cột bổ sung mới */}
+                        <th className="py-3 px-4 text-right">HỌC PHÍ KHÓA</th>
+                        <th className="py-3 px-4 text-right">ĐƠN GIÁ BUỔI</th>
+
+                        <th className="py-3 px-4 text-center">KHÓA ĐANG KÍCH HOẠT</th>
+                        <th className="py-3 px-4 text-center">LỚP HỌC MỞ</th>
+                        <th className="py-3 px-4 text-center">THAO TÁC</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800 text-slate-200">
-                      {filteredSubjects.map(subject => {
+
+                    {/* Table Body Row */}
+                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                      {filteredSubjects.map((subject) => {
                         const activeTermsCount = store.termSubjects.filter(ts => ts.subject_id === subject.id && ts.is_active).length;
                         const relatedClassesCount = store.classes.filter(c => c.subject_id === subject.id).length;
                         const catBadge = getSubjectCategoryBadge(subject.category);
                         const CatIcon = catBadge.icon;
 
+                        const courseFee = Number(subject.standard_course_fee || 0);
+                        const sessions = Number(subject.standard_sessions || 16);
+                        const sessionRate = Number(subject.standard_session_rate) || (sessions > 0 ? Math.round(courseFee / sessions) : 0);
+
                         return (
-                          <tr key={subject.id} className="hover:bg-slate-850/50 transition-colors">
-                            <td className="py-3 px-4 font-mono font-black text-amber-400">
+                          <tr key={subject.id} className="border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3.5 px-4 font-mono font-bold text-xs text-amber-400/90">
                               {subject.code}
                             </td>
-                            <td className="py-3 px-4">
-                              <div className="font-extrabold text-white text-xs">{subject.name}</div>
-                              {subject.description ? (
-                                <div className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">{subject.description}</div>
-                              ) : (
-                                <div className="text-[11px] text-slate-500 italic mt-0.5">Chương trình chuẩn Hoàng Gia</div>
-                              )}
+                            <td className="py-3.5 px-4">
+                              <div className="font-semibold text-white text-sm">{subject.name}</div>
+                              <div className="text-xs text-slate-400 truncate max-w-xs">
+                                {subject.description || 'Chương trình chuẩn Hoàng Gia'}
+                              </div>
                             </td>
-                            <td className="py-3 px-4">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 ${catBadge.badge}`}>
+                            <td className="py-3.5 px-4 text-center">
+                              <span className={`px-2.5 py-1 rounded-full text-[11px] font-medium border inline-flex items-center gap-1 ${catBadge.badge}`}>
                                 <CatIcon className="w-3 h-3" />
-                                <span>{subject.category}</span>
+                                <span>{subject.category || 'Môn học'}</span>
                               </span>
                             </td>
-                            <td className="py-3 px-4 font-medium text-slate-300">
-                              <span className="flex items-center gap-1">
+                            <td className="py-3.5 px-4 text-center text-xs text-slate-300">
+                              <span className="inline-flex items-center gap-1">
                                 <Clock className="w-3.5 h-3.5 text-cyan-400" />
                                 {subject.standard_duration || '90 phút'}
                               </span>
                             </td>
-                            <td className="py-3 px-4 text-center font-mono">
-                              <span className="px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
-                                {subject.standard_sessions || 24} buổi
+                            <td className="py-3.5 px-4 text-center">
+                              <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                {sessions} buổi
                               </span>
                             </td>
-                            <td className="py-3 px-4 text-center font-mono">
-                              <span className="text-amber-400 font-bold">{activeTermsCount}</span>
-                              <span className="text-slate-500 text-[10px]"> / {store.terms.length}</span>
+
+                            {/* Render 2 Cột mới */}
+                            <td className="py-3.5 px-4 text-right font-medium text-amber-300 font-mono">
+                              {courseFee > 0 ? (
+                                `${new Intl.NumberFormat('vi-VN').format(courseFee)} đ`
+                              ) : (
+                                <span className="text-slate-500 text-xs italic">Chưa thiết lập</span>
+                              )}
                             </td>
-                            <td className="py-3 px-4 text-center font-mono font-bold text-cyan-400">
+                            <td className="py-3.5 px-4 text-right font-semibold text-emerald-400 font-mono">
+                              {sessionRate > 0 ? (
+                                `${new Intl.NumberFormat('vi-VN').format(sessionRate)} đ/b`
+                              ) : (
+                                <span className="text-slate-500 text-xs">--</span>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4 text-center text-xs">
+                              <span className="text-amber-400 font-bold">{activeTermsCount}</span>
+                              <span className="text-slate-500"> / {store.terms.length || 3}</span>
+                            </td>
+                            <td className="py-3.5 px-4 text-center font-bold text-cyan-400">
                               {relatedClassesCount}
                             </td>
-                            <td className="py-3 px-4 text-right">
-                              <div className="flex items-center justify-end gap-1.5">
+                            <td className="py-3.5 px-4 text-center">
+                              <div className="flex items-center justify-center gap-1.5">
                                 <button
                                   onClick={() => handleOpenEditSubject(subject)}
                                   className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition-all"

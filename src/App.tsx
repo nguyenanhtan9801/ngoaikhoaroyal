@@ -164,7 +164,7 @@ export default function App() {
   const [selectedCampusId, setSelectedCampusId] = useState<string>(() =>
     normalizeCampusScope(currentUser?.campus_id)
   );
-  const [selectedTermId, setSelectedTermId] = useState<string>(store.terms[0]?.id || 'term_fall_2026');
+  const [selectedTermId, setSelectedTermId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [studentSearchFilter, setStudentSearchFilter] = useState<string>('');
 
