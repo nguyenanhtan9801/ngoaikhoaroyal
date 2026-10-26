@@ -21,7 +21,8 @@ import {
   X,
   RotateCcw,
   Filter,
-  Globe
+  Globe,
+  Trash2
 } from 'lucide-react';
 import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
@@ -527,6 +528,93 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       allow_over_quota: Boolean(cls.allow_over_quota),
     });
     setShowAddModal(true);
+  };
+
+  const handleDeleteClass = async (classItem: ExtracurricularClass) => {
+    // 0. Khóa học đã đóng kiểm tra quyền
+    if (isTermClosed(classItem.term_id, store)) {
+      showToast('Khóa học này đã Đóng. Toàn bộ dữ liệu ở chế độ chỉ xem, không thể xóa lớp.', 'error', {
+        title: 'Khóa học đã đóng',
+      });
+      return;
+    }
+
+    try {
+      // 1. Kiểm tra sĩ số / học viên thực tế trong bảng enrollments (cả từ local store và Supabase)
+      const localEnrollments = store.enrollments.filter(
+        e => e.class_id === classItem.id && (e.status === 'active' || e.status === 'trial')
+      );
+      if (localEnrollments.length > 0) {
+        alert(
+          `Không thể xóa! Lớp "${classItem.name}" đang có ${localEnrollments.length} học viên ghi danh. Vui lòng gỡ học viên khỏi lớp trước khi xóa.`
+        );
+        return;
+      }
+
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        const { count, error: countError } = await client
+          .from('enrollments')
+          .select('id', { count: 'exact', head: true })
+          .eq('class_id', classItem.id);
+
+        if (!countError && count && count > 0) {
+          alert(
+            `Không thể xóa! Lớp "${classItem.name}" đang có ${count} học viên ghi danh. Vui lòng gỡ học viên khỏi lớp trước khi xóa.`
+          );
+          return;
+        }
+      }
+
+      // 2. Xác nhận xóa
+      if (!window.confirm(`Xác nhận xóa vĩnh viễn lớp "${classItem.name}"?`)) {
+        return;
+      }
+
+      // 3. Xóa các hóa đơn rác hoặc dữ liệu liên kết nếu có (cascade)
+      if (client) {
+        try {
+          await client.from('tuition_invoices').delete().eq('class_id', classItem.id);
+          await client.from('class_sessions').delete().eq('class_id', classItem.id);
+        } catch (e) {
+          console.warn('Lỗi dọn dẹp sessions/invoices:', e);
+        }
+
+        // 4. Xóa lớp học khỏi bảng extracurricular_classes
+        const { error: deleteError } = await client
+          .from('extracurricular_classes')
+          .delete()
+          .eq('id', classItem.id);
+
+        if (deleteError) throw deleteError;
+      }
+
+      // 5. Cập nhật local reactive store
+      onUpdateStore(prev => ({
+        ...prev,
+        classes: prev.classes.filter(c => c.id !== classItem.id),
+        sessions: prev.sessions.filter(s => s.class_id !== classItem.id),
+        invoices: prev.invoices.filter(i => i.class_id !== classItem.id),
+        auditLogs: [
+          createAuditRecord(
+            'CLASS_DELETE' as any,
+            'ACADEMIC',
+            'Lớp Ngoại Khóa',
+            `Xóa vĩnh viễn lớp: ${classItem.name} (${classItem.code || classItem.id})`,
+            null,
+            { target_id: classItem.id }
+          ),
+          ...(prev.auditLogs || [])
+        ]
+      }));
+
+      showToast(`Đã xóa thành công lớp học "${classItem.name}"!`, 'success', {
+        title: 'Xóa lớp học'
+      });
+    } catch (err: any) {
+      console.error('Lỗi khi xóa lớp:', err);
+      alert('Không thể xóa lớp học: ' + (err.message || err));
+    }
   };
 
   const handleSaveClass = (e: React.FormEvent) => {
@@ -1172,23 +1260,38 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
+                        <div className="flex items-center justify-end gap-2">
                           <button
+                            type="button"
                             onClick={() => handleOpenEditModal(cls)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                               isTermClosed(cls.term_id, store)
-                                ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed'
-                                : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                                ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed border border-slate-800'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
                             }`}
-                            title={isTermClosed(cls.term_id, store) ? 'Khóa đã đóng - Chỉ xem' : 'Sửa Lớp'}
+                            title={isTermClosed(cls.term_id, store) ? 'Khóa đã đóng - Chỉ xem' : 'Sửa'}
                           >
                             Sửa
                           </button>
                           <button
+                            type="button"
                             onClick={() => onSelectClassForAttendance(cls)}
-                            className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-bold"
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold"
                           >
                             Điểm Danh
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteClass(cls)}
+                            disabled={isTermClosed(cls.term_id, store)}
+                            className={`p-1.5 rounded-lg border transition-colors ${
+                              isTermClosed(cls.term_id, store)
+                                ? 'bg-slate-800/30 text-slate-600 border-slate-800 cursor-not-allowed'
+                                : 'bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-colors'
+                            }`}
+                            title="Xóa lớp học"
+                          >
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                       </td>
@@ -1333,19 +1436,37 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
-                  <button
-                    onClick={() => handleOpenEditModal(cls)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                      isTermClosed(cls.term_id, store)
-                        ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed'
-                        : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-                    }`}
-                    title={isTermClosed(cls.term_id, store) ? 'Khóa đã đóng - Chỉ xem' : 'Sửa Lớp'}
-                  >
-                    Sửa Lớp
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditModal(cls)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                        isTermClosed(cls.term_id, store)
+                          ? 'bg-slate-800/40 text-slate-500 cursor-not-allowed'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                      }`}
+                      title={isTermClosed(cls.term_id, store) ? 'Khóa đã đóng - Chỉ xem' : 'Sửa Lớp'}
+                    >
+                      Sửa Lớp
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteClass(cls)}
+                      disabled={isTermClosed(cls.term_id, store)}
+                      className={`p-1.5 rounded-xl border transition-colors ${
+                        isTermClosed(cls.term_id, store)
+                          ? 'bg-slate-800/30 text-slate-600 border-slate-800 cursor-not-allowed'
+                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 transition-colors'
+                      }`}
+                      title="Xóa lớp học"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
 
                   <button
+                    type="button"
                     onClick={() => onSelectClassForAttendance(cls)}
                     className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-md shadow-amber-500/20 flex items-center gap-1.5"
                   >
