@@ -10,11 +10,14 @@ import {
   ArrowRight,
   ShieldAlert,
   FileText,
-  CalendarDays
+  CalendarDays,
+  Building2,
+  Coins
 } from 'lucide-react';
 import { AppStore, formatVND } from '../../lib/storage';
 import { Student, ExtracurricularClass } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { supabase } from '../../supabaseClient';
 
 interface OverviewKpiTabProps {
   store: AppStore;
@@ -155,33 +158,238 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     }
   });
 
+  // ==========================================
+  // KPI CALCULATIONS (Synchronized with Supabase & Local Store)
+  // ==========================================
+  // 1. TỔNG HỌC VIÊN ĐANG HỌC
+  const totalStudents = store.students.length;
+  const activeEnrollments = store.enrollments.filter(e => e.status === 'active');
+  const uniqueActiveStudentIds = Array.from(new Set(activeEnrollments.map(e => e.student_id)));
+  const activeStudentsCount = uniqueActiveStudentIds.length;
+
+  // 2. HỌC VIÊN THEO CƠ SỞ (PMH vs Phú Lâm)
+  const studentMap = React.useMemo(() => new Map(store.students.map(s => [s.id, s])), [store.students]);
+  const classMap = React.useMemo(() => new Map(store.classes.map(c => [c.id, c])), [store.classes]);
+
+  const { activePMH, activePL } = React.useMemo(() => {
+    let pmh = 0;
+    let pl = 0;
+
+    uniqueActiveStudentIds.forEach(studentId => {
+      const student = studentMap.get(studentId);
+      let campus = '';
+      if (student?.campus_id) {
+        campus = student.campus_id.toLowerCase();
+      } else if (student?.school_name) {
+        const sn = student.school_name.toLowerCase();
+        if (sn.includes('pmh') || sn.includes('phú mỹ hưng') || sn.includes('phu my hung')) campus = 'pmh';
+        else if (sn.includes('pl') || sn.includes('phú lâm') || sn.includes('phu lam')) campus = 'pl';
+      }
+
+      if (!campus) {
+        const studentEnrolls = activeEnrollments.filter(e => e.student_id === studentId);
+        for (const enr of studentEnrolls) {
+          const cls = classMap.get(enr.class_id);
+          if (cls) {
+            const cId = (cls.campus_id || '').toLowerCase();
+            if (cId.includes('pmh')) { campus = 'pmh'; break; }
+            if (cId.includes('pl')) { campus = 'pl'; break; }
+          }
+        }
+      }
+
+      if (campus.includes('pl')) {
+        pl += 1;
+      } else {
+        pmh += 1;
+      }
+    });
+
+    return { activePMH: pmh, activePL: pl };
+  }, [uniqueActiveStudentIds, studentMap, classMap, activeEnrollments]);
+
+  // 3. DOANH THU KHÓA HIỆN TẠI
+  const currentTerm = store.terms.find(t => t.id === selectedTermId) ||
+    store.terms.find(t => t.is_active) ||
+    store.terms.find(t => t.status === 'in_progress' || t.status === 'open_enrollment') ||
+    store.terms[0];
+
+  const currentTermClasses = store.classes.filter(c => c.term_id === currentTerm?.id);
+  const currentTermClassIds = new Set(currentTermClasses.map(c => c.id));
+  const currentTermInvoices = store.invoices.filter(
+    i => currentTermClassIds.has(i.class_id) && i.payment_status !== 'cancelled' && !i.is_trial_pending
+  );
+
+  const termTotalRevenue = currentTermInvoices.reduce((acc, i) => acc + (i.net_payable || 0), 0);
+  const termCollectedRevenue = currentTermInvoices.reduce((acc, i) => acc + (i.paid_amount || 0), 0);
+  const termOutstandingRevenue = Math.max(0, termTotalRevenue - termCollectedRevenue);
+  const termRecoveryRate = termTotalRevenue > 0 
+    ? Math.round((termCollectedRevenue / termTotalRevenue) * 100) 
+    : 0;
+
+  // Real-time Supabase sync fallback state
+  const [liveDb, setLiveDb] = React.useState<{
+    totalStudents?: number;
+    activeCount?: number;
+  } | null>(null);
+
+  React.useEffect(() => {
+    let isMounted = true;
+    const fetchLiveKPIs = async () => {
+      if (!supabase) return;
+      try {
+        const { count: sCount, error: sErr } = await supabase
+          .from('students')
+          .select('*', { count: 'exact', head: true });
+        
+        const { data: enrData, error: eErr } = await supabase
+          .from('enrollments')
+          .select('student_id')
+          .eq('status', 'active');
+
+        if (!isMounted) return;
+
+        if (!sErr && typeof sCount === 'number' && sCount > 0) {
+          const uniqueIds = enrData ? Array.from(new Set(enrData.map((e: any) => e.student_id))) : [];
+          setLiveDb({
+            totalStudents: sCount,
+            activeCount: uniqueIds.length,
+          });
+        }
+      } catch (err) {
+        // Fallback directly to local store
+      }
+    };
+    fetchLiveKPIs();
+    return () => { isMounted = false; };
+  }, [selectedTermId]);
+
+  const displayTotalStudents = liveDb?.totalStudents ?? totalStudents;
+  const displayActiveStudents = liveDb?.activeCount ?? activeStudentsCount;
+  const displayParticipationRate = displayTotalStudents > 0
+    ? ((displayActiveStudents / displayTotalStudents) * 100).toFixed(1)
+    : '0.0';
+
+  const activePMHPercent = displayTotalStudents > 0 ? ((activePMH / displayTotalStudents) * 100).toFixed(1) : '0.0';
+  const activePLPercent = displayTotalStudents > 0 ? ((activePL / displayTotalStudents) * 100).toFixed(1) : '0.0';
+  const totalCampusActive = activePMH + activePL || 1;
+  const pmhRatio = Math.round((activePMH / totalCampusActive) * 100);
+  const plRatio = 100 - pmhRatio;
+
   return (
     <div className="space-y-4">
       
       {/* 4 Large KPI Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {/* Card 1: Total Attendance */}
-        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl">
+        {/* Thẻ 1: TỔNG HỌC VIÊN ĐANG HỌC */}
+        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl hover:border-blue-500/30 transition-colors">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">Lượt Điểm Danh</span>
-            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+              Tổng Học Viên Đang Học
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
               <Users className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2.5 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-white">{totalAttendance}</span>
-            <span className="text-xs text-slate-400">lượt tổng hợp</span>
+            <span className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              {displayActiveStudents}
+            </span>
+            <span className="text-xs text-blue-400 font-medium">học sinh đang học</span>
           </div>
-          <div className="mt-3 flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
-            <TrendingUp className="w-3.5 h-3.5" />
-            <span>{filteredClasses.length} lớp học đang mở</span>
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-400 truncate">
+            Trên tổng số <span className="text-white font-semibold">{displayTotalStudents}</span> học sinh toàn trường
+          </div>
+          <div className="mt-2.5 flex items-center justify-between text-[11px] text-slate-400">
+            <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+              <TrendingUp className="w-3 h-3" />
+              Tỷ lệ tham gia: {displayParticipationRate}%
+            </span>
           </div>
         </div>
 
-        {/* Card 2: Attendance Rate */}
-        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl">
+        {/* Thẻ 2: HỌC VIÊN THEO CƠ SỞ */}
+        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl hover:border-amber-500/30 transition-colors">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">Tỷ Lệ Chuyên Cần</span>
+            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+              Học Viên Theo Cơ Sở
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+              <Building2 className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-2 space-y-1 text-xs">
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="flex items-center gap-1.5 font-medium">
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                PMH:
+              </span>
+              <span className="font-semibold text-white">
+                {activePMH}/{displayTotalStudents} <span className="text-amber-400 text-[11px]">({activePMHPercent}%)</span>
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="flex items-center gap-1.5 font-medium">
+                <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                Phú Lâm:
+              </span>
+              <span className="font-semibold text-white">
+                {activePL}/{displayTotalStudents} <span className="text-cyan-400 text-[11px]">({activePLPercent}%)</span>
+              </span>
+            </div>
+          </div>
+          {/* Dual progress bar */}
+          <div className="mt-2.5 w-full bg-slate-800 rounded-full h-2 overflow-hidden flex">
+            <div
+              className="bg-amber-500 h-full transition-all duration-500"
+              style={{ width: `${pmhRatio}%` }}
+              title={`Phú Mỹ Hưng: ${pmhRatio}%`}
+            />
+            <div
+              className="bg-cyan-500 h-full transition-all duration-500"
+              style={{ width: `${plRatio}%` }}
+              title={`Phú Lâm: ${plRatio}%`}
+            />
+          </div>
+        </div>
+
+        {/* Thẻ 3: DOANH THU KHÓA HIỆN TẠI */}
+        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl hover:border-emerald-500/30 transition-colors">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+              Doanh Thu Khóa Hiện Tại
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <Coins className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-2.5 flex items-baseline gap-2">
+            <span className="text-xl sm:text-2xl font-extrabold text-emerald-400 tracking-tight">
+              {formatVND(termTotalRevenue)}
+            </span>
+          </div>
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-400 truncate">
+            Đã thu: <span className="text-emerald-400 font-semibold">{formatVND(termCollectedRevenue)}</span> • Còn nợ: <span className="text-rose-400 font-semibold">{formatVND(termOutstandingRevenue)}</span>
+          </div>
+          <div className="mt-2.5 flex items-center justify-between text-[11px]">
+            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mr-2">
+              <div
+                className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.min(100, termRecoveryRate)}%` }}
+              />
+            </div>
+            <span className="text-slate-400 whitespace-nowrap text-[11px] font-medium">
+              Thu hồi: <strong className="text-emerald-400">{termRecoveryRate}%</strong>
+            </span>
+          </div>
+        </div>
+
+        {/* Thẻ 4: TỶ LỆ CHUYÊN CẦN */}
+        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl hover:border-cyan-500/30 transition-colors">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+              Tỷ Lệ Chuyên Cần
+            </span>
             <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
               <CheckCircle2 className="w-4 h-4" />
             </div>
@@ -190,45 +398,14 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
             <span className="text-2xl sm:text-3xl font-extrabold text-cyan-400">{attendanceRate}%</span>
             <span className="text-xs text-slate-400">{presentCount} / {totalAttendance} có mặt</span>
           </div>
-          <div className="mt-3 w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-400 truncate">
+            Vắng phép: <span className="text-amber-400 font-semibold">{excusedCount}</span> • Không phép: <span className="text-rose-400 font-semibold">{unexcusedCount}</span>
+          </div>
+          <div className="mt-2.5 w-full bg-slate-800 rounded-full h-2 overflow-hidden">
             <div 
               className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full rounded-full transition-all duration-500"
               style={{ width: `${Math.min(100, attendanceRate)}%` }}
             />
-          </div>
-        </div>
-
-        {/* Card 3: Excused Absence */}
-        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">Vắng Có Phép</span>
-            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-              <AlertTriangle className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="mt-2.5 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-amber-400">{excusedCount}</span>
-            <span className="text-xs text-slate-400">buổi (hoàn trả bánh sữa)</span>
-          </div>
-          <div className="mt-3 text-xs text-amber-400/90 font-medium">
-            Có thể phát sinh quyền bảo lưu
-          </div>
-        </div>
-
-        {/* Card 4: Unexcused Absence */}
-        <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">Vắng Không Phép</span>
-            <div className="w-8 h-8 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-              <XCircle className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="mt-2.5 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-rose-400">{unexcusedCount}</span>
-            <span className="text-xs text-slate-400">buổi vi phạm</span>
-          </div>
-          <div className="mt-3 text-xs text-rose-400/90 font-medium">
-            Suất bánh sữa vẫn tính tiêu thụ
           </div>
         </div>
       </div>
