@@ -31,6 +31,7 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateClassModal } from '../modals/CreateClassModal';
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
+import { FacilityManagementView } from '../classes/FacilityManagementView';
 import { ScheduleCalendarView } from './ScheduleCalendarView';
 
 export interface ScheduleCalculationResult {
@@ -140,7 +141,7 @@ interface ClassesTabProps {
   onSelectTermId?: (id: string) => void;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSelectClassForAttendance: (cls: ExtracurricularClass) => void;
-  initialTab?: 'classes' | 'time_slots' | 'monthly_schedule';
+  initialTab?: 'classes' | 'time_slots' | 'facilities' | 'monthly_schedule';
 }
 
 export const ClassesTab: React.FC<ClassesTabProps> = ({
@@ -155,7 +156,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onSelectClassForAttendance,
   initialTab = 'classes',
 }) => {
-  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots' | 'monthly_schedule'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'classes' | 'time_slots' | 'facilities' | 'monthly_schedule'>(initialTab);
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
@@ -897,6 +898,19 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
           <button
             type="button"
+            onClick={() => setActiveTab('facilities')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'facilities'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            <Building2 className="w-3.5 h-3.5" />
+            <span>Quản Lý Phòng Học &amp; Sân ({store.facilities?.length || 0})</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('monthly_schedule')}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
               activeTab === 'monthly_schedule'
@@ -922,6 +936,13 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
       {activeTab === 'time_slots' ? (
         <TimeSlotsManager store={store} onUpdateStore={onUpdateStore} />
+      ) : activeTab === 'facilities' ? (
+        <FacilityManagementView
+          store={store}
+          currentRole={currentRole}
+          selectedCampusId={localCampusId}
+          onUpdateStore={onUpdateStore}
+        />
       ) : activeTab === 'monthly_schedule' ? (
         <ScheduleCalendarView
           store={store}
