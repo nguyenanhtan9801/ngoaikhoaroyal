@@ -133,16 +133,6 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   // Trạng thái gửi đơn vào Supabase
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Check role authorization for "Xem hồ sơ tiếp nhận"
-  // CHỈ HIỆN CHO NHÂN SỰ ĐƯỢC PHÂN CÔNG LÀ TUYỂN SINH, GIÁO VỤ HOẶC ADMIN
-  const isAuthorizedStaff = Boolean(
-    currentRole && [
-      'super_admin',
-      'admissions',
-      'academic_admissions'
-    ].includes(currentRole)
-  );
-
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [subjectSearch, setSubjectSearch] = useState<string>('');
   const [copyToast, setCopyToast] = useState<string | null>(null);
@@ -691,109 +681,48 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
         </div>
       )}
 
-      {/* Top Header - Apple School Style */}
-      <div className="px-5 py-3.5 bg-gradient-to-r from-slate-900 via-[#0D1527] to-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0">
+      {/* Header Cổng Phụ Huynh Chuẩn */}
+      <header className="flex items-center justify-between px-6 py-4 bg-slate-950/80 border-b border-slate-800 backdrop-blur-md">
+        {/* Logo & Tên cổng */}
         <div className="flex items-center gap-3">
           <RoyalLogo size="md" />
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-extrabold text-sm sm:text-base tracking-wider text-white">ROYAL PARENT PORTAL</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors ${
-                currentStep === 'success' 
-                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' 
-                  : 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-              }`}>
-                {currentStep === 'success' ? 'Đã Tiếp Nhận Hồ Sơ' : 'Cổng Đăng Ký Trực Tuyến'}
+              <h1 className="text-base font-bold text-white tracking-wide">ROYAL PARENT PORTAL</h1>
+              <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                Cổng Đăng Ký Trực Tuyến
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 font-medium">
+            <p className="text-xs text-slate-400">
               Trường Song Ngữ Quốc Tế Hoàng Gia &bull; Đăng Ký Môn Học Ngoại Khóa Cho Con
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Nút Sao Chép Link Đăng Ký Gửi Phụ Huynh */}
+        {/* Nút tiện ích bên phải */}
+        <div className="flex items-center gap-3">
           <button
+            type="button"
             onClick={handleCopyPortalLink}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-amber-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 transition-all shadow-sm"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 transition-colors"
             title="Sao chép link này để gửi qua Zalo/Email cho phụ huynh đăng ký"
           >
             <Share2 className="w-3.5 h-3.5 text-amber-400" />
             <span className="hidden sm:inline">Sao Chép Link Gửi Phụ Huynh</span>
           </button>
 
-          {/* Phần xem hồ sơ tiếp nhận: CHỈ HIỆN CHO NHÂN SỰ ĐƯỢC PHÂN CÔNG (TUYỂN SINH, GIÁO VỤ, ADMIN) */}
-          {isAuthorizedStaff && onNavigateToAdminLeads && (
-            <button
-              onClick={onNavigateToAdminLeads}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-300 bg-slate-800/80 hover:bg-slate-700 hover:text-white border border-slate-700 transition-all"
-              title="Dành cho Tuyển sinh & Giáo vụ: Xem danh sách hồ sơ phụ huynh nộp"
-            >
-              <UsersIcon className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden md:inline">Hồ Sơ Tiếp Nhận</span>
-              <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono font-bold">
-                {store.parentRegistrations.length}
-              </span>
-            </button>
-          )}
-
-          {/* NÚT ĐĂNG NHẬP QUẢN TRỊ (Nếu chưa đăng nhập) */}
-          {!currentUser && onOpenAdminLogin && (
-            <button
-              onClick={onOpenAdminLogin}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-black text-slate-950 bg-gradient-to-r from-amber-400 via-amber-300 to-amber-400 hover:from-amber-300 hover:to-amber-200 border border-amber-400 shadow-md shadow-amber-500/25 transition-all transform active:scale-95"
-              title="Dành cho Ban giám hiệu, nhân viên học vụ, kế toán, giáo viên đăng nhập"
-            >
-              <Lock className="w-3.5 h-3.5 text-slate-950" />
-              <span>Đăng Nhập Quản Trị</span>
-            </button>
-          )}
-
-          {/* THÔNG TIN NHÂN SỰ ĐÃ ĐĂNG NHẬP */}
-          {currentUser && (
-            <div className="flex items-center gap-2">
-              <div className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-xl bg-slate-800/80 border border-slate-700 text-xs">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-white font-semibold truncate max-w-[130px]">{currentUser.full_name}</span>
-                <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold">
-                  {currentUser.role === 'super_admin' ? 'Super Admin' : currentUser.role}
-                </span>
-              </div>
-
-              {onClose && (
-                <button
-                  onClick={onClose}
-                  className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition-all shadow-sm"
-                  title="Vào hệ thống quản trị nội bộ"
-                >
-                  Vào Quản Trị
-                </button>
-              )}
-
-              {onLogout && (
-                <button
-                  onClick={onLogout}
-                  className="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 border border-slate-700 transition-colors"
-                  title="Đăng xuất tài khoản quản trị"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          )}
-
           {!isStandalonePage && (
             <button
+              type="button"
               onClick={onClose}
-              className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
               title="Đóng Cổng Phụ Huynh"
             >
               <X className="w-5 h-5" />
             </button>
           )}
         </div>
-      </div>
+      </header>
 
       {/* Subheader Notice Banner */}
       <div className="px-5 sm:px-8 py-2.5 bg-slate-900/80 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-2 shrink-0">
