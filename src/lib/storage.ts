@@ -484,6 +484,26 @@ export function loadStore(): AppStore {
       end_time: slot.end_time || '18:15',
     }));
 
+    const rawFacilities = Array.isArray(parsed.facilities) && parsed.facilities.length > 0
+      ? parsed.facilities
+      : initial.facilities;
+    const facilities: Facility[] = rawFacilities.map((f: any, idx: number) => {
+      const camp = f.campus_id || 'camp_pmh';
+      const prefix = camp === 'camp_pl' ? 'PL' : 'PMH';
+      return {
+        ...f,
+        code: f.code || `${prefix}-PH-${String(idx + 1).padStart(2, '0')}`,
+        room_type: f.room_type || f.type || 'classroom',
+        type: f.room_type || f.type || 'classroom',
+        capacity: Number(f.capacity) || 30,
+        floor_building: f.floor_building || '',
+        equipment: f.equipment || '',
+        is_locked: Boolean(f.is_locked ?? (f.is_active === false)),
+        is_active: !Boolean(f.is_locked ?? (f.is_active === false)),
+        note: f.note || '',
+      };
+    });
+
     const loadedStore: AppStore = {
       ...initial,
       ...parsed,
@@ -494,7 +514,7 @@ export function loadStore(): AppStore {
       subjects: (Array.isArray(parsed.subjects) ? parsed.subjects : initial.subjects).map(normalizeSubjectRecord),
       termSubjects,
       campusPricings,
-      facilities: Array.isArray(parsed.facilities) ? parsed.facilities : initial.facilities,
+      facilities,
       timeSlots,
       teachers: Array.isArray(parsed.teachers) ? parsed.teachers : [],
       classes: Array.isArray(parsed.classes) ? parsed.classes : [],

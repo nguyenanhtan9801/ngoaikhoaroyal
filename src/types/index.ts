@@ -210,11 +210,19 @@ export interface TermCampusSubjectPricing {
 
 export interface Facility {
   id: string;
+  code?: string;
   name: string;
   campus_id: string;
   capacity: number;
-  type: 'classroom' | 'field' | 'pool' | 'studio' | 'hall' | 'music_hall' | 'art_studio';
-  is_active: boolean;
+  room_type?: 'classroom' | 'sports_hall' | 'pool' | 'art_music' | string;
+  type?: 'classroom' | 'sports_hall' | 'pool' | 'art_music' | 'field' | 'studio' | 'hall' | 'music_hall' | 'art_studio' | string;
+  floor_building?: string;
+  equipment?: string;
+  is_locked?: boolean;
+  is_active?: boolean;
+  note?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface TimeSlot {

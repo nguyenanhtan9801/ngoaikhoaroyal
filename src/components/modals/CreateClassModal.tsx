@@ -159,15 +159,16 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     return store.subjects.filter(s => activeIds.has(s.id));
   }, [store.termSubjects, store.subjects, formData.term_id]);
 
-  // Campus Facilities
+  // Campus Facilities: Chỉ nạp các phòng thuộc đúng campus_id đã chọn
   const campusFacilities = useMemo(() => {
-    return store.facilities.filter(f => f.campus_id === formData.campus_id && f.is_active);
+    return store.facilities.filter(f => f.campus_id === formData.campus_id);
   }, [store.facilities, formData.campus_id]);
 
   // Handle Cascading Changes
   const handleCascadingChange = (newTermId: string, newCampusId: string, newSubjId: string) => {
     const termObj = store.terms.find(t => t.id === newTermId) || store.terms[0];
-    const newFacilities = store.facilities.filter(f => f.campus_id === newCampusId && f.is_active);
+    const newFacilities = store.facilities.filter(f => f.campus_id === newCampusId);
+    const firstUnlockedFacility = newFacilities.find(f => !f.is_locked) || newFacilities[0];
     
     // Auto generate suggested class name
     const subj = store.subjects.find(s => s.id === newSubjId);
@@ -179,7 +180,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       term_id: newTermId,
       campus_id: newCampusId,
       subject_id: newSubjId,
-      facility_id: newFacilities[0]?.id || prev.facility_id,
+      facility_id: firstUnlockedFacility?.id || prev.facility_id,
       start_date: termObj?.start_date || prev.start_date,
       name: editingClass ? prev.name : suggestedName,
     }));
@@ -344,6 +345,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
 
     if (formData.days_of_week.length !== 2) {
       showToast('Lịch học bắt buộc phải chọn đúng 2 ngày trong tuần!', 'error');
+      return;
+    }
+
+    const chosenFacility = store.facilities.find(f => f.id === formData.facility_id);
+    if (chosenFacility && chosenFacility.is_locked) {
+      showToast(`Phòng học "${chosenFacility.name}" đang bị KHÓA (BẢO TRÌ). Vui lòng chọn phòng học khác!`, 'error');
       return;
     }
 
@@ -822,9 +829,21 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, facility_id: e.target.value })}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-medium"
               >
-                {campusFacilities.map(f => (
-                  <option key={f.id} value={f.id}>{f.name} ({(f as any).room_code || f.type})</option>
-                ))}
+                {campusFacilities.length === 0 ? (
+                  <option value="" disabled>Không có phòng học nào tại cơ sở này</option>
+                ) : (
+                  campusFacilities.map(f => {
+                    const isLocked = Boolean(f.is_locked);
+                    const roomCode = f.code || f.id;
+                    return (
+                      <option key={f.id} value={f.id} disabled={isLocked}>
+                        {isLocked
+                          ? `🔒 [Đang Khóa - Bảo Trì] ${f.name} (${roomCode})`
+                          : `✓ ${f.name} (${roomCode} • Sức chứa: ${f.capacity || 30} HS)`}
+                      </option>
+                    );
+                  })
+                )}
               </select>
             </div>
 

@@ -18,7 +18,6 @@ import {
   Search, 
   Info,
   Copy,
-  Share2,
   Trash2,
   Users as UsersIcon,
   ExternalLink,
@@ -701,16 +700,6 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
         {/* Nút tiện ích bên phải */}
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleCopyPortalLink}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 transition-colors"
-            title="Sao chép link này để gửi qua Zalo/Email cho phụ huynh đăng ký"
-          >
-            <Share2 className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">Sao Chép Link Gửi Phụ Huynh</span>
-          </button>
-
           {!isStandalonePage && (
             <button
               type="button"
@@ -742,7 +731,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
         <div className="flex items-center gap-2 text-slate-400 text-[11px] shrink-0">
           <Clock className="w-3.5 h-3.5 text-amber-400" />
-          <span>Hotline Tuyển sinh: <strong>(028) 7102 9999</strong></span>
+          <span>Hotline Tuyển sinh: <strong>0765420355 - 0767648166</strong></span>
         </div>
       </div>
 
@@ -1302,7 +1291,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                   <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                     <span className="text-xs font-bold text-white flex items-center gap-2">
                       <Clock className="w-4 h-4 text-amber-400" />
-                      <span>Cấu hình khung giờ học cho từng môn đã chọn ({selectedSubjectConfigs.length} môn)</span>
+                      <span>Chọn giờ học</span>
                     </span>
                     <span className="text-[11px] text-slate-400">
                       Mỗi môn có thể học ca sau giờ học hoặc cuối tuần
@@ -1415,20 +1404,15 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                     {isSubmitting ? (
                       <>
                         <RefreshCw className="w-4 h-4 text-slate-950 animate-spin" />
-                        <span>ĐANG GỬI ĐƠN VÀO HỆ THỐNG SUPABASE...</span>
+                        <span>Đang gửi đơn đăng ký...</span>
                       </>
                     ) : (
                       <>
                         <Send className="w-4 h-4 text-slate-950" />
-                        <span>
-                          GỬI ĐƠN ĐĂNG KÝ {selectedSubjectConfigs.length > 0 ? `${selectedSubjectConfigs.length} MÔN HỌC` : 'MÔN HỌC'} CHO BÉ NGAY
-                        </span>
+                        <span>Gửi đơn đăng ký</span>
                       </>
                     )}
                   </button>
-                  <p className="text-center text-[11px] text-slate-500 mt-2">
-                    Sau khi phụ huynh gửi đơn đăng ký, dữ liệu sẽ được lưu trực tiếp vào CSDL tuyển sinh của trường và thông báo tức thì đến Ban Tuyển Sinh.
-                  </p>
                 </div>
 
               </div>
@@ -1444,7 +1428,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       {/* Footer */}
       <div className="px-6 py-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs shrink-0">
         <div className="text-slate-500 text-[11px] hidden sm:block">
-          Royal Bilingual International School &bull; Hotline Tuyển sinh: (028) 7102 9999
+          Royal Bilingual International School &bull; Hotline Tuyển sinh: 0765420355 - 0767648166
         </div>
 
         <div className="flex items-center gap-3 ml-auto">
