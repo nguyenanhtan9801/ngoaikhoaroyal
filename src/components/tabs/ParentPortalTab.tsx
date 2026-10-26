@@ -29,7 +29,9 @@ import {
   CheckSquare,
   Square,
   Building2,
-  User
+  User,
+  Trash2,
+  UserX
 } from 'lucide-react';
 import { supabase, getSupabaseClient } from '@/supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
@@ -109,6 +111,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const [editingLeadContact, setEditingLeadContact] = useState<ParentRegistration | null>(null);
   const [contactNoteInput, setContactNoteInput] = useState<string>('');
   const [contactStatusInput, setContactStatusInput] = useState<'pending' | 'contacted' | 'partially_enrolled' | 'canceled'>('contacted');
+
+  // Modal Loại bỏ / Xử lý hồ sơ ảo (Hủy đơn hoặc Xóa vĩnh viễn khỏi CSDL Supabase)
+  const [rejectTargetLead, setRejectTargetLead] = useState<ParentRegistration | null>(null);
+  const [isRejecting, setIsRejecting] = useState<boolean>(false);
 
   // Trạng thái đồng bộ CSDL Tuyển sinh trực tiếp từ Supabase
   const [isRefreshingFromSupabase, setIsRefreshingFromSupabase] = useState(false);
@@ -337,6 +343,115 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       'info',
       { title: 'Đã dọn đơn trùng lặp' }
     );
+  };
+
+  // ============================================================================
+  // XỬ LÝ LOẠI BỎ HỒ SƠ TUYỂN SINH ẢO (HỦY ĐƠN HOẶC XÓA VĨNH VIỄN KHỎI CSDL)
+  // ============================================================================
+  const handleRejectRegistration = async (
+    regId: string, 
+    regCode: string, 
+    isPermanentDelete = false
+  ) => {
+    try {
+      setIsRejecting(true);
+      const client = supabase || getSupabaseClient();
+      const staffName = currentUser?.full_name || 'Chuyên viên Tuyển sinh';
+
+      if (isPermanentDelete) {
+        if (client) {
+          const { error } = await client
+            .from('parent_registrations')
+            .delete()
+            .eq('id', regId);
+          if (error) {
+            console.warn('Lỗi Supabase khi xóa vĩnh viễn parent_registrations:', error);
+          }
+        }
+
+        const deleteAudit = createAuditRecord(
+          'DATA_UPDATE' as any,
+          'ACADEMIC',
+          'Xóa Vĩnh Viễn Hồ Sơ Tuyển Sinh Ảo',
+          `Tuyển sinh ${staffName} đã XÓA VĨNH VIỄN hồ sơ ${regCode} khỏi cơ sở dữ liệu.`,
+          currentUser,
+          {
+            target_id: regCode,
+            details: {
+              action: 'permanent_delete',
+              lead_id: regId,
+            },
+          }
+        );
+
+        onUpdateStore(prev => ({
+          ...prev,
+          parentRegistrations: prev.parentRegistrations.filter(r => r.id !== regId),
+          auditLogs: [deleteAudit, ...(prev.auditLogs || [])],
+        }));
+
+        showToast(`Đã xóa vĩnh viễn hồ sơ ${regCode} khỏi cơ sở dữ liệu!`, 'success', {
+          title: 'Đã Xóa Bản Ghi',
+        });
+      } else {
+        // Đánh dấu là hồ sơ ảo / đã hủy
+        if (client) {
+          const { error } = await client
+            .from('parent_registrations')
+            .update({ 
+              status: 'canceled', 
+              notes: 'Hồ sơ ảo / Người dùng hủy',
+              contact_notes: 'Hồ sơ ảo / Người dùng hủy'
+            })
+            .eq('id', regId);
+          if (error) {
+            console.warn('Lỗi Supabase khi cập nhật trạng thái hủy:', error);
+          }
+        }
+
+        const cancelAudit = createAuditRecord(
+          'DATA_UPDATE' as any,
+          'ACADEMIC',
+          'Loại Bỏ Hồ Sơ Tuyển Sinh Ảo',
+          `Tuyển sinh ${staffName} đã chuyển hồ sơ ${regCode} sang trạng thái Loại bỏ / Ảo.`,
+          currentUser,
+          {
+            target_id: regCode,
+            details: {
+              action: 'mark_as_spam_canceled',
+              lead_id: regId,
+            },
+          }
+        );
+
+        onUpdateStore(prev => ({
+          ...prev,
+          parentRegistrations: prev.parentRegistrations.map(r =>
+            r.id === regId
+              ? {
+                  ...r,
+                  status: 'canceled',
+                  contact_notes: 'Hồ sơ ảo / Người dùng hủy',
+                  notes: 'Hồ sơ ảo / Người dùng hủy',
+                }
+              : r
+          ),
+          auditLogs: [cancelAudit, ...(prev.auditLogs || [])],
+        }));
+
+        showToast(`Đã chuyển hồ sơ ${regCode} sang trạng thái Loại bỏ!`, 'info', {
+          title: 'Đã Đánh Dấu Hồ Sơ Ảo',
+        });
+      }
+
+      setRejectTargetLead(null);
+      // Nạp lại danh sách từ Supabase
+      fetchLeadsFromSupabase(false);
+    } catch (err: any) {
+      showToast('Lỗi khi xử lý hồ sơ: ' + (err?.message || err), 'error');
+    } finally {
+      setIsRejecting(false);
+    }
   };
 
   // ============================================================================
@@ -1819,15 +1934,26 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                 </div>
 
                 {/* Bottom Action Footer */}
-                <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                  <button
-                    onClick={() => handleOpenContactModal(lead)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold flex items-center gap-1 transition-colors"
-                    title="Cập nhật ghi chú tư vấn hoặc đổi trạng thái"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Ghi Chú</span>
-                  </button>
+                <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleOpenContactModal(lead)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold flex items-center gap-1 transition-colors"
+                      title="Cập nhật ghi chú tư vấn hoặc đổi trạng thái"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Ghi Chú</span>
+                    </button>
+
+                    <button
+                      onClick={() => setRejectTargetLead(lead)}
+                      className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Loại bỏ hồ sơ ảo / Hủy đơn"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Loại Bỏ</span>
+                    </button>
+                  </div>
 
                   {lead.status !== 'enrolled' && lead.status !== 'canceled' ? (
                     <button
@@ -2111,6 +2237,14 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                             title="Cập nhật ghi chú tư vấn"
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            onClick={() => setRejectTargetLead(lead)}
+                            className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 hover:text-rose-300 text-xs transition-colors cursor-pointer shrink-0"
+                            title="Loại bỏ hồ sơ ảo / Hủy đơn"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
 
                           {lead.status !== 'enrolled' && lead.status !== 'canceled' ? (
@@ -4035,6 +4169,128 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ======================================================== */}
+      {/* MODAL 4: XÁC NHẬN LOẠI BỎ HỒ SƠ TUYỂN SINH ẢO / HỦY ĐƠN    */}
+      {/* ======================================================== */}
+      {rejectTargetLead && (() => {
+        const leadCode = rejectTargetLead.registration_code || rejectTargetLead.id;
+        const campusName = store.campuses.find(c => c.id === rejectTargetLead.desired_campus_id)?.name || rejectTargetLead.desired_campus_id || 'Chưa chọn';
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+            <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-rose-500/40 p-6 shadow-2xl space-y-5 animate-scaleUp">
+              
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center shrink-0">
+                    <Trash2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      <span>Loại Bỏ Hồ Sơ Tuyển Sinh</span>
+                      <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 text-[11px] font-mono">
+                        {leadCode}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Chọn hình thức xử lý hồ sơ ảo hoặc yêu cầu hủy đăng ký từ phụ huynh
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isRejecting}
+                  onClick={() => setRejectTargetLead(null)}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Lead Details Card */}
+              <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Học sinh đăng ký:</span>
+                  <span className="font-bold text-white text-sm">{rejectTargetLead.student_name}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Phụ huynh liên hệ:</span>
+                  <span className="font-semibold text-slate-200">
+                    {rejectTargetLead.parent_name} • <span className="font-mono text-cyan-400">{rejectTargetLead.parent_phone}</span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Cơ sở đăng ký:</span>
+                  <span className="text-amber-400 font-medium">{campusName}</span>
+                </div>
+              </div>
+
+              {/* 2 Options Cards */}
+              <div className="space-y-3">
+                {/* Lựa chọn 1: Đánh dấu hồ sơ ảo */}
+                <div className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/20 hover:border-amber-500/40 transition-colors space-y-2">
+                  <div className="flex items-center gap-2">
+                    <UserX className="w-4 h-4 text-amber-400" />
+                    <span className="font-bold text-amber-300 text-xs uppercase tracking-wide">
+                      Lựa Chọn 1: Đánh Dấu Là Hồ Sơ Ảo / Đã Hủy
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Cập nhật trạng thái thành <code className="text-amber-300 bg-amber-950/40 px-1 py-0.5 rounded">cancelled</code> trên Supabase và ghi chú <em>"Hồ sơ ảo / Người dùng hủy"</em>. Giữ lại bản ghi trong CSDL để tiện đối soát lịch sử.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={isRejecting}
+                    onClick={() => handleRejectRegistration(rejectTargetLead.id, leadCode, false)}
+                    className="w-full mt-1 py-2 px-3.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <UserX className="w-4 h-4" />
+                    <span>Xác Nhận Đánh Dấu Hồ Sơ Ảo</span>
+                  </button>
+                </div>
+
+                {/* Lựa chọn 2: Xóa vĩnh viễn */}
+                <div className="p-4 rounded-2xl bg-rose-500/5 border border-rose-500/20 hover:border-rose-500/40 transition-colors space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Trash2 className="w-4 h-4 text-rose-400" />
+                    <span className="font-bold text-rose-400 text-xs uppercase tracking-wide">
+                      Lựa Chọn 2: Xóa Vĩnh Viễn Khỏi CSDL
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Thực hiện lệnh <code className="text-rose-300 bg-rose-950/40 px-1 py-0.5 rounded">DELETE</code> xóa hoàn toàn bản ghi khỏi bảng <code className="text-slate-300 font-mono">parent_registrations</code> trên Supabase. Thao tác này không thể hoàn tác.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={isRejecting}
+                    onClick={() => handleRejectRegistration(rejectTargetLead.id, leadCode, true)}
+                    className="w-full mt-1 py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-rose-600/20 cursor-pointer disabled:opacity-50"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Xóa Vĩnh Viễn Khỏi Cơ Sở Dữ Liệu</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex items-center justify-end pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  disabled={isRejecting}
+                  onClick={() => setRejectTargetLead(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Đóng / Giữ Lại Hồ Sơ
+                </button>
+              </div>
+
             </div>
           </div>
         );

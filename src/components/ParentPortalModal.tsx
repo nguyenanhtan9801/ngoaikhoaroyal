@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   X, 
   Send, 
@@ -57,6 +57,40 @@ export const TIME_SLOT_OPTIONS = [
   { value: 'sun_afternoon', label: 'Chiều Chủ Nhật (15:00 - 16:30)' },
   { value: 'evening', label: 'Ca tối ngày thường (18:15 - 19:45)' },
 ];
+
+/** Định dạng nhãn hiển thị khung giờ học trực quan từ bản ghi time_slots */
+export const formatSlotLabel = (slot: any): string => {
+  if (!slot) return '';
+  const formatTime = (t?: string) => {
+    if (!t) return '';
+    const parts = t.split(':');
+    return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : t;
+  };
+
+  const start = formatTime(slot.start_time);
+  const end = formatTime(slot.end_time);
+  const timeRange = start && end ? `(${start} - ${end})` : '';
+
+  let days = '';
+  if (Array.isArray(slot.days_of_week) && slot.days_of_week.length > 0) {
+    days = slot.days_of_week.join(' & ');
+  } else if (typeof slot.days_of_week === 'string' && slot.days_of_week) {
+    days = slot.days_of_week;
+  }
+
+  if (slot.name) {
+    if (slot.name.includes(':') || slot.name.includes('(')) {
+      return days && !slot.name.includes(days) ? `${slot.name} • ${days}` : slot.name;
+    }
+    const parts = [slot.name];
+    if (timeRange) parts.push(timeRange);
+    if (days && !slot.name.toLowerCase().includes(days.toLowerCase())) parts.push(`• ${days}`);
+    return parts.join(' ');
+  }
+
+  const code = slot.code || 'Khung giờ';
+  return [code, timeRange, days ? `• ${days}` : ''].filter(Boolean).join(' ');
+};
 
 export type PortalStep = 'form' | 'success';
 
@@ -138,15 +172,110 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     notes: '',
   });
 
+  // Nạp động khung giờ học từ bảng public.time_slots trên CSDL Supabase
+  const [timeSlots, setTimeSlots] = useState<any[]>(() => {
+    if (store.timeSlots && store.timeSlots.length > 0) {
+      return store.timeSlots.filter(
+        (slot) => slot.status === 'active' || (slot.status as string) === 'Đang áp dụng'
+      );
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    const fetchTimeSlots = async () => {
+      try {
+        const client = supabase || getSupabaseClient();
+        if (client) {
+          const { data, error } = await client
+            .from('time_slots')
+            .select('*')
+            .order('start_time', { ascending: true });
+
+          if (!error && data && data.length > 0) {
+            // Chỉ lấy các khung giờ đang áp dụng (status = 'active' hoặc 'Đang áp dụng')
+            const activeSlots = data.filter(
+              (slot: any) => slot.status === 'active' || slot.status === 'Đang áp dụng'
+            );
+            if (activeSlots.length > 0) {
+              setTimeSlots(activeSlots);
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Lỗi khi nạp time_slots từ Supabase:', err);
+      }
+
+      // Fallback nếu CSDL Supabase chưa có bảng hoặc rỗng
+      if (store.timeSlots && store.timeSlots.length > 0) {
+        const activeSlots = store.timeSlots.filter(
+          (slot: any) => slot.status === 'active' || (slot.status as string) === 'Đang áp dụng'
+        );
+        if (activeSlots.length > 0) {
+          setTimeSlots(activeSlots);
+        }
+      }
+    };
+
+    fetchTimeSlots();
+  }, [store.timeSlots]);
+
+  // Danh sách các option khung giờ học nạp động
+  const slotOptions = useMemo(() => {
+    if (timeSlots && timeSlots.length > 0) {
+      const currentCampusId = regForm.desired_campus_id;
+      const shortCampus = currentCampusId === 'camp_pl' || currentCampusId === 'pl' ? 'pl' : 'pmh';
+      const campusSpecific = timeSlots.filter(
+        (slot) => !slot.campus_id || slot.campus_id === 'all' || slot.campus_id === currentCampusId || slot.campus_id === shortCampus
+      );
+      const targetSlots = campusSpecific.length > 0 ? campusSpecific : timeSlots;
+
+      return targetSlots.map((slot) => ({
+        value: slot.id || slot.code,
+        label: formatSlotLabel(slot),
+        slot,
+      }));
+    }
+    return TIME_SLOT_OPTIONS.map(opt => ({
+      value: opt.value,
+      label: opt.label,
+      slot: opt,
+    }));
+  }, [timeSlots, regForm.desired_campus_id]);
+
   // 2. MÔN HỌC ĐĂNG KÝ: CÓ THỂ CHỌN NHIỀU MÔN, GIỜ HỌC CHO MỖI MÔN
   const [selectedSubjectConfigs, setSelectedSubjectConfigs] = useState<
     { subjectId: string; timeSlot: string; timeSlotLabel: string }[]
   >(() => {
     const firstSub = store.subjects[0];
+    const initialSlot = (store.timeSlots && store.timeSlots.find(s => s.status === 'active' || (s.status as string) === 'Đang áp dụng')) || null;
+    const defaultVal = initialSlot ? (initialSlot.id || initialSlot.code) : TIME_SLOT_OPTIONS[0].value;
+    const defaultLabel = initialSlot ? formatSlotLabel(initialSlot) : TIME_SLOT_OPTIONS[0].label;
     return firstSub
-      ? [{ subjectId: firstSub.id, timeSlot: 'after_school', timeSlotLabel: 'Sau giờ chính khóa (16:45 - 18:15)' }]
+      ? [{ subjectId: firstSub.id, timeSlot: defaultVal, timeSlotLabel: defaultLabel }]
       : [];
   });
+
+  // Tự động cập nhật nhãn hoặc gán slot hợp lệ khi nạp dynamic time_slots xong
+  useEffect(() => {
+    if (slotOptions.length > 0) {
+      setSelectedSubjectConfigs((prev) =>
+        prev.map((item) => {
+          const matched = slotOptions.find((o) => o.value === item.timeSlot);
+          if (matched) {
+            return item.timeSlotLabel !== matched.label ? { ...item, timeSlotLabel: matched.label } : item;
+          }
+          const defaultSlot = slotOptions[0];
+          return {
+            ...item,
+            timeSlot: defaultSlot.value,
+            timeSlotLabel: defaultSlot.label,
+          };
+        })
+      );
+    }
+  }, [slotOptions]);
 
   const [formErrors, setFormErrors] = useState<{ [key: string]: string }>({});
   
@@ -205,12 +334,16 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
       if (exists) {
         return prev.filter(c => c.subjectId !== subjectId);
       } else {
+        const defaultSlot = slotOptions[0] || {
+          value: 'after_school',
+          label: 'Sau giờ chính khóa (16:45 - 18:15)',
+        };
         return [
           ...prev,
           {
             subjectId,
-            timeSlot: 'after_school',
-            timeSlotLabel: 'Sau giờ chính khóa (16:45 - 18:15)',
+            timeSlot: defaultSlot.value,
+            timeSlotLabel: defaultSlot.label,
           },
         ];
       }
@@ -222,7 +355,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
   // Change Time Slot for a specific Subject
   const handleChangeSubjectTimeSlot = (subjectId: string, newSlotValue: string) => {
-    const slotObj = TIME_SLOT_OPTIONS.find(o => o.value === newSlotValue);
+    const slotObj = slotOptions.find(o => o.value === newSlotValue) || TIME_SLOT_OPTIONS.find(o => o.value === newSlotValue);
     const label = slotObj ? slotObj.label : newSlotValue;
 
     setSelectedSubjectConfigs(prev =>
@@ -1278,7 +1411,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                               onChange={(e) => handleChangeSubjectTimeSlot(item.subjectId, e.target.value)}
                               className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500 font-medium"
                             >
-                              {TIME_SLOT_OPTIONS.map(opt => (
+                              {slotOptions.map(opt => (
                                 <option key={opt.value} value={opt.value}>
                                   {opt.label}
                                 </option>
