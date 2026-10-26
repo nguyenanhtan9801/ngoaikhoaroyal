@@ -27,7 +27,8 @@ import {
   ChevronRight,
   HeartHandshake,
   LogIn,
-  LogOut
+  LogOut,
+  CalendarOff
 } from 'lucide-react';
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
@@ -235,6 +236,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           desc: 'Dọn sạch cơ sở dữ liệu 4 cấp độ an toàn, Nhập và Xuất 10 bảng dữ liệu' 
         },
         { 
+          id: 'sub_holidays', 
+          label: 'Danh Sách Ngày Nghỉ Lễ', 
+          icon: CalendarOff, 
+          desc: 'Quản lý lịch nghỉ lễ toàn trường hoặc theo cơ sở, tự động loại trừ khi tính số buổi thực học' 
+        },
+        { 
           id: 'sub_audit_logs', 
           label: 'Nhật Ký Hoạt Động & Kiểm Toán', 
           icon: ShieldCheck, 
@@ -261,7 +268,8 @@ export const Navbar: React.FC<NavbarProps> = ({
       case 'sub_term_subjects':
       case 'sub_pricing':
       case 'sub_settings':
-        return !!perms.can_config_system;
+      case 'sub_holidays':
+        return !!(perms.can_config_system || perms.can_manage_classes);
       case 'sub_classes':
         return !!(perms.can_manage_classes || perms.can_view_classes || perms.can_take_attendance);
       case 'sub_attendance':

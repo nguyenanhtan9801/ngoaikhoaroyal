@@ -8,7 +8,7 @@ import {
   CheckCircle2, 
   AlertCircle 
 } from 'lucide-react';
-import { Student, ExtracurricularClass, Enrollment, TuitionInvoice, AppStore } from '../../types';
+import { Student, ExtracurricularClass, Enrollment, TuitionInvoice, AppStore, Holiday } from '../../types';
 import { 
   formatVND, 
   deduplicateEnrollments, 
@@ -34,13 +34,57 @@ export const DAY_MAP: Record<string, number> = {
 };
 
 /**
+ * Kiểm tra xem một ngày cụ thể có rơi vào kỳ nghỉ lễ đang active (thuộc cơ sở tương ứng hoặc toàn trường) hay không
+ */
+export function isDateInHoliday(
+  dateObj: Date,
+  holidays: Holiday[] = [],
+  campusId?: string | null
+): boolean {
+  if (!holidays || holidays.length === 0) return false;
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  const dateStr = `${y}-${m}-${d}`;
+  const monthDay = `${m}-${d}`;
+
+  const normalizedCampus = campusId
+    ? (campusId.startsWith('camp_') ? campusId : `camp_${campusId}`)
+    : null;
+
+  return holidays.some((h) => {
+    if (h.status && h.status !== 'active') return false;
+    // Nếu kỳ nghỉ lễ chỉ định cơ sở cụ thể, kiểm tra khớp cơ sở của lớp học
+    if (h.campus_id && normalizedCampus && h.campus_id !== normalizedCampus) {
+      return false;
+    }
+    if (!h.start_date || !h.end_date) return false;
+
+    if (dateStr >= h.start_date && dateStr <= h.end_date) {
+      return true;
+    }
+    // Hỗ trợ ngày nghỉ lễ lặp lại hàng năm (is_recurring)
+    if (h.is_recurring) {
+      const startMD = h.start_date.slice(5);
+      const endMD = h.end_date.slice(5);
+      if (startMD <= endMD && monthDay >= startMD && monthDay <= endMD) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+/**
  * Hàm thuật toán đếm số buổi học thực tế theo lịch (Calendar Exact Count)
- * Thay thế hoàn toàn công thức tỷ lệ tĩnh
+ * Tự động loại trừ các ngày nghỉ lễ đang active (thuộc cơ sở tương ứng hoặc toàn trường)
  */
 export function calculateActualSessions(
   startDateStr: string,
   endDateStr: string,
-  selectedDayCodes: string[] // ví dụ: ['T2', 'T4']
+  selectedDayCodes: string[], // ví dụ: ['T2', 'T4']
+  holidays: Holiday[] = [],
+  campusId?: string | null
 ): number {
   if (!startDateStr || !endDateStr || selectedDayCodes.length === 0) return 0;
 
@@ -57,7 +101,10 @@ export function calculateActualSessions(
 
   let sessionCount = 0;
   while (cur <= end) {
-    if (targetDayIndices.includes(cur.getDay())) {
+    if (
+      targetDayIndices.includes(cur.getDay()) &&
+      !isDateInHoliday(cur, holidays, campusId)
+    ) {
       sessionCount++;
     }
     cur.setDate(cur.getDate() + 1);
@@ -124,6 +171,34 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
 
   const [enrollmentError, setEnrollmentError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [activeHolidays, setActiveHolidays] = useState<Holiday[]>(
+    (store.holidays || []).filter((h) => h.status !== 'inactive')
+  );
+
+  // Nạp danh sách ngày nghỉ lễ đang active từ Supabase để loại trừ khi đếm buổi thực học
+  useEffect(() => {
+    const fetchActiveHolidays = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data, error } = await client
+          .from('holidays')
+          .select('*')
+          .eq('status', 'active')
+          .order('start_date', { ascending: true });
+        if (!error && Array.isArray(data)) {
+          setActiveHolidays(data as Holiday[]);
+          onUpdateStore((prev) => ({
+            ...prev,
+            holidays: data as Holiday[],
+          }));
+        }
+      } catch (err) {
+        console.warn('Lỗi tải holidays khi xếp lớp:', err);
+      }
+    };
+    fetchActiveHolidays();
+  }, []);
 
   // Selected Class & Subject
   const selectedClass = useMemo(() => {
@@ -174,18 +249,20 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     setEnrollmentError(null);
   }, [selectedClassId]);
 
-  // Reactive Calculation: Each time startDate, selectedDays, or selectedClass changes
+  // Reactive Calculation: Each time startDate, selectedDays, selectedClass, or activeHolidays changes
   useEffect(() => {
     if (!selectedClass || !startDate) return;
 
     const term = store.terms?.find(t => t.id === selectedClass.term_id);
     const classEnd = selectedClass.end_date || term?.end_date || '2026-12-25';
 
-    // 1. Tính số buổi thực tế từ ngày bắt đầu đến ngày kết thúc lớp theo lịch chính xác
+    // 1. Tính số buổi thực tế từ ngày bắt đầu đến ngày kết thúc lớp (đã trừ ngày nghỉ lễ active)
     const actualSessions = isTrialMode ? 1 : calculateActualSessions(
       startDate,
       classEnd,
-      selectedDays
+      selectedDays,
+      activeHolidays,
+      selectedClass.campus_id
     );
 
     // 2. Cập nhật vào state hiển thị và ô điều chỉnh thủ công
@@ -206,7 +283,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     );
     const totalFee = isTrialMode ? 0 : (effectiveSessionsToCharge * rate);
     setTotalTuition(totalFee);
-  }, [startDate, selectedDays, selectedClassId, isTrialMode, isManualOverride, manualSessions]);
+  }, [startDate, selectedDays, selectedClassId, isTrialMode, isManualOverride, manualSessions, activeHolidays]);
 
   // Ràng buộc triệt để thuộc tính min và max cho ô Input Date
   const handleStartDateInputChange = (val: string) => {

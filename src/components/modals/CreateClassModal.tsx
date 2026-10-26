@@ -18,7 +18,7 @@ import {
   Globe,
   Info
 } from 'lucide-react';
-import { ExtracurricularClass, ClassSession, AppStore, AcademicTerm } from '../../types';
+import { ExtracurricularClass, ClassSession, AppStore, AcademicTerm, Holiday } from '../../types';
 import { 
   formatVND, 
   formatDateVN, 
@@ -29,6 +29,7 @@ import {
 } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
+import { isDateInHoliday } from './EnrollmentModal';
 
 interface CreateClassModalProps {
   isOpen: boolean;
@@ -161,11 +162,34 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
 
   // Fetch Danh Sách Phòng Học Theo Cơ Sở (campus_id) trực tiếp từ bảng public.facilities trên Supabase
   const [facilityList, setFacilityList] = useState<any[]>([]);
+  const [holidaysList, setHolidaysList] = useState<Holiday[]>(
+    (store.holidays || []).filter((h) => h.status !== 'inactive')
+  );
   const selectedCampusId = formData.campus_id;
   const selectedFacilityId = formData.facility_id;
   const setSelectedFacilityId = (id: string) => {
     setFormData(prev => ({ ...prev, facility_id: id }));
   };
+
+  useEffect(() => {
+    const fetchActiveHolidays = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data, error } = await client
+          .from('holidays')
+          .select('*')
+          .eq('status', 'active')
+          .order('start_date', { ascending: true });
+        if (!error && Array.isArray(data)) {
+          setHolidaysList(data as Holiday[]);
+        }
+      } catch (err) {
+        console.warn('Lỗi tải holidays khi tạo lớp:', err);
+      }
+    };
+    fetchActiveHolidays();
+  }, []);
 
   useEffect(() => {
     const fetchFacilitiesByCampus = async () => {
@@ -279,11 +303,14 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     const startDate = new Date(`${formData.start_date}T00:00:00`);
     const primaryTermEndDate = new Date(`${primaryTerm.end_date}T00:00:00`);
 
-    // 1. Calculate Primary Term sessions
+    // 1. Calculate Primary Term sessions (loại trừ ngày nghỉ lễ đang active)
     const primaryDates: string[] = [];
     const cur1 = new Date(startDate);
     while (primaryDates.length < standardSessions && cur1 <= primaryTermEndDate) {
-      if (activeDayNumbers.includes(cur1.getDay())) {
+      if (
+        activeDayNumbers.includes(cur1.getDay()) &&
+        !isDateInHoliday(cur1, holidaysList, formData.campus_id)
+      ) {
         primaryDates.push(toLocalDateStr(cur1));
       }
       cur1.setDate(cur1.getDate() + 1);
@@ -305,7 +332,10 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       const cur2 = new Date(nextTermStart);
 
       while (spanningDates.length < remainingNeeded && cur2 <= nextTermEnd) {
-        if (activeDayNumbers.includes(cur2.getDay())) {
+        if (
+          activeDayNumbers.includes(cur2.getDay()) &&
+          !isDateInHoliday(cur2, holidaysList, formData.campus_id)
+        ) {
           spanningDates.push(toLocalDateStr(cur2));
         }
         cur2.setDate(cur2.getDate() + 1);
@@ -351,7 +381,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       effectiveTotalSessions,
       effectiveFee,
     };
-  }, [formData.start_date, formData.days_of_week, primaryTerm, nextSpanningTerm, standardSessions, sessionRate, crossTermMode]);
+  }, [formData.start_date, formData.days_of_week, formData.campus_id, primaryTerm, nextSpanningTerm, standardSessions, sessionRate, crossTermMode, holidaysList]);
 
   // Conflict Checking
   const formConflicts = useMemo(() => {

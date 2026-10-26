@@ -13,6 +13,7 @@ import { ParentPortalTab } from './components/tabs/ParentPortalTab';
 import { SettingsDataTab } from './components/tabs/SettingsDataTab';
 import { AuditLogsTab } from './components/tabs/AuditLogsTab';
 import { UserManagementTab } from './components/tabs/UserManagementTab';
+import { HolidayManagementView } from './components/settings/HolidayManagementView';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
@@ -801,6 +802,13 @@ export default function App() {
               currentUser={currentUser}
               onUpdateStore={updateStore}
               initialSection="excel_master"
+            />
+          )}
+
+          {currentRoute === 'sub_holidays' && (
+            <HolidayManagementView
+              store={store}
+              onUpdateStore={updateStore}
             />
           )}
 

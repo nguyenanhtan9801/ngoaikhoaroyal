@@ -692,6 +692,20 @@ export interface PayrollRateConfig {
   updated_by?: string;
 }
 
+export interface Holiday {
+  id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  campus_id: string | null; // null = Toàn trường, 'camp_pmh' = Phú Mỹ Hưng, 'camp_pl' = Phú Lâm
+  academic_year: string;
+  is_recurring: boolean;
+  description: string;
+  status: 'active' | 'inactive';
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface AppStore {
   users: AppUser[];
   campuses: Campus[];
@@ -702,6 +716,7 @@ export interface AppStore {
   campusPricings: CampusTermPricing[];
   pricings: TermCampusSubjectPricing[];
   facilities: Facility[];
+  holidays?: Holiday[];
   timeSlots: TimeSlot[];
   teachers: Teacher[];
   classes: ExtracurricularClass[];
@@ -731,3 +746,4 @@ export interface AppStore {
   };
   cloudStorageConfig?: CloudStorageConfig;
 }
+
