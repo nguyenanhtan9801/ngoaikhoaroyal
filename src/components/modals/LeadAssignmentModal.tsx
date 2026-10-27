@@ -88,23 +88,50 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
       // 2. Direct Supabase fallback to ensure student is 100% saved in students & enrollments
       let directOk = false;
       try {
+        // Chuẩn hóa ngày sinh
+        const birthDateValue = registrationData.date_of_birth || registrationData.dob || registrationData.student_dob || '2016-05-15';
+
         const studentPayload: any = {
           id: studentCode,
+          student_code: studentCode,
           code: studentCode,
-          name: registrationData.student_name || registrationData.name,
-          dob: registrationData.date_of_birth || registrationData.student_dob || '2016-05-15',
-          gender: 'Nam',
+          name: registrationData.student_name || registrationData.name || 'Học viên mới',
+          full_name: registrationData.student_name || registrationData.name || 'Học viên mới',
           campus_id: cleanCampus === 'camp_pl' ? 'pl' : 'pmh',
+          student_type: registrationData.student_type || (registrationData.is_royal_student ? 'royal' : 'external'),
+          is_royal_student: Boolean(registrationData.is_royal_student),
           parent_name: registrationData.parent_name || 'Phụ huynh',
           parent_phone: registrationData.parent_phone || '',
+          parent_email: registrationData.parent_email || '',
           school_name: registrationData.is_royal_student ? 'Royal School' : 'Trường ngoài',
           regular_class: registrationData.student_grade || 'Khối Mầm Non',
-          medical_notes: registrationData.medical_notes || 'Bình thường',
+          medical_notes: registrationData.medical_notes || '',
           status: 'active',
-          created_at: new Date().toISOString()
+          updated_at: new Date().toISOString()
         };
-        const { error: sErr } = await client.from('students').upsert(studentPayload, { onConflict: 'id' });
-        if (!sErr) directOk = true;
+
+        // Gán cả 2 trường ngày sinh để tương thích mọi cấu trúc bảng
+        if (birthDateValue) {
+          studentPayload.date_of_birth = birthDateValue;
+          studentPayload.dob = birthDateValue;
+        }
+
+        const { error: studentErr } = await client
+          .from('students')
+          .upsert(studentPayload, { onConflict: 'id' });
+
+        if (studentErr) {
+          // Nếu lỗi do cột nào chưa nhận, thử lại chỉ với các trường cơ bản
+          console.warn('Lỗi upsert students, đang thử lại với fallback:', studentErr);
+          delete studentPayload.date_of_birth;
+          delete studentPayload.student_code;
+          delete studentPayload.full_name;
+          const { error: retryErr } = await client.from('students').upsert(studentPayload, { onConflict: 'id' });
+          if (!retryErr) directOk = true;
+          else console.warn('Lỗi retry upsert student:', retryErr);
+        } else {
+          directOk = true;
+        }
 
         await client.from('enrollments').upsert({
           id: `enr_${Date.now()}_${targetClassId}`,

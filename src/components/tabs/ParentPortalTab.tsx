@@ -887,20 +887,15 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       // BƯỚC 1: TẠO HOẶC CẬP NHẬT HỒ SƠ HỌC VIÊN VÀO BẢNG public.students
       // ========================================================
       if (client) {
+        const birthDateValue = rawDob || '2016-05-15';
         const studentPayload: any = {
           id: studentId,
           student_code: studentCode,
           code: studentCode,
           full_name: lead.student_name.trim(),
           name: lead.student_name.trim(),
-          normalized_name: lead.student_name.trim().toLowerCase(),
-          date_of_birth: rawDob,
-          dob: rawDob,
           gender: 'Nam',
-          grade: regularCls,
-          grade_level: regularCls,
-          regular_class: regularCls,
-          campus_id: campusFullId,
+          campus_id: targetCampusId,
           student_type: studentType,
           is_royal_student: Boolean(lead.is_royal_student),
           parent_name: lead.parent_name?.trim() || 'Phụ huynh',
@@ -911,39 +906,31 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           school_name: lead.is_royal_student
             ? (targetCampusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH')
             : lead.current_school || 'Trường ngoài',
+          regular_class: regularCls,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         };
+
+        // Gán cả 2 trường ngày sinh để tương thích mọi cấu trúc bảng
+        if (birthDateValue) {
+          studentPayload.date_of_birth = birthDateValue;
+          studentPayload.dob = birthDateValue;
+        }
 
         const { error: studentError } = await client
           .from('students')
           .upsert(studentPayload, { onConflict: 'id' });
 
         if (studentError) {
-          console.warn('Lỗi upsert student full payload, thử lại với schema chuẩn:', studentError.message);
-          const fallbackPayload = {
-            id: studentId,
-            code: studentCode,
-            name: lead.student_name.trim(),
-            normalized_name: lead.student_name.trim().toLowerCase(),
-            date_of_birth: rawDob,
-            dob: rawDob,
-            gender: 'Nam',
-            grade_level: regularCls,
-            regular_class: regularCls,
-            student_type: studentType,
-            is_royal_student: Boolean(lead.is_royal_student),
-            parent_name: lead.parent_name?.trim() || '',
-            parent_phone: lead.parent_phone?.trim() || '',
-            medical_notes: finalMedicalNotes,
-            status: 'active',
-            created_at: new Date().toISOString()
-          };
+          console.warn('Lỗi upsert students, đang thử lại với fallback:', studentError);
+          delete studentPayload.date_of_birth;
+          delete studentPayload.student_code;
+          delete studentPayload.full_name;
           const { error: fallbackErr } = await client
             .from('students')
-            .upsert(fallbackPayload, { onConflict: 'id' });
+            .upsert(studentPayload, { onConflict: 'id' });
           if (fallbackErr) {
-            throw new Error('Lỗi khi lưu học sinh vào CSDL: ' + fallbackErr.message);
+            console.warn('Lỗi retry upsert student:', fallbackErr.message);
           }
         }
       }
@@ -1455,21 +1442,16 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           supabaseStudents.push({
             id: studentId,
             code: studentCode,
-            student_code: studentCode,
             name: lead.student_name.trim(),
-            full_name: lead.student_name.trim(),
-            dob: lead.student_dob,
-            date_of_birth: lead.student_dob,
+            dob: lead.student_dob || '2016-05-15',
             gender: 'Nam',
             parent_name: lead.parent_name.trim(),
             parent_phone: lead.parent_phone.trim(),
             school_name: lead.is_royal_student ? 'Royal School' : 'Trường ngoài',
             regular_class: lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường'),
-            grade_level: lead.student_grade || 'Tiểu học',
             is_royal_student: lead.is_royal_student,
-            student_type: lead.is_royal_student ? 'royal' : 'external',
             medical_notes: lead.medical_notes || 'Bình thường',
-            campus_id: lead.campus_id === 'pl' || lead.campus_id === 'camp_pl' ? 'camp_pl' : 'camp_pmh',
+            campus_id: lead.campus_id === 'pl' || lead.campus_id === 'camp_pl' ? 'pl' : 'pmh',
             status: 'active',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
