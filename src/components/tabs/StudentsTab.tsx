@@ -293,12 +293,15 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             }
 
             const existing = studentMap.get(sid) || Array.from(studentMap.values()).find(s => s.code === scode);
+            if (existing && existing.id !== sid) {
+              studentMap.delete(existing.id);
+            }
             const isRoyal = checkIsRoyalStudent({ ...existing, ...r, code: scode, id: sid });
             const dob = r.dob || r.birth_date || r.date_of_birth || existing?.dob || '2016-01-01';
             const regularClass = r.regular_class || r.class_name || r.grade_level || existing?.regular_class || '';
             const campusId = resolveStudentCampusId({ ...existing, ...r });
 
-            const targetKey = existing?.id || sid;
+            const targetKey = sid;
             studentMap.set(targetKey, {
               ...(existing || {}),
               id: targetKey,
@@ -391,6 +394,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   };
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [convertingStudent, setConvertingStudent] = useState<Student | null>(null);
   const [enrollingStudent, setEnrollingStudent] = useState<Student | null>(null);
@@ -611,16 +615,165 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
   };
 
+  const handleCreateStudent = async (studentFormData: any) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const isRoyal = studentFormData.is_royal_student !== false && studentFormData.student_type !== 'external';
+      const client = getSupabaseClient() || supabase;
+      if (!client) {
+        throw new Error('Không thể kết nối tới máy chủ Supabase.');
+      }
+
+      // Gọi hàm RPC tự động cấp mã kế tiếp và lưu vào CSDL trong 1 giao dịch
+      const { data: res, error: rpcError } = await client.rpc('create_new_student', {
+        p_name: studentFormData.name || studentFormData.full_name,
+        p_campus_id: studentFormData.campus_id || 'pmh',
+        p_parent_name: studentFormData.parent_name || 'Phụ huynh',
+        p_parent_phone: studentFormData.parent_phone || '',
+        p_parent_email: studentFormData.parent_email || '',
+        p_dob: studentFormData.dob || studentFormData.date_of_birth || '2016-01-01',
+        p_gender: studentFormData.gender || 'Nam',
+        p_is_royal: isRoyal,
+        p_school_name: studentFormData.school_name || (isRoyal ? 'Royal School' : 'Ngoài trường'),
+        p_regular_class: studentFormData.regular_class || '',
+        p_grade: studentFormData.grade || '',
+        p_medical_notes: studentFormData.medical_notes || ''
+      });
+
+      if (rpcError) {
+        throw rpcError;
+      }
+      if (res && !res.success) {
+        throw new Error(res.error || 'Lỗi khi lưu học sinh vào CSDL');
+      }
+
+      const assignedCode = res?.student_code || res?.code || (typeof res === 'string' ? res : '');
+      const assignedId = res?.student_id || res?.id || assignedCode;
+
+      const storedAt = studentFormData.avatar_url
+        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${assignedCode}.jpg`
+        : undefined;
+
+      const newStudent: Student = {
+        id: assignedId || `std_${Date.now()}`,
+        code: assignedCode,
+        name: studentFormData.name,
+        dob: studentFormData.dob,
+        birth_date: studentFormData.dob,
+        gender: studentFormData.gender,
+        campus_id: studentFormData.campus_id,
+        student_type: (isRoyal ? 'royal' : 'external') as ('royal' | 'external'),
+        has_snack: isRoyal,
+        parent_name: studentFormData.parent_name,
+        parent_phone: studentFormData.parent_phone,
+        school_name: studentFormData.school_name,
+        regular_class: studentFormData.regular_class,
+        class_name: studentFormData.regular_class,
+        is_royal_student: isRoyal,
+        medical_notes: studentFormData.medical_notes,
+        avatar_url: studentFormData.avatar_url || undefined,
+        photo_stored_at: storedAt,
+        photo_updated_at: studentFormData.avatar_url ? new Date().toISOString().split('T')[0] : undefined,
+        status: 'active',
+        created_at: new Date().toISOString().split('T')[0],
+      };
+
+      const createLog = createAuditRecord(
+        'STUDENT_CREATE',
+        'ACADEMIC',
+        'Hồ sơ Học sinh',
+        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${assignedCode}, Cơ sở: ${(studentFormData.campus_id || 'pmh').toUpperCase()})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
+        null,
+        {
+          target_id: assignedCode,
+          details: {
+            status: 'success',
+            has_photo: !!newStudent.avatar_url,
+            photo_stored_at: storedAt,
+            after: {
+              code: assignedCode,
+              name: newStudent.name,
+              campus_id: newStudent.campus_id,
+              parent_phone: newStudent.parent_phone,
+              is_royal: newStudent.is_royal_student,
+            }
+          }
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        students: [newStudent, ...prev.students.filter(s => s.id !== newStudent.id && s.code !== assignedCode)],
+        auditLogs: [createLog, ...(prev.auditLogs || [])],
+      }));
+
+      // Hiển thị toast thông báo kèm mã học viên thực tế được sinh ra
+      showToast({
+        title: 'Thêm mới học sinh',
+        message: `Đã thêm mới hồ sơ học viên ${studentFormData.name} (${assignedCode}) thành công!`,
+        type: 'success'
+      });
+
+      // Đóng modal và tải lại dữ liệu từ Supabase
+      setShowAddModal(false);
+      setEditingStudent(null);
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
+    } catch (err: any) {
+      console.error('Lỗi thêm học sinh:', err);
+      alert('Không thể lưu học sinh vào CSDL: ' + (err.message || err.toString()));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   // Save Add / Edit Student
-  const handleSaveStudent = (e: React.FormEvent) => {
+  const handleSaveStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.parent_phone) return;
 
-    if (editingStudent) {
+    if (!editingStudent) {
+      await handleCreateStudent(formData);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
       // Edit
       const storedAt = formData.avatar_url && (!editingStudent.avatar_url || formData.avatar_url !== editingStudent.avatar_url)
         ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${editingStudent.code}.jpg`
         : (formData.photo_stored_at || editingStudent.photo_stored_at);
+
+      // Đồng bộ cập nhật vào Supabase
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        const isRoyal = formData.is_royal_student;
+        const { error: updateErr } = await client.from('students').update({
+          full_name: formData.name,
+          name: formData.name,
+          date_of_birth: formData.dob,
+          dob: formData.dob,
+          gender: formData.gender,
+          campus_id: formData.campus_id,
+          parent_name: formData.parent_name,
+          parent_phone: formData.parent_phone,
+          school_name: formData.school_name,
+          regular_class: formData.regular_class,
+          class_name: formData.regular_class,
+          is_royal_student: isRoyal,
+          student_type: isRoyal ? 'royal' : 'external',
+          has_snack: isRoyal,
+          medical_notes: formData.medical_notes,
+          avatar_url: formData.avatar_url || null,
+          updated_at: new Date().toISOString()
+        }).eq('id', editingStudent.id);
+
+        if (updateErr) {
+          console.warn('Sync student update to Supabase warning:', updateErr);
+        }
+      }
 
       const updateLog = createAuditRecord(
         'STUDENT_UPDATE',
@@ -671,104 +824,22 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
 
-      // Đồng bộ cập nhật vào Supabase
-      try {
-        const client = getSupabaseClient() || supabase;
-        if (client) {
-          const isRoyal = formData.is_royal_student;
-          client.from('students').update({
-            full_name: formData.name,
-            name: formData.name,
-            date_of_birth: formData.dob,
-            dob: formData.dob,
-            gender: formData.gender,
-            campus_id: formData.campus_id,
-            parent_name: formData.parent_name,
-            parent_phone: formData.parent_phone,
-            school_name: formData.school_name,
-            regular_class: formData.regular_class,
-            class_name: formData.regular_class,
-            is_royal_student: isRoyal,
-            student_type: isRoyal ? 'royal' : 'external',
-            has_snack: isRoyal,
-            medical_notes: formData.medical_notes,
-            avatar_url: formData.avatar_url || null,
-            updated_at: new Date().toISOString()
-          }).eq('id', editingStudent.id).then();
-        }
-      } catch (err) {
-        console.warn('Sync student update to Supabase error:', err);
-      }
-    } else {
-      // Add
-      const code = generateStudentCode(formData.is_royal_student, store.students);
-      const storedAt = formData.avatar_url
-        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${code}.jpg`
-        : undefined;
-
-      const newStudent: Student = {
-        id: `std_${Date.now()}`,
-        code,
-        name: formData.name,
-        dob: formData.dob,
-        birth_date: formData.dob,
-        gender: formData.gender,
-        campus_id: formData.campus_id,
-        student_type: (formData.is_royal_student ? 'royal' : 'external') as ('royal' | 'external'),
-        has_snack: formData.is_royal_student,
-        parent_name: formData.parent_name,
-        parent_phone: formData.parent_phone,
-        school_name: formData.school_name,
-        regular_class: formData.regular_class,
-        class_name: formData.regular_class,
-        is_royal_student: formData.is_royal_student,
-        medical_notes: formData.medical_notes,
-        avatar_url: formData.avatar_url || undefined,
-        photo_stored_at: storedAt,
-        photo_updated_at: formData.avatar_url ? new Date().toISOString().split('T')[0] : undefined,
-        status: 'active',
-        created_at: new Date().toISOString().split('T')[0],
-      };
-
-      const createLog = createAuditRecord(
-        'STUDENT_CREATE',
-        'ACADEMIC',
-        'Hồ sơ Học sinh',
-        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
-        null,
-        {
-          target_id: newStudent.code,
-          details: {
-            status: 'success',
-            has_photo: !!newStudent.avatar_url,
-            photo_stored_at: storedAt,
-            after: {
-              code: newStudent.code,
-              name: newStudent.name,
-              campus_id: newStudent.campus_id,
-              parent_phone: newStudent.parent_phone,
-              is_royal: newStudent.is_royal_student,
-            }
-          }
-        }
+      showToast(
+        `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`,
+        'success',
+        { title: 'Cập nhật hồ sơ học sinh' }
       );
-
-      onUpdateStore(prev => ({
-        ...prev,
-        students: [newStudent, ...prev.students],
-        auditLogs: [createLog, ...(prev.auditLogs || [])],
-      }));
+      setShowAddModal(false);
+      setEditingStudent(null);
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
+    } catch (err: any) {
+      console.error('Lỗi cập nhật học sinh:', err);
+      alert('Không thể cập nhật học sinh: ' + (err.message || String(err)));
+    } finally {
+      setIsSubmitting(false);
     }
-
-    showToast(
-      editingStudent
-        ? `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`
-        : `Đã thêm mới hồ sơ học viên ${formData.name} (Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`,
-      'success',
-      { title: editingStudent ? 'Cập nhật hồ sơ học sinh' : 'Thêm mới học sinh' }
-    );
-    setShowAddModal(false);
-    setEditingStudent(null);
   };
 
   // Open Edit Modal
@@ -2079,16 +2150,18 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold"
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold disabled:opacity-50"
                 >
                   Hủy
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold"
+                  disabled={isSubmitting}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold disabled:opacity-50"
                 >
-                  {editingStudent ? 'Cập Nhật' : 'Lưu Học Viên'}
+                  {isSubmitting ? 'Đang lưu...' : (editingStudent ? 'Cập Nhật' : 'Lưu Học Viên')}
                 </button>
               </div>
             </form>
@@ -2149,6 +2222,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         enrollingStudent={enrollingStudent}
         store={store}
         onUpdateStore={onUpdateStore}
+        onSuccess={() => {
+          fetchStudents();
+        }}
       />
 
       {/* Modal: Xác nhận Lên Chính Thức hoặc Dừng Học Sau Buổi Thử */}

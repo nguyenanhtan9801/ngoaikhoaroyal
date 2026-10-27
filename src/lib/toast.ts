@@ -26,13 +26,25 @@ export const dismissToast = (id: string) => {
   notifyListeners();
 };
 
+export interface ToastOptionsObject {
+  title?: string;
+  message: string;
+  type?: ToastType;
+  duration?: number;
+}
+
 export const showToast = (
-  message: string,
-  type: ToastType = 'success',
+  messageOrOptions: string | ToastOptionsObject,
+  typeArg: ToastType = 'success',
   options?: { title?: string; duration?: number }
 ) => {
+  const isObj = typeof messageOrOptions === 'object' && messageOrOptions !== null;
+  const message = isObj ? messageOrOptions.message : messageOrOptions;
+  const type: ToastType = isObj ? (messageOrOptions.type || 'success') : typeArg;
+  const titleOpt = isObj ? messageOrOptions.title : options?.title;
+  const duration = (isObj ? messageOrOptions.duration : options?.duration) ?? 3800;
+
   const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const duration = options?.duration ?? 3800;
 
   // Auto-detect title if not provided
   const defaultTitles: Record<ToastType, string> = {
@@ -45,7 +57,7 @@ export const showToast = (
   const newToast: ToastItem = {
     id,
     type,
-    title: options?.title || defaultTitles[type],
+    title: titleOpt || defaultTitles[type],
     message,
     duration,
     createdAt: Date.now(),

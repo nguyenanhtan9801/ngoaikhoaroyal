@@ -508,61 +508,21 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     setIsSubmitting(true);
 
     try {
+      // Luôn ưu tiên student.id trước, nếu không có mới dùng student.code
+      const resolvedStudentId = enrollingStudent.id || enrollingStudent.code;
+      const resolvedStudentCode = enrollingStudent.code || enrollingStudent.id;
+
       const isPartial = selectedDays.length < classDaysCount;
       const existingLocalEnr = store.enrollments.find(
-        e => String(e.student_id) === String(enrollingStudent.id) && String(e.class_id) === String(selectedClass.id)
+        e =>
+          (String(e.student_id) === String(resolvedStudentId) || String(e.student_id) === String(resolvedStudentCode)) &&
+          String(e.class_id) === String(selectedClass.id)
       );
       let enrollmentId = existingLocalEnr?.id || `ENR-${Date.now()}`;
       const trialDateVal = trialSessionDate || startDate;
 
-      // 1. Lưu trực tiếp vào Supabase (Upsert với onConflict: 'student_id,class_id')
-      const client = getSupabaseClient() || supabase;
-      if (client) {
-        const { data: existingRemoteEnr } = await client
-          .from('enrollments')
-          .select('id')
-          .eq('student_id', enrollingStudent.id)
-          .eq('class_id', selectedClass.id)
-          .maybeSingle();
-
-        if (existingRemoteEnr?.id) {
-          enrollmentId = existingRemoteEnr.id;
-        }
-
-        const payload: any = {
-          id: enrollmentId,
-          student_id: enrollingStudent.id,
-          class_id: selectedClass.id,
-          registered_sessions: isTrialMode ? 1 : effectiveSessions,
-          enrolled_days_of_week: isTrialMode ? [] : selectedDays,
-          is_partial_schedule: isTrialMode ? false : isPartial,
-          is_trial: isTrialMode,
-          enrollment_type: isTrialMode ? 'trial' : 'official',
-          trial_session_date: isTrialMode ? trialDateVal : null,
-          trial_attended: false,
-          status: isTrialMode ? 'trial' : 'active',
-          joined_date: startDate,
-        };
-
-        const { error } = await client
-          .from('enrollments')
-          .upsert([payload], { onConflict: 'student_id,class_id' });
-
-        if (error) {
-          delete payload.enrollment_type;
-          const { error: fbErr } = await client
-            .from('enrollments')
-            .upsert([payload], { onConflict: 'student_id,class_id' });
-          if (fbErr) {
-            console.error('Lỗi khi lưu enrollment vào Supabase:', fbErr);
-            showToast('Cảnh báo CSDL: ' + fbErr.message, 'warning');
-          }
-        }
-      }
-
-      // 2. Lưu hóa đơn trực tiếp vào bảng public.tuition_invoices trên Supabase
-      const invoiceId = `inv_${Date.now()}`;
-      const invoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      let invoiceId = `inv_${Date.now()}`;
+      let invoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
       const grossAmount = isTrialMode ? 0 : totalTuition;
       const todayStr = new Date().toISOString().split('T')[0];
       const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
@@ -573,41 +533,148 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
         : `Học phí môn ${subShortName}: ${effectiveSessions}/${totalStd} buổi (${formatDaysListLabel(totalClassDays)})`;
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
 
-      const invoicePayload = {
-        id: invoiceId,
-        invoice_code: invoiceCode,
-        student_id: enrollingStudent.id,
-        class_id: selectedClass.id,
-        registered_sessions: isTrialMode ? 1 : effectiveSessions,
-        total_class_sessions: totalStd,
-        session_rate: isTrialMode ? 0 : rate,
-        gross_amount: grossAmount,
-        credit_deducted: 0,
-        discount_amount: 0,
-        net_payable: grossAmount,
-        paid_amount: 0,
-        outstanding_amount: grossAmount,
-        payment_status: isTrialMode ? 'trial_pending' : 'unpaid',
-        due_date: dueDate,
-        payment_history: [],
-        created_at: todayStr,
-        updated_at: new Date().toISOString()
-      };
+      let finalStudentId = resolvedStudentId;
 
+      const client = getSupabaseClient() || supabase;
       if (client) {
-        const { error: invError } = await client.from('tuition_invoices').upsert([invoicePayload], { onConflict: 'id' });
-        if (invError) {
-          console.error('Lỗi khi lưu tuition_invoice vào Supabase:', invError);
-          showToast('Cảnh báo lưu hóa đơn: ' + invError.message, 'warning');
+        // 1. Gọi hàm RPC create_enrollment_with_invoice (đảm bảo toàn vẹn khóa ngoại trong 1 giao dịch)
+        const { data: rpcRes, error: rpcErr } = await client.rpc('create_enrollment_with_invoice', {
+          p_student_id: resolvedStudentId,
+          p_student_code: resolvedStudentCode,
+          p_student_name: enrollingStudent.name,
+          p_class_id: selectedClass.id,
+          p_is_trial: isTrialMode,
+          p_start_date: isTrialMode ? trialDateVal : startDate,
+          p_sessions: isTrialMode ? 1 : effectiveSessions,
+          p_session_rate: isTrialMode ? 0 : rate,
+          p_total_amount: grossAmount,
+          p_campus_id: enrollingStudent.campus_id || selectedClass.campus_id || 'pmh',
+          p_is_royal: Boolean(enrollingStudent.is_royal_student),
+          p_parent_name: enrollingStudent.parent_name || 'Phụ huynh',
+          p_parent_phone: enrollingStudent.parent_phone || ''
+        });
+
+        if (!rpcErr && (!rpcRes || rpcRes.success !== false)) {
+          if (rpcRes?.student_id) finalStudentId = rpcRes.student_id;
+          if (rpcRes?.enrollment_id) enrollmentId = rpcRes.enrollment_id;
+          if (rpcRes?.invoice_id) invoiceId = rpcRes.invoice_id;
+          if (rpcRes?.invoice_code) invoiceCode = rpcRes.invoice_code;
+
+          // Đồng bộ bổ sung lịch học riêng (enrolled_days_of_week, is_partial_schedule) nếu có
+          await client
+            .from('enrollments')
+            .update({
+              enrolled_days_of_week: isTrialMode ? [] : selectedDays,
+              is_partial_schedule: isTrialMode ? false : isPartial,
+            })
+            .eq('student_id', finalStudentId)
+            .eq('class_id', selectedClass.id);
         } else {
-          console.log('✅ Đã tạo hóa đơn học phí trên Supabase:', invoiceCode);
+          console.warn('RPC create_enrollment_with_invoice thông báo, chuyển sang đồng bộ bảo đảm khóa ngoại:', rpcErr || rpcRes?.error);
+
+          // Đảm bảo học sinh tồn tại trong bảng students và lấy đúng id khóa chính
+          const { data: remoteStu } = await client
+            .from('students')
+            .select('id, code')
+            .or(`id.eq.${resolvedStudentId},code.eq.${resolvedStudentCode}`)
+            .maybeSingle();
+
+          if (remoteStu?.id) {
+            finalStudentId = remoteStu.id;
+          } else {
+            const studentPayload: any = {
+              id: resolvedStudentId,
+              code: resolvedStudentCode,
+              name: enrollingStudent.name,
+              dob: enrollingStudent.dob || '2016-01-01',
+              gender: enrollingStudent.gender || 'Nam',
+              is_royal_student: Boolean(enrollingStudent.is_royal_student),
+              campus_id: enrollingStudent.campus_id === 'pl' ? 'pl' : 'pmh',
+              school_name: enrollingStudent.school_name || 'Royal School',
+              regular_class: enrollingStudent.regular_class || '',
+              parent_name: enrollingStudent.parent_name || 'Phụ huynh',
+              parent_phone: enrollingStudent.parent_phone || '',
+              medical_notes: enrollingStudent.medical_notes || '',
+              status: 'active',
+            };
+            await client.from('students').upsert([studentPayload], { onConflict: 'id' });
+          }
+
+          const { data: existingRemoteEnr } = await client
+            .from('enrollments')
+            .select('id')
+            .eq('student_id', finalStudentId)
+            .eq('class_id', selectedClass.id)
+            .maybeSingle();
+
+          if (existingRemoteEnr?.id) {
+            enrollmentId = existingRemoteEnr.id;
+          }
+
+          const payload: any = {
+            id: enrollmentId,
+            student_id: finalStudentId,
+            class_id: selectedClass.id,
+            registered_sessions: isTrialMode ? 1 : effectiveSessions,
+            enrolled_days_of_week: isTrialMode ? [] : selectedDays,
+            is_partial_schedule: isTrialMode ? false : isPartial,
+            is_trial: isTrialMode,
+            enrollment_type: isTrialMode ? 'trial' : 'official',
+            trial_session_date: isTrialMode ? trialDateVal : null,
+            trial_attended: false,
+            status: isTrialMode ? 'trial' : 'active',
+            joined_date: startDate,
+          };
+
+          const { error: enrErr } = await client
+            .from('enrollments')
+            .upsert([payload], { onConflict: 'student_id,class_id' });
+
+          if (enrErr) {
+            delete payload.enrollment_type;
+            const { error: fbErr } = await client
+              .from('enrollments')
+              .upsert([payload], { onConflict: 'student_id,class_id' });
+            if (fbErr) {
+              throw new Error(fbErr.message);
+            }
+          }
+
+          const invoicePayload = {
+            id: invoiceId,
+            invoice_code: invoiceCode,
+            student_id: finalStudentId,
+            class_id: selectedClass.id,
+            registered_sessions: isTrialMode ? 1 : effectiveSessions,
+            total_class_sessions: totalStd,
+            session_rate: isTrialMode ? 0 : rate,
+            gross_amount: grossAmount,
+            credit_deducted: 0,
+            discount_amount: 0,
+            net_payable: grossAmount,
+            paid_amount: 0,
+            outstanding_amount: grossAmount,
+            payment_status: isTrialMode ? 'trial_pending' : 'unpaid',
+            due_date: dueDate,
+            payment_history: [],
+            created_at: todayStr,
+            updated_at: new Date().toISOString()
+          };
+
+          const { error: invError } = await client
+            .from('tuition_invoices')
+            .upsert([invoicePayload], { onConflict: 'id' });
+
+          if (invError) {
+            throw new Error(invError.message);
+          }
         }
       }
 
       // 3. Tạo đối tượng Enrollment & TuitionInvoice cho Local Store
       const newEnrollment: Enrollment = {
         id: enrollmentId,
-        student_id: enrollingStudent.id,
+        student_id: finalStudentId,
         class_id: selectedClass.id,
         registered_sessions: isTrialMode ? 1 : effectiveSessions,
         joined_date: startDate,
@@ -626,7 +693,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       const newInvoice: TuitionInvoice = {
         id: invoiceId,
         invoice_code: invoiceCode,
-        student_id: enrollingStudent.id,
+        student_id: finalStudentId,
         class_id: selectedClass.id,
         gross_amount: grossAmount,
         discount_amount: 0,
@@ -652,7 +719,11 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
 
       onUpdateStore((prev) => {
         const cleanExisting = prev.enrollments.filter(
-          (e) => !(e.student_id === enrollingStudent.id && e.class_id === selectedClass.id && e.status === 'active')
+          (e) =>
+            !(
+              (e.student_id === finalStudentId || e.student_id === resolvedStudentId || e.student_id === resolvedStudentCode) &&
+              e.class_id === selectedClass.id
+            )
         );
         const cleanEnrollments = deduplicateEnrollments([...cleanExisting, newEnrollment]);
         return {
