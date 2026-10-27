@@ -84,6 +84,42 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
   const [onlyHealth, setOnlyHealth] = useState(focusHealth);
 
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [convertingStudent, setConvertingStudent] = useState<Student | null>(null);
+  const [enrollingStudent, setEnrollingStudent] = useState<Student | null>(null);
+
+  // Student Photo Upload & Preview Modal
+  const [photoModalStudent, setPhotoModalStudent] = useState<Student | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [photoUploadSuccess, setPhotoUploadSuccess] = useState<string | null>(null);
+
+  // New Student Form State
+  const [formData, setFormData] = useState({
+    name: '',
+    dob: '2016-01-01',
+    gender: 'Nam' as 'Nam' | 'Nữ',
+    campus_id: 'pmh' as 'pmh' | 'pl',
+    parent_name: '',
+    parent_phone: '',
+    school_name: 'Royal School PMH',
+    regular_class: 'Grade 4A1',
+    is_royal_student: true,
+    medical_notes: '',
+    avatar_url: '',
+    photo_stored_at: '',
+  });
+
+  // Trial Action Modal State (Promote to Active or Drop after Trial)
+  const [trialActionModal, setTrialActionModal] = useState<{
+    type: 'promote' | 'drop';
+    student: Student;
+    enrollment: Enrollment;
+    className: string;
+  } | null>(null);
+  const [trialNotes, setTrialNotes] = useState('');
+
   React.useEffect(() => {
     setOnlyHealth(focusHealth);
   }, [focusHealth]);
@@ -393,36 +429,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     return Array.from(combinedMap.values());
   };
 
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
-  const [convertingStudent, setConvertingStudent] = useState<Student | null>(null);
-  const [enrollingStudent, setEnrollingStudent] = useState<Student | null>(null);
-
-  // Student Photo Upload & Preview Modal
-  const [photoModalStudent, setPhotoModalStudent] = useState<Student | null>(null);
-  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [photoUploadSuccess, setPhotoUploadSuccess] = useState<string | null>(null);
-
   // Cloud Storage destination folder config
   const cloudFolder = store.cloudStorageConfig?.drive_folder_id || GOOGLE_DRIVE_FOLDER_ID;
   const cloudProviderLabel = 'Google Drive';
-
-  // New Student Form State
-  const [formData, setFormData] = useState({
-    name: '',
-    dob: '2016-01-01',
-    gender: 'Nam' as 'Nam' | 'Nữ',
-    campus_id: 'pmh' as 'pmh' | 'pl',
-    parent_name: '',
-    parent_phone: '',
-    school_name: 'Royal School PMH',
-    regular_class: 'Grade 4A1',
-    is_royal_student: true,
-    medical_notes: '',
-    avatar_url: '',
-    photo_stored_at: '',
-  });
 
   // Handle image file selection
   const handlePhotoFileChange = (
@@ -515,15 +524,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     }
   };
 
-
-  // Trial Action Modal State (Promote to Active or Drop after Trial)
-  const [trialActionModal, setTrialActionModal] = useState<{
-    type: 'promote' | 'drop';
-    student: Student;
-    enrollment: Enrollment;
-    className: string;
-  } | null>(null);
-  const [trialNotes, setTrialNotes] = useState('');
 
   // Filter students combining Campus ('all' | 'pmh' | 'pl'), Type, Medical & Search Query
   const filteredStudents = useMemo(() => {
@@ -863,48 +863,77 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   };
 
   // Delete Student along with related enrollments, invoices, and attendance records
-  const handleDeleteStudent = async (student: Student) => {
-    const confirmMsg = `Bạn có chắc chắn muốn xóa học sinh "${student.name}" (Mã: ${student.code})? Mọi dữ liệu ghi danh và hóa đơn liên quan sẽ bị xóa vĩnh viễn!`;
-    if (!window.confirm(confirmMsg)) return;
+  const handleDeleteStudent = async (student: any) => {
+    const targetId = student.id || student.code;
+    const targetCode = student.code || student.id;
+    const targetName = student.name || 'Học viên';
+
+    if (!window.confirm(`Bạn có chắc chắn muốn XÓA VĨNH VIỄN hồ sơ của học sinh "${targetName}" (${targetCode})? Mọi dữ liệu ghi danh và hóa đơn liên quan sẽ bị xóa sạch.`)) {
+      return;
+    }
 
     try {
       const client = getSupabaseClient() || supabase;
       if (client) {
-        // 1. Xóa các hóa đơn học phí liên quan
-        const { error: invErr } = await client.from('tuition_invoices').delete().eq('student_id', student.id);
-        if (invErr) console.warn('Lỗi xóa tuition_invoices trên Supabase:', invErr);
+        // 1. Gọi hàm RPC delete_student_cascade đã tạo trên Supabase
+        const { data: res, error: rpcErr } = await client.rpc('delete_student_cascade', {
+          p_student_id: targetId
+        });
 
-        // 2. Xóa các bản ghi ghi danh
-        const { error: enrErr } = await client.from('enrollments').delete().eq('student_id', student.id);
-        if (enrErr) console.warn('Lỗi xóa enrollments trên Supabase:', enrErr);
+        if (rpcErr || (res && !res.success)) {
+          console.warn('RPC thất bại, chuyển sang xóa tuần tự:', rpcErr || res?.error);
 
-        // 3. Xóa các bản ghi điểm danh
-        await client.from('attendance_records').delete().eq('student_id', student.id);
+          // 2. Fallback xóa tuần tự các bảng con trước khi xóa học sinh
+          await client.from('parent_registrations')
+            .update({ student_code: null, student_id: null })
+            .or(`student_id.eq.${targetId},student_code.eq.${targetCode}`);
 
-        // 4. Xóa các phiếu bảo lưu
-        await client.from('credit_notes').delete().eq('student_id', student.id);
+          await client.from('enrollments')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
 
-        // 5. Xóa học sinh khỏi bảng students
-        const { error } = await client.from('students').delete().eq('id', student.id);
-        if (error) throw error;
+          await client.from('tuition_invoices')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          await client.from('attendance_records')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          await client.from('credit_notes')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          const { error: delErr } = await client.from('students')
+            .delete()
+            .or(`id.eq.${targetId},code.eq.${targetCode}`);
+
+          if (delErr) throw delErr;
+        }
       }
 
-      // Cập nhật State toàn cục
+      // 3. Cập nhật ngay lập tức trên State giao diện (loại bỏ dòng vừa xóa)
       onUpdateStore(prev => ({
         ...prev,
-        students: prev.students.filter(s => s.id !== student.id),
-        enrollments: prev.enrollments.filter(e => e.student_id !== student.id),
-        invoices: prev.invoices.filter(inv => inv.student_id !== student.id),
-        attendance: prev.attendance.filter(att => att.student_id !== student.id),
-        makeupCredits: (prev.makeupCredits || []).filter(mc => mc.student_id !== student.id),
+        students: prev.students.filter(s => s.id !== targetId && s.code !== targetCode),
+        enrollments: prev.enrollments.filter(e => e.student_id !== targetId && e.student_id !== targetCode),
+        invoices: prev.invoices.filter(inv => inv.student_id !== targetId && inv.student_id !== targetCode),
+        attendance: prev.attendance.filter(att => att.student_id !== targetId && att.student_id !== targetCode),
+        makeupCredits: (prev.makeupCredits || []).filter(mc => mc.student_id !== targetId && mc.student_id !== targetCode),
       }));
 
-      showToast(`Đã xóa hồ sơ học sinh ${student.name} (${student.code}) thành công!`, 'success', {
-        title: 'Xóa hồ sơ học sinh'
+      // 4. Thông báo thành công
+      showToast({
+        title: 'Xóa hồ sơ học sinh',
+        message: `Đã xóa học sinh ${targetName} (${targetCode}) thành công!`,
+        type: 'success'
       });
+
+      // 5. Đồng bộ lại danh sách mới nhất
+      await fetchStudents();
     } catch (err: any) {
       console.error('Lỗi khi xóa học sinh:', err);
-      alert('Lỗi khi xóa học sinh: ' + (err.message || String(err)));
+      alert('Không thể xóa hồ sơ học sinh: ' + (err.message || 'Lỗi ràng buộc dữ liệu'));
     }
   };
 
@@ -1596,9 +1625,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             + Lớp
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleDeleteStudent(student)}
-                            className="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors"
-                            title={`Xóa vĩnh viễn hồ sơ học sinh ${student.name} (${student.code})`}
+                            title="Xóa học sinh"
+                            className="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1873,9 +1903,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       + Xếp Lớp
                     </button>
                     <button
+                      type="button"
                       onClick={() => handleDeleteStudent(student)}
-                      className="p-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors"
-                      title={`Xóa vĩnh viễn hồ sơ học sinh ${student.name} (${student.code})`}
+                      title="Xóa học sinh"
+                      className="p-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
