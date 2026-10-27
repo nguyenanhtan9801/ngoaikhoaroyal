@@ -212,10 +212,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           const sid = raw.student_id || fallbackStudentId;
           if (!sid) return;
           const isTrial = Boolean(
+            raw.is_trial === true ||
             raw.enrollment_type === 'trial' ||
-            raw.status === 'trial' ||
-            raw.status === 'trial_pending' ||
-            raw.is_trial === true
+            raw.status === 'trial_pending'
           );
           const nestedCls = Array.isArray(raw.extracurricular_classes)
             ? raw.extracurricular_classes[0]
@@ -370,10 +369,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       if (raw.status === 'dropped' || raw.status === 'trial_dropped' || raw.status === 'cancelled') return;
       if (!combinedMap.has(raw.class_id)) {
         const isTrial = Boolean(
+          raw.is_trial === true ||
           raw.enrollment_type === 'trial' ||
-          raw.status === 'trial' ||
-          raw.status === 'trial_pending' ||
-          raw.is_trial === true
+          raw.status === 'trial_pending'
         );
         combinedMap.set(raw.class_id, {
           id: raw.id || `enr_${student.id}_${raw.class_id}`,
@@ -836,70 +834,170 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
 
 
-  // Promote Trial Enrollment to Active (Chính thức theo học)
-  const handleConfirmPromoteTrial = (enrollmentId: string) => {
-    const enr = store.enrollments.find(e => e.id === enrollmentId);
-    if (!enr) return;
+  // Promote Trial Enrollment to Official (Chính thức theo học - Đồng bộ CSDL Supabase)
+  const handlePromoteToOfficial = async (studentId: string, classId?: string, enrollmentId?: string) => {
+    try {
+      const client = getSupabaseClient() || supabase;
+      const targetStudent = store.students.find(
+        s => String(s.id) === String(studentId) || String(s.code) === String(studentId)
+      );
+      const candidateStudentIds = Array.from(
+        new Set([studentId, targetStudent?.id, targetStudent?.code].filter(Boolean) as string[])
+      );
 
-    const client = getSupabaseClient() || supabase;
-    if (client) {
-      client.from('enrollments').update({
-        status: 'active',
-        is_trial: false,
-        trial_attended: true,
-        trial_outcome: 'promoted',
-        trial_notes: 'Xác nhận lên học chính thức toàn khóa (Buổi thử tính là buổi 1)'
-      }).eq('id', enrollmentId).then();
+      if (client) {
+        // 1. Thử gọi qua RPC function đã tạo trên Supabase
+        const { data: rpcRes, error: rpcErr } = await client.rpc('convert_trial_to_official', {
+          p_student_id: studentId,
+          p_class_id: classId || null,
+        });
 
-      client.from('tuition_invoices').update({
-        is_trial_pending: false,
-        payment_status: 'unpaid'
-      }).match({ student_id: enr.student_id, class_id: enr.class_id }).then();
-    }
+        if (rpcErr || (rpcRes && !rpcRes.success)) {
+          console.warn('RPC thất bại, fallback sang update trực tiếp bảng enrollments:', rpcErr || rpcRes);
 
-    onUpdateStore(prev => {
-      const student = prev.students.find(s => s.id === enr.student_id);
-      const cls = prev.classes.find(c => c.id === enr.class_id);
+          // 2. Fallback: Update trực tiếp tất cả các cột liên quan đến học thử trên bảng enrollments
+          let query = client
+            .from('enrollments')
+            .update({
+              is_trial: false,
+              enrollment_type: 'official',
+              status: 'active',
+              trial_session_count: 0,
+              tuition_status: 'pending',
+              updated_at: new Date().toISOString(),
+            })
+            .in('student_id', candidateStudentIds);
 
-      return {
-        ...prev,
-        enrollments: prev.enrollments.map(e => 
-          e.id === enrollmentId 
-            ? { 
-                ...e, 
-                status: 'active', 
+          if (classId) {
+            query = query.eq('class_id', classId);
+          }
+
+          const { error: updateErr } = await query;
+          if (updateErr) {
+            // Fallback tối giản nếu bảng enrollments trên Supabase không có cột phụ trial_session_count / tuition_status
+            let minQuery = client
+              .from('enrollments')
+              .update({
+                is_trial: false,
+                enrollment_type: 'official',
+                status: 'active',
+              })
+              .in('student_id', candidateStudentIds);
+            if (classId) {
+              minQuery = minQuery.eq('class_id', classId);
+            }
+            const { error: minErr } = await minQuery;
+            if (minErr) throw minErr;
+          }
+        }
+
+        // Kích hoạt hóa đơn học phí liên quan nếu đang ở trạng thái chờ học thử
+        let invQuery = client
+          .from('tuition_invoices')
+          .update({
+            is_trial_pending: false,
+            payment_status: 'unpaid',
+          })
+          .in('student_id', candidateStudentIds);
+        if (classId) {
+          invQuery = invQuery.eq('class_id', classId);
+        }
+        await invQuery;
+      }
+
+      // 3. Cập nhật lại state danh sách học sinh & ghi danh trên giao diện
+      onUpdateStore(prev => {
+        const student = prev.students.find(
+          s => candidateStudentIds.includes(String(s.id)) || candidateStudentIds.includes(String(s.code))
+        );
+        const cls = classId ? prev.classes.find(c => c.id === classId) : undefined;
+
+        return {
+          ...prev,
+          students: prev.students.map(stu => {
+            if (!candidateStudentIds.includes(String(stu.id)) && !candidateStudentIds.includes(String(stu.code))) {
+              return stu;
+            }
+            const nestedEnr = Array.isArray((stu as any).enrollments)
+              ? (stu as any).enrollments.map((enr: any) =>
+                  !classId || enr.class_id === classId
+                    ? {
+                        ...enr,
+                        is_trial: false,
+                        enrollment_type: 'official',
+                        status: 'active',
+                      }
+                    : enr
+                )
+              : undefined;
+            return {
+              ...stu,
+              ...(nestedEnr ? { enrollments: nestedEnr } : {}),
+            };
+          }),
+          enrollments: prev.enrollments.map(e => {
+            const matchStudent = candidateStudentIds.includes(String(e.student_id));
+            const matchClass = !classId || e.class_id === classId;
+            const matchId = Boolean(enrollmentId && e.id === enrollmentId);
+            if ((matchStudent && matchClass) || matchId) {
+              return {
+                ...e,
+                status: 'active',
                 is_trial: false,
                 trial_attended: true,
                 trial_completed_action: 'promoted',
-                trial_outcome: 'promoted', 
-                trial_notes: 'Xác nhận lên học chính thức toàn khóa (Buổi thử tính là buổi 1)' 
-              } 
-            : e
-        ),
-        invoices: prev.invoices.map(inv => 
-          inv.student_id === enr.student_id && inv.class_id === enr.class_id && inv.is_trial_pending
-            ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' }
-            : inv
-        ),
-        notifications: [
-          {
-            id: `notif_${Date.now()}`,
-            type: 'enrollment_over_quota',
-            title: 'Học viên chính thức theo học sau buổi thử 1',
-            message: `Học sinh ${student?.name || ''} đã chuyển sang học CHÍNH THỨC lớp ${cls?.name || ''}. Hóa đơn học phí đã kích hoạt thanh toán VietQR.`,
-            date: new Date().toISOString().split('T')[0],
-            severity: 'low',
-            read: false,
-          },
-          ...prev.notifications,
-        ],
-      };
-    });
-    setTrialActionModal(null);
-    setTrialNotes('');
-    showToast('Đã chuyển học viên lên học CHÍNH THỨC toàn khóa và kích hoạt hóa đơn!', 'success', {
-      title: 'Chuyển lên học chính thức',
-    });
+                trial_outcome: 'promoted',
+                trial_notes: 'Xác nhận lên học chính thức toàn khóa (Buổi thử tính là buổi 1)',
+                ...({ enrollment_type: 'official' } as any),
+              };
+            }
+            return e;
+          }),
+          invoices: prev.invoices.map(inv =>
+            candidateStudentIds.includes(String(inv.student_id)) &&
+            (!classId || inv.class_id === classId) &&
+            inv.is_trial_pending
+              ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' }
+              : inv
+          ),
+          notifications: [
+            {
+              id: `notif_${Date.now()}`,
+              type: 'enrollment_over_quota',
+              title: 'Học viên chính thức theo học sau buổi thử 1',
+              message: `Học sinh ${student?.name || studentId} đã chuyển sang học CHÍNH THỨC lớp ${cls?.name || classId || ''}. Hóa đơn học phí đã kích hoạt thanh toán VietQR.`,
+              date: new Date().toISOString().split('T')[0],
+              severity: 'low',
+              read: false,
+            },
+            ...prev.notifications,
+          ],
+        };
+      });
+
+      setTrialActionModal(null);
+      setTrialNotes('');
+
+      alert('Đã lưu thành công trạng thái CHÍNH THỨC vào CSDL Supabase!');
+      showToast('Đã lưu thành công trạng thái CHÍNH THỨC vào CSDL Supabase!', 'success', {
+        title: 'Chuyển lên học chính thức',
+      });
+
+      // Load lại dữ liệu từ DB để đảm bảo đồng bộ 100%
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
+    } catch (err: any) {
+      console.error('Lỗi khi chuyển lên chính thức:', err);
+      alert('Không thể lưu trạng thái chính thức: ' + (err.message || JSON.stringify(err)));
+    }
+  };
+
+  const handleConfirmPromoteTrial = async (enrollmentId: string) => {
+    const enr = store.enrollments.find(e => e.id === enrollmentId) || trialActionModal?.enrollment;
+    const studentId = enr?.student_id || trialActionModal?.student?.id || trialActionModal?.student?.code;
+    if (!studentId) return;
+    await handlePromoteToOfficial(studentId, enr?.class_id, enrollmentId);
   };
 
   // Drop Trial Enrollment (Nghỉ sau buổi học thử 1 - Hủy hóa đơn, không nợ, giải phóng chỗ)
@@ -1263,11 +1361,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                 days_of_week: ['T2', 'T4'],
                                 total_sessions: 24,
                               };
-                              const isTrial =
+                              const isTrial = Boolean(
+                                enr.is_trial === true ||
                                 (enr as any).enrollment_type === 'trial' ||
-                                enr.status === 'trial' ||
-                                (enr.status as string) === 'trial_pending' ||
-                                (enr as any).is_trial === true;
+                                (enr.status as string) === 'trial_pending'
+                              );
                               const shortName = (c.name || 'Môn học').split('-')[0].trim();
                               const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
                                 ? c.days_of_week
@@ -1315,9 +1413,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                   {isTrial && (
                                     <div className="flex items-center gap-1 flex-wrap">
                                       <button
-                                        onClick={() => setTrialActionModal({ type: 'promote', student, enrollment: enr, className: c.name })}
-                                        className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9.5px] font-bold flex items-center gap-1 transition-colors"
-                                        title="Chuyển Lên Chính Thức (Kích hoạt hóa đơn toàn khóa)"
+                                        onClick={() => handlePromoteToOfficial(student.id, enr.class_id, enr.id)}
+                                        className="px-2 py-0.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[9.5px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                        title="Chuyển Lên Chính Thức (Lưu trực tiếp vào CSDL Supabase)"
                                       >
                                         <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                                         <span>✓ Lên chính thức</span>
@@ -1533,11 +1631,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             days_of_week: ['T2', 'T4'],
                             total_sessions: 24,
                           };
-                          const isTrial =
+                          const isTrial = Boolean(
+                            enr.is_trial === true ||
                             (enr as any).enrollment_type === 'trial' ||
-                            enr.status === 'trial' ||
-                            (enr.status as string) === 'trial_pending' ||
-                            (enr as any).is_trial === true;
+                            (enr.status as string) === 'trial_pending'
+                          );
                           const shortName = (c.name || 'Môn học').split('-')[0].trim();
                           const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
                             ? c.days_of_week
@@ -1585,9 +1683,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               {isTrial && (
                                 <div className="flex items-center gap-1.5">
                                   <button
-                                    onClick={() => setTrialActionModal({ type: 'promote', student, enrollment: enr, className: c.name })}
-                                    className="flex-1 px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
-                                    title="Chuyển Lên Chính Thức (Kích hoạt hóa đơn toàn khóa)"
+                                    onClick={() => handlePromoteToOfficial(student.id, enr.class_id, enr.id)}
+                                    className="flex-1 px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                                    title="Chuyển Lên Chính Thức (Lưu trực tiếp vào CSDL Supabase)"
                                   >
                                     <CheckCircle2 className="w-3 h-3 text-emerald-400" />
                                     <span>✓ Lên chính thức</span>

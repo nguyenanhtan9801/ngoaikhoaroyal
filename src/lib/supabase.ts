@@ -1312,19 +1312,27 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
       }));
 
     case 'enrollments':
-      return (store.enrollments || []).map(e => ({
-        id: e.id,
-        student_id: e.student_id,
-        class_id: e.class_id,
-        registered_sessions: e.registered_sessions || 24,
-        joined_date: e.joined_date || new Date().toISOString().split('T')[0],
-        enrolled_days_of_week: e.enrolled_days_of_week || [],
-        is_partial_schedule: Boolean(e.is_partial_schedule),
-        is_trial: Boolean(e.is_trial),
-        trial_session_date: e.trial_session_date || null,
-        trial_attended: Boolean(e.trial_attended),
-        status: e.status || 'active',
-      }));
+      return (store.enrollments || []).map(e => {
+        const isTrial = Boolean(
+          e.is_trial === true ||
+          (e as any).enrollment_type === 'trial' ||
+          (e.status as string) === 'trial_pending'
+        );
+        return {
+          id: e.id,
+          student_id: e.student_id,
+          class_id: e.class_id,
+          registered_sessions: e.registered_sessions || 24,
+          joined_date: e.joined_date || new Date().toISOString().split('T')[0],
+          enrolled_days_of_week: e.enrolled_days_of_week || [],
+          is_partial_schedule: Boolean(e.is_partial_schedule),
+          is_trial: isTrial,
+          enrollment_type: isTrial ? 'trial' : 'official',
+          trial_session_date: e.trial_session_date || null,
+          trial_attended: Boolean(e.trial_attended),
+          status: isTrial ? 'trial' : (e.status === 'dropped' || e.status === 'trial_dropped' ? e.status : 'active'),
+        };
+      });
 
     case 'attendance_records':
       return (store.attendance || []).map(a => ({
@@ -1684,19 +1692,27 @@ export async function pullAllTablesFromSupabase(
           });
           break;
         case 'enrollments':
-          nextStore.enrollments = data.map((r: any): Enrollment => ({
-            id: r.id,
-            student_id: r.student_id,
-            class_id: r.class_id,
-            registered_sessions: Number(r.registered_sessions) || 24,
-            joined_date: r.joined_date || new Date().toISOString().split('T')[0],
-            enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : undefined,
-            is_partial_schedule: Boolean(r.is_partial_schedule),
-            is_trial: Boolean(r.is_trial),
-            trial_session_date: r.trial_session_date || undefined,
-            trial_attended: Boolean(r.trial_attended),
-            status: r.status || 'active',
-          }));
+          nextStore.enrollments = data.map((r: any): Enrollment => {
+            const isTrial = Boolean(
+              r.is_trial === true ||
+              r.enrollment_type === 'trial' ||
+              r.status === 'trial_pending'
+            );
+            return {
+              id: r.id,
+              student_id: r.student_id,
+              class_id: r.class_id,
+              registered_sessions: Number(r.registered_sessions) || 24,
+              joined_date: r.joined_date || new Date().toISOString().split('T')[0],
+              enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : undefined,
+              is_partial_schedule: Boolean(r.is_partial_schedule),
+              is_trial: isTrial,
+              trial_session_date: r.trial_session_date || undefined,
+              trial_attended: Boolean(r.trial_attended),
+              status: isTrial ? 'trial' : (r.status === 'dropped' || r.status === 'trial_dropped' ? r.status : 'active'),
+              ...({ enrollment_type: isTrial ? 'trial' : 'official' } as any),
+            };
+          });
           break;
         case 'attendance_records':
           nextStore.attendance = data.map((r: any): AttendanceRecord => ({
@@ -2008,9 +2024,8 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
 
     case 'enrollments': {
       const isTrial = Boolean(
-        r.is_trial ||
+        r.is_trial === true ||
         r.enrollment_type === 'trial' ||
-        r.status === 'trial' ||
         r.status === 'trial_pending'
       );
       return {
@@ -2024,7 +2039,8 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         is_trial: isTrial,
         trial_session_date: r.trial_session_date || r.start_date || undefined,
         trial_attended: Boolean(r.trial_attended),
-        status: isTrial ? 'trial' : (r.status || 'active'),
+        status: isTrial ? 'trial' : (r.status === 'dropped' || r.status === 'trial_dropped' ? r.status : 'active'),
+        ...({ enrollment_type: isTrial ? 'trial' : 'official' } as any),
       };
     }
 
