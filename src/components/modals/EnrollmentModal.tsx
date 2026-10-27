@@ -8,7 +8,7 @@ import {
   CheckCircle2, 
   AlertCircle 
 } from 'lucide-react';
-import { Student, ExtracurricularClass, Enrollment, TuitionInvoice, AppStore, Holiday } from '../../types';
+import { Student, ExtracurricularClass, Enrollment, TuitionInvoice, AppStore, Holiday, AcademicTerm } from '../../types';
 import { 
   formatVND, 
   deduplicateEnrollments, 
@@ -149,15 +149,126 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       .map((e) => String(e.class_id));
   }, [store.enrollments, enrollingStudent.id]);
 
+  // Danh sách Khóa học (Academic Terms) & Khóa học đang chọn
+  const [terms, setTerms] = useState<AcademicTerm[]>(store.terms || []);
+  const [selectedTermId, setSelectedTermId] = useState<string>(() => {
+    const activeTerm = (store.terms || []).find(
+      (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
+    ) || store.terms?.[0];
+    return activeTerm?.id || '';
+  });
+
+  // Lọc các lớp thuộc khóa học đang chọn
+  const termClasses = useMemo(() => {
+    if (!selectedTermId) return store.classes;
+    return store.classes.filter(
+      (cls) => cls.term_id === selectedTermId || (cls as any).primary_term_id === selectedTermId
+    );
+  }, [store.classes, selectedTermId]);
+
   const availableClasses = useMemo(() => {
-    return store.classes.filter((cls) => !enrolledClassIds.includes(String(cls.id)));
-  }, [store.classes, enrolledClassIds]);
+    return termClasses.filter((cls) => !enrolledClassIds.includes(String(cls.id)));
+  }, [termClasses, enrolledClassIds]);
+
+  // Lọc danh sách môn học mở trong khóa học đang chọn
+  const activeTermSubjects = useMemo(() => {
+    if (!selectedTermId) return store.subjects;
+
+    const termSubjectIds = new Set(
+      (store.termSubjects || [])
+        .filter((ts) => ts.term_id === selectedTermId && (ts.is_active === undefined || ts.is_active))
+        .map((ts) => ts.subject_id)
+    );
+
+    const subjectsWithClasses = new Set(termClasses.map((c) => String(c.subject_id)));
+
+    if (termSubjectIds.size > 0 || subjectsWithClasses.size > 0) {
+      return store.subjects.filter(
+        (s) => termSubjectIds.has(s.id) || subjectsWithClasses.has(String(s.id)) || termSubjectIds.has(s.code)
+      );
+    }
+
+    return store.subjects;
+  }, [store.subjects, store.termSubjects, selectedTermId, termClasses]);
 
   // Form State
   const [selectedEnrollSubjectId, setSelectedEnrollSubjectId] = useState<string>('all');
   const [selectedClassId, setSelectedClassId] = useState<string>(() => {
-    return availableClasses[0]?.id || store.classes[0]?.id || '';
+    return availableClasses[0]?.id || termClasses[0]?.id || store.classes[0]?.id || '';
   });
+
+  // Nạp danh sách Khóa học từ Supabase (bảng academic_terms)
+  useEffect(() => {
+    let isMounted = true;
+    const fetchTerms = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) {
+        if (store.terms && store.terms.length > 0 && isMounted) {
+          setTerms(store.terms);
+          const activeTerm = store.terms.find(
+            (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
+          ) || store.terms[0];
+          if (activeTerm && !selectedTermId) {
+            setSelectedTermId(activeTerm.id);
+          }
+        }
+        return;
+      }
+
+      try {
+        const { data, error } = await client
+          .from('academic_terms')
+          .select('*')
+          .order('start_date', { ascending: false });
+
+        if (isMounted) {
+          const termsData = (!error && data && data.length > 0) ? (data as AcademicTerm[]) : store.terms;
+          if (termsData && termsData.length > 0) {
+            setTerms(termsData);
+            const activeTerm = termsData.find(
+              (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
+            ) || termsData[0];
+            if (activeTerm && !selectedTermId) {
+              setSelectedTermId(activeTerm.id);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Lỗi tải academic_terms từ supabase:', err);
+      }
+    };
+
+    fetchTerms();
+    return () => { isMounted = false; };
+  }, [store.terms]);
+
+  // Xử lý khi thay đổi Khóa học (Academic Term)
+  const handleTermChange = (newTermId: string) => {
+    setSelectedTermId(newTermId);
+    setSelectedEnrollSubjectId('all');
+
+    const newTermClasses = store.classes.filter(
+      (c) => (c.term_id === newTermId || (c as any).primary_term_id === newTermId) && !enrolledClassIds.includes(String(c.id))
+    );
+    if (newTermClasses.length > 0) {
+      setSelectedClassId(newTermClasses[0].id);
+    } else {
+      const anyInTerm = store.classes.filter(
+        (c) => c.term_id === newTermId || (c as any).primary_term_id === newTermId
+      );
+      setSelectedClassId(anyInTerm[0]?.id || '');
+    }
+  };
+
+  // Đồng bộ selectedClassId khi termClasses thay đổi
+  useEffect(() => {
+    if (!selectedTermId) return;
+    const isCurrentValid = termClasses.some((c) => String(c.id) === String(selectedClassId));
+    if (!isCurrentValid && termClasses.length > 0) {
+      const openClass = termClasses.find((c) => !enrolledClassIds.includes(String(c.id))) || termClasses[0];
+      setSelectedClassId(openClass?.id || '');
+    }
+  }, [selectedTermId, termClasses, selectedClassId, enrolledClassIds]);
 
   const [isTrialMode, setIsTrialMode] = useState<boolean>(false);
   const [trialSessionDate, setTrialSessionDate] = useState<string>('');
@@ -347,11 +458,11 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
   const isCurrentClassAlreadyEnrolled = Boolean(selectedClassId && enrolledClassIds.includes(String(selectedClassId)));
 
   const filteredClassesToDisplay = useMemo(() => {
-    if (selectedEnrollSubjectId === 'all') return store.classes;
-    return store.classes.filter(
+    if (selectedEnrollSubjectId === 'all') return termClasses;
+    return termClasses.filter(
       c => String(c.subject_id) === String(selectedEnrollSubjectId) || (c as any).subject_code === String(selectedEnrollSubjectId)
     );
-  }, [store.classes, selectedEnrollSubjectId]);
+  }, [termClasses, selectedEnrollSubjectId]);
 
   const rate = Number(
     selectedClass?.price_per_session || 
@@ -589,6 +700,33 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
         )}
 
         <div className="space-y-3.5 text-xs">
+          {/* 0. Chọn Khóa học */}
+          <div className="space-y-1.5 pb-1">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                <span>0. Chọn Khóa học (Academic Term) <span className="text-rose-400">*</span>:</span>
+              </label>
+              {selectedTermId && (
+                <span className="text-[11px] text-slate-400 font-medium">
+                  {terms.find(t => t.id === selectedTermId)?.name}
+                </span>
+              )}
+            </div>
+
+            <select
+              value={selectedTermId}
+              onChange={(e) => handleTermChange(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs font-medium text-white focus:outline-none focus:border-amber-500 transition-colors"
+            >
+              {terms.map((term) => (
+                <option key={term.id} value={term.id}>
+                  {term.name} {term.is_active ? '★ (Đang tuyển sinh / Diễn ra)' : ''} [{term.start_date ? formatDateVN(term.start_date) : ''} - {term.end_date ? formatDateVN(term.end_date) : ''}]
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* 1. Chọn Môn Học */}
           <div>
             <label className="block text-slate-400 font-medium mb-1 flex items-center justify-between">
@@ -602,7 +740,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                   onClick={() => setSelectedEnrollSubjectId('all')}
                   className="text-[10px] text-amber-300 hover:underline cursor-pointer"
                 >
-                  Xem tất cả môn ({store.subjects.length})
+                  Xem tất cả môn ({activeTermSubjects.length})
                 </button>
               )}
             </label>
@@ -618,8 +756,8 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                   setSelectedClassId(matching[0].id);
                 } else {
                   const anyMatching = subId === 'all'
-                    ? store.classes
-                    : store.classes.filter(c => String(c.subject_id) === String(subId) || (c as any).subject_code === String(subId));
+                    ? termClasses
+                    : termClasses.filter(c => String(c.subject_id) === String(subId) || (c as any).subject_code === String(subId));
                   if (anyMatching.length > 0) {
                     setSelectedClassId(anyMatching[0].id);
                   }
@@ -627,10 +765,11 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
               }}
               className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500 transition-colors"
             >
-              <option value="all">-- Tất cả môn học ({store.subjects.length} môn) --</option>
-              {store.subjects.map((s) => {
-                const openCount = availableClasses.filter(
-                  (c) => String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)
+              <option value="all">-- Tất cả môn học ({activeTermSubjects.length} môn) --</option>
+              {activeTermSubjects.map((s) => {
+                const openCount = termClasses.filter(
+                  (c) => (String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)) &&
+                         !enrolledClassIds.includes(String(c.id))
                 ).length;
                 return (
                   <option key={s.id} value={s.id}>
@@ -714,7 +853,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
           {/* 4. Hình thức: Học chính thức vs Học thử 1 buổi */}
           <div className="space-y-1.5">
             <label className="block text-slate-400 font-medium">
-              Hình thức nhập học môn này <span className="text-rose-400">*</span>:
+              4. Hình thức: Học chính thức vs Học thử 1 buổi <span className="text-rose-400">*</span>:
             </label>
             <div className="grid grid-cols-2 gap-2">
               <button

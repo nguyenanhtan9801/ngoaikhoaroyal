@@ -103,6 +103,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const [customStudentCode, setCustomStudentCode] = useState<string>('');
   const [mergedMedicalNotes, setMergedMedicalNotes] = useState<string>('');
   const [enrollNote, setEnrollNote] = useState<string>('');
+  const [isSubmittingEnrollment, setIsSubmittingEnrollment] = useState<boolean>(false);
 
   // Bulk 1-Click Quick Assignment State
   const [selectedLeadIdsForBulk, setSelectedLeadIdsForBulk] = useState<string[]>([]);
@@ -756,272 +757,437 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   };
 
   // Execute Multi-Class Enrollment & Existing Student Merge
-  const handleConfirmEnrollment = () => {
+  const handleConfirmEnrollment = async () => {
     if (!selectedLeadForEnroll) return;
-    const lead = selectedLeadForEnroll;
-    const subjects = getSubjectsForLead(lead);
-    const matchRes = matchLeadWithDatabase(lead, store);
-    const matchedStudent = matchRes.matchedStudent;
+    if (isSubmittingEnrollment) return;
+    setIsSubmittingEnrollment(true);
 
-    // Get selected class IDs ONLY for subjects whose mode is 'assign_now'
-    const activeAssignedEntries = Object.entries(assignedClassesBySubject).filter(([subId, classId]) => {
-      const mode = subjectAssignModes[subId] ?? 'assign_now';
-      return mode === 'assign_now' && Boolean(classId);
-    });
+    try {
+      const lead = selectedLeadForEnroll;
+      const subjects = getSubjectsForLead(lead);
+      const matchRes = matchLeadWithDatabase(lead, store);
+      const matchedStudent = matchRes.matchedStudent;
 
-    const alreadyEnrolledSubjectsCount = subjects.filter(
-      s => subjectAssignModes[s.subject_id] === 'already_enrolled'
-    ).length;
-    const newRequestedSubjectsCount = Math.max(0, subjects.length - alreadyEnrolledSubjectsCount);
+      // Get selected class IDs ONLY for subjects whose mode is 'assign_now'
+      const activeAssignedEntries = Object.entries(assignedClassesBySubject).filter(([subId, classId]) => {
+        const mode = subjectAssignModes[subId] ?? 'assign_now';
+        return mode === 'assign_now' && Boolean(classId);
+      });
 
-    const selectedClassIds = activeAssignedEntries.map(([_, classId]) => classId);
-    const selectedClassObjects = selectedClassIds
-      .map(id => store.classes.find(c => c.id === id))
-      .filter((c): c is ExtracurricularClass => Boolean(c));
+      const alreadyEnrolledSubjectsCount = subjects.filter(
+        s => subjectAssignModes[s.subject_id] === 'already_enrolled'
+      ).length;
+      const newRequestedSubjectsCount = Math.max(0, subjects.length - alreadyEnrolledSubjectsCount);
 
-    const totalRequested = subjects.length;
-    const assignedCount = selectedClassObjects.length;
+      const selectedClassIds = activeAssignedEntries.map(([_, classId]) => classId);
+      const selectedClassObjects = selectedClassIds
+        .map(id => store.classes.find(c => c.id === id))
+        .filter((c): c is ExtracurricularClass => Boolean(c));
 
-    // Check if student already exists via Matching Engine or code
-    const existingStudent =
-      matchedStudent ||
-      store.students.find(
-        s =>
-          s.code === customStudentCode.trim() ||
-          (lead.assigned_student_code && s.code === lead.assigned_student_code)
-      );
+      const totalRequested = subjects.length;
+      const assignedCount = selectedClassObjects.length;
 
-    // Ensure 1 student has strictly 1 unique student code across all terms
-    const studentCode = existingStudent
-      ? existingStudent.code
-      : customStudentCode.trim() || generateStudentCode(lead.is_royal_student, store.students);
-    const studentId = existingStudent ? existingStudent.id : `std_${Date.now()}`;
-    const finalMedicalNotes = mergedMedicalNotes.trim() || existingStudent?.medical_notes || lead.medical_notes;
+      // Check if student already exists via Matching Engine or code
+      const existingStudent =
+        matchedStudent ||
+        store.students.find(
+          s =>
+            s.code === customStudentCode.trim() ||
+            (lead.assigned_student_code && s.code === lead.assigned_student_code)
+        );
 
-    let newStudent: Student | null = null;
-    if (!existingStudent) {
+      // Ensure 1 student has strictly 1 unique student code across all terms
+      const studentCode = existingStudent
+        ? existingStudent.code
+        : customStudentCode.trim() || generateStudentCode(lead.is_royal_student, store.students);
+      const studentId = existingStudent ? existingStudent.id : studentCode;
+      const finalMedicalNotes = mergedMedicalNotes.trim() || existingStudent?.medical_notes || lead.medical_notes || 'Bình thường';
       const targetCampusId: 'pmh' | 'pl' =
         lead.desired_campus_id === 'camp_pl' || lead.desired_campus_id === 'pl' ? 'pl' : 'pmh';
-      const regularCls = lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường');
-      newStudent = {
-        id: studentId,
-        code: studentCode,
-        name: lead.student_name.trim(),
-        dob: lead.student_dob,
-        birth_date: lead.student_dob,
-        gender: 'Nam',
-        campus_id: targetCampusId,
-        student_type: lead.is_royal_student ? 'royal' : 'external',
-        has_snack: lead.is_royal_student,
-        parent_name: lead.parent_name.trim(),
-        parent_phone: lead.parent_phone.trim(),
-        school_name: lead.is_royal_student
-          ? targetCampusId === 'pl'
-            ? 'Royal School Phú Lâm'
-            : 'Royal School PMH'
-          : lead.current_school || 'Trường ngoài',
-        regular_class: regularCls,
-        class_name: regularCls,
-        is_royal_student: lead.is_royal_student,
-        medical_notes: finalMedicalNotes,
-        status: 'active',
-        created_at: new Date().toISOString().split('T')[0],
-      };
-    }
+      const campusFullId = targetCampusId === 'pl' ? 'camp_pl' : 'camp_pmh';
+      const regularCls = lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Khối Mầm Non');
+      const rawDob = lead.student_dob || (lead as any).dob || '2016-05-15';
+      const studentType = lead.is_royal_student ? 'royal' : 'external';
 
-    // 2. Tạo bản ghi ghi danh (enrollments) & 3. Tạo hóa đơn học phí (invoices) theo đúng số buổi thực học
-    const existingEnrollmentsForStudent = store.enrollments.filter(e => e.student_id === studentId);
-    const newEnrollments: Enrollment[] = [];
-    const newInvoices: TuitionInvoice[] = [];
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    selectedClassObjects.forEach((cls, idx) => {
-      const classDays = getClassDaysOfWeek(cls, store);
-      const chosenDays = subjectEnrolledDays[cls.subject_id] && subjectEnrolledDays[cls.subject_id].length > 0
-        ? subjectEnrolledDays[cls.subject_id]
-        : classDays;
-      const startDate = subjectStartDates[cls.subject_id] || getDefaultClassStartDate(cls, store, undefined, chosenDays);
-      const autoCalc = calculateRemainingSessions(cls, startDate, store, chosenDays);
-      const effectiveSessions = subjectCustomSessions[cls.subject_id] ?? autoCalc.remainingSessions;
-      const pricing = calculateClassProratedPricing(cls, effectiveSessions, lead.is_royal_student, store);
-      const isTrial = subjectEnrollmentTypes[cls.subject_id] === 'trial';
-      const subObj = store.subjects.find(s => s.id === cls.subject_id);
-      const subShortName = (subObj?.name || cls.name).split('(')[0].trim();
-      const scheduleLabel = formatStudentScheduleLabel(autoCalc.enrolledDaysOfWeek, autoCalc.daysOfWeek);
-
-      const alreadyInClass = existingEnrollmentsForStudent.some(
-        e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial')
-      );
-      if (!alreadyInClass) {
-        newEnrollments.push({
-          id: `enr_${Date.now()}_${idx}`,
-          student_id: studentId,
-          class_id: cls.id,
-          registered_sessions: pricing.effectiveSessions,
-          joined_date: startDate,
-          enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
-          is_partial_schedule: autoCalc.isPartialSchedule,
-          status: isTrial ? 'trial' : 'active',
-          is_trial: isTrial,
-          trial_session_date: isTrial ? startDate : undefined,
-          trial_attended: false,
-          trial_notes: isTrial
-            ? `Đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(startDate)} (${scheduleLabel} • ${pricing.effectiveSessions}/${pricing.totalSessions} buổi)`
-            : undefined,
-        });
+      let newStudent: Student | null = null;
+      if (!existingStudent) {
+        newStudent = {
+          id: studentId,
+          code: studentCode,
+          name: lead.student_name.trim(),
+          dob: rawDob,
+          birth_date: rawDob,
+          gender: 'Nam',
+          campus_id: targetCampusId,
+          student_type: studentType,
+          has_snack: lead.is_royal_student,
+          parent_name: lead.parent_name?.trim() || 'Phụ huynh',
+          parent_phone: lead.parent_phone?.trim() || '',
+          school_name: lead.is_royal_student
+            ? targetCampusId === 'pl'
+              ? 'Royal School Phú Lâm'
+              : 'Royal School PMH'
+            : lead.current_school || 'Trường ngoài',
+          regular_class: regularCls,
+          class_name: regularCls,
+          is_royal_student: lead.is_royal_student,
+          medical_notes: finalMedicalNotes,
+          status: 'active',
+          created_at: new Date().toISOString().split('T')[0],
+        };
       }
 
-      // Check if invoice for this class and student already exists
-      const alreadyInvoiced = store.invoices.some(
-        inv => inv.student_id === studentId && inv.class_id === cls.id && inv.payment_status !== 'cancelled'
-      );
-      if (!alreadyInvoiced) {
-        const proratedNote = autoCalc.isPartialSchedule
-          ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${pricing.effectiveSessions} buổi x ${formatVND(pricing.sessionRate)}/buổi)`
-          : pricing.isMidCourse
-          ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDate)})`
-          : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
+      const client = getSupabaseClient() || supabase;
 
-        newInvoices.push({
-          id: `inv_${Date.now()}_${idx}`,
-          invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`,
-          student_id: studentId,
-          class_id: cls.id,
-          gross_amount: pricing.proratedGrossFee,
-          discount_amount: pricing.discountAmount,
-          credit_deducted: 0,
-          net_payable: pricing.netPayable,
-          paid_amount: 0,
-          outstanding_amount: pricing.netPayable,
-          payment_status: 'unpaid',
-          is_trial_pending: isTrial,
-          trial_fee: 0,
-          registered_sessions: pricing.effectiveSessions,
-          total_class_sessions: pricing.totalSessions,
-          session_rate: pricing.sessionRate,
-          start_date: startDate,
-          enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
-          is_partial_schedule: autoCalc.isPartialSchedule,
-          is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
-          prorated_note: proratedNote,
-          created_at: todayStr,
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        });
-      }
-    });
+      // ========================================================
+      // BƯỚC 1: TẠO HOẶC CẬP NHẬT HỒ SƠ HỌC VIÊN VÀO BẢNG public.students
+      // ========================================================
+      if (client) {
+        const studentPayload: any = {
+          id: studentId,
+          student_code: studentCode,
+          code: studentCode,
+          full_name: lead.student_name.trim(),
+          name: lead.student_name.trim(),
+          normalized_name: lead.student_name.trim().toLowerCase(),
+          date_of_birth: rawDob,
+          dob: rawDob,
+          gender: 'Nam',
+          grade: regularCls,
+          grade_level: regularCls,
+          regular_class: regularCls,
+          campus_id: campusFullId,
+          student_type: studentType,
+          is_royal_student: Boolean(lead.is_royal_student),
+          parent_name: lead.parent_name?.trim() || 'Phụ huynh',
+          parent_phone: lead.parent_phone?.trim() || '',
+          parent_email: lead.parent_email?.trim() || '',
+          medical_notes: finalMedicalNotes,
+          status: 'active',
+          school_name: lead.is_royal_student
+            ? (targetCampusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH')
+            : lead.current_school || 'Trường ngoài',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
 
-    // 4. Cập nhật trạng thái đơn đăng ký (parentRegistrations)
-    const totalFulfilled = assignedCount + alreadyEnrolledSubjectsCount;
-    const isFullEnrollment = totalFulfilled >= totalRequested && totalRequested > 0;
-    const isPartialEnrollment = totalFulfilled > 0 && totalFulfilled < totalRequested;
-    const newStatus: 'enrolled' | 'partially_enrolled' | 'contacted' = isFullEnrollment
-      ? 'enrolled'
-      : isPartialEnrollment
-      ? 'partially_enrolled'
-      : 'contacted';
+        const { error: studentError } = await client
+          .from('students')
+          .upsert(studentPayload, { onConflict: 'id' });
 
-    const assignedNames = selectedClassObjects.map(c => c.name).join(', ');
-    const unassignedSubjectsList = subjects
-      .filter(s => subjectAssignModes[s.subject_id] === 'unassigned')
-      .map(s => {
-        const reason = unassignedReasons[s.subject_id] ? ` [Lý do: ${unassignedReasons[s.subject_id]}]` : '';
-        return `${s.subject_name}${reason}`;
-      })
-      .join('; ');
-
-    let updatedNote = '';
-    if (existingStudent) {
-      updatedNote = `Đã gộp vào hồ sơ học viên hiện tại [${studentCode} - ${existingStudent.name}]. Thêm ${assignedCount}/${newRequestedSubjectsCount || totalRequested} môn mới: ${assignedNames || 'Không phát sinh lớp mới'}. ${enrollNote}`;
-    } else if (newStatus === 'enrolled') {
-      updatedNote = `Đã phân bổ đủ ${assignedCount}/${totalRequested} môn: ${assignedNames} (Mã HV: ${studentCode}). ${enrollNote}`;
-    } else if (newStatus === 'partially_enrolled') {
-      updatedNote = `Đã phân bổ ${assignedCount}/${totalRequested} môn: ${assignedNames}. Chờ mở lớp: ${unassignedSubjectsList} (Mã HV: ${studentCode}). ${enrollNote}`;
-    } else {
-      updatedNote = `Đã tiếp nhận hồ sơ & cấp Mã HV: ${studentCode}. Toàn bộ ${totalRequested} môn chuyển danh sách Chờ xếp lớp: ${unassignedSubjectsList}. ${enrollNote}`;
-    }
-
-    const staffName = currentUser?.full_name || 'Chuyên viên Tuyển sinh';
-    const auditDescription = existingStudent
-      ? `Tuyển sinh ${staffName} đã tiếp nhận đơn ${lead.registration_code || lead.id} và gộp môn học mới vào học sinh hiện tại [${studentCode} - ${existingStudent.name}]`
-      : `Tiếp nhận đơn ${lead.registration_code || lead.id}: Xếp ${assignedCount}/${totalRequested} môn cho học sinh mới ${lead.student_name.trim()} (Mã HV: ${studentCode})`;
-
-    const assignLog = createAuditRecord(
-      'CLASS_ASSIGN',
-      'ACADEMIC',
-      existingStudent ? 'Gộp Môn Học Vào Học Viên Hiện Tại' : 'Xếp lớp Đa môn Tuyển sinh',
-      auditDescription,
-      currentUser || null,
-      {
-        target_id: lead.registration_code || lead.id,
-        details: {
-          status: 'success',
-          after: {
-            registration_code: lead.registration_code || lead.id,
-            linked_student_id: studentId,
-            student_code: studentCode,
-            is_existing_student_merge: Boolean(existingStudent),
-            assigned_classes: selectedClassIds,
-            status: newStatus,
-            enrollments_count: newEnrollments.length,
-            invoices_count: newInvoices.length,
+        if (studentError) {
+          console.warn('Lỗi upsert student full payload, thử lại với schema chuẩn:', studentError.message);
+          const fallbackPayload = {
+            id: studentId,
+            code: studentCode,
+            name: lead.student_name.trim(),
+            normalized_name: lead.student_name.trim().toLowerCase(),
+            date_of_birth: rawDob,
+            dob: rawDob,
+            gender: 'Nam',
+            grade_level: regularCls,
+            regular_class: regularCls,
+            student_type: studentType,
+            is_royal_student: Boolean(lead.is_royal_student),
+            parent_name: lead.parent_name?.trim() || '',
+            parent_phone: lead.parent_phone?.trim() || '',
+            medical_notes: finalMedicalNotes,
+            status: 'active',
+            created_at: new Date().toISOString()
+          };
+          const { error: fallbackErr } = await client
+            .from('students')
+            .upsert(fallbackPayload, { onConflict: 'id' });
+          if (fallbackErr) {
+            throw new Error('Lỗi khi lưu học sinh vào CSDL: ' + fallbackErr.message);
           }
         }
       }
-    );
 
-    const existingEnrolledClassIds = matchRes.enrolledClasses.map(c => c.id);
-    const mergedClassIds = Array.from(
-      new Set([...(lead.assigned_class_ids || []), ...existingEnrolledClassIds, ...selectedClassIds])
-    );
+      // ========================================================
+      // BƯỚC 2: TẠO BẢN GHI DANH VÀO BẢNG public.enrollments CHO TỪNG MÔN
+      // ========================================================
+      const existingEnrollmentsForStudent = store.enrollments.filter(e => e.student_id === studentId);
+      const newEnrollments: Enrollment[] = [];
+      const newInvoices: TuitionInvoice[] = [];
+      const todayStr = new Date().toISOString().split('T')[0];
 
-    onUpdateStore(prev => ({
-      ...prev,
-      students: newStudent 
-        ? [newStudent, ...prev.students] 
-        : prev.students.map(s => 
-            s.id === studentId 
-              ? {
-                  ...s,
-                  medical_notes: finalMedicalNotes || s.medical_notes,
-                  parent_phone: lead.parent_phone?.trim() || s.parent_phone,
-                  regular_class: s.regular_class || lead.student_grade,
-                }
-              : s
-          ),
-      enrollments: [...newEnrollments, ...prev.enrollments],
-      invoices: [...newInvoices, ...prev.invoices],
-      parentRegistrations: prev.parentRegistrations.map(r => 
-        r.id === lead.id 
-          ? { 
-              ...r, 
-              status: newStatus,
+      for (let idx = 0; idx < selectedClassObjects.length; idx++) {
+        const cls = selectedClassObjects[idx];
+        const classDays = getClassDaysOfWeek(cls, store);
+        const chosenDays = subjectEnrolledDays[cls.subject_id] && subjectEnrolledDays[cls.subject_id].length > 0
+          ? subjectEnrolledDays[cls.subject_id]
+          : classDays;
+        const startDate = subjectStartDates[cls.subject_id] || getDefaultClassStartDate(cls, store, undefined, chosenDays);
+        const autoCalc = calculateRemainingSessions(cls, startDate, store, chosenDays);
+        const effectiveSessions = subjectCustomSessions[cls.subject_id] ?? autoCalc.remainingSessions;
+        const pricing = calculateClassProratedPricing(cls, effectiveSessions, lead.is_royal_student, store);
+        const isTrial = subjectEnrollmentTypes[cls.subject_id] === 'trial';
+        const subObj = store.subjects.find(s => s.id === cls.subject_id);
+        const subShortName = (subObj?.name || cls.name).split('(')[0].trim();
+        const scheduleLabel = formatStudentScheduleLabel(autoCalc.enrolledDaysOfWeek, autoCalc.daysOfWeek);
+        const enrId = `enr_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`;
+
+        const alreadyInClass = existingEnrollmentsForStudent.some(
+          e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial')
+        );
+        if (!alreadyInClass) {
+          const enrRecord: Enrollment = {
+            id: enrId,
+            student_id: studentId,
+            class_id: cls.id,
+            registered_sessions: isTrial ? 1 : pricing.effectiveSessions,
+            joined_date: startDate,
+            enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+            is_partial_schedule: autoCalc.isPartialSchedule,
+            status: isTrial ? 'trial' : 'active',
+            is_trial: isTrial,
+            trial_session_date: isTrial ? startDate : undefined,
+            trial_attended: false,
+            trial_notes: isTrial
+              ? `Đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(startDate)} (${scheduleLabel} • ${pricing.effectiveSessions}/${pricing.totalSessions} buổi)`
+              : undefined,
+          };
+          newEnrollments.push(enrRecord);
+
+          if (client) {
+            const enrollmentPayload: any = {
+              id: enrId,
               student_id: studentId,
-              assigned_student_id: studentId,
-              linked_student_id: studentId,
-              assigned_class_id: selectedClassObjects[0]?.id || r.assigned_class_id,
-              assigned_class_ids: mergedClassIds,
-              assigned_student_code: studentCode,
-              contact_notes: updatedNote,
-            } 
-          : r
-      ),
-      auditLogs: [assignLog, ...(prev.auditLogs || [])],
-    }));
+              class_id: cls.id,
+              term_id: cls.term_id,
+              enrollment_type: isTrial ? 'trial' : 'official',
+              status: isTrial ? 'trial' : 'active',
+              is_trial: isTrial,
+              trial_session_count: isTrial ? 1 : 0,
+              trial_session_date: isTrial ? startDate : null,
+              trial_attended: false,
+              start_date: startDate,
+              joined_date: startDate,
+              total_sessions: isTrial ? 1 : pricing.effectiveSessions,
+              registered_sessions: isTrial ? 1 : pricing.effectiveSessions,
+              total_tuition: isTrial ? 0 : pricing.netPayable,
+              tuition_status: isTrial ? 'trial_deferred' : 'pending',
+              enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+              is_partial_schedule: autoCalc.isPartialSchedule,
+              trial_notes: isTrial ? `Học thử 1 buổi đầu (${scheduleLabel})` : null,
+              created_at: new Date().toISOString()
+            };
 
-    if (existingStudent) {
-      showToast(
-        `Đã gộp thêm ${assignedCount} môn mới vào hồ sơ học sinh hiện tại ${existingStudent.name} (${studentCode})!`,
-        'success',
-        { title: 'Tích hợp học viên hiện tại thành công' }
+            const { error: enrollError } = await client
+              .from('enrollments')
+              .upsert([enrollmentPayload], { onConflict: 'student_id,class_id' });
+
+            if (enrollError) {
+              console.warn('Lỗi ghi enrollments chi tiết, thử lại với schema chuẩn:', enrollError.message);
+              const fallbackEnrollPayload = {
+                id: enrId,
+                student_id: studentId,
+                class_id: cls.id,
+                joined_date: startDate,
+                enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+                registered_sessions: isTrial ? 1 : pricing.effectiveSessions,
+                status: isTrial ? 'trial' : 'active',
+                is_trial: isTrial,
+                trial_session_date: isTrial ? startDate : null,
+                trial_attended: false,
+                created_at: new Date().toISOString()
+              };
+              await client.from('enrollments').upsert([fallbackEnrollPayload], { onConflict: 'student_id,class_id' });
+            }
+
+            // Tăng sĩ số hiện tại của lớp
+            try {
+              await client.rpc('increment_class_enrolled_count', { class_id_input: cls.id });
+            } catch {
+              await client.from('extracurricular_classes')
+                .update({ current_students: (cls.current_students || 0) + 1 })
+                .eq('id', cls.id);
+            }
+          }
+        }
+
+        // Hóa đơn
+        const alreadyInvoiced = store.invoices.some(
+          inv => inv.student_id === studentId && inv.class_id === cls.id && inv.payment_status !== 'cancelled'
+        );
+        if (!alreadyInvoiced) {
+          const proratedNote = autoCalc.isPartialSchedule
+            ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${pricing.effectiveSessions} buổi x ${formatVND(pricing.sessionRate)}/buổi)`
+            : pricing.isMidCourse
+            ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDate)})`
+            : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
+
+          const invoicePayload: TuitionInvoice = {
+            id: `inv_${Date.now()}_${idx}`,
+            invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`,
+            student_id: studentId,
+            class_id: cls.id,
+            gross_amount: pricing.proratedGrossFee,
+            discount_amount: pricing.discountAmount,
+            credit_deducted: 0,
+            net_payable: pricing.netPayable,
+            paid_amount: 0,
+            outstanding_amount: pricing.netPayable,
+            payment_status: 'unpaid',
+            is_trial_pending: isTrial,
+            trial_fee: 0,
+            registered_sessions: pricing.effectiveSessions,
+            total_class_sessions: pricing.totalSessions,
+            session_rate: pricing.sessionRate,
+            start_date: startDate,
+            enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+            is_partial_schedule: autoCalc.isPartialSchedule,
+            is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
+            prorated_note: proratedNote,
+            created_at: todayStr,
+            due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          };
+          newInvoices.push(invoicePayload);
+
+          if (client) {
+            try {
+              await client.from('tuition_invoices').upsert([invoicePayload], { onConflict: 'id' });
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+
+      // ========================================================
+      // BƯỚC 3: CẬP NHẬT TRẠNG THÁI BẢNG parent_registrations TRÊN SUPABASE
+      // ========================================================
+      const totalFulfilled = assignedCount + alreadyEnrolledSubjectsCount;
+      const isFullEnrollment = totalFulfilled >= totalRequested && totalRequested > 0;
+      const isPartialEnrollment = totalFulfilled > 0 && totalFulfilled < totalRequested;
+      const newStatus: 'enrolled' | 'partially_enrolled' | 'contacted' = isFullEnrollment
+        ? 'enrolled'
+        : isPartialEnrollment
+        ? 'partially_enrolled'
+        : 'contacted';
+
+      const assignedNames = selectedClassObjects.map(c => c.name).join(', ');
+      const unassignedSubjectsList = subjects
+        .filter(s => subjectAssignModes[s.subject_id] === 'unassigned')
+        .map(s => {
+          const reason = unassignedReasons[s.subject_id] ? ` [Lý do: ${unassignedReasons[s.subject_id]}]` : '';
+          return `${s.subject_name}${reason}`;
+        })
+        .join('; ');
+
+      let updatedNote = '';
+      if (existingStudent) {
+        updatedNote = `Đã gộp vào hồ sơ học viên hiện tại [${studentCode} - ${existingStudent.name}]. Thêm ${assignedCount}/${newRequestedSubjectsCount || totalRequested} môn mới: ${assignedNames || 'Không phát sinh lớp mới'}. ${enrollNote}`;
+      } else if (newStatus === 'enrolled') {
+        updatedNote = `Đã phân bổ đủ ${assignedCount}/${totalRequested} môn: ${assignedNames} (Mã HV: ${studentCode}). ${enrollNote}`;
+      } else if (newStatus === 'partially_enrolled') {
+        updatedNote = `Đã phân bổ ${assignedCount}/${totalRequested} môn: ${assignedNames}. Chờ mở lớp: ${unassignedSubjectsList} (Mã HV: ${studentCode}). ${enrollNote}`;
+      } else {
+        updatedNote = `Đã tiếp nhận hồ sơ & cấp Mã HV: ${studentCode}. Toàn bộ ${totalRequested} môn chuyển danh sách Chờ xếp lớp: ${unassignedSubjectsList}. ${enrollNote}`;
+      }
+
+      const existingEnrolledClassIds = matchRes.enrolledClasses.map(c => c.id);
+      const mergedClassIds = Array.from(
+        new Set([...(lead.assigned_class_ids || []), ...existingEnrolledClassIds, ...selectedClassIds])
       );
-    } else if (newStatus === 'enrolled') {
-      showToast(`Đã phân bổ đủ ${assignedCount}/${totalRequested} môn & cấp mã học viên ${studentCode}!`);
-    } else if (newStatus === 'partially_enrolled') {
-      showToast(`Đã phân bổ ${assignedCount}/${totalRequested} môn (Trạng thái: Đã xếp một phần). Cấp mã học viên ${studentCode}!`);
-    } else {
-      showToast(`Đã tiếp nhận hồ sơ & cấp mã học viên ${studentCode}. Toàn bộ môn chuyển sang danh sách Chờ xếp lớp!`);
+
+      if (client) {
+        await client
+          .from('parent_registrations')
+          .update({
+            status: newStatus,
+            allocated_student_id: studentId,
+            student_id: studentId,
+            linked_student_id: studentId,
+            assigned_student_id: studentId,
+            assigned_student_code: studentCode,
+            assigned_class_id: selectedClassObjects[0]?.id || lead.assigned_class_id,
+            assigned_class_ids: mergedClassIds,
+            contact_notes: updatedNote,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', lead.id);
+      }
+
+      const staffName = currentUser?.full_name || 'Chuyên viên Tuyển sinh';
+      const auditDescription = existingStudent
+        ? `Tuyển sinh ${staffName} đã tiếp nhận đơn ${lead.registration_code || lead.id} và gộp môn học mới vào học sinh hiện tại [${studentCode} - ${existingStudent.name}]`
+        : `Tiếp nhận đơn ${lead.registration_code || lead.id}: Xếp ${assignedCount}/${totalRequested} môn cho học sinh mới ${lead.student_name.trim()} (Mã HV: ${studentCode})`;
+
+      const assignLog = createAuditRecord(
+        'CLASS_ASSIGN',
+        'ACADEMIC',
+        existingStudent ? 'Gộp Môn Học Vào Học Viên Hiện Tại' : 'Xếp lớp Đa môn Tuyển sinh',
+        auditDescription,
+        currentUser || null,
+        {
+          target_id: lead.registration_code || lead.id,
+          details: {
+            status: 'success',
+            after: {
+              registration_code: lead.registration_code || lead.id,
+              linked_student_id: studentId,
+              student_code: studentCode,
+              is_existing_student_merge: Boolean(existingStudent),
+              assigned_classes: selectedClassIds,
+              status: newStatus,
+              enrollments_count: newEnrollments.length,
+              invoices_count: newInvoices.length,
+            }
+          }
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        students: newStudent 
+          ? [newStudent, ...prev.students.filter(s => s.id !== studentId && s.code !== studentCode)] 
+          : prev.students.map(s => 
+              s.id === studentId 
+                ? {
+                    ...s,
+                    medical_notes: finalMedicalNotes || s.medical_notes,
+                    parent_phone: lead.parent_phone?.trim() || s.parent_phone,
+                    regular_class: s.regular_class || lead.student_grade,
+                  }
+                : s
+            ),
+        enrollments: [...newEnrollments, ...prev.enrollments.filter(e => !newEnrollments.some(ne => ne.student_id === e.student_id && ne.class_id === e.class_id))],
+        invoices: [...newInvoices, ...prev.invoices],
+        parentRegistrations: prev.parentRegistrations.map(r => 
+          r.id === lead.id 
+            ? { 
+                ...r, 
+                status: newStatus,
+                student_id: studentId,
+                assigned_student_id: studentId,
+                linked_student_id: studentId,
+                assigned_class_id: selectedClassObjects[0]?.id || r.assigned_class_id,
+                assigned_class_ids: mergedClassIds,
+                assigned_student_code: studentCode,
+                contact_notes: updatedNote,
+              } 
+            : r
+        ),
+        auditLogs: [assignLog, ...(prev.auditLogs || [])],
+      }));
+
+      showToast(
+        `Đã xếp lớp và lưu học sinh ${lead.student_name} (${studentCode}) thành công vào CSDL!`,
+        'success',
+        { title: 'Xếp lớp & Lưu CSDL thành công' }
+      );
+
+      setSelectedLeadForEnroll(null);
+      fetchLeadsFromSupabase(false);
+
+    } catch (err: any) {
+      console.error('Lỗi xếp lớp:', err);
+      alert('Không thể lưu dữ liệu xếp lớp: ' + (err.message || String(err)));
+    } finally {
+      setIsSubmittingEnrollment(false);
     }
-    setSelectedLeadForEnroll(null);
   };
 
   // Open Contact Notes Modal
@@ -1188,6 +1354,11 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     const todayStr = new Date().toISOString().split('T')[0];
     const staffName = currentUser?.full_name || 'Chuyên viên Tuyển sinh';
 
+    const supabaseStudents: any[] = [];
+    const supabaseEnrollments: any[] = [];
+    const supabaseInvoices: any[] = [];
+    const supabaseRegistrations: { id: string; payload: any }[] = [];
+
     onUpdateStore(prev => {
       let updatedStudents = [...prev.students];
       let updatedEnrollments = [...prev.enrollments];
@@ -1238,6 +1409,29 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             created_at: todayStr,
           };
           updatedStudents = [newStudentObj, ...updatedStudents];
+
+          supabaseStudents.push({
+            id: studentId,
+            code: studentCode,
+            student_code: studentCode,
+            name: lead.student_name.trim(),
+            full_name: lead.student_name.trim(),
+            dob: lead.student_dob,
+            date_of_birth: lead.student_dob,
+            gender: 'Nam',
+            parent_name: lead.parent_name.trim(),
+            parent_phone: lead.parent_phone.trim(),
+            school_name: lead.is_royal_student ? 'Royal School' : 'Trường ngoài',
+            regular_class: lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Ngoài trường'),
+            grade_level: lead.student_grade || 'Tiểu học',
+            is_royal_student: lead.is_royal_student,
+            student_type: lead.is_royal_student ? 'royal' : 'external',
+            medical_notes: lead.medical_notes || 'Bình thường',
+            campus_id: lead.campus_id === 'pl' || lead.campus_id === 'camp_pl' ? 'camp_pl' : 'camp_pmh',
+            status: 'active',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
         } else if (lead.medical_notes) {
           updatedStudents = updatedStudents.map(s =>
             s.id === studentId
@@ -1255,8 +1449,9 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             e => e.student_id === studentId && e.class_id === mCls.cls.id && (e.status === 'active' || e.status === 'trial')
           );
           if (!alreadyInClass) {
+            const enrId = `enr_bulk_${Date.now()}_${leadIdx}_${cIdx}`;
             updatedEnrollments.push({
-              id: `enr_bulk_${Date.now()}_${leadIdx}_${cIdx}`,
+              id: enrId,
               student_id: studentId,
               class_id: mCls.cls.id,
               registered_sessions: mCls.effectiveSessions,
@@ -1266,15 +1461,31 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               status: 'active',
               is_trial: false,
             });
+
+            supabaseEnrollments.push({
+              id: enrId,
+              student_id: studentId,
+              class_id: mCls.cls.id,
+              registered_sessions: mCls.effectiveSessions,
+              joined_date: mCls.startDate,
+              enrolled_days_of_week: mCls.enrolledDays,
+              is_partial_schedule: false,
+              status: 'active',
+              enrollment_type: 'official',
+              is_trial: false,
+              created_at: new Date().toISOString(),
+            });
           }
 
           const alreadyInvoiced = updatedInvoices.some(
             inv => inv.student_id === studentId && inv.class_id === mCls.cls.id && inv.payment_status !== 'cancelled'
           );
           if (!alreadyInvoiced) {
+            const invId = `inv_bulk_${Date.now()}_${leadIdx}_${cIdx}`;
+            const invCode = `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-3)}${leadIdx}${cIdx}`;
             updatedInvoices.push({
-              id: `inv_bulk_${Date.now()}_${leadIdx}_${cIdx}`,
-              invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-3)}${leadIdx}${cIdx}`,
+              id: invId,
+              invoice_code: invCode,
               student_id: studentId,
               class_id: mCls.cls.id,
               gross_amount: mCls.netPayable,
@@ -1295,6 +1506,32 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               is_prorated: mCls.effectiveSessions < mCls.totalSessions,
               prorated_note: `Xếp lớp nhanh tự động: ${mCls.effectiveSessions}/${mCls.totalSessions} buổi × ${formatVND(mCls.sessionRate)}/buổi`,
               created_at: todayStr,
+              due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            });
+
+            supabaseInvoices.push({
+              id: invId,
+              invoice_code: invCode,
+              student_id: studentId,
+              class_id: mCls.cls.id,
+              gross_amount: mCls.netPayable,
+              discount_amount: 0,
+              credit_deducted: 0,
+              net_payable: mCls.netPayable,
+              paid_amount: 0,
+              outstanding_amount: mCls.netPayable,
+              payment_status: 'unpaid',
+              is_trial_pending: false,
+              trial_fee: 0,
+              registered_sessions: mCls.effectiveSessions,
+              total_class_sessions: mCls.totalSessions,
+              session_rate: mCls.sessionRate,
+              start_date: mCls.startDate,
+              enrolled_days_of_week: mCls.enrolledDays,
+              is_partial_schedule: false,
+              is_prorated: mCls.effectiveSessions < mCls.totalSessions,
+              prorated_note: `Xếp lớp nhanh tự động: ${mCls.effectiveSessions}/${mCls.totalSessions} buổi × ${formatVND(mCls.sessionRate)}/buổi`,
+              created_at: new Date().toISOString(),
               due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             });
           }
@@ -1341,6 +1578,21 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             : r
         );
 
+        supabaseRegistrations.push({
+          id: lead.id,
+          payload: {
+            status: newStatus,
+            allocated_student_id: studentId,
+            assigned_student_id: studentId,
+            linked_student_id: studentId,
+            assigned_class_id: matchedClassesList[0]?.cls.id || lead.assigned_class_id,
+            assigned_class_ids: mergedClassIds,
+            assigned_student_code: studentCode,
+            contact_notes: noteSummary,
+            updated_at: new Date().toISOString(),
+          },
+        });
+
         const logItem = createAuditRecord(
           'CLASS_ASSIGN',
           'ACADEMIC',
@@ -1368,6 +1620,33 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         auditLogs: updatedAuditLogs,
       };
     });
+
+    // Asynchronously persist to Supabase in the background
+    const client = getSupabaseClient() || supabase;
+    if (client) {
+      (async () => {
+          try {
+            if (supabaseStudents.length > 0) {
+              const { error: sErr } = await client.from('students').upsert(supabaseStudents, { onConflict: 'id' });
+              if (sErr) console.warn('Supabase bulk students upsert notice:', sErr.message);
+            }
+            if (supabaseEnrollments.length > 0) {
+              const { error: eErr } = await client.from('enrollments').upsert(supabaseEnrollments, { onConflict: 'id' });
+              if (eErr) console.warn('Supabase bulk enrollments upsert notice:', eErr.message);
+            }
+            if (supabaseInvoices.length > 0) {
+              const { error: iErr } = await client.from('tuition_invoices').upsert(supabaseInvoices, { onConflict: 'id' });
+              if (iErr) console.warn('Supabase bulk invoices upsert notice:', iErr.message);
+            }
+            for (const reg of supabaseRegistrations) {
+              await client.from('parent_registrations').update(reg.payload).eq('id', reg.id);
+            }
+            fetchLeadsFromSupabase(false);
+          } catch (err) {
+            console.warn('Background Supabase persistence error during bulk quick assign:', err);
+          }
+        })();
+    }
 
     const totalEnrolledLeads = previews.length;
     const totalMatchedClasses = previews.reduce((acc, p) => acc + p.matchedClassesList.length, 0);
@@ -3873,23 +4152,30 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                   <button
                     type="button"
                     onClick={handleConfirmEnrollment}
-                    className={`px-5 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 shadow-lg transition-all cursor-pointer ${
-                      matchedStudent
-                        ? 'bg-gradient-to-r from-teal-400 to-emerald-400 hover:from-teal-300 hover:to-emerald-300 text-slate-950 shadow-teal-500/25 active:scale-95'
+                    disabled={isSubmittingEnrollment}
+                    className={`px-5 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 shadow-lg transition-all ${
+                      isSubmittingEnrollment
+                        ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-80'
+                        : matchedStudent
+                        ? 'bg-gradient-to-r from-teal-400 to-emerald-400 hover:from-teal-300 hover:to-emerald-300 text-slate-950 shadow-teal-500/25 active:scale-95 cursor-pointer'
                         : assignedCount > 0 
                         ? trialAssignedCount > 0 && officialAssignedCount === 0
-                          ? 'bg-gradient-to-r from-purple-500 to-amber-500 hover:from-purple-400 hover:to-amber-400 text-slate-950 shadow-purple-500/25 active:scale-95'
-                          : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95'
-                        : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 shadow-sm active:scale-95'
+                          ? 'bg-gradient-to-r from-purple-500 to-amber-500 hover:from-purple-400 hover:to-amber-400 text-slate-950 shadow-purple-500/25 active:scale-95 cursor-pointer'
+                          : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95 cursor-pointer'
+                        : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 shadow-sm active:scale-95 cursor-pointer'
                     }`}
                   >
-                    {assignModalMode === 'quick' ? (
+                    {isSubmittingEnrollment ? (
+                      <span className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                    ) : assignModalMode === 'quick' ? (
                       <Zap className="w-4 h-4 fill-slate-950" />
                     ) : (
                       <Check className="w-4 h-4 stroke-[3]" />
                     )}
                     <span>
-                      {matchedStudent
+                      {isSubmittingEnrollment
+                        ? 'Đang lưu CSDL Supabase...'
+                        : matchedStudent
                         ? `Xác Nhận Thêm Môn Vào Học Sinh Hiện Tại (${matchedStudent.code})`
                         : assignModalMode === 'quick' && assignedCount > 0
                         ? `Xác Nhận Xếp Lớp Nhanh & Cấp Mã Học Viên`

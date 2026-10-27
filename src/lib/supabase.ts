@@ -1979,14 +1979,14 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
 
     case 'students': {
       const isRoyal = Boolean(r.is_royal_student ?? (r.student_type === 'royal'));
-      const dob = r.dob || r.birth_date || '2016-01-01';
-      const regularClass = r.regular_class || r.class_name || '';
+      const dob = r.dob || r.birth_date || r.date_of_birth || '2016-01-01';
+      const regularClass = r.regular_class || r.class_name || r.grade_level || r.grade || '';
       const campusId = resolveStudentCampusId(r);
       return {
-        id: r.id,
-        code: r.code,
+        id: r.id || r.code || r.student_code,
+        code: r.code || r.student_code || r.id,
         previous_student_code: r.previous_student_code || undefined,
-        name: r.name,
+        name: r.name || r.full_name,
         dob,
         birth_date: dob,
         gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
@@ -2006,20 +2006,27 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
       };
     }
 
-    case 'enrollments':
+    case 'enrollments': {
+      const isTrial = Boolean(
+        r.is_trial ||
+        r.enrollment_type === 'trial' ||
+        r.status === 'trial' ||
+        r.status === 'trial_pending'
+      );
       return {
         id: r.id,
         student_id: r.student_id,
         class_id: r.class_id,
-        registered_sessions: Number(r.registered_sessions) || 24,
-        joined_date: r.joined_date || new Date().toISOString().split('T')[0],
+        registered_sessions: Number(r.registered_sessions || r.total_sessions) || 24,
+        joined_date: r.joined_date || r.start_date || new Date().toISOString().split('T')[0],
         enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : undefined,
         is_partial_schedule: Boolean(r.is_partial_schedule),
-        is_trial: Boolean(r.is_trial),
-        trial_session_date: r.trial_session_date || undefined,
+        is_trial: isTrial,
+        trial_session_date: r.trial_session_date || r.start_date || undefined,
         trial_attended: Boolean(r.trial_attended),
-        status: r.status || 'active',
+        status: isTrial ? 'trial' : (r.status || 'active'),
       };
+    }
 
     case 'attendance_records':
       return {

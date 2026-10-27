@@ -545,9 +545,26 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
   // Promote Trial Enrollment to Active (Chính thức theo học)
   const handleConfirmPromoteTrial = (enrollmentId: string) => {
+    const enr = store.enrollments.find(e => e.id === enrollmentId);
+    if (!enr) return;
+
+    const client = getSupabaseClient() || supabase;
+    if (client) {
+      client.from('enrollments').update({
+        status: 'active',
+        is_trial: false,
+        trial_attended: true,
+        trial_outcome: 'promoted',
+        trial_notes: 'Xác nhận lên học chính thức toàn khóa (Buổi thử tính là buổi 1)'
+      }).eq('id', enrollmentId).then();
+
+      client.from('tuition_invoices').update({
+        is_trial_pending: false,
+        payment_status: 'unpaid'
+      }).match({ student_id: enr.student_id, class_id: enr.class_id }).then();
+    }
+
     onUpdateStore(prev => {
-      const enr = prev.enrollments.find(e => e.id === enrollmentId);
-      if (!enr) return prev;
       const student = prev.students.find(s => s.id === enr.student_id);
       const cls = prev.classes.find(c => c.id === enr.class_id);
 
@@ -558,6 +575,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             ? { 
                 ...e, 
                 status: 'active', 
+                is_trial: false,
                 trial_attended: true,
                 trial_completed_action: 'promoted',
                 trial_outcome: 'promoted', 
@@ -593,9 +611,28 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
   // Drop Trial Enrollment (Nghỉ sau buổi học thử 1 - Hủy hóa đơn, không nợ, giải phóng chỗ)
   const handleConfirmDropTrial = (enrollmentId: string, notes?: string) => {
+    const enr = store.enrollments.find(e => e.id === enrollmentId);
+    if (!enr) return;
+
+    const client = getSupabaseClient() || supabase;
+    if (client) {
+      client.from('enrollments').update({
+        status: 'trial_dropped',
+        trial_attended: true,
+        trial_outcome: 'dropped',
+        trial_notes: notes || 'Học sinh dừng học sau buổi thử 1 (Trial Dropped)'
+      }).eq('id', enrollmentId).then();
+
+      client.from('tuition_invoices').update({
+        is_trial_pending: false,
+        payment_status: 'cancelled',
+        outstanding_amount: 0,
+        net_payable: 0,
+        payment_reference: 'MIỄN PHÍ BUỔI HỌC THỬ (DỪNG HỌC)'
+      }).match({ student_id: enr.student_id, class_id: enr.class_id }).then();
+    }
+
     onUpdateStore(prev => {
-      const enr = prev.enrollments.find(e => e.id === enrollmentId);
-      if (!enr) return prev;
       const student = prev.students.find(s => s.id === enr.student_id);
       const cls = prev.classes.find(c => c.id === enr.class_id);
 
@@ -812,7 +849,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               <tbody className="divide-y divide-slate-800/60">
                 {filteredStudents.map(student => {
                   const studentEnrollments = store.enrollments.filter(
-                    e => e.student_id === student.id && (e.status === 'active' || e.status === 'trial')
+                    e => (String(e.student_id) === String(student.id) || String(e.student_id) === String(student.code)) &&
+                         (e.status === 'active' || e.status === 'trial' || (e.status as string) === 'trial_pending' || (e as any).enrollment_type === 'trial' || (e as any).is_trial)
                   );
 
                   return (
@@ -929,7 +967,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             studentEnrollments.map(enr => {
                               const c = store.classes.find(cl => cl.id === enr.class_id);
                               if (!c) return null;
-                              const isTrial = enr.status === 'trial';
+                              const isTrial = enr.status === 'trial' || (enr.status as string) === 'trial_pending' || (enr as any).is_trial === true || (enr as any).enrollment_type === 'trial';
                               const shortName = c.name.split('-')[0].trim();
                               const clsDays = getClassDaysOfWeek(c, store);
                               const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
@@ -946,6 +984,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                   <div className="flex items-center gap-1 flex-wrap">
                                     {isTrial ? (
                                       <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold inline-flex items-center gap-1 shadow-sm w-fit">
+                                        <span>🟣</span>
                                         <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
                                         <span>{shortName} (Học Thử Buổi 1)</span>
                                       </span>
@@ -1056,7 +1095,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredStudents.map(student => {
             const studentEnrollments = store.enrollments.filter(
-              e => e.student_id === student.id && (e.status === 'active' || e.status === 'trial')
+              e => (String(e.student_id) === String(student.id) || String(e.student_id) === String(student.code)) &&
+                   (e.status === 'active' || e.status === 'trial' || (e.status as string) === 'trial_pending' || (e as any).enrollment_type === 'trial' || (e as any).is_trial)
             );
 
             return (
@@ -1181,7 +1221,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         studentEnrollments.map(enr => {
                           const c = store.classes.find(cl => cl.id === enr.class_id);
                           if (!c) return null;
-                          const isTrial = enr.status === 'trial';
+                          const isTrial = enr.status === 'trial' || (enr.status as string) === 'trial_pending' || (enr as any).is_trial === true || (enr as any).enrollment_type === 'trial';
                           const shortName = c.name.split('-')[0].trim();
                           const clsDays = getClassDaysOfWeek(c, store);
                           const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
@@ -1198,6 +1238,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               <div className="flex items-center justify-between gap-2 flex-wrap">
                                 {isTrial ? (
                                   <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                    <span>🟣</span>
                                     <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
                                     <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
                                   </span>
