@@ -29,7 +29,8 @@ import {
   ChevronRight,
   Eye,
   FileSpreadsheet,
-  RefreshCw
+  RefreshCw,
+  Search
 } from 'lucide-react';
 import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords, formatDaysListLabel, getClassDaysOfWeek, getTeacherEffectivePeriodRate, formatDateVN } from '../../lib/storage';
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
@@ -60,7 +61,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   currentUser,
   selectedCampusId,
   selectedTermId,
-  searchQuery = '',
+  searchQuery: externalSearchQuery = '',
   onUpdateStore,
   onPrintReceipt,
   onPrintTransferAgreement,
@@ -74,7 +75,24 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   // Invoices Scope Filters: default to 'all' to ensure newly created invoices in any term are visible
   const [invoiceTermFilter, setInvoiceTermFilter] = useState<string>('all');
   const [invoiceCampusFilter, setInvoiceCampusFilter] = useState<string>(selectedCampusId || 'all');
+  const [searchQuery, setSearchQuery] = useState<string>(externalSearchQuery || '');
   const [isRefreshingInvoices, setIsRefreshingInvoices] = useState(false);
+
+  useEffect(() => {
+    if (externalSearchQuery !== undefined) {
+      setSearchQuery(externalSearchQuery);
+    }
+  }, [externalSearchQuery]);
+
+  // Hàm loại bỏ dấu tiếng Việt để tìm kiếm chính xác
+  const removeAccents = (str: string) => {
+    return (str || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'd')
+      .toLowerCase();
+  };
 
   // Fetch invoices directly from Supabase to guarantee real-time sync
   const fetchInvoicesFromSupabase = async () => {
@@ -82,10 +100,32 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     if (!client) return;
     try {
       setIsRefreshingInvoices(true);
-      const { data, error } = await client
+      let { data, error } = await client
         .from('tuition_invoices')
-        .select('*')
+        .select(`
+          *,
+          students (
+            id,
+            code,
+            name,
+            parent_phone
+          ),
+          extracurricular_classes (
+            id,
+            name,
+            code
+          )
+        `)
         .order('created_at', { ascending: false });
+
+      if (error) {
+        const fallbackRes = await client
+          .from('tuition_invoices')
+          .select('*')
+          .order('created_at', { ascending: false });
+        data = fallbackRes.data as any;
+        error = fallbackRes.error;
+      }
 
       if (error) {
         console.warn('Lỗi fetch tuition_invoices từ Supabase:', error);
@@ -357,38 +397,48 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     }
   };
 
-  // 1. Base filtered invoices by Campus, Term, and Search Query
+  // 1. Base filtered invoices by Campus, Term, and Search Query (Tên, Mã HV, Mã HĐ, SĐT)
   const baseFilteredInvoices = useMemo(() => {
-    return store.invoices.filter(inv => {
+    return store.invoices.filter((inv: any) => {
       const cls = store.classes.find(c => c.id === inv.class_id);
-      const student = store.students.find(s => s.id === inv.student_id);
+      const student = store.students.find(s => s.id === inv.student_id || s.code === inv.student_id);
 
-      // 1. Lọc theo Cơ sở (hỗ trợ 'all' hoặc cơ sở được chọn)
-      const matchCampus = invoiceCampusFilter === 'all' || cls?.campus_id === invoiceCampusFilter;
+      // 1. Lọc theo Khóa & Cơ sở đang chọn
+      const invCampusId = cls?.campus_id || inv.campus_id;
+      const invTermId = cls?.term_id || inv.term_id;
+      if (invoiceTermFilter !== 'all' && invTermId && invTermId !== invoiceTermFilter) return false;
+      if (invoiceCampusFilter !== 'all' && invCampusId && invCampusId !== invoiceCampusFilter) return false;
 
-      // 2. Lọc theo Niên khóa (hỗ trợ 'all' hoặc khóa được chọn)
-      const matchTerm = invoiceTermFilter === 'all' || cls?.term_id === invoiceTermFilter;
+      // 2. Lọc theo Từ khóa tìm kiếm (Tên, Mã HV, Mã HĐ, SĐT)
+      if (!searchQuery.trim()) return true;
 
-      // 3. Lọc theo từ khóa tìm kiếm
-      const query = (searchQuery || '').trim().toLowerCase();
-      const matchQuery = !query || 
-        inv.invoice_code.toLowerCase().includes(query) ||
-        (student?.name && student.name.toLowerCase().includes(query)) ||
-        (student?.code && student.code.toLowerCase().includes(query)) ||
-        (cls?.name && cls.name.toLowerCase().includes(query));
+      const query = removeAccents(searchQuery.trim());
+      const studentName = removeAccents(inv.students?.name || inv.student_name || student?.name || '');
+      const studentCode = (inv.students?.code || inv.student_code || student?.code || inv.student_id || '').toLowerCase();
+      const invoiceCode = (inv.invoice_code || inv.id || '').toLowerCase();
+      const parentPhone = (inv.students?.parent_phone || inv.parent_phone || student?.parent_phone || '').replace(/\s+/g, '');
+      const className = removeAccents(inv.extracurricular_classes?.name || cls?.name || '');
 
-      return Boolean(matchCampus && matchTerm && matchQuery);
+      return (
+        studentName.includes(query) ||
+        studentCode.includes(query) ||
+        invoiceCode.includes(query) ||
+        parentPhone.includes(query.replace(/\s+/g, '')) ||
+        className.includes(query)
+      );
     });
   }, [store.invoices, store.classes, store.students, invoiceCampusFilter, invoiceTermFilter, searchQuery]);
 
   // 2. Filtered invoices by status sub-filter
   const filteredInvoices = useMemo(() => {
-    return baseFilteredInvoices.filter(i => {
-      if (invoiceStatusFilter === 'paid') return i.payment_status === 'paid';
-      if (invoiceStatusFilter === 'partial') return i.payment_status === 'partial';
-      if (invoiceStatusFilter === 'unpaid') return i.payment_status === 'unpaid' && !i.is_trial_pending;
-      if (invoiceStatusFilter === 'trial_pending') return !!i.is_trial_pending;
-      if (invoiceStatusFilter === 'cancelled') return i.payment_status === 'cancelled';
+    return baseFilteredInvoices.filter(inv => {
+      if (invoiceStatusFilter !== 'all') {
+        if (invoiceStatusFilter === 'paid' && inv.payment_status !== 'paid') return false;
+        if (invoiceStatusFilter === 'partial' && inv.payment_status !== 'partial') return false;
+        if (invoiceStatusFilter === 'unpaid' && (inv.payment_status !== 'unpaid' || inv.is_trial_pending)) return false;
+        if (invoiceStatusFilter === 'trial_pending' && !inv.is_trial_pending) return false;
+        if (invoiceStatusFilter === 'cancelled' && inv.payment_status !== 'cancelled') return false;
+      }
       return true;
     });
   }, [baseFilteredInvoices, invoiceStatusFilter]);
@@ -858,28 +908,95 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
       {/* SECTION 1: INVOICES & VIETQR */}
       {activeSection === 'invoices' && (
-        <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
-          <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Receipt className="w-4 h-4 text-amber-400" />
-                <span>Hóa Đơn Học Phí Ngoại Khóa & Đối Soát Sao Kê Ngân Hàng ({filteredInvoices.length} hóa đơn)</span>
-              </h3>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                Mỗi lớp/môn học có hóa đơn và mã VietQR Napas247 riêng biệt. Kế toán xác nhận gạch nợ thủ công.
-              </p>
-              <div className="flex items-center gap-2.5 mt-2.5 flex-wrap">
-                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Phạm vi đối soát:</span>
+        <>
+          {/* 2. CỤM 4 THẺ KPI TÀI CHÍNH ĐƯỢC ĐƯA LÊN TRÊN */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* Thẻ 1: Tổng phải thu chính thức */}
+            <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between shadow-lg shadow-black/20">
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                TỔNG PHẢI THU CHÍNH THỨC
+              </span>
+              <div className="mt-2 text-xl font-bold font-mono text-white">
+                {new Intl.NumberFormat('vi-VN').format(
+                  baseFilteredInvoices
+                    .filter(i => i.payment_status !== 'cancelled' && !i.is_trial_pending)
+                    .reduce((sum, i) => sum + (i.net_payable || i.gross_amount || 0), 0)
+                )} đ
+              </div>
+            </div>
+
+            {/* Thẻ 2: Đã thu lũy kế */}
+            <div className="p-4 rounded-2xl bg-slate-900/90 border border-emerald-500/30 flex flex-col justify-between shadow-lg shadow-black/20">
+              <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider">
+                ĐÃ THU LŨY KẾ
+              </span>
+              <div className="mt-2 text-xl font-bold font-mono text-emerald-400">
+                {new Intl.NumberFormat('vi-VN').format(
+                  baseFilteredInvoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0)
+                )} đ
+              </div>
+            </div>
+
+            {/* Thẻ 3: Công nợ cần thu */}
+            <div className="p-4 rounded-2xl bg-slate-900/90 border border-rose-500/30 flex flex-col justify-between shadow-lg shadow-black/20">
+              <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-wider">
+                CÔNG NỢ CẦN THU
+              </span>
+              <div className="mt-2 text-xl font-bold font-mono text-rose-400">
+                {new Intl.NumberFormat('vi-VN').format(
+                  baseFilteredInvoices
+                    .filter(i => i.payment_status !== 'cancelled' && !i.is_trial_pending)
+                    .reduce((sum, i) => sum + (i.outstanding_amount || 0), 0)
+                )} đ
+              </div>
+            </div>
+
+            {/* Thẻ 4: Tạm hoãn (Đang học thử) */}
+            <div className="p-4 rounded-2xl bg-slate-900/90 border border-purple-500/30 flex flex-col justify-between shadow-lg shadow-black/20">
+              <span className="text-[11px] font-semibold text-purple-400 uppercase tracking-wider">
+                TẠM HOÃN (ĐANG HỌC THỬ)
+              </span>
+              <div className="mt-2 text-xl font-bold font-mono text-purple-300">
+                {baseFilteredInvoices.filter(i => i.is_trial_pending).length} Hóa Đơn
+              </div>
+            </div>
+          </div>
+
+          {/* 3. KHỐI TIÊU ĐỀ, BỘ LỌC ĐỐI SOÁT & DANH SÁCH BẢNG HÓA ĐƠN */}
+          <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
+            <div className="p-4 border-b border-slate-800 space-y-3">
+              {/* Header khối đối soát */}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2 tracking-wide">
+                    <Receipt className="w-4 h-4 text-amber-400" />
+                    <span>Hóa Đơn Học Phí Ngoại Khóa & Đối Soát Sao Kê Ngân Hàng ({filteredInvoices.length} hóa đơn)</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Mỗi lớp/môn học có hóa đơn và mã VietQR Napas247 riêng biệt. Kế toán xác nhận gạch nợ thủ công.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <ViewToggle viewMode={invoiceViewMode} onViewModeChange={setInvoiceViewMode} />
+                </div>
+              </div>
+
+              {/* Thanh lọc: Khóa, Cơ sở, Tìm kiếm, Nạp CSDL */}
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  PHẠM VI ĐỐI SOÁT:
+                </span>
                 
                 {/* Dropdown Bộ lọc Khóa học */}
-                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-1 rounded-xl border border-amber-500/30">
-                  <span className="text-[11px] text-amber-400 font-bold whitespace-nowrap">Khóa:</span>
+                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-amber-500/30">
+                  <span className="text-xs text-amber-400 font-bold whitespace-nowrap">Khóa:</span>
                   <select
                     value={invoiceTermFilter}
                     onChange={(e) => setInvoiceTermFilter(e.target.value)}
                     className="bg-transparent text-amber-300 text-xs font-bold focus:outline-none cursor-pointer"
                   >
-                    <option value="all" className="bg-slate-900 text-amber-300">-- Tất cả các khóa ({store.terms.length}) --</option>
+                    <option value="all" className="bg-slate-900 text-amber-300">— Tất cả các khóa ({store.terms.length}) —</option>
                     {store.terms.map(t => (
                       <option key={t.id} value={t.id} className="bg-slate-900 text-white font-medium">
                         {t.name} ({t.code})
@@ -889,14 +1006,14 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 </div>
 
                 {/* Dropdown Bộ lọc Cơ sở */}
-                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-1 rounded-xl border border-sky-500/30">
-                  <span className="text-[11px] text-sky-400 font-bold whitespace-nowrap">Cơ sở:</span>
+                <div className="flex items-center gap-1.5 bg-slate-900/90 px-2.5 py-1.5 rounded-xl border border-sky-500/30">
+                  <span className="text-xs text-sky-400 font-bold whitespace-nowrap">Cơ sở:</span>
                   <select
                     value={invoiceCampusFilter}
                     onChange={(e) => setInvoiceCampusFilter(e.target.value)}
                     className="bg-transparent text-sky-300 text-xs font-bold focus:outline-none cursor-pointer"
                   >
-                    <option value="all" className="bg-slate-900 text-sky-300">-- Tất cả cơ sở --</option>
+                    <option value="all" className="bg-slate-900 text-sky-300">— Tất cả cơ sở —</option>
                     {store.campuses.map(c => (
                       <option key={c.id} value={c.id} className="bg-slate-900 text-white font-medium">
                         {c.name}
@@ -905,69 +1022,41 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   </select>
                 </div>
 
+                {/* Ô Tìm Kiếm Hồ Sơ Hóa Đơn Theo Tên, Mã HV, Mã HĐ, SĐT Phụ Huynh */}
+                <div className="relative flex items-center min-w-[280px] sm:min-w-[320px] max-w-sm">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="🔍 Tìm theo tên bé, mã HV, mã HĐ, SĐT phụ huynh..."
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-8 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2.5 text-slate-400 hover:text-white cursor-pointer"
+                      title="Xóa nhanh từ khóa"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
                 {/* Nút Làm Mới từ Supabase */}
                 <button
                   type="button"
                   onClick={fetchInvoicesFromSupabase}
                   disabled={isRefreshingInvoices}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
                   title="Nạp lại danh sách hóa đơn mới nhất từ CSDL Supabase"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isRefreshingInvoices ? 'animate-spin' : ''}`} />
                   <span>{isRefreshingInvoices ? 'Đang nạp...' : 'Nạp CSDL'}</span>
                 </button>
-
-                {searchQuery && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                    Từ khóa: &quot;{searchQuery}&quot;
-                  </span>
-                )}
               </div>
             </div>
-
-            <div className="flex items-center gap-3">
-              <ViewToggle viewMode={invoiceViewMode} onViewModeChange={setInvoiceViewMode} />
-            </div>
-          </div>
-
-          {/* Quick Invoice Financial Metrics Row */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4 border-b border-slate-800 bg-slate-950/40">
-            <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800">
-              <span className="text-[10px] uppercase font-bold text-slate-400">Tổng Phải Thu Chính Thức</span>
-              <div className="text-sm font-extrabold font-mono text-white mt-1">
-                {formatVND(
-                  baseFilteredInvoices
-                    .filter(i => i.payment_status !== 'cancelled' && !i.is_trial_pending)
-                    .reduce((sum, i) => sum + (i.net_payable || i.gross_amount || 0), 0)
-                )}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-emerald-950/30 border border-emerald-500/30">
-              <span className="text-[10px] uppercase font-bold text-emerald-400">Đã Thu Lũy Kế</span>
-              <div className="text-sm font-extrabold font-mono text-emerald-400 mt-1">
-                {formatVND(baseFilteredInvoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0))}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-rose-950/30 border border-rose-500/30">
-              <span className="text-[10px] uppercase font-bold text-rose-400">Công Nợ Cần Thu</span>
-              <div className="text-sm font-extrabold font-mono text-rose-400 mt-1">
-                {formatVND(
-                  baseFilteredInvoices
-                    .filter(i => i.payment_status !== 'cancelled' && !i.is_trial_pending)
-                    .reduce((sum, i) => sum + (i.outstanding_amount || 0), 0)
-                )}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-purple-950/30 border border-purple-500/30">
-              <span className="text-[10px] uppercase font-bold text-purple-300">Tạm Hoãn (Đang Học Thử)</span>
-              <div className="text-sm font-extrabold font-mono text-purple-300 mt-1">
-                {baseFilteredInvoices.filter(i => i.is_trial_pending).length} Hóa Đơn
-              </div>
-            </div>
-          </div>
 
           {/* Invoice Filter Bar & Trial Policy Note */}
           <div className="px-4 py-3 bg-slate-900/50 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -1045,9 +1134,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           {/* VIEW 1: INVOICES CARDS VIEW */}
           {invoiceViewMode === 'cards' && (
             <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredInvoices.map(invoice => {
-                const student = store.students.find(s => s.id === invoice.student_id);
+              {filteredInvoices.map((invoice: any) => {
+                const student = store.students.find(s => s.id === invoice.student_id || s.code === invoice.student_id);
                 const cls = store.classes.find(c => c.id === invoice.class_id);
+                const displayStudentName = invoice.students?.name || invoice.student_name || student?.name || invoice.student_id;
+                const displayStudentCode = invoice.students?.code || invoice.student_code || student?.code || invoice.student_id;
+                const displayParentPhone = invoice.students?.parent_phone || invoice.parent_phone || student?.parent_phone || '';
 
                 return (
                   <div 
@@ -1061,8 +1153,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <span className="font-mono text-xs font-extrabold text-amber-400">
                             {invoice.invoice_code}
                           </span>
-                          <h4 className="font-bold text-white text-sm mt-0.5">{student?.name}</h4>
-                          <span className="text-[10px] text-slate-500 font-mono">{student?.code}</span>
+                          <h4 className="font-bold text-white text-sm mt-0.5">{displayStudentName}</h4>
+                          <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
+                            <span>{displayStudentCode}</span>
+                            {displayParentPhone && <span>• SĐT: {displayParentPhone}</span>}
+                          </div>
                         </div>
 
                         {invoice.is_trial_pending ? (
@@ -1288,9 +1383,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {filteredInvoices.map(invoice => {
-                    const student = store.students.find(s => s.id === invoice.student_id);
+                  {filteredInvoices.map((invoice: any) => {
+                    const student = store.students.find(s => s.id === invoice.student_id || s.code === invoice.student_id);
                     const cls = store.classes.find(c => c.id === invoice.class_id);
+                    const displayStudentName = invoice.students?.name || invoice.student_name || student?.name || invoice.student_id;
+                    const displayStudentCode = invoice.students?.code || invoice.student_code || student?.code || invoice.student_id;
+                    const displayParentPhone = invoice.students?.parent_phone || invoice.parent_phone || student?.parent_phone || '';
+                    const displayClassName = invoice.extracurricular_classes?.name || cls?.name || invoice.class_id;
 
                     return (
                       <tr key={invoice.id} className="hover:bg-slate-800/30 transition-colors">
@@ -1299,12 +1398,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         </td>
 
                         <td className="py-3 px-4">
-                          <div className="font-bold text-white">{student?.name}</div>
-                          <div className="text-[10px] text-slate-500 font-mono">{student?.code}</div>
+                          <div className="font-bold text-white">{displayStudentName}</div>
+                          <div className="text-[10px] text-slate-500 font-mono flex items-center gap-1.5">
+                            <span>{displayStudentCode}</span>
+                            {displayParentPhone && <span className="text-slate-400">• {displayParentPhone}</span>}
+                          </div>
                         </td>
 
                         <td className="py-3 px-4">
-                          <div className="font-semibold text-slate-200">{cls?.name}</div>
+                          <div className="font-semibold text-slate-200">{displayClassName}</div>
                           {(() => {
                             const enr = store.enrollments.find(
                               e => e.student_id === invoice.student_id && e.class_id === invoice.class_id && e.status !== 'trial_dropped'
@@ -1468,7 +1570,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               </table>
             </div>
           )}
-        </div>
+          </div>
+        </>
       )}
 
       {/* SECTION 2: TEACHER PAYROLL & WORKLOAD BI DASHBOARD */}
