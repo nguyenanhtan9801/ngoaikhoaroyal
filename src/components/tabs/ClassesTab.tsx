@@ -1468,6 +1468,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
       {/* Create / Edit Class Modal with Full Cross-Term Support */}
       <CreateClassModal
+        key={editingClass ? `edit_${editingClass.id}` : 'new_class'}
         isOpen={showAddModal}
         onClose={() => {
           setShowAddModal(false);

@@ -218,6 +218,48 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Tự động đồng bộ form data khi mở modal hoặc khi chọn lớp cần sửa khác nhau
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (editingClass) {
+      // Nạp đầy đủ thông tin của lớp được click Sửa
+      setFormData({
+        name: editingClass.name || '',
+        term_id: editingClass.term_id || defaultTermId,
+        campus_id: editingClass.campus_id || defaultCampusId,
+        subject_id: editingClass.subject_id || '',
+        facility_id: editingClass.facility_id || '',
+        time_slot_id: editingClass.time_slot_id || '',
+        days_of_week: Array.isArray(editingClass.days_of_week) && editingClass.days_of_week.length > 0
+          ? editingClass.days_of_week
+          : ['T2', 'T4'],
+        start_date: editingClass.start_date || '2026-09-01',
+        primary_teacher_id: editingClass.primary_teacher_id || '',
+        max_students: editingClass.max_students || 15,
+        allow_over_quota: Boolean(editingClass.allow_over_quota),
+      });
+      setCrossTermMode(editingClass.is_cross_term ? 'spanning' : 'truncate');
+    } else {
+      // Reset form trống khi bấm "+ Mở Lớp Mới"
+      const termTarget = store.terms.find(t => t.id === defaultTermId);
+      setFormData({
+        name: '',
+        term_id: defaultTermId,
+        campus_id: defaultCampusId,
+        subject_id: initialSubjectId || store.subjects[0]?.id || '',
+        facility_id: store.facilities[0]?.id || '',
+        time_slot_id: store.timeSlots[0]?.id || '',
+        days_of_week: ['T2', 'T4'],
+        start_date: termTarget?.start_date || '2026-09-01',
+        primary_teacher_id: store.teachers[0]?.id || '',
+        max_students: 15,
+        allow_over_quota: false,
+      });
+      setCrossTermMode('spanning');
+    }
+  }, [isOpen, editingClass, defaultTermId, defaultCampusId, initialSubjectId]);
+
   // Active Primary Term
   const primaryTerm = useMemo(() => {
     return store.terms.find(t => t.id === formData.term_id) || store.terms[0];
