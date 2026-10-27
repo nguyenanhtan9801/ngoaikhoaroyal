@@ -121,6 +121,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     school_name: 'Royal School PMH',
     regular_class: 'Grade 4A1',
     is_royal_student: true,
+    student_type: 'royal' as 'royal' | 'external',
     medical_notes: '',
     avatar_url: '',
     photo_stored_at: '',
@@ -756,102 +757,146 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     setIsSubmitting(true);
     try {
-      // Edit
-      const storedAt = formData.avatar_url && (!editingStudent.avatar_url || formData.avatar_url !== editingStudent.avatar_url)
-        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${editingStudent.code}.jpg`
-        : (formData.photo_stored_at || editingStudent.photo_stored_at);
-
-      // Đồng bộ cập nhật vào Supabase
+      const isRoyal = formData.is_royal_student !== false && formData.student_type !== 'external';
+      const studentType = isRoyal ? 'royal' : 'external';
       const client = getSupabaseClient() || supabase;
-      if (client) {
-        const isRoyal = formData.is_royal_student;
-        const { error: updateErr } = await client.from('students').update({
-          full_name: formData.name,
+
+      if (!client) {
+        throw new Error('Không thể kết nối Supabase Client');
+      }
+
+      // 1. Gọi RPC update_student_profile trên Supabase
+      const { data: res, error: rpcErr } = await client.rpc('update_student_profile', {
+        p_student_id: editingStudent.id,
+        p_name: formData.name,
+        p_dob: formData.dob || '2016-01-01',
+        p_gender: formData.gender || 'Nam',
+        p_campus_id: formData.campus_id || 'pmh',
+        p_student_type: studentType,
+        p_school_name: isRoyal ? (formData.campus_id?.includes('pl') ? 'Royal School PL' : 'Royal School PMH') : (formData.school_name || 'Ngoài trường'),
+        p_regular_class: formData.regular_class || '',
+        p_parent_name: formData.parent_name,
+        p_parent_phone: formData.parent_phone,
+        p_medical_notes: formData.medical_notes || 'Bình thường',
+        p_avatar_url: formData.avatar_url || null
+      });
+
+      let finalResult = res;
+
+      // Fallback an toàn nếu RPC update_student_profile chưa tồn tại trên schema cache
+      if (rpcErr) {
+        console.warn('RPC update_student_profile error, attempting fallback update:', rpcErr);
+        const isSwitchToExt = !isRoyal && editingStudent.code?.startsWith('RY-');
+        const isSwitchToRoyal = isRoyal && editingStudent.code?.startsWith('EXT-');
+        let fallbackNewCode = editingStudent.code;
+        let fallbackPrevCode = editingStudent.previous_student_code;
+
+        if (isSwitchToExt) {
+          const extNums = (store.students || [])
+            .map(s => s.code?.match(/EXT-2026-(\d+)/)?.[1])
+            .filter(Boolean)
+            .map(Number);
+          const nextNum = (extNums.length > 0 ? Math.max(...extNums) : 0) + 1;
+          fallbackNewCode = `EXT-2026-${String(nextNum).padStart(5, '0')}`;
+          fallbackPrevCode = editingStudent.code;
+        } else if (isSwitchToRoyal) {
+          const ryNums = (store.students || [])
+            .map(s => s.code?.match(/RY-2026-(\d+)/)?.[1])
+            .filter(Boolean)
+            .map(Number);
+          const nextNum = (ryNums.length > 0 ? Math.max(...ryNums) : 0) + 1;
+          fallbackNewCode = `RY-2026-${String(nextNum).padStart(5, '0')}`;
+          fallbackPrevCode = editingStudent.code;
+        }
+
+        const schoolNameFallback = isRoyal 
+          ? (formData.campus_id?.includes('pl') ? 'Royal School PL' : 'Royal School PMH') 
+          : (formData.school_name || 'Ngoài trường');
+
+        const { error: directErr } = await client.from('students').update({
+          code: fallbackNewCode,
+          previous_student_code: fallbackPrevCode,
           name: formData.name,
-          date_of_birth: formData.dob,
-          dob: formData.dob,
-          gender: formData.gender,
-          campus_id: formData.campus_id,
+          dob: formData.dob || '2016-01-01',
+          gender: formData.gender || 'Nam',
+          campus_id: (formData.campus_id || 'pmh').replace('camp_', ''),
+          is_royal_student: isRoyal,
+          school_name: schoolNameFallback,
+          regular_class: formData.regular_class || '',
           parent_name: formData.parent_name,
           parent_phone: formData.parent_phone,
-          school_name: formData.school_name,
-          regular_class: formData.regular_class,
-          class_name: formData.regular_class,
-          is_royal_student: isRoyal,
-          student_type: isRoyal ? 'royal' : 'external',
-          has_snack: isRoyal,
-          medical_notes: formData.medical_notes,
+          medical_notes: formData.medical_notes || 'Bình thường',
           avatar_url: formData.avatar_url || null,
           updated_at: new Date().toISOString()
         }).eq('id', editingStudent.id);
 
-        if (updateErr) {
-          console.warn('Sync student update to Supabase warning:', updateErr);
+        if (directErr) {
+          throw rpcErr;
         }
+
+        finalResult = {
+          success: true,
+          new_code: fallbackNewCode,
+          old_code: editingStudent.code,
+          previous_code: fallbackPrevCode
+        };
       }
 
-      const updateLog = createAuditRecord(
-        'STUDENT_UPDATE',
-        'ACADEMIC',
-        'Hồ sơ Học sinh',
-        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${formData.avatar_url !== editingStudent.avatar_url ? ' - Đồng bộ hình thẻ vào Cloud' : ''}`,
-        null,
-        {
-          target_id: editingStudent.code,
-          details: {
-            status: 'success',
-            photo_stored_at: storedAt,
-            before: {
-              name: editingStudent.name,
-              campus_id: resolveStudentCampusId(editingStudent),
-              parent_phone: editingStudent.parent_phone,
-              regular_class: editingStudent.regular_class,
-              medical_notes: editingStudent.medical_notes,
-            },
-            after: {
-              name: formData.name,
-              campus_id: formData.campus_id,
-              parent_phone: formData.parent_phone,
-              regular_class: formData.regular_class,
-              medical_notes: formData.medical_notes,
-            }
-          }
-        }
-      );
+      if (finalResult && !finalResult.success) {
+        throw new Error(finalResult.error || 'Lỗi khi cập nhật học sinh');
+      }
 
+      const newCode = finalResult.new_code || editingStudent.code;
+      const prevCode = finalResult.previous_code || editingStudent.previous_student_code;
+
+      // 2. Cập nhật React Store
       onUpdateStore(prev => ({
         ...prev,
-        students: prev.students.map(s => 
-          s.id === editingStudent.id 
-            ? { 
-                ...s, 
-                ...formData,
-                birth_date: formData.dob,
-                class_name: formData.regular_class,
-                is_royal_student: formData.is_royal_student,
-                student_type: (formData.is_royal_student ? 'royal' : 'external') as ('royal' | 'external'),
-                has_snack: formData.is_royal_student,
-                photo_stored_at: storedAt, 
-                photo_updated_at: formData.avatar_url ? (s.photo_updated_at || new Date().toISOString().split('T')[0]) : undefined 
-              } 
-            : s
-        ),
-        auditLogs: [updateLog, ...(prev.auditLogs || [])],
+        students: prev.students.map(s => {
+          if (s.id === editingStudent.id || s.code === editingStudent.code) {
+            return {
+              ...s,
+              id: finalResult.new_code && editingStudent.id === editingStudent.code ? finalResult.new_code : s.id,
+              code: newCode,
+              previous_student_code: prevCode,
+              name: formData.name,
+              dob: formData.dob,
+              birth_date: formData.dob,
+              gender: formData.gender,
+              campus_id: (formData.campus_id || 'pmh').replace('camp_', '') as 'pmh' | 'pl',
+              is_royal_student: isRoyal,
+              student_type: studentType,
+              has_snack: isRoyal,
+              school_name: isRoyal ? (formData.campus_id?.includes('pl') ? 'Royal School PL' : 'Royal School PMH') : (formData.school_name || 'Ngoài trường'),
+              regular_class: formData.regular_class,
+              parent_name: formData.parent_name,
+              parent_phone: formData.parent_phone,
+              medical_notes: formData.medical_notes,
+              avatar_url: formData.avatar_url,
+            };
+          }
+          return s;
+        })
       }));
 
-      showToast(
-        `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`,
-        'success',
-        { title: 'Cập nhật hồ sơ học sinh' }
-      );
+      showToast({
+        title: 'Cập nhật thành công',
+        message: finalResult.old_code !== finalResult.new_code 
+          ? `Đã chuyển phân loại học sinh: Mã mới là ${finalResult.new_code} (Mã cũ: ${finalResult.old_code})`
+          : `Đã cập nhật hồ sơ học sinh ${formData.name}!`,
+        type: 'success'
+      });
+
       setShowAddModal(false);
       setEditingStudent(null);
+
+      // 3. Tải lại danh sách học sinh từ Supabase
       if (typeof fetchStudents === 'function') {
         await fetchStudents();
       }
     } catch (err: any) {
       console.error('Lỗi cập nhật học sinh:', err);
-      alert('Không thể cập nhật học sinh: ' + (err.message || String(err)));
+      alert('Không thể cập nhật hồ sơ học sinh: ' + (err.message || String(err)));
     } finally {
       setIsSubmitting(false);
     }
@@ -860,6 +905,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   // Open Edit Modal
   const handleOpenEdit = (student: Student) => {
     setEditingStudent(student);
+    const isRoyal = checkIsRoyalStudent(student);
     setFormData({
       name: student.name,
       dob: student.dob || student.birth_date || '2016-01-01',
@@ -869,7 +915,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       parent_phone: student.parent_phone,
       school_name: getDisplaySchoolName(student),
       regular_class: student.regular_class || student.class_name || '',
-      is_royal_student: checkIsRoyalStudent(student),
+      is_royal_student: isRoyal,
+      student_type: isRoyal ? 'royal' : 'external',
       medical_notes: student.medical_notes || '',
       avatar_url: student.avatar_url || '',
       photo_stored_at: student.photo_stored_at || '',
@@ -1426,6 +1473,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 school_name: defaultCampus === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH',
                 regular_class: defaultCampus === 'pl' ? 'Grade 4PL1' : 'Grade 4A1',
                 is_royal_student: true,
+                student_type: 'royal',
                 medical_notes: '',
                 avatar_url: '',
                 photo_stored_at: '',
@@ -2114,7 +2162,18 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Phân loại học sinh</label>
                   <select
                     value={formData.is_royal_student ? 'true' : 'false'}
-                    onChange={(e) => setFormData({ ...formData, is_royal_student: e.target.value === 'true' })}
+                    onChange={(e) => {
+                      const isRoyal = e.target.value === 'true';
+                      const defaultSchool = isRoyal 
+                        ? (formData.campus_id?.includes('pl') ? 'Royal School PL' : 'Royal School PMH')
+                        : 'Ngoài trường';
+                      setFormData({ 
+                        ...formData, 
+                        is_royal_student: isRoyal,
+                        student_type: isRoyal ? 'royal' : 'external',
+                        school_name: defaultSchool
+                      });
+                    }}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-bold focus:outline-none focus:border-amber-500"
                   >
                     <option value="true">Học sinh ROYAL SCHOOL</option>

@@ -709,6 +709,132 @@ ALTER PUBLICATION supabase_realtime ADD TABLE parent_registrations;
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('attendance-proofs', 'attendance-proofs', true)
 ON CONFLICT (id) DO NOTHING;
+
+-- HÀM RPC 1: TẠO MỚI HỌC SINH TỰ ĐỘNG CẤP MÃ RY- HOẶC EXT-
+CREATE OR REPLACE FUNCTION create_new_student(
+  p_name TEXT,
+  p_campus_id TEXT,
+  p_parent_name TEXT,
+  p_parent_phone TEXT,
+  p_parent_email TEXT,
+  p_dob DATE,
+  p_gender TEXT,
+  p_is_royal BOOLEAN,
+  p_school_name TEXT,
+  p_regular_class TEXT,
+  p_grade TEXT,
+  p_medical_notes TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_next_num INTEGER;
+  v_assigned_code TEXT;
+  v_assigned_id TEXT;
+  v_clean_campus TEXT;
+BEGIN
+  v_clean_campus := CASE WHEN p_campus_id ILIKE '%pl%' THEN 'pl' ELSE 'pmh' END;
+
+  IF p_is_royal THEN
+    SELECT COALESCE(MAX(SUBSTRING(code FROM 'RY-2026-([0-9]+)')::INTEGER), 0) + 1 INTO v_next_num
+    FROM students WHERE code LIKE 'RY-2026-%';
+    v_assigned_code := 'RY-2026-' || LPAD(v_next_num::TEXT, 5, '0');
+  ELSE
+    SELECT COALESCE(MAX(SUBSTRING(code FROM 'EXT-2026-([0-9]+)')::INTEGER), 0) + 1 INTO v_next_num
+    FROM students WHERE code LIKE 'EXT-2026-%';
+    v_assigned_code := 'EXT-2026-' || LPAD(v_next_num::TEXT, 5, '0');
+  END IF;
+
+  v_assigned_id := 'std_' || SUBSTRING(MD5(RANDOM()::TEXT) FROM 1 FOR 9);
+
+  INSERT INTO students (
+    id, code, name, dob, gender, is_royal_student, campus_id,
+    school_name, regular_class, parent_name, parent_phone, medical_notes,
+    status, created_at, updated_at
+  ) VALUES (
+    v_assigned_id, v_assigned_code, p_name, p_dob, p_gender, p_is_royal, v_clean_campus,
+    p_school_name, p_regular_class, p_parent_name, p_parent_phone, p_medical_notes,
+    'active', CURRENT_DATE, NOW()
+  );
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'student_id', v_assigned_id,
+    'student_code', v_assigned_code
+  );
+END;
+$$;
+
+-- HÀM RPC 2: CẬP NHẬT HỒ SƠ HỌC SINH & TỰ ĐỘNG ĐỔI MÃ KHI THAY ĐỔI PHÂN LOẠI
+CREATE OR REPLACE FUNCTION update_student_profile(
+  p_student_id TEXT,
+  p_name TEXT,
+  p_dob DATE,
+  p_gender TEXT,
+  p_campus_id TEXT,
+  p_student_type TEXT,
+  p_school_name TEXT,
+  p_regular_class TEXT,
+  p_parent_name TEXT,
+  p_parent_phone TEXT,
+  p_medical_notes TEXT,
+  p_avatar_url TEXT
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_old_code TEXT;
+  v_new_code TEXT;
+  v_prev_code TEXT;
+  v_is_royal BOOLEAN;
+  v_clean_campus TEXT;
+  v_next_num INTEGER;
+BEGIN
+  SELECT code, previous_student_code INTO v_old_code, v_prev_code
+  FROM students WHERE id = p_student_id;
+  
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Không tìm thấy học sinh với ID ' || p_student_id);
+  END IF;
+
+  v_is_royal := (p_student_type = 'royal');
+  v_clean_campus := CASE WHEN p_campus_id ILIKE '%pl%' THEN 'pl' ELSE 'pmh' END;
+
+  IF v_is_royal AND v_old_code LIKE 'EXT-%' THEN
+    SELECT COALESCE(MAX(SUBSTRING(code FROM 'RY-2026-([0-9]+)')::INTEGER), 0) + 1 INTO v_next_num
+    FROM students WHERE code LIKE 'RY-2026-%';
+    v_new_code := 'RY-2026-' || LPAD(v_next_num::TEXT, 5, '0');
+    v_prev_code := v_old_code;
+  ELSIF (NOT v_is_royal) AND v_old_code LIKE 'RY-%' THEN
+    SELECT COALESCE(MAX(SUBSTRING(code FROM 'EXT-2026-([0-9]+)')::INTEGER), 0) + 1 INTO v_next_num
+    FROM students WHERE code LIKE 'EXT-2026-%';
+    v_new_code := 'EXT-2026-' || LPAD(v_next_num::TEXT, 5, '0');
+    v_prev_code := v_old_code;
+  ELSE
+    v_new_code := v_old_code;
+  END IF;
+
+  UPDATE students SET
+    code = v_new_code,
+    previous_student_code = v_prev_code,
+    name = p_name,
+    dob = p_dob,
+    gender = p_gender,
+    campus_id = v_clean_campus,
+    is_royal_student = v_is_royal,
+    school_name = p_school_name,
+    regular_class = p_regular_class,
+    parent_name = p_parent_name,
+    parent_phone = p_parent_phone,
+    medical_notes = p_medical_notes,
+    avatar_url = p_avatar_url,
+    updated_at = NOW()
+  WHERE id = p_student_id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'new_code', v_new_code,
+    'old_code', v_old_code,
+    'previous_code', v_prev_code
+  );
+END;
+$$;
 `;
 
 export const SUPABASE_REALTIME_PUBLICATION_SQL = `-- Kích hoạt Realtime cho toàn bộ các bảng nghiệp vụ cốt lõi
