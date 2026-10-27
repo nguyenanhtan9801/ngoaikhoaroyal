@@ -1490,7 +1490,7 @@ export function matchLeadWithDatabase(
   const leadName = normalizeStudentName(lead.student_name);
   const leadPhone = normalizePhoneDigits(lead.parent_phone);
   const leadDob = (lead.student_dob || lead.dob || '').trim();
-  const explicitStudentId = lead.linked_student_id || lead.student_id || lead.assigned_student_id;
+  const explicitStudentId = (lead as any).allocated_student_id || lead.linked_student_id || lead.student_id || lead.assigned_student_id;
 
   let matchedStudent: Student | null = null;
   let confidence = 0;
@@ -1503,8 +1503,8 @@ export function matchLeadWithDatabase(
     const sDob = (s.dob || '').trim();
 
     const isExplicitLink = Boolean(
-      (explicitStudentId && s.id === explicitStudentId) ||
-        (lead.assigned_student_code && s.code === lead.assigned_student_code)
+      (explicitStudentId && (s.id === explicitStudentId || s.code === explicitStudentId)) ||
+        (lead.assigned_student_code && (s.code === lead.assigned_student_code || s.id === lead.assigned_student_code))
     );
     // Tiêu chí 1: Trùng SĐT phụ huynh + Tên học sinh
     const isPhoneAndNameMatch = Boolean(
@@ -1543,7 +1543,10 @@ export function matchLeadWithDatabase(
   // Lấy danh sách các lớp & môn học mà học sinh cũ đang theo học (active hoặc trial)
   const activeEnrollments: Enrollment[] = matchedStudent
     ? store.enrollments.filter(
-        e => e.student_id === matchedStudent!.id && (e.status === 'active' || e.status === 'trial')
+        e =>
+          (String(e.student_id) === String(matchedStudent!.id) ||
+            String(e.student_id) === String(matchedStudent!.code)) &&
+          (e.status === 'active' || e.status === 'trial' || (e as any).enrollment_type === 'trial' || (e as any).enrollment_type === 'official')
       )
     : [];
 

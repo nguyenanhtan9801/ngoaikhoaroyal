@@ -102,6 +102,299 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     }
   }, [store.enrollments, onUpdateStore]);
 
+  // Đồng bộ trực tiếp danh sách học sinh kèm ghi danh (enrollments) & lớp học (extracurricular_classes) từ Supabase
+  const fetchStudents = React.useCallback(async () => {
+    const client = getSupabaseClient() || supabase;
+    if (!client) return;
+
+    try {
+      let { data: studentsData, error: studentsErr } = await client
+        .from('students')
+        .select(`
+          *,
+          enrollments (
+            id,
+            class_id,
+            enrollment_type,
+            status,
+            extracurricular_classes (
+              id,
+              name,
+              schedule_days,
+              days_of_week
+            )
+          )
+        `);
+
+      if (studentsErr) {
+        const fallbackJoin = await client
+          .from('students')
+          .select(`
+            *,
+            enrollments (
+              *,
+              extracurricular_classes (
+                *
+              )
+            )
+          `);
+        if (!fallbackJoin.error && fallbackJoin.data) {
+          studentsData = fallbackJoin.data;
+        } else {
+          const plainStudents = await client.from('students').select('*');
+          if (!plainStudents.error && plainStudents.data) {
+            studentsData = plainStudents.data;
+          }
+        }
+      }
+
+      const [enrRes, clsRes] = await Promise.all([
+        client.from('enrollments').select('*, extracurricular_classes(*)'),
+        client.from('extracurricular_classes').select('*'),
+      ]);
+
+      let remoteEnrollmentsRaw: any[] = [];
+      if (!enrRes.error && Array.isArray(enrRes.data)) {
+        remoteEnrollmentsRaw = enrRes.data;
+      } else {
+        const plainEnr = await client.from('enrollments').select('*');
+        if (!plainEnr.error && Array.isArray(plainEnr.data)) {
+          remoteEnrollmentsRaw = plainEnr.data;
+        }
+      }
+
+      const remoteClassesRaw: any[] = !clsRes.error && Array.isArray(clsRes.data) ? clsRes.data : [];
+
+      onUpdateStore(prev => {
+        // 1. Merge classes
+        const classMap = new Map<string, ExtracurricularClass>();
+        prev.classes.forEach(c => classMap.set(c.id, c));
+        remoteClassesRaw.forEach(r => {
+          if (!r || !r.id) return;
+          const existing = classMap.get(r.id);
+          const parsedDays = Array.isArray(r.days_of_week)
+            ? r.days_of_week
+            : typeof r.days_of_week === 'string' && r.days_of_week.startsWith('[')
+            ? JSON.parse(r.days_of_week)
+            : Array.isArray(r.schedule_days)
+            ? r.schedule_days
+            : existing?.days_of_week || ['T2', 'T4'];
+          classMap.set(r.id, {
+            ...(existing || {}),
+            id: r.id,
+            name: r.name || existing?.name || r.id,
+            code: r.code || existing?.code || r.id,
+            term_id: r.term_id || existing?.term_id || 'term_fall_2026',
+            campus_id: r.campus_id || existing?.campus_id || 'camp_pmh',
+            subject_id: r.subject_id || existing?.subject_id || 'sub_01',
+            facility_id: r.facility_id || existing?.facility_id || 'fac_01',
+            time_slot_id: r.time_slot_id || existing?.time_slot_id || 'slot_after_01',
+            days_of_week: parsedDays,
+            start_date: r.start_date || existing?.start_date,
+            end_date: r.end_date || existing?.end_date,
+            primary_teacher_id: r.primary_teacher_id || r.teacher_id || existing?.primary_teacher_id || '',
+            max_students: Number(r.max_students || existing?.max_students || 25),
+            total_sessions: Number(r.total_sessions || existing?.total_sessions || 24),
+            full_course_fee: Number(r.full_course_fee || existing?.full_course_fee || 3990000),
+            price_per_session: Number(r.price_per_session || existing?.price_per_session || 166250),
+            status: r.status || existing?.status || 'active',
+          });
+        });
+
+        // 2. Collect nested enrollments from studentsData + remoteEnrollmentsRaw
+        const enrMap = new Map<string, Enrollment>();
+        prev.enrollments.forEach(e => {
+          enrMap.set(`${e.student_id}__${e.class_id}`, e);
+        });
+
+        const processRawEnrollment = (raw: any, fallbackStudentId?: string) => {
+          if (!raw || !raw.class_id) return;
+          const sid = raw.student_id || fallbackStudentId;
+          if (!sid) return;
+          const isTrial = Boolean(
+            raw.enrollment_type === 'trial' ||
+            raw.status === 'trial' ||
+            raw.status === 'trial_pending' ||
+            raw.is_trial === true
+          );
+          const nestedCls = Array.isArray(raw.extracurricular_classes)
+            ? raw.extracurricular_classes[0]
+            : raw.extracurricular_classes;
+
+          if (nestedCls && nestedCls.id && !classMap.has(nestedCls.id)) {
+            const parsedDays = Array.isArray(nestedCls.days_of_week)
+              ? nestedCls.days_of_week
+              : Array.isArray(nestedCls.schedule_days)
+              ? nestedCls.schedule_days
+              : typeof nestedCls.schedule_days === 'string'
+              ? nestedCls.schedule_days.split(',').map((s: string) => s.trim()).filter(Boolean)
+              : ['T2', 'T4'];
+            classMap.set(nestedCls.id, {
+              id: nestedCls.id,
+              name: nestedCls.name || nestedCls.id,
+              code: nestedCls.id,
+              term_id: 'term_fall_2026',
+              campus_id: 'camp_pmh',
+              subject_id: 'sub_01',
+              facility_id: 'fac_01',
+              time_slot_id: 'slot_after_01',
+              days_of_week: parsedDays,
+              primary_teacher_id: '',
+              max_students: 25,
+              total_sessions: Number(nestedCls.total_sessions || 24),
+              full_course_fee: 3990000,
+              price_per_session: 166250,
+              status: 'active',
+            });
+          }
+
+          const key = `${sid}__${raw.class_id}`;
+          const existing = enrMap.get(key);
+          const enrolledDays = Array.isArray(raw.enrolled_days_of_week)
+            ? raw.enrolled_days_of_week
+            : existing?.enrolled_days_of_week;
+
+          enrMap.set(key, {
+            ...(existing || {}),
+            id: raw.id || existing?.id || `enr_${sid}_${raw.class_id}`,
+            student_id: sid,
+            class_id: raw.class_id,
+            registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || raw.total_sessions || existing?.registered_sessions || 24),
+            joined_date: raw.joined_date || raw.start_date || existing?.joined_date || new Date().toISOString().split('T')[0],
+            enrolled_days_of_week: enrolledDays,
+            is_partial_schedule: Boolean(raw.is_partial_schedule ?? existing?.is_partial_schedule),
+            status: isTrial ? 'trial' : (raw.status === 'dropped' || raw.status === 'trial_dropped' ? raw.status : 'active'),
+            is_trial: isTrial,
+            trial_session_date: raw.trial_session_date || raw.start_date || existing?.trial_session_date,
+            trial_attended: Boolean(raw.trial_attended ?? existing?.trial_attended),
+            ...( {
+              enrollment_type: isTrial ? 'trial' : (raw.enrollment_type || 'official'),
+              extracurricular_classes: nestedCls || (existing as any)?.extracurricular_classes,
+            } as any ),
+          });
+        };
+
+        remoteEnrollmentsRaw.forEach(raw => processRawEnrollment(raw));
+
+        // 3. Merge students
+        const studentMap = new Map<string, Student>();
+        prev.students.forEach(s => studentMap.set(s.id, s));
+
+        if (Array.isArray(studentsData)) {
+          studentsData.forEach((r: any) => {
+            if (!r) return;
+            const sid = r.id || r.code || r.student_code;
+            const scode = r.code || r.student_code || r.id;
+            if (!sid) return;
+
+            if (Array.isArray(r.enrollments)) {
+              r.enrollments.forEach((ne: any) => processRawEnrollment(ne, sid));
+            }
+
+            const existing = studentMap.get(sid) || Array.from(studentMap.values()).find(s => s.code === scode);
+            const isRoyal = Boolean(
+              r.is_royal_student !== undefined && r.is_royal_student !== null
+                ? r.is_royal_student
+                : r.student_type
+                ? r.student_type === 'royal'
+                : existing?.is_royal_student
+            );
+            const dob = r.dob || r.birth_date || r.date_of_birth || existing?.dob || '2016-01-01';
+            const regularClass = r.regular_class || r.class_name || r.grade_level || existing?.regular_class || '';
+            const campusId = resolveStudentCampusId({ ...existing, ...r });
+
+            const targetKey = existing?.id || sid;
+            studentMap.set(targetKey, {
+              ...(existing || {}),
+              id: targetKey,
+              code: scode,
+              previous_student_code: r.previous_student_code || existing?.previous_student_code,
+              name: r.name || r.full_name || existing?.name || '',
+              dob,
+              birth_date: dob,
+              gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
+              is_royal_student: isRoyal,
+              student_type: isRoyal ? 'royal' : 'external',
+              has_snack: isRoyal,
+              campus_id: campusId,
+              school_name: r.school_name || existing?.school_name || (campusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH'),
+              regular_class: regularClass,
+              class_name: regularClass,
+              parent_name: r.parent_name || existing?.parent_name || '',
+              parent_phone: r.parent_phone || existing?.parent_phone || '',
+              medical_notes: r.medical_notes ?? existing?.medical_notes ?? '',
+              avatar_url: r.avatar_url || existing?.avatar_url,
+              status: r.status || existing?.status || 'active',
+              created_at: r.created_at ? String(r.created_at).split('T')[0] : (existing?.created_at || new Date().toISOString().split('T')[0]),
+              ...(Array.isArray(r.enrollments) ? { enrollments: r.enrollments } : {}),
+            } as Student);
+          });
+        }
+
+        return {
+          ...prev,
+          classes: Array.from(classMap.values()),
+          students: Array.from(studentMap.values()),
+          enrollments: deduplicateEnrollments(Array.from(enrMap.values())),
+        };
+      });
+    } catch (err) {
+      console.warn('Lỗi đồng bộ danh sách học sinh & ghi danh từ Supabase:', err);
+    }
+  }, [onUpdateStore]);
+
+  React.useEffect(() => {
+    fetchStudents();
+  }, [fetchStudents]);
+
+  // Helper lấy danh sách enrollments (kèm thông tin lớp) của 1 học sinh từ cả store.enrollments và nested student.enrollments
+  const getStudentEnrollmentsList = (student: Student) => {
+    const fromStore = store.enrollments.filter(
+      e =>
+        (String(e.student_id) === String(student.id) || String(e.student_id) === String(student.code)) &&
+        e.status !== 'dropped' &&
+        e.status !== 'trial_dropped' &&
+        (e.status as string) !== 'cancelled' &&
+        (e.status as string) !== 'canceled'
+    );
+
+    const nestedRaw: any[] = Array.isArray((student as any).enrollments) ? (student as any).enrollments : [];
+    const combinedMap = new Map<string, Enrollment>();
+
+    fromStore.forEach(e => {
+      combinedMap.set(e.class_id || e.id, e);
+    });
+
+    nestedRaw.forEach(raw => {
+      if (!raw || !raw.class_id) return;
+      if (raw.status === 'dropped' || raw.status === 'trial_dropped' || raw.status === 'cancelled') return;
+      if (!combinedMap.has(raw.class_id)) {
+        const isTrial = Boolean(
+          raw.enrollment_type === 'trial' ||
+          raw.status === 'trial' ||
+          raw.status === 'trial_pending' ||
+          raw.is_trial === true
+        );
+        combinedMap.set(raw.class_id, {
+          id: raw.id || `enr_${student.id}_${raw.class_id}`,
+          student_id: student.id,
+          class_id: raw.class_id,
+          registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || 24),
+          joined_date: raw.joined_date || raw.start_date || new Date().toISOString().split('T')[0],
+          enrolled_days_of_week: Array.isArray(raw.enrolled_days_of_week) ? raw.enrolled_days_of_week : undefined,
+          status: isTrial ? 'trial' : 'active',
+          is_trial: isTrial,
+          ...( {
+            enrollment_type: isTrial ? 'trial' : (raw.enrollment_type || 'official'),
+            extracurricular_classes: raw.extracurricular_classes,
+          } as any ),
+        });
+      }
+    });
+
+    return Array.from(combinedMap.values());
+  };
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [convertingStudent, setConvertingStudent] = useState<Student | null>(null);
@@ -848,10 +1141,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {filteredStudents.map(student => {
-                  const studentEnrollments = store.enrollments.filter(
-                    e => (String(e.student_id) === String(student.id) || String(e.student_id) === String(student.code)) &&
-                         (e.status === 'active' || e.status === 'trial' || (e.status as string) === 'trial_pending' || (e as any).enrollment_type === 'trial' || (e as any).is_trial)
-                  );
+                  const studentEnrollments = getStudentEnrollmentsList(student);
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
@@ -965,18 +1255,36 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         <div className="flex flex-col gap-1.5 max-w-xs">
                           {studentEnrollments.length > 0 ? (
                             studentEnrollments.map(enr => {
-                              const c = store.classes.find(cl => cl.id === enr.class_id);
-                              if (!c) return null;
-                              const isTrial = enr.status === 'trial' || (enr.status as string) === 'trial_pending' || (enr as any).is_trial === true || (enr as any).enrollment_type === 'trial';
-                              const shortName = c.name.split('-')[0].trim();
-                              const clsDays = getClassDaysOfWeek(c, store);
+                              const nestedClsRaw = (enr as any).extracurricular_classes;
+                              const nestedCls = Array.isArray(nestedClsRaw) ? nestedClsRaw[0] : nestedClsRaw;
+                              const c = store.classes.find(cl => cl.id === enr.class_id) || nestedCls || {
+                                id: enr.class_id,
+                                name: enr.class_id || 'Lớp ngoại khóa',
+                                days_of_week: ['T2', 'T4'],
+                                total_sessions: 24,
+                              };
+                              const isTrial =
+                                (enr as any).enrollment_type === 'trial' ||
+                                enr.status === 'trial' ||
+                                (enr.status as string) === 'trial_pending' ||
+                                (enr as any).is_trial === true;
+                              const shortName = (c.name || 'Môn học').split('-')[0].trim();
+                              const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
+                                ? c.days_of_week
+                                : getClassDaysOfWeek(c as ExtracurricularClass, store);
                               const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
                                 ? enr.enrolled_days_of_week
                                 : clsDays;
+                              const scheduleLabelText =
+                                typeof (c as any).schedule_days === 'string' && (c as any).schedule_days.trim()
+                                  ? (c as any).schedule_days
+                                  : formatDaysListLabel(studentDays);
                               const isPartial = enr.is_partial_schedule || studentDays.length < clsDays.length;
                               const regSess = enr.registered_sessions || c.total_sessions || 24;
                               const attendedCount = store.attendance.filter(
-                                a => a.student_id === student.id && a.class_id === c.id && a.status === 'present'
+                                a => (String(a.student_id) === String(student.id) || String(a.student_id) === String(student.code)) &&
+                                     a.class_id === c.id &&
+                                     a.status === 'present'
                               ).length;
 
                               return (
@@ -989,7 +1297,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         <span>{shortName} (Học Thử Buổi 1)</span>
                                       </span>
                                     ) : (
-                                      <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium inline-flex items-center gap-1 w-fit">
+                                      <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold inline-flex items-center gap-1 w-fit">
+                                        <span>🟢</span>
                                         <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                                         <span>{shortName} (Chính thức)</span>
                                       </span>
@@ -999,7 +1308,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
                                         : 'bg-slate-800/80 text-slate-300 border-slate-700'
                                     }`}>
-                                      Lịch: {studentDays.join(', ')} ({attendedCount}/{regSess}b)
+                                      Lịch: {scheduleLabelText} ({attendedCount}/{regSess}b)
                                     </span>
                                   </div>
 
@@ -1094,10 +1403,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         /* VIEW MODE 2: DẠNG THẺ (CARDS VIEW) */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredStudents.map(student => {
-            const studentEnrollments = store.enrollments.filter(
-              e => (String(e.student_id) === String(student.id) || String(e.student_id) === String(student.code)) &&
-                   (e.status === 'active' || e.status === 'trial' || (e.status as string) === 'trial_pending' || (e as any).enrollment_type === 'trial' || (e as any).is_trial)
-            );
+            const studentEnrollments = getStudentEnrollmentsList(student);
 
             return (
               <div
@@ -1219,18 +1525,36 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     <div className="flex flex-col gap-1.5">
                       {studentEnrollments.length > 0 ? (
                         studentEnrollments.map(enr => {
-                          const c = store.classes.find(cl => cl.id === enr.class_id);
-                          if (!c) return null;
-                          const isTrial = enr.status === 'trial' || (enr.status as string) === 'trial_pending' || (enr as any).is_trial === true || (enr as any).enrollment_type === 'trial';
-                          const shortName = c.name.split('-')[0].trim();
-                          const clsDays = getClassDaysOfWeek(c, store);
+                          const nestedClsRaw = (enr as any).extracurricular_classes;
+                          const nestedCls = Array.isArray(nestedClsRaw) ? nestedClsRaw[0] : nestedClsRaw;
+                          const c = store.classes.find(cl => cl.id === enr.class_id) || nestedCls || {
+                            id: enr.class_id,
+                            name: enr.class_id || 'Lớp ngoại khóa',
+                            days_of_week: ['T2', 'T4'],
+                            total_sessions: 24,
+                          };
+                          const isTrial =
+                            (enr as any).enrollment_type === 'trial' ||
+                            enr.status === 'trial' ||
+                            (enr.status as string) === 'trial_pending' ||
+                            (enr as any).is_trial === true;
+                          const shortName = (c.name || 'Môn học').split('-')[0].trim();
+                          const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
+                            ? c.days_of_week
+                            : getClassDaysOfWeek(c as ExtracurricularClass, store);
                           const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
                             ? enr.enrolled_days_of_week
                             : clsDays;
+                          const scheduleLabelText =
+                            typeof (c as any).schedule_days === 'string' && (c as any).schedule_days.trim()
+                              ? (c as any).schedule_days
+                              : formatDaysListLabel(studentDays);
                           const isPartial = enr.is_partial_schedule || studentDays.length < clsDays.length;
                           const regSess = enr.registered_sessions || c.total_sessions || 24;
                           const attendedCount = store.attendance.filter(
-                            a => a.student_id === student.id && a.class_id === c.id && a.status === 'present'
+                            a => (String(a.student_id) === String(student.id) || String(a.student_id) === String(student.code)) &&
+                                 a.class_id === c.id &&
+                                 a.status === 'present'
                           ).length;
 
                           return (
@@ -1243,7 +1567,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                     <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
                                   </span>
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-medium flex items-center gap-1">
+                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
+                                    <span>🟢</span>
                                     <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                                     <span className="truncate">{shortName} (Chính thức)</span>
                                   </span>
@@ -1253,7 +1578,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
                                     : 'bg-slate-800 text-slate-300 border-slate-700'
                                 }`}>
-                                  Lịch: {studentDays.join(', ')} ({attendedCount}/{regSess} buổi)
+                                  Lịch: {scheduleLabelText} ({attendedCount}/{regSess} buổi)
                                 </span>
                               </div>
 
