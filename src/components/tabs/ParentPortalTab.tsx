@@ -756,8 +756,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     }
   };
 
-  // Execute Multi-Class Enrollment & Existing Student Merge
-  const handleConfirmEnrollment = async () => {
+  // Execute Multi-Class Enrollment via RPC confirm_lead_enrollment with direct Supabase persistence
+  const handleConfirmEnrollment = async (forceTrial?: boolean) => {
     if (!selectedLeadForEnroll) return;
     if (isSubmittingEnrollment) return;
     setIsSubmittingEnrollment(true);
@@ -838,6 +838,50 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       }
 
       const client = getSupabaseClient() || supabase;
+
+      // ========================================================
+      // BƯỚC 0: GỌI HÀM RPC confirm_lead_enrollment TRỰC TIẾP TRÊN SUPABASE
+      // ========================================================
+      const primaryTargetClassId = selectedClassObjects[0]?.id || (lead as any).assigned_class_id;
+      const isTrialMode = forceTrial !== undefined
+        ? forceTrial
+        : selectedClassObjects.some(c => subjectEnrollmentTypes[c.subject_id] === 'trial');
+
+      if (client && primaryTargetClassId) {
+        try {
+          const firstCls = selectedClassObjects[0];
+          const firstClsDays = getClassDaysOfWeek(firstCls, store);
+          const firstChosenDays = subjectEnrolledDays[firstCls.subject_id] && subjectEnrolledDays[firstCls.subject_id].length > 0
+            ? subjectEnrolledDays[firstCls.subject_id]
+            : firstClsDays;
+          const firstStartDate = subjectStartDates[firstCls.subject_id] || getDefaultClassStartDate(firstCls, store, undefined, firstChosenDays);
+          const firstAutoCalc = calculateRemainingSessions(firstCls, firstStartDate, store, firstChosenDays);
+          const firstEffectiveSessions = subjectCustomSessions[firstCls.subject_id] ?? firstAutoCalc.remainingSessions;
+          const firstPricing = calculateClassProratedPricing(firstCls, firstEffectiveSessions, lead.is_royal_student, store);
+
+          const { data: rpcData, error: rpcErr } = await client.rpc('confirm_lead_enrollment', {
+            p_reg_id: lead.id,
+            p_student_code: studentCode,
+            p_student_name: lead.student_name || (lead as any).name,
+            p_date_of_birth: rawDob,
+            p_campus_id: campusFullId,
+            p_parent_name: lead.parent_name || 'Na',
+            p_parent_phone: lead.parent_phone || '0915279768',
+            p_class_id: primaryTargetClassId,
+            p_is_trial: isTrialMode,
+            p_total_fee: isTrialMode ? 0 : Number(firstPricing.netPayable || 3250000),
+            p_actual_sessions: Number(firstEffectiveSessions || 13)
+          });
+
+          if (rpcErr) {
+            console.warn('RPC confirm_lead_enrollment notice:', rpcErr.message);
+          } else if (rpcData && !rpcData.success) {
+            console.warn('RPC confirm_lead_enrollment unsuccess notice:', rpcData.error);
+          }
+        } catch (rpcEx) {
+          console.warn('RPC confirm_lead_enrollment exception:', rpcEx);
+        }
+      }
 
       // ========================================================
       // BƯỚC 1: TẠO HOẶC CẬP NHẬT HỒ SƠ HỌC VIÊN VÀO BẢNG public.students
@@ -922,7 +966,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         const autoCalc = calculateRemainingSessions(cls, startDate, store, chosenDays);
         const effectiveSessions = subjectCustomSessions[cls.subject_id] ?? autoCalc.remainingSessions;
         const pricing = calculateClassProratedPricing(cls, effectiveSessions, lead.is_royal_student, store);
-        const isTrial = subjectEnrollmentTypes[cls.subject_id] === 'trial';
+        const isTrial = forceTrial !== undefined ? forceTrial : (subjectEnrollmentTypes[cls.subject_id] === 'trial');
         const subObj = store.subjects.find(s => s.id === cls.subject_id);
         const subShortName = (subObj?.name || cls.name).split('(')[0].trim();
         const scheduleLabel = formatStudentScheduleLabel(autoCalc.enrolledDaysOfWeek, autoCalc.daysOfWeek);
@@ -1173,22 +1217,20 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         auditLogs: [assignLog, ...(prev.auditLogs || [])],
       }));
 
-      showToast(
-        `Đã xếp lớp và lưu học sinh ${lead.student_name} (${studentCode}) thành công vào CSDL!`,
-        'success',
-        { title: 'Xếp lớp & Lưu CSDL thành công' }
-      );
+      alert(`✅ Thành công! Đã lưu học sinh ${lead.student_name} (${studentCode}) và xếp lớp ${isTrialMode ? 'HỌC THỬ' : 'CHÍNH THỨC'} vào CSDL.`);
 
       setSelectedLeadForEnroll(null);
-      fetchLeadsFromSupabase(false);
+      await fetchLeadsFromSupabase(false);
 
     } catch (err: any) {
       console.error('Lỗi xếp lớp:', err);
-      alert('Không thể lưu dữ liệu xếp lớp: ' + (err.message || String(err)));
+      alert('Không thể hoàn tất xếp lớp: ' + (err.message || String(err)));
     } finally {
       setIsSubmittingEnrollment(false);
     }
   };
+
+  const handleExecuteEnrollment = handleConfirmEnrollment;
 
   // Open Contact Notes Modal
   const handleOpenContactModal = (lead: ParentRegistration) => {
@@ -4141,52 +4183,43 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                   )}
                 </div>
 
-                <div className="flex items-center justify-end gap-3">
+                <div className="flex items-center justify-end gap-3 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setSelectedLeadForEnroll(null)}
-                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
                   >
                     Hủy Bỏ
                   </button>
+
+                  {/* Nút tím: Xác Nhận Xếp Lớp & Cấp Mã Học Viên (Học Thử 1 Lớp) */}
                   <button
                     type="button"
-                    onClick={handleConfirmEnrollment}
+                    onClick={() => handleExecuteEnrollment(true)}
                     disabled={isSubmittingEnrollment}
-                    className={`px-5 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 shadow-lg transition-all ${
-                      isSubmittingEnrollment
-                        ? 'bg-slate-800 text-slate-400 border border-slate-700 cursor-not-allowed opacity-80'
-                        : matchedStudent
-                        ? 'bg-gradient-to-r from-teal-400 to-emerald-400 hover:from-teal-300 hover:to-emerald-300 text-slate-950 shadow-teal-500/25 active:scale-95 cursor-pointer'
-                        : assignedCount > 0 
-                        ? trialAssignedCount > 0 && officialAssignedCount === 0
-                          ? 'bg-gradient-to-r from-purple-500 to-amber-500 hover:from-purple-400 hover:to-amber-400 text-slate-950 shadow-purple-500/25 active:scale-95 cursor-pointer'
-                          : 'bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95 cursor-pointer'
-                        : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 shadow-sm active:scale-95 cursor-pointer'
-                    }`}
+                    className="px-5 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 shadow-lg transition-all bg-gradient-to-r from-purple-600 via-purple-500 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-purple-500/25 active:scale-95 cursor-pointer disabled:opacity-60"
                   >
                     {isSubmittingEnrollment ? (
-                      <span className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                    ) : assignModalMode === 'quick' ? (
-                      <Zap className="w-4 h-4 fill-slate-950" />
+                      <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     ) : (
-                      <Check className="w-4 h-4 stroke-[3]" />
+                      <Sparkles className="w-4 h-4 text-purple-200" />
                     )}
-                    <span>
-                      {isSubmittingEnrollment
-                        ? 'Đang lưu CSDL Supabase...'
-                        : matchedStudent
-                        ? `Xác Nhận Thêm Môn Vào Học Sinh Hiện Tại (${matchedStudent.code})`
-                        : assignModalMode === 'quick' && assignedCount > 0
-                        ? `Xác Nhận Xếp Lớp Nhanh & Cấp Mã Học Viên`
-                        : assignedCount > 0 
-                        ? trialAssignedCount > 0 && officialAssignedCount === 0
-                          ? `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (Học Thử ${trialAssignedCount} Lớp)`
-                          : trialAssignedCount > 0
-                          ? `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (${officialAssignedCount} Chính Thức, ${trialAssignedCount} Học Thử)`
-                          : `Xác Nhận Xếp Lớp & Cấp Mã Học Viên (${assignedCount} lớp)`
-                        : `Tiếp Nhận & Cấp Mã Học Viên (Lưu Chờ Xếp Lớp)`}
-                    </span>
+                    <span>Xác Nhận Xếp Lớp & Cấp Mã Học Viên (Học Thử 1 Lớp)</span>
+                  </button>
+
+                  {/* Nút cam: Xác Nhận Xếp Lớp Nhanh & Cấp Mã Học Viên */}
+                  <button
+                    type="button"
+                    onClick={() => handleExecuteEnrollment(false)}
+                    disabled={isSubmittingEnrollment}
+                    className="px-5 py-2.5 rounded-xl font-black text-xs flex items-center gap-2 shadow-lg transition-all bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 shadow-amber-500/25 active:scale-95 cursor-pointer disabled:opacity-60"
+                  >
+                    {isSubmittingEnrollment ? (
+                      <span className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Zap className="w-4 h-4 fill-slate-950" />
+                    )}
+                    <span>Xác Nhận Xếp Lớp Nhanh & Cấp Mã Học Viên</span>
                   </button>
                 </div>
               </div>
