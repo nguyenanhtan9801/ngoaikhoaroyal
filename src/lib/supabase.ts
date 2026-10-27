@@ -709,32 +709,6 @@ ALTER PUBLICATION supabase_realtime ADD TABLE parent_registrations;
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('attendance-proofs', 'attendance-proofs', true)
 ON CONFLICT (id) DO NOTHING;
-
--- HÀM RPC HỦY GHI DANH LỚP HỌC DO XẾP NHẦM & XÓA HÓA ĐƠN CHƯA THU TƯƠNG ỨNG
-CREATE OR REPLACE FUNCTION public.remove_student_from_class(
-  p_student_id TEXT,
-  p_class_id TEXT
-) RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
-BEGIN
-  DELETE FROM public.tuition_invoices
-  WHERE student_id = p_student_id
-    AND class_id = p_class_id
-    AND COALESCE(payment_status, 'unpaid') <> 'paid';
-
-  DELETE FROM public.enrollments
-  WHERE student_id = p_student_id
-    AND class_id = p_class_id;
-
-  RETURN jsonb_build_object(
-    'success', true,
-    'student_id', p_student_id,
-    'class_id', p_class_id
-  );
-END;
-$$;
 `;
 
 export const SUPABASE_REALTIME_PUBLICATION_SQL = `-- Kích hoạt Realtime cho toàn bộ các bảng nghiệp vụ cốt lõi
