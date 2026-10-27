@@ -179,8 +179,6 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   initialSubjectId,
   onSuccess,
 }) => {
-  if (!isOpen) return null;
-
   // Active term list sorted chronologically
   const sortedTerms = useMemo(() => {
     return [...store.terms].sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
@@ -219,6 +217,28 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   );
   const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setFormData({
+      name: editingClass?.name || '',
+      term_id: editingClass?.term_id || defaultTermId,
+      campus_id: editingClass?.campus_id || defaultCampusId,
+      subject_id: editingClass?.subject_id || initialSubjectId || store.subjects[0]?.id || '',
+      facility_id: editingClass?.facility_id || store.facilities[0]?.id || '',
+      time_slot_id: editingClass?.time_slot_id || store.timeSlots[0]?.id || '',
+      days_of_week: (editingClass?.days_of_week && editingClass.days_of_week.length === 2)
+        ? editingClass.days_of_week
+        : (store.timeSlots[0]?.days_of_week && store.timeSlots[0].days_of_week.length === 2)
+        ? store.timeSlots[0].days_of_week
+        : ['T2', 'T4'],
+      start_date: editingClass?.start_date || store.terms.find(t => t.id === defaultTermId)?.start_date || '2026-09-01',
+      primary_teacher_id: editingClass?.primary_teacher_id || store.teachers[0]?.id || '',
+      max_students: editingClass?.max_students || 15,
+      allow_over_quota: editingClass?.allow_over_quota || false,
+    });
+    setCrossTermMode(editingClass?.is_cross_term ? 'spanning' : 'spanning');
+  }, [isOpen, editingClass]);
 
   // Active Primary Term
   const primaryTerm = useMemo(() => {
@@ -798,6 +818,8 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       setIsSaving(false);
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn overflow-y-auto">

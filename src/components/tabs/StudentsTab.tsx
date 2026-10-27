@@ -30,6 +30,7 @@ import {
 import { 
   AppStore, 
   generateStudentCode, 
+  generateStudentCodeSync,
   formatVND, 
   deduplicateEnrollments, 
   createAuditRecord, 
@@ -102,6 +103,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     }
   }, [store.enrollments, onUpdateStore]);
 
+  // Lưu vết các cặp (student_id__class_id) vừa được hủy trong phiên để tránh fetch bất đồng bộ ghi đè lại
+  const recentlyRemovedEnrollmentsRef = React.useRef<Set<string>>(new Set());
+
   // Đồng bộ trực tiếp danh sách học sinh kèm ghi danh (enrollments) & lớp học (extracurricular_classes) từ Supabase
   const fetchStudents = React.useCallback(async () => {
     const client = getSupabaseClient() || supabase;
@@ -148,9 +152,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         }
       }
 
-      const [enrRes, clsRes] = await Promise.all([
+      const [enrRes, clsRes, invRes] = await Promise.all([
         client.from('enrollments').select('*, extracurricular_classes(*)'),
         client.from('extracurricular_classes').select('*'),
+        client.from('tuition_invoices').select('*'),
       ]);
 
       let remoteEnrollmentsRaw: any[] = [];
@@ -164,6 +169,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       }
 
       const remoteClassesRaw: any[] = !clsRes.error && Array.isArray(clsRes.data) ? clsRes.data : [];
+      const remoteInvoicesRaw: any[] = !invRes.error && Array.isArray(invRes.data) ? invRes.data : [];
 
       onUpdateStore(prev => {
         // 1. Merge classes
@@ -204,13 +210,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         // 2. Collect nested enrollments from studentsData + remoteEnrollmentsRaw
         const enrMap = new Map<string, Enrollment>();
         prev.enrollments.forEach(e => {
-          enrMap.set(`${e.student_id}__${e.class_id}`, e);
+          const k = `${e.student_id}__${e.class_id}`;
+          if (!recentlyRemovedEnrollmentsRef.current.has(k)) {
+            enrMap.set(k, e);
+          }
         });
 
         const processRawEnrollment = (raw: any, fallbackStudentId?: string) => {
           if (!raw || !raw.class_id) return;
           const sid = raw.student_id || fallbackStudentId;
           if (!sid) return;
+          if (recentlyRemovedEnrollmentsRef.current.has(`${sid}__${raw.class_id}`)) return;
           const isTrial = Boolean(
             (raw.is_trial === true || raw.enrollment_type === 'trial') &&
             raw.status !== 'active'
@@ -274,22 +284,51 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
         remoteEnrollmentsRaw.forEach(raw => processRawEnrollment(raw));
 
-        // 3. Merge students
+        // 3. Merge students & tự động xử lý nếu phát hiện 2 học sinh khác nhau bị trùng chung mã code (VD: RY-2026-00365)
         const studentMap = new Map<string, Student>();
         prev.students.forEach(s => studentMap.set(s.id, s));
+
+        const usedCodesByStudentId = new Map<string, string>(); // codeUpper -> studentId
+        const duplicateFixTasks: Array<{ id: string; newCode: string; oldCode: string; name: string }> = [];
+
+        // Tìm số thứ tự lớn nhất hiện tại cho RY và EXT để cấp mã tuần tự nếu phát hiện bản ghi trùng mã
+        const currentYear = new Date().getFullYear();
+        const maxSeqByPrefix: Record<string, number> = { RY: 0, EXT: 0 };
+        const scanMaxSeq = (codeStr?: string) => {
+          if (!codeStr) return;
+          const upper = String(codeStr).trim().toUpperCase();
+          for (const p of ['RY', 'EXT']) {
+            const pref = `${p}-${currentYear}-`;
+            if (upper.startsWith(pref)) {
+              const m = upper.match(new RegExp(`${pref}(\\d+)`));
+              if (m) {
+                const n = parseInt(m[1], 10);
+                if (!isNaN(n) && n > maxSeqByPrefix[p]) {
+                  maxSeqByPrefix[p] = n;
+                }
+              }
+            }
+          }
+        };
+
+        prev.students.forEach(s => scanMaxSeq(s.code));
+        if (Array.isArray(studentsData)) {
+          studentsData.forEach((r: any) => scanMaxSeq(r?.code || r?.student_code));
+        }
 
         if (Array.isArray(studentsData)) {
           studentsData.forEach((r: any) => {
             if (!r) return;
             const sid = r.id || r.code || r.student_code;
-            const scode = r.code || r.student_code || r.id;
+            let scode = String(r.code || r.student_code || r.id || '').trim();
             if (!sid) return;
 
             if (Array.isArray(r.enrollments)) {
               r.enrollments.forEach((ne: any) => processRawEnrollment(ne, sid));
             }
 
-            const existing = studentMap.get(sid) || Array.from(studentMap.values()).find(s => s.code === scode);
+            // Chỉ khớp theo đúng ID định danh (không gộp 2 học sinh khác tên/khác ID có chung code)
+            const existing = studentMap.get(sid);
             const isRoyal = Boolean(
               r.is_royal_student !== undefined && r.is_royal_student !== null
                 ? r.is_royal_student
@@ -297,6 +336,24 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 ? r.student_type === 'royal'
                 : existing?.is_royal_student
             );
+
+            const codeUpper = scode.toUpperCase();
+            const ownerId = usedCodesByStudentId.get(codeUpper);
+            if (ownerId && ownerId !== sid) {
+              // Phát hiện trùng mã học viên giữa 2 học sinh khác nhau -> Cấp mã tuần tự mới cho bản ghi bị trùng
+              const prefix = isRoyal ? 'RY' : 'EXT';
+              maxSeqByPrefix[prefix] = (maxSeqByPrefix[prefix] || 0) + 1;
+              const reassignedCode = `${prefix}-${currentYear}-${String(maxSeqByPrefix[prefix]).padStart(5, '0')}`;
+              duplicateFixTasks.push({
+                id: sid,
+                oldCode: scode,
+                newCode: reassignedCode,
+                name: r.name || r.full_name || existing?.name || '',
+              });
+              scode = reassignedCode;
+            }
+            usedCodesByStudentId.set(scode.toUpperCase(), sid);
+
             const dob = r.dob || r.birth_date || r.date_of_birth || existing?.dob || '2016-01-01';
             const regularClass = r.regular_class || r.class_name || r.grade_level || existing?.regular_class || '';
             const campusId = resolveStudentCampusId({ ...existing, ...r });
@@ -324,16 +381,82 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               avatar_url: r.avatar_url || existing?.avatar_url,
               status: r.status || existing?.status || 'active',
               created_at: r.created_at ? String(r.created_at).split('T')[0] : (existing?.created_at || new Date().toISOString().split('T')[0]),
-              ...(Array.isArray(r.enrollments) ? { enrollments: r.enrollments } : {}),
+              ...(Array.isArray(r.enrollments)
+                ? {
+                    enrollments: r.enrollments.filter(
+                      (ne: any) =>
+                        ne &&
+                        !recentlyRemovedEnrollmentsRef.current.has(`${sid}__${ne.class_id}`) &&
+                        !recentlyRemovedEnrollmentsRef.current.has(`${scode}__${ne.class_id}`)
+                    ),
+                  }
+                : {}),
             } as Student);
           });
         }
+
+        // Đồng bộ lại các bản ghi bị trùng mã lên Supabase để chuẩn hóa vĩnh viễn
+        if (duplicateFixTasks.length > 0 && client) {
+          duplicateFixTasks.forEach(task => {
+            client
+              .from('students')
+              .update({ code: task.newCode })
+              .eq('id', task.id)
+              .then(({ error }) => {
+                if (!error) {
+                  console.info(`Đã tự động chuẩn hóa mã trùng lặp cho học sinh ${task.name}: ${task.oldCode} -> ${task.newCode}`);
+                }
+              });
+          });
+        }
+
+        // 4. Merge invoices
+        const invMap = new Map<string, TuitionInvoice>();
+        (prev.invoices || []).forEach(inv => {
+          if (
+            inv &&
+            inv.id &&
+            !recentlyRemovedEnrollmentsRef.current.has(`${inv.student_id}__${inv.class_id}`)
+          ) {
+            invMap.set(inv.id, inv);
+          }
+        });
+        remoteInvoicesRaw.forEach((rawInv: any) => {
+          if (!rawInv || !rawInv.id) return;
+          if (recentlyRemovedEnrollmentsRef.current.has(`${rawInv.student_id}__${rawInv.class_id}`)) return;
+          const existingInv = invMap.get(rawInv.id);
+          const gross = Number(rawInv.gross_amount ?? rawInv.total_amount ?? existingInv?.gross_amount ?? 0);
+          const net = Number(rawInv.net_payable ?? rawInv.final_amount ?? existingInv?.net_payable ?? gross);
+          const paid = Number(rawInv.paid_amount ?? existingInv?.paid_amount ?? 0);
+          const pStatus = rawInv.payment_status || rawInv.status || existingInv?.payment_status || 'unpaid';
+          invMap.set(rawInv.id, {
+            ...(existingInv || {}),
+            id: rawInv.id,
+            invoice_code: rawInv.invoice_code || existingInv?.invoice_code || rawInv.id,
+            student_id: rawInv.student_id,
+            class_id: rawInv.class_id,
+            registered_sessions: Number(rawInv.registered_sessions || rawInv.actual_sessions || existingInv?.registered_sessions || 24),
+            total_class_sessions: Number(rawInv.total_class_sessions || rawInv.total_sessions || existingInv?.total_class_sessions || 24),
+            session_rate: Number(rawInv.session_rate || existingInv?.session_rate || 250000),
+            gross_amount: gross,
+            discount_amount: Number(rawInv.discount_amount ?? existingInv?.discount_amount ?? 0),
+            credit_deducted: Number(rawInv.credit_deducted ?? existingInv?.credit_deducted ?? 0),
+            net_payable: net,
+            paid_amount: paid,
+            outstanding_amount: Number(rawInv.outstanding_amount ?? Math.max(0, net - paid)),
+            payment_status: pStatus,
+            is_trial_pending: Boolean(rawInv.is_trial_pending ?? (pStatus === 'trial_pending')),
+            due_date: rawInv.due_date || existingInv?.due_date || new Date().toISOString().split('T')[0],
+            created_at: rawInv.created_at ? String(rawInv.created_at).split('T')[0] : (existingInv?.created_at || new Date().toISOString().split('T')[0]),
+          } as TuitionInvoice);
+        });
 
         return {
           ...prev,
           classes: Array.from(classMap.values()),
           students: Array.from(studentMap.values()),
           enrollments: deduplicateEnrollments(Array.from(enrMap.values())),
+          invoices: Array.from(invMap.values()),
         };
       });
     } catch (err) {
@@ -365,6 +488,12 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
     nestedRaw.forEach(raw => {
       if (!raw || !raw.class_id) return;
+      if (
+        recentlyRemovedEnrollmentsRef.current.has(`${student.id}__${raw.class_id}`) ||
+        recentlyRemovedEnrollmentsRef.current.has(`${student.code}__${raw.class_id}`)
+      ) {
+        return;
+      }
       if (raw.status === 'dropped' || raw.status === 'trial_dropped' || raw.status === 'cancelled') return;
       const isTrial = Boolean(
         (raw.is_trial === true || raw.enrollment_type === 'trial') &&
@@ -407,8 +536,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const cloudFolder = store.cloudStorageConfig?.drive_folder_id || GOOGLE_DRIVE_FOLDER_ID;
   const cloudProviderLabel = 'Google Drive';
 
-  // New Student Form State
+  // New / Edit Student Form State
   const [formData, setFormData] = useState({
+    code: '',
     name: '',
     dob: '2016-01-01',
     gender: 'Nam' as 'Nam' | 'Nữ',
@@ -422,6 +552,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     avatar_url: '',
     photo_stored_at: '',
   });
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [isSavingStudent, setIsSavingStudent] = useState(false);
 
   // Handle image file selection
   const handlePhotoFileChange = (
@@ -524,6 +656,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   } | null>(null);
   const [trialNotes, setTrialNotes] = useState('');
 
+  // Wrong Class Removal / Quick Switch Modal State (Hủy ghi danh nhầm môn / Đổi sang lớp khác)
+  const [wrongClassModal, setWrongClassModal] = useState<{
+    mode: 'remove' | 'switch';
+    student: Student;
+    enrollment: Enrollment;
+    className: string;
+  } | null>(null);
+  const [switchTargetClassId, setSwitchTargetClassId] = useState<string>('');
+  const [switchEnrollType, setSwitchEnrollType] = useState<'official' | 'trial'>('official');
+  const [isRemovingOrSwitching, setIsRemovingOrSwitching] = useState(false);
+
   // Filter students combining Campus ('all' | 'pmh' | 'pl'), Type, Medical & Search Query
   const filteredStudents = useMemo(() => {
     return store.students.filter((student) => {
@@ -553,8 +696,21 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   }, [store.students, selectedCampus, filterType, onlyHealth, search]);
 
   // Convert Outside Student to Royal Student
-  const handleConfirmConvert = (student: Student) => {
-    const newCode = generateStudentCode(true, store.students);
+  const handleConfirmConvert = async (student: Student) => {
+    const newCode = await generateStudentCode(true, store.students);
+    const client = getSupabaseClient() || supabase;
+    if (client) {
+      await client
+        .from('students')
+        .update({
+          code: newCode,
+          previous_student_code: student.code,
+          is_royal_student: true,
+          school_name: student.school_name?.includes('Royal') ? student.school_name : 'Royal School (Chính khóa)',
+        })
+        .eq('id', student.id);
+    }
+
     onUpdateStore(prev => {
       const updatedStudents = prev.students.map(s => {
         if (s.id === student.id) {
@@ -593,140 +749,259 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
   };
 
-  // Save Add / Edit Student
-  const handleSaveStudent = (e: React.FormEvent) => {
+  // Save Add / Edit Student (Kiểm tra trùng mã học viên trên Supabase & State trước khi lưu)
+  const handleSaveStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.parent_phone) return;
+    if (isSavingStudent) return;
 
-    if (editingStudent) {
-      // Edit
-      const storedAt = formData.avatar_url && (!editingStudent.avatar_url || formData.avatar_url !== editingStudent.avatar_url)
-        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${editingStudent.code}.jpg`
-        : (formData.photo_stored_at || editingStudent.photo_stored_at);
+    setCodeError(null);
+    setIsSavingStudent(true);
 
-      const updateLog = createAuditRecord(
-        'STUDENT_UPDATE',
-        'ACADEMIC',
-        'Hồ sơ Học sinh',
-        `Cập nhật thông tin học sinh ${editingStudent.name} (Mã: ${editingStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${formData.avatar_url !== editingStudent.avatar_url ? ' - Đồng bộ hình thẻ vào Cloud' : ''}`,
-        null,
-        {
-          target_id: editingStudent.code,
-          details: {
-            status: 'success',
-            photo_stored_at: storedAt,
-            before: {
-              name: editingStudent.name,
-              campus_id: resolveStudentCampusId(editingStudent),
-              parent_phone: editingStudent.parent_phone,
-              regular_class: editingStudent.regular_class,
-              medical_notes: editingStudent.medical_notes,
-            },
-            after: {
-              name: formData.name,
+    try {
+      const client = getSupabaseClient() || supabase;
+      const targetCode = (formData.code || '').trim().toUpperCase() || (await generateStudentCode(formData.is_royal_student, store.students));
+
+      // 1. Kiểm tra trùng mã học viên trên Supabase: select count(*) from students where code = :newCode and id != :currentId
+      if (client) {
+        let dupQuery = client
+          .from('students')
+          .select('*', { count: 'exact', head: true })
+          .eq('code', targetCode);
+
+        if (editingStudent?.id) {
+          dupQuery = dupQuery.neq('id', editingStudent.id);
+        }
+
+        const { count, error: countErr } = await dupQuery;
+        if (!countErr && count && count > 0) {
+          const dupMsg = 'Mã học viên này đã tồn tại, vui lòng chọn mã khác!';
+          setCodeError(dupMsg);
+          alert(dupMsg);
+          showToast(dupMsg, 'error', { title: 'Trùng mã học viên' });
+          setIsSavingStudent(false);
+          return;
+        }
+      }
+
+      // 2. Kiểm tra trùng mã học viên trên danh sách hiện hành
+      const isLocalDuplicate = store.students.some(
+        s =>
+          s.code.trim().toUpperCase() === targetCode.toUpperCase() &&
+          (!editingStudent || s.id !== editingStudent.id)
+      );
+      if (isLocalDuplicate) {
+        const dupMsg = 'Mã học viên này đã tồn tại, vui lòng chọn mã khác!';
+        setCodeError(dupMsg);
+        alert(dupMsg);
+        showToast(dupMsg, 'error', { title: 'Trùng mã học viên' });
+        setIsSavingStudent(false);
+        return;
+      }
+
+      if (editingStudent) {
+        // Edit
+        const oldCode = editingStudent.code;
+        const isCodeChanged = oldCode !== targetCode;
+        const storedAt = formData.avatar_url && (!editingStudent.avatar_url || formData.avatar_url !== editingStudent.avatar_url)
+          ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${targetCode}.jpg`
+          : (formData.photo_stored_at || editingStudent.photo_stored_at);
+
+        if (client) {
+          const { error: updErr } = await client
+            .from('students')
+            .update({
+              code: targetCode,
+              name: formData.name.trim(),
+              dob: formData.dob,
+              gender: formData.gender,
               campus_id: formData.campus_id,
-              parent_phone: formData.parent_phone,
+              parent_name: formData.parent_name.trim(),
+              parent_phone: formData.parent_phone.trim(),
+              school_name: formData.school_name,
               regular_class: formData.regular_class,
+              is_royal_student: formData.is_royal_student,
               medical_notes: formData.medical_notes,
-            }
+              avatar_url: formData.avatar_url || null,
+            })
+            .eq('id', editingStudent.id);
+
+          if (updErr) {
+            throw updErr;
           }
         }
-      );
 
-      onUpdateStore(prev => ({
-        ...prev,
-        students: prev.students.map(s => 
-          s.id === editingStudent.id 
-            ? { 
-                ...s, 
-                ...formData,
-                birth_date: formData.dob,
-                class_name: formData.regular_class,
-                student_type: formData.is_royal_student ? 'royal' : 'external',
-                has_snack: formData.is_royal_student,
-                photo_stored_at: storedAt, 
-                photo_updated_at: formData.avatar_url ? (s.photo_updated_at || new Date().toISOString().split('T')[0]) : undefined 
-              } 
-            : s
-        ),
-        auditLogs: [updateLog, ...(prev.auditLogs || [])],
-      }));
-    } else {
-      // Add
-      const code = generateStudentCode(formData.is_royal_student, store.students);
-      const storedAt = formData.avatar_url
-        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${code}.jpg`
-        : undefined;
-
-      const newStudent: Student = {
-        id: `std_${Date.now()}`,
-        code,
-        name: formData.name,
-        dob: formData.dob,
-        birth_date: formData.dob,
-        gender: formData.gender,
-        campus_id: formData.campus_id,
-        student_type: formData.is_royal_student ? 'royal' : 'external',
-        has_snack: formData.is_royal_student,
-        parent_name: formData.parent_name,
-        parent_phone: formData.parent_phone,
-        school_name: formData.school_name,
-        regular_class: formData.regular_class,
-        class_name: formData.regular_class,
-        is_royal_student: formData.is_royal_student,
-        medical_notes: formData.medical_notes,
-        avatar_url: formData.avatar_url || undefined,
-        photo_stored_at: storedAt,
-        photo_updated_at: formData.avatar_url ? new Date().toISOString().split('T')[0] : undefined,
-        status: 'active',
-        created_at: new Date().toISOString().split('T')[0],
-      };
-
-      const createLog = createAuditRecord(
-        'STUDENT_CREATE',
-        'ACADEMIC',
-        'Hồ sơ Học sinh',
-        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
-        null,
-        {
-          target_id: newStudent.code,
-          details: {
-            status: 'success',
-            has_photo: !!newStudent.avatar_url,
-            photo_stored_at: storedAt,
-            after: {
-              code: newStudent.code,
-              name: newStudent.name,
-              campus_id: newStudent.campus_id,
-              parent_phone: newStudent.parent_phone,
-              is_royal: newStudent.is_royal_student,
+        const updateLog = createAuditRecord(
+          'STUDENT_UPDATE',
+          'ACADEMIC',
+          'Hồ sơ Học sinh',
+          `Cập nhật thông tin học sinh ${formData.name} (Mã: ${targetCode}${isCodeChanged ? ` - Đổi từ mã cũ: ${oldCode}` : ''}, Cơ sở: ${formData.campus_id.toUpperCase()})`,
+          null,
+          {
+            target_id: targetCode,
+            details: {
+              status: 'success',
+              photo_stored_at: storedAt,
+              before: {
+                code: oldCode,
+                name: editingStudent.name,
+                campus_id: resolveStudentCampusId(editingStudent),
+                parent_phone: editingStudent.parent_phone,
+                regular_class: editingStudent.regular_class,
+                medical_notes: editingStudent.medical_notes,
+              },
+              after: {
+                code: targetCode,
+                name: formData.name,
+                campus_id: formData.campus_id,
+                parent_phone: formData.parent_phone,
+                regular_class: formData.regular_class,
+                medical_notes: formData.medical_notes,
+              }
             }
           }
-        }
-      );
+        );
 
-      onUpdateStore(prev => ({
-        ...prev,
-        students: [newStudent, ...prev.students],
-        auditLogs: [createLog, ...(prev.auditLogs || [])],
-      }));
+        onUpdateStore(prev => ({
+          ...prev,
+          students: prev.students.map(s => 
+            s.id === editingStudent.id 
+              ? { 
+                  ...s, 
+                  ...formData,
+                  code: targetCode,
+                  previous_student_code: isCodeChanged ? oldCode : s.previous_student_code,
+                  birth_date: formData.dob,
+                  class_name: formData.regular_class,
+                  student_type: formData.is_royal_student ? 'royal' : 'external',
+                  has_snack: formData.is_royal_student,
+                  photo_stored_at: storedAt, 
+                  photo_updated_at: formData.avatar_url ? (s.photo_updated_at || new Date().toISOString().split('T')[0]) : undefined 
+                } 
+              : s
+          ),
+          auditLogs: [updateLog, ...(prev.auditLogs || [])],
+        }));
+      } else {
+        // Add
+        const code = targetCode;
+        const storedAt = formData.avatar_url
+          ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${code}.jpg`
+          : undefined;
+
+        const newStudent: Student = {
+          id: `std_${Date.now()}`,
+          code,
+          name: formData.name.trim(),
+          dob: formData.dob,
+          birth_date: formData.dob,
+          gender: formData.gender,
+          campus_id: formData.campus_id,
+          student_type: formData.is_royal_student ? 'royal' : 'external',
+          has_snack: formData.is_royal_student,
+          parent_name: formData.parent_name.trim(),
+          parent_phone: formData.parent_phone.trim(),
+          school_name: formData.school_name,
+          regular_class: formData.regular_class,
+          class_name: formData.regular_class,
+          is_royal_student: formData.is_royal_student,
+          medical_notes: formData.medical_notes,
+          avatar_url: formData.avatar_url || undefined,
+          photo_stored_at: storedAt,
+          photo_updated_at: formData.avatar_url ? new Date().toISOString().split('T')[0] : undefined,
+          status: 'active',
+          created_at: new Date().toISOString().split('T')[0],
+        };
+
+        if (client) {
+          const { error: insErr } = await client
+            .from('students')
+            .upsert(
+              {
+                id: newStudent.id,
+                code: newStudent.code,
+                name: newStudent.name,
+                dob: newStudent.dob,
+                gender: newStudent.gender,
+                campus_id: newStudent.campus_id,
+                parent_name: newStudent.parent_name,
+                parent_phone: newStudent.parent_phone,
+                school_name: newStudent.school_name,
+                regular_class: newStudent.regular_class,
+                is_royal_student: newStudent.is_royal_student,
+                medical_notes: newStudent.medical_notes || '',
+                avatar_url: newStudent.avatar_url || null,
+                status: 'active',
+              },
+              { onConflict: 'id' }
+            );
+          if (insErr) {
+            throw insErr;
+          }
+        }
+
+        const createLog = createAuditRecord(
+          'STUDENT_CREATE',
+          'ACADEMIC',
+          'Hồ sơ Học sinh',
+          `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${newStudent.code}, Cơ sở: ${formData.campus_id.toUpperCase()})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
+          null,
+          {
+            target_id: newStudent.code,
+            details: {
+              status: 'success',
+              has_photo: !!newStudent.avatar_url,
+              photo_stored_at: storedAt,
+              after: {
+                code: newStudent.code,
+                name: newStudent.name,
+                campus_id: newStudent.campus_id,
+                parent_phone: newStudent.parent_phone,
+                is_royal: newStudent.is_royal_student,
+              }
+            }
+          }
+        );
+
+        onUpdateStore(prev => ({
+          ...prev,
+          students: [newStudent, ...prev.students],
+          auditLogs: [createLog, ...(prev.auditLogs || [])],
+        }));
+      }
+
+      showToast(
+        editingStudent
+          ? `Đã cập nhật hồ sơ học viên ${formData.name} (${targetCode} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`
+          : `Đã thêm mới hồ sơ học viên ${formData.name} (${targetCode} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`,
+        'success',
+        { title: editingStudent ? 'Cập nhật hồ sơ học sinh' : 'Thêm mới học sinh' }
+      );
+      setShowAddModal(false);
+      setEditingStudent(null);
+      setCodeError(null);
+    } catch (err: any) {
+      console.error('Lỗi khi lưu học sinh:', err);
+      const errMsg = err?.message || String(err);
+      if (errMsg.toLowerCase().includes('duplicate') || errMsg.toLowerCase().includes('unique')) {
+        const dupMsg = 'Mã học viên này đã tồn tại, vui lòng chọn mã khác!';
+        setCodeError(dupMsg);
+        alert(dupMsg);
+        showToast(dupMsg, 'error');
+      } else {
+        alert('Không thể lưu hồ sơ học viên: ' + errMsg);
+      }
+    } finally {
+      setIsSavingStudent(false);
     }
-
-    showToast(
-      editingStudent
-        ? `Đã cập nhật hồ sơ học viên ${formData.name} (${editingStudent.code} - Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`
-        : `Đã thêm mới hồ sơ học viên ${formData.name} (Cơ sở ${formData.campus_id.toUpperCase()}) thành công!`,
-      'success',
-      { title: editingStudent ? 'Cập nhật hồ sơ học sinh' : 'Thêm mới học sinh' }
-    );
-    setShowAddModal(false);
-    setEditingStudent(null);
   };
 
   // Open Edit Modal
   const handleOpenEdit = (student: Student) => {
     setEditingStudent(student);
+    setCodeError(null);
     setFormData({
+      code: student.code || '',
       name: student.name,
       dob: student.dob || student.birth_date || '2016-01-01',
       gender: student.gender,
@@ -1069,6 +1344,370 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
   };
 
+  // Mở Modal Hủy lớp hoặc Đổi sang lớp khác nhanh ngay trên badge môn học
+  const openWrongClassModal = (
+    student: Student,
+    enrollment: Enrollment,
+    className: string,
+    mode: 'remove' | 'switch' = 'remove'
+  ) => {
+    const isTrial = Boolean(
+      (enrollment.is_trial === true || (enrollment as any).enrollment_type === 'trial') &&
+      enrollment.status !== 'active'
+    );
+    const studentCampus = resolveStudentCampusId(student);
+    const targetCampusCode = studentCampus === 'pl' ? 'camp_pl' : 'camp_pmh';
+    const availableClasses = store.classes.filter(
+      c =>
+        c.id !== enrollment.class_id &&
+        c.status !== 'canceled' &&
+        (c.campus_id === targetCampusCode || c.campus_id === studentCampus || !c.campus_id)
+    );
+    const fallbackClasses = availableClasses.length > 0
+      ? availableClasses
+      : store.classes.filter(c => c.id !== enrollment.class_id);
+
+    setSwitchTargetClassId(fallbackClasses[0]?.id || '');
+    setSwitchEnrollType(isTrial ? 'trial' : 'official');
+    setWrongClassModal({
+      mode,
+      student,
+      enrollment,
+      className,
+    });
+  };
+
+  // Helper bọc timeout cho truy vấn Supabase để tránh treo nút vô hạn
+  const withSupabaseTimeout = <T,>(promiseLike: PromiseLike<T>, timeoutMs: number = 5000): Promise<T> => {
+    return Promise.race([
+      Promise.resolve(promiseLike),
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error('Quá thời gian chờ phản hồi từ CSDL')), timeoutMs)
+      ),
+    ]);
+  };
+
+  // Xử lý thao tác "Hủy ghi danh do xếp nhầm" (handleConfirmDelete / handleRemoveWrongClass)
+  const handleRemoveWrongClass = async (
+    studentData: Student,
+    selectedClass: Enrollment,
+    classNameInput?: string,
+    reopenEnrollAfterRemove: boolean = false
+  ) => {
+    if (isRemovingOrSwitching) return;
+    setIsRemovingOrSwitching(true);
+
+    const studentTargetId = studentData.id || studentData.code;
+    const classTargetId = selectedClass.class_id || (selectedClass as any).id;
+    const studentCode = studentData.code || studentTargetId;
+
+    const candidateStudentIds = Array.from(
+      new Set([studentTargetId, studentData.id, studentData.code, selectedClass.student_id].filter(Boolean) as string[])
+    );
+
+    try {
+      const client = getSupabaseClient() || supabase;
+
+      if (client) {
+        // 1. Gọi RPC với cơ chế fallback trực tiếp
+        let needFallback = false;
+        try {
+          const { data: rpcRes, error: rpcErr } = await withSupabaseTimeout<any>(
+            client.rpc('remove_student_from_class', {
+              p_student_id: studentTargetId,
+              p_class_id: classTargetId,
+            }),
+            4500
+          );
+
+          if (rpcErr || (rpcRes && !rpcRes.success)) {
+            console.warn('RPC thất bại, chuyển sang fallback xóa bảng trực tiếp:', rpcErr || rpcRes?.error);
+            needFallback = true;
+          }
+        } catch (rpcTimeoutOrErr) {
+          console.warn('RPC timeout hoặc chưa khởi tạo, chuyển sang fallback xóa bảng trực tiếp:', rpcTimeoutOrErr);
+          needFallback = true;
+        }
+
+        if (needFallback) {
+          const orCondition =
+            studentTargetId !== studentCode
+              ? `student_id.eq.${studentTargetId},student_id.eq.${studentCode}`
+              : `student_id.eq.${studentTargetId}`;
+
+          // Fallback: Xóa trực tiếp trong enrollments & xóa hóa đơn chưa thanh toán trong tuition_invoices
+          await Promise.allSettled([
+            withSupabaseTimeout(
+              client
+                .from('enrollments')
+                .delete()
+                .or(orCondition)
+                .eq('class_id', classTargetId),
+              4500
+            ),
+            withSupabaseTimeout(
+              client
+                .from('tuition_invoices')
+                .delete()
+                .or(orCondition)
+                .eq('class_id', classTargetId),
+              4500
+            ),
+          ]);
+        }
+      }
+
+      // Đánh dấu cặp (student_id, class_id) vừa xóa để fetchStudents không ghi đè lại
+      candidateStudentIds.forEach(sid => {
+        recentlyRemovedEnrollmentsRef.current.add(`${sid}__${classTargetId}`);
+      });
+
+      // 2. Cập nhật state học sinh trên UI ngay lập tức
+      onUpdateStore(prev => ({
+        ...prev,
+        students: prev.students.map(s => {
+          if (candidateStudentIds.includes(String(s.id)) || candidateStudentIds.includes(String(s.code))) {
+            const nextNested = ((s as any).enrollments || []).filter(
+              (ne: any) => ne && ne.class_id !== classTargetId && ne.id !== selectedClass.id
+            );
+            return {
+              ...s,
+              enrollments: nextNested,
+            } as Student;
+          }
+          return s;
+        }),
+        enrollments: prev.enrollments.filter(
+          e =>
+            !(
+              (candidateStudentIds.includes(String(e.student_id)) && e.class_id === classTargetId) ||
+              (selectedClass.id && e.id === selectedClass.id)
+            )
+        ),
+        invoices: prev.invoices.filter(
+          inv =>
+            !(
+              candidateStudentIds.includes(String(inv.student_id)) &&
+              inv.class_id === classTargetId &&
+              inv.payment_status !== 'paid'
+            )
+        ),
+      }));
+
+      setWrongClassModal(null);
+
+      showToast(
+        `Đã hủy lớp${classNameInput ? ` "${classNameInput}"` : ''} thành công! Hồ sơ học sinh đã được giải phóng khỏi lớp này.`,
+        'success',
+        { title: 'Đã hủy lớp thành công' }
+      );
+
+      // 3. Tải lại danh sách học viên
+      fetchStudents().catch(() => {});
+
+      if (reopenEnrollAfterRemove) {
+        await handleOpenEnrollModal(studentData);
+      }
+    } catch (err: any) {
+      console.error('Lỗi khi hủy lớp:', err);
+      showToast('Không thể hoàn tất hủy lớp: ' + (err.message || err.toString()), 'error', {
+        title: 'Lỗi khi hủy lớp',
+      });
+    } finally {
+      // Luôn luôn giải phóng trạng thái loading
+      setIsRemovingOrSwitching(false);
+    }
+  };
+
+  // Xử lý thao tác "Đổi sang lớp khác" (Hủy lớp nhầm cũ + Ghi danh sang lớp mới & cập nhật hóa đơn)
+  const handleQuickSwitchClass = async () => {
+    if (isRemovingOrSwitching) return;
+    if (!wrongClassModal || !switchTargetClassId) return;
+    const { student, enrollment, className: oldClassName } = wrongClassModal;
+    const newClass = store.classes.find(c => c.id === switchTargetClassId);
+    if (!newClass) {
+      showToast('Vui lòng chọn lớp học mới hợp lệ để chuyển sang!', 'warning');
+      return;
+    }
+
+    setIsRemovingOrSwitching(true);
+
+    const studentTargetId = student.id || student.code;
+    const classTargetId = enrollment.class_id;
+    const studentCode = student.code || studentTargetId;
+    const candidateStudentIds = Array.from(
+      new Set([studentTargetId, student.id, student.code, enrollment.student_id].filter(Boolean) as string[])
+    );
+    const isTrial = switchEnrollType === 'trial';
+    const todayStr = new Date().toISOString().split('T')[0];
+    const totalSess = Number(newClass.total_sessions || 24);
+    const grossFee = Number(newClass.full_course_fee || 3990000);
+    const sessionRate = Number(newClass.price_per_session || Math.ceil(grossFee / Math.max(1, totalSess)));
+    const newEnrollmentId = `enr_${student.id}_${newClass.id}`;
+    const newInvoiceCode = `INV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
+    const newInvoiceId = `inv_${student.id}_${newClass.id}`;
+
+    try {
+      const client = getSupabaseClient() || supabase;
+
+      if (client) {
+        // 1. Xóa lớp cũ bị xếp nhầm trên Supabase (RPC + Fallback)
+        let needFallback = false;
+        try {
+          const { data: rpcRes, error: rpcErr } = await withSupabaseTimeout<any>(
+            client.rpc('remove_student_from_class', {
+              p_student_id: studentTargetId,
+              p_class_id: classTargetId,
+            }),
+            4500
+          );
+          if (rpcErr || (rpcRes && !rpcRes.success)) {
+            needFallback = true;
+          }
+        } catch {
+          needFallback = true;
+        }
+
+        if (needFallback) {
+          const orCondition =
+            studentTargetId !== studentCode
+              ? `student_id.eq.${studentTargetId},student_id.eq.${studentCode}`
+              : `student_id.eq.${studentTargetId}`;
+
+          await Promise.allSettled([
+            withSupabaseTimeout(
+              client.from('enrollments').delete().or(orCondition).eq('class_id', classTargetId),
+              4500
+            ),
+            withSupabaseTimeout(
+              client.from('tuition_invoices').delete().or(orCondition).eq('class_id', classTargetId),
+              4500
+            ),
+          ]);
+        }
+
+        // 2. Ghi danh vào lớp mới & tạo hóa đơn đồng bộ qua RPC create_enrollment_with_invoice
+        await withSupabaseTimeout(
+          client.rpc('create_enrollment_with_invoice', {
+            p_student_id: studentTargetId,
+            p_student_code: studentCode,
+            p_student_name: student.name || (student as any).full_name || 'Học viên',
+            p_campus_id: student.campus_id || newClass.campus_id || 'camp_pmh',
+            p_parent_name: student.parent_name || 'Phụ huynh',
+            p_parent_phone: student.parent_phone || '',
+            p_class_id: newClass.id,
+            p_is_trial: isTrial,
+            p_start_date: todayStr,
+            p_actual_sessions: isTrial ? 1 : totalSess,
+            p_session_rate: sessionRate,
+            p_total_tuition: isTrial ? 0 : grossFee,
+          }),
+          4500
+        ).catch(() => {});
+      }
+
+      candidateStudentIds.forEach(sid => {
+        recentlyRemovedEnrollmentsRef.current.add(`${sid}__${classTargetId}`);
+        recentlyRemovedEnrollmentsRef.current.delete(`${sid}__${newClass.id}`);
+      });
+
+      // 3. Cập nhật ngay trên State giao diện
+      const newEnrollmentObj: Enrollment = {
+        id: newEnrollmentId,
+        student_id: student.id,
+        class_id: newClass.id,
+        registered_sessions: totalSess,
+        joined_date: todayStr,
+        enrolled_days_of_week: newClass.days_of_week || ['T2', 'T4'],
+        is_partial_schedule: false,
+        status: isTrial ? 'trial' : 'active',
+        is_trial: isTrial,
+        ...({
+          enrollment_type: isTrial ? 'trial' : 'official',
+          extracurricular_classes: {
+            id: newClass.id,
+            name: newClass.name,
+            days_of_week: newClass.days_of_week,
+          },
+        } as any),
+      };
+
+      const newInvoiceObj: TuitionInvoice = {
+        id: newInvoiceId,
+        invoice_code: newInvoiceCode,
+        student_id: student.id,
+        class_id: newClass.id,
+        registered_sessions: totalSess,
+        total_class_sessions: totalSess,
+        session_rate: sessionRate,
+        gross_amount: grossFee,
+        credit_deducted: 0,
+        discount_amount: 0,
+        net_payable: grossFee,
+        paid_amount: 0,
+        outstanding_amount: grossFee,
+        payment_status: 'unpaid',
+        due_date: todayStr,
+        is_trial_pending: isTrial,
+        created_at: todayStr,
+      };
+
+      onUpdateStore(prev => {
+        const filteredEnrollments = prev.enrollments.filter(
+          e =>
+            !(
+              (candidateStudentIds.includes(String(e.student_id)) &&
+                (e.class_id === classTargetId || e.class_id === newClass.id)) ||
+              (enrollment.id && e.id === enrollment.id)
+            )
+        );
+        const filteredInvoices = prev.invoices.filter(
+          inv =>
+            !(
+              candidateStudentIds.includes(String(inv.student_id)) &&
+              (inv.class_id === classTargetId || inv.class_id === newClass.id) &&
+              inv.payment_status !== 'paid'
+            )
+        );
+
+        return {
+          ...prev,
+          students: prev.students.map(s => {
+            if (candidateStudentIds.includes(String(s.id)) || candidateStudentIds.includes(String(s.code))) {
+              const cleanedNested = ((s as any).enrollments || []).filter(
+                (ne: any) =>
+                  ne &&
+                  ne.class_id !== classTargetId &&
+                  ne.class_id !== newClass.id &&
+                  ne.id !== enrollment.id
+              );
+              return {
+                ...s,
+                enrollments: [...cleanedNested, newEnrollmentObj],
+              } as Student;
+            }
+            return s;
+          }),
+          enrollments: deduplicateEnrollments([newEnrollmentObj, ...filteredEnrollments]),
+          invoices: [newInvoiceObj, ...filteredInvoices],
+        };
+      });
+
+      setWrongClassModal(null);
+      showToast(
+        `Đã đổi lớp cho học sinh ${student.name}: Hủy "${oldClassName}" → Chuyển sang "${newClass.name}" (${isTrial ? 'Học thử' : 'Chính thức'})!`,
+        'success',
+        { title: 'Đổi lớp thành công' }
+      );
+      fetchStudents().catch(() => {});
+    } catch (err: any) {
+      console.error('Lỗi khi đổi sang lớp khác:', err);
+      showToast('Lỗi khi đổi lớp: ' + (err.message || String(err)), 'error');
+    } finally {
+      setIsRemovingOrSwitching(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       
@@ -1185,10 +1824,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           </a>
 
           <button
-            onClick={() => {
+            onClick={async () => {
               setEditingStudent(null);
+              setCodeError(null);
               const defaultCampus = selectedCampus === 'pl' ? 'pl' : 'pmh';
+              const initialCode = generateStudentCodeSync(true, store.students);
               setFormData({
+                code: initialCode,
                 name: '',
                 dob: '2016-01-01',
                 gender: 'Nam',
@@ -1203,6 +1845,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 photo_stored_at: '',
               });
               setShowAddModal(true);
+              const nextDbCode = await generateStudentCode(true, store.students);
+              setFormData(prev => ({ ...prev, code: nextDbCode }));
             }}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all shrink-0 cursor-pointer"
           >
@@ -1387,14 +2031,48 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         <span>🟣</span>
                                         <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
                                         <span>{shortName} (Học Thử Buổi 1)</span>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                          }}
+                                          className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                          title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                        >
+                                          ✕
+                                        </button>
                                       </span>
                                     ) : (
                                       <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold inline-flex items-center gap-1 w-fit">
                                         <span>🟢</span>
                                         <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                                         <span>{shortName} (Chính thức)</span>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                          }}
+                                          className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                          title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                        >
+                                          ✕
+                                        </button>
                                       </span>
                                     )}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openWrongClassModal(student, enr, c.name || shortName, 'switch');
+                                      }}
+                                      className="px-1.5 py-0.5 rounded bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-[9.5px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                      title="Đổi sang lớp khác (Chuyển lớp nhanh do xếp nhầm)"
+                                    >
+                                      <ArrowRightLeft className="w-2.5 h-2.5 text-sky-400" />
+                                      <span>Đổi lớp</span>
+                                    </button>
                                     <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold border ${
                                       isPartial
                                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
@@ -1652,19 +2330,55 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           return (
                             <div key={enr.id} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
                               <div className="flex items-center justify-between gap-2 flex-wrap">
-                                {isTrial ? (
-                                  <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
-                                    <span>🟣</span>
-                                    <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
-                                    <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
-                                    <span>🟢</span>
-                                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                    <span className="truncate">{shortName} (Chính thức)</span>
-                                  </span>
-                                )}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {isTrial ? (
+                                    <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                      <span>🟣</span>
+                                      <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                      <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                        }}
+                                        className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                        title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                      >
+                                        ✕
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
+                                      <span>🟢</span>
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      <span className="truncate">{shortName} (Chính thức)</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                        }}
+                                        className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                        title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                      >
+                                        ✕
+                                      </button>
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openWrongClassModal(student, enr, c.name || shortName, 'switch');
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-[9.5px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                    title="Đổi sang lớp khác (Chuyển lớp nhanh do xếp nhầm)"
+                                  >
+                                    <ArrowRightLeft className="w-2.5 h-2.5 text-sky-400" />
+                                    <span>Đổi lớp</span>
+                                  </button>
+                                </div>
                                 <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${
                                   isPartial
                                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
@@ -1844,6 +2558,49 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </div>
               </div>
 
+              {/* Mã học viên (Cho phép xem, đổi mã nếu trùng hoặc tự động cấp mã tuần tự từ Supabase) */}
+              <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-amber-400 font-bold text-xs">
+                    Mã học viên (Student Code) *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const nextCode = await generateStudentCode(formData.is_royal_student, store.students);
+                      setFormData(prev => ({ ...prev, code: nextCode }));
+                      setCodeError(null);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-[10.5px] flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Lấy mã tăng tuần tự tiếp theo từ CSDL Supabase"
+                  >
+                    <Sparkles className="w-3 h-3 text-amber-400" />
+                    <span>Cấp mã mới tự động</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={formData.code}
+                  onChange={(e) => {
+                    setFormData({ ...formData, code: e.target.value.toUpperCase() });
+                    setCodeError(null);
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl bg-slate-950 border font-mono font-bold text-amber-300 focus:outline-none ${
+                    codeError
+                      ? 'border-rose-500 focus:border-rose-500'
+                      : 'border-slate-700 focus:border-amber-500'
+                  }`}
+                  placeholder={formData.is_royal_student ? 'RY-2026-00001' : 'EXT-2026-00001'}
+                />
+                {codeError && (
+                  <div className="text-[11px] text-rose-400 font-semibold flex items-center gap-1 pt-0.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{codeError}</span>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Họ và tên học sinh *</label>
@@ -1882,7 +2639,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Phân loại học sinh</label>
                   <select
                     value={formData.is_royal_student ? 'true' : 'false'}
-                    onChange={(e) => setFormData({ ...formData, is_royal_student: e.target.value === 'true' })}
+                    onChange={async (e) => {
+                      const nextIsRoyal = e.target.value === 'true';
+                      setFormData(prev => ({ ...prev, is_royal_student: nextIsRoyal }));
+                      if (!editingStudent) {
+                        const nextCode = await generateStudentCode(nextIsRoyal, store.students);
+                        setFormData(prev => ({ ...prev, is_royal_student: nextIsRoyal, code: nextCode }));
+                      }
+                    }}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-bold focus:outline-none focus:border-amber-500"
                   >
                     <option value="true">Học sinh ROYAL SCHOOL</option>
@@ -2036,9 +2800,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold"
+                  disabled={isSavingStudent}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 font-bold cursor-pointer"
                 >
-                  {editingStudent ? 'Cập Nhật' : 'Lưu Học Viên'}
+                  {isSavingStudent ? 'Đang lưu...' : editingStudent ? 'Cập Nhật' : 'Lưu Học Viên'}
                 </button>
               </div>
             </form>
@@ -2099,6 +2864,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         enrollingStudent={enrollingStudent}
         store={store}
         onUpdateStore={onUpdateStore}
+        refreshData={fetchStudents}
       />
 
       {/* Modal: Xác nhận Lên Chính Thức hoặc Dừng Học Sau Buổi Thử */}
@@ -2202,6 +2968,210 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Hủy Ghi Danh Lớp Xếp Nhầm / Đổi Sang Lớp Khác Nhanh */}
+      {wrongClassModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 animate-fadeIn">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                {wrongClassModal.mode === 'remove' ? (
+                  <XCircle className="w-5 h-5 text-rose-400" />
+                ) : (
+                  <ArrowRightLeft className="w-5 h-5 text-sky-400" />
+                )}
+                <h3 className="text-base font-bold text-white">
+                  {wrongClassModal.mode === 'remove'
+                    ? 'Hủy Ghi Danh Lớp Này (Do Xếp Nhầm Môn)'
+                    : 'Đổi Sang Lớp Ngoại Khóa Khác'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWrongClassModal(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Chuyển nhanh giữa 2 chế độ: Hủy lớp này / Đổi sang lớp khác */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => setWrongClassModal({ ...wrongClassModal, mode: 'remove' })}
+                className={`py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  wrongClassModal.mode === 'remove'
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                <span>Hủy ghi danh lớp này</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setWrongClassModal({ ...wrongClassModal, mode: 'switch' })}
+                className={`py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  wrongClassModal.mode === 'switch'
+                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+                <span>Đổi sang lớp khác</span>
+              </button>
+            </div>
+
+            {/* Thông tin Học viên & Lớp hiện tại */}
+            <div className="text-xs text-slate-300 space-y-1.5 p-3.5 rounded-2xl bg-slate-900/90 border border-slate-800">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Học sinh:</span>
+                <span className="font-bold text-white">
+                  {wrongClassModal.student.name} ({wrongClassModal.student.code})
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Lớp đang chọn xử lý:</span>
+                <span className="font-bold text-rose-300">{wrongClassModal.className}</span>
+              </div>
+            </div>
+
+            {wrongClassModal.mode === 'remove' ? (
+              <div className="space-y-3 text-xs">
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-slate-300 space-y-1.5">
+                  <div className="font-bold text-rose-300 flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>Xác nhận hủy lớp &quot;{wrongClassModal.className}&quot; (do xếp nhầm)?</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Hệ thống sẽ xóa bản ghi ghi danh của lớp này trên CSDL Supabase và tự động xóa hóa đơn học phí chưa thu tương ứng. Hồ sơ học sinh vẫn được giữ nguyên.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() => setWrongClassModal(null)}
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Đóng
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() =>
+                      handleRemoveWrongClass(
+                        wrongClassModal.student,
+                        wrongClassModal.enrollment,
+                        wrongClassModal.className,
+                        true
+                      )
+                    }
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Hủy Lớp &amp; Mở Bảng Xếp Lớp Lại
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() =>
+                      handleRemoveWrongClass(
+                        wrongClassModal.student,
+                        wrongClassModal.enrollment,
+                        wrongClassModal.className,
+                        false
+                      )
+                    }
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+                  >
+                    {isRemovingOrSwitching ? 'Đang hủy lớp...' : 'Xác Nhận Hủy Lớp Này'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3.5 text-xs">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1.5">
+                    Chọn lớp ngoại khóa mới để chuyển sang:
+                  </label>
+                  <select
+                    value={switchTargetClassId}
+                    onChange={(e) => setSwitchTargetClassId(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="">-- Chọn lớp học đúng --</option>
+                    {store.classes
+                      .filter(c => c.id !== wrongClassModal.enrollment.class_id && c.status !== 'canceled')
+                      .map(cls => {
+                        const campusBadge = cls.campus_id === 'camp_pl' || cls.campus_id === 'pl' ? '[PL]' : '[PMH]';
+                        const daysStr = Array.isArray(cls.days_of_week) ? cls.days_of_week.join(', ') : 'T2, T4';
+                        return (
+                          <option key={cls.id} value={cls.id}>
+                            {campusBadge} {cls.name} • Lịch: {daysStr} • {formatVND(cls.full_course_fee || 3990000)}
+                          </option>
+                        );
+                      })}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1.5">
+                    Hình thức ghi danh ở lớp mới:
+                  </label>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setSwitchEnrollType('official')}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        switchEnrollType === 'official'
+                          ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>🟢 Học Chính Thức</div>
+                      <div className="text-[10px] font-normal text-slate-400 mt-0.5">Kích hoạt hóa đơn toàn khóa</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSwitchEnrollType('trial')}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        switchEnrollType === 'trial'
+                          ? 'bg-purple-500/20 border-purple-500 text-purple-300 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>🟣 Học Thử Buổi 1</div>
+                      <div className="text-[10px] font-normal text-slate-400 mt-0.5">Tạm hoãn thu phí buổi đầu</div>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() => setWrongClassModal(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching || !switchTargetClassId}
+                    onClick={handleQuickSwitchClass}
+                    className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-sky-600/20 transition-all cursor-pointer flex items-center gap-1.5"
+                  >
+                    <ArrowRightLeft className="w-3.5 h-3.5" />
+                    <span>{isRemovingOrSwitching ? 'Đang chuyển lớp...' : 'Xác Nhận Đổi Sang Lớp Này'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

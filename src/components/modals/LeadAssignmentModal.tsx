@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase, getSupabaseClient } from '@/supabaseClient';
+import { generateStudentCode } from '../../lib/storage';
 import { Zap, Sparkles, X } from 'lucide-react';
 
 export interface LeadAssignmentModalProps {
@@ -40,14 +41,23 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
         currentStudentCode ||
         registrationData.allocated_student_id ||
         registrationData.assigned_student_code ||
-        'EXT-2026-00102';
-      
+        registrationData.student_id ||
+        (await generateStudentCode(Boolean(registrationData.is_royal_student)));
+      const studentId =
+        registrationData.student_id ||
+        registrationData.allocated_student_id ||
+        studentCode;
+      const studentName = registrationData.student_name || registrationData.name || 'Học viên';
+
       // Chuẩn hóa campus_id
       const rawCampus = registrationData.desired_campus_id || registrationData.campus_id || 'camp_pmh';
       const cleanCampus = rawCampus.startsWith('camp_') ? rawCampus : `camp_${rawCampus}`;
 
       // Lấy lớp học đã chọn
-      const targetClassId = selectedClassId || assignedClasses[0]?.class_id || assignedClasses[0]?.id;
+      const targetClassObj =
+        assignedClasses.find((c: any) => (c.class_id || c.id) === selectedClassId) ||
+        assignedClasses[0];
+      const targetClassId = selectedClassId || targetClassObj?.class_id || targetClassObj?.id;
 
       if (!targetClassId) {
         alert('Vui lòng chọn lớp học cụ thể trước khi xác nhận xếp lớp!');
@@ -61,162 +71,142 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
       }
 
       const startDateVal = registrationData.start_date || new Date().toISOString().split('T')[0];
-      const actualSessionsVal = Number(actualSessions || 12);
-      const totalFeeVal = isTrial ? 0 : Number(calculatedFee || 3000000);
+      const actualSessionsVal = Number(actualSessions || 16);
+      const sessionRateVal = Number(targetClassObj?.price_per_session || targetClassObj?.session_rate || 250000);
+      const calculatedTuitionFee = isTrial ? 0 : Number(calculatedFee || 3000000);
 
-      // 1. Gọi hàm RPC assign_student_to_class / confirm_lead_enrollment trực tiếp trên Supabase
-      let rpcOk = false;
-      let rpcErrDetail = '';
-      try {
-        const { data: assignRpcData, error: assignRpcErr } = await client.rpc('assign_student_to_class', {
-          p_student_id: studentCode,
-          p_class_id: targetClassId,
-          p_is_trial: isTrial,
-          p_start_date: startDateVal,
-          p_actual_sessions: actualSessionsVal,
-          p_tuition_fee: totalFeeVal
-        });
+      // Gọi hàm RPC create_enrollment_with_invoice đã được tạo sẵn trên Supabase
+      const { data: result, error: rpcError } = await client.rpc('create_enrollment_with_invoice', {
+        p_student_id: studentId,
+        p_student_code: studentCode,
+        p_student_name: studentName,
+        p_campus_id: cleanCampus,
+        p_parent_name: registrationData.parent_name || 'Phụ huynh',
+        p_parent_phone: registrationData.parent_phone || '',
+        p_class_id: targetClassId,
+        p_is_trial: isTrial,
+        p_start_date: startDateVal,
+        p_actual_sessions: actualSessionsVal,
+        p_session_rate: sessionRateVal,
+        p_total_tuition: calculatedTuitionFee
+      });
 
-        if (!assignRpcErr && (!assignRpcData || assignRpcData.success !== false)) {
-          rpcOk = true;
-        } else {
-          const { data, error } = await client.rpc('confirm_lead_enrollment', {
-            p_reg_id: registrationData.id,
-            p_student_code: studentCode,
-            p_student_name: registrationData.student_name || registrationData.name,
-            p_date_of_birth: registrationData.date_of_birth || registrationData.student_dob || '2016-05-15',
-            p_campus_id: cleanCampus,
-            p_parent_name: registrationData.parent_name || 'Na',
-            p_parent_phone: registrationData.parent_phone || '0915279768',
-            p_class_id: targetClassId,
-            p_is_trial: isTrial,
-            p_total_fee: totalFeeVal,
-            p_actual_sessions: actualSessionsVal
-          });
+      let resolvedStudentId = result?.student_id || studentId;
 
-          if (error) {
-            rpcErrDetail = error.message;
-          } else if (data && !data.success) {
-            rpcErrDetail = data.error || 'Lỗi không xác định từ CSDL';
-          } else {
-            rpcOk = true;
-          }
-        }
-      } catch (err: any) {
-        rpcErrDetail = err.message;
-      }
+      if (rpcError) {
+        const isFnMissing =
+          rpcError.code === 'PGRST202' ||
+          rpcError.code === '42883' ||
+          String(rpcError.message || '').includes('does not exist') ||
+          String(rpcError.message || '').includes('schema cache');
 
-      // 2. Direct Supabase fallback to ensure student is 100% saved in students & enrollments
-      let directOk = false;
-      try {
-        // Chuẩn hóa ngày sinh
-        const birthDateValue = registrationData.date_of_birth || registrationData.dob || registrationData.student_dob || '2016-05-15';
-
-        const studentPayload: any = {
-          id: studentCode,
-          student_code: studentCode,
-          code: studentCode,
-          name: registrationData.student_name || registrationData.name || 'Học viên mới',
-          full_name: registrationData.student_name || registrationData.name || 'Học viên mới',
-          campus_id: cleanCampus === 'camp_pl' ? 'pl' : 'pmh',
-          student_type: registrationData.student_type || (registrationData.is_royal_student ? 'royal' : 'external'),
-          is_royal_student: Boolean(registrationData.is_royal_student),
-          parent_name: registrationData.parent_name || 'Phụ huynh',
-          parent_phone: registrationData.parent_phone || '',
-          parent_email: registrationData.parent_email || '',
-          school_name: registrationData.is_royal_student ? 'Royal School' : 'Trường ngoài',
-          regular_class: registrationData.student_grade || 'Khối Mầm Non',
-          medical_notes: registrationData.medical_notes || '',
-          status: 'active',
-          updated_at: new Date().toISOString()
-        };
-
-        // Gán cả 2 trường ngày sinh để tương thích mọi cấu trúc bảng
-        if (birthDateValue) {
-          studentPayload.date_of_birth = birthDateValue;
-          studentPayload.dob = birthDateValue;
+        if (!isFnMissing) {
+          throw rpcError;
         }
 
-        const { error: studentErr } = await client
+        // Fallback an toàn đảm bảo học sinh tồn tại trong bảng students trước khi tạo enrollments & tuition_invoices
+        const { data: existingStd } = await client
           .from('students')
-          .upsert(studentPayload, { onConflict: 'id' });
-
-        if (studentErr) {
-          // Nếu lỗi do cột nào chưa nhận, thử lại chỉ với các trường cơ bản
-          console.warn('Lỗi upsert students, đang thử lại với fallback:', studentErr);
-          delete studentPayload.date_of_birth;
-          delete studentPayload.student_code;
-          delete studentPayload.full_name;
-          const { error: retryErr } = await client.from('students').upsert(studentPayload, { onConflict: 'id' });
-          if (!retryErr) directOk = true;
-          else console.warn('Lỗi retry upsert student:', retryErr);
-        } else {
-          directOk = true;
-        }
-
-        const { data: existingEnr } = await client
-          .from('enrollments')
-          .select('id')
-          .eq('student_id', studentCode)
-          .eq('class_id', targetClassId)
+          .select('id, code')
+          .or(`id.eq.${studentId},code.eq.${studentCode}`)
           .maybeSingle();
 
-        const finalEnrId = existingEnr?.id || `enr_${Date.now()}_${targetClassId}`;
-
-        const { error: enrollUpsertErr } = await client.from('enrollments').upsert({
-          id: finalEnrId,
-          student_id: studentCode,
-          class_id: targetClassId,
-          status: isTrial ? 'trial' : 'active',
-          is_trial: isTrial,
-          enrollment_type: isTrial ? 'trial' : 'official',
-          trial_session_count: isTrial ? 1 : 0,
-          registered_sessions: isTrial ? 1 : actualSessionsVal,
-          total_sessions: isTrial ? 1 : actualSessionsVal,
-          joined_date: startDateVal,
-          created_at: new Date().toISOString()
-        }, { onConflict: 'student_id,class_id' });
-
-        if (!enrollUpsertErr) {
-          directOk = true;
+        if (existingStd?.id) {
+          resolvedStudentId = existingStd.id;
+        } else {
+          await client.from('students').upsert(
+            {
+              id: studentId,
+              code: studentCode,
+              name: studentName,
+              campus_id: cleanCampus === 'camp_pl' ? 'pl' : 'pmh',
+              is_royal_student: Boolean(registrationData.is_royal_student),
+              parent_name: registrationData.parent_name || 'Phụ huynh',
+              parent_phone: registrationData.parent_phone || '',
+              school_name: registrationData.is_royal_student ? 'Royal School' : 'Trường ngoài',
+              regular_class: registrationData.student_grade || 'Khối Mầm Non',
+              medical_notes: registrationData.medical_notes || '',
+              status: 'active',
+            },
+            { onConflict: 'id' }
+          );
         }
 
-        const { error: regUpdErr } = await client.from('parent_registrations').update({
-          status: 'enrolled',
-          allocated_student_id: studentCode,
-          student_id: studentCode,
-          assigned_student_code: studentCode,
-          assigned_class_id: targetClassId,
-          updated_at: new Date().toISOString()
-        }).eq('id', registrationData.id);
+        await client.from('enrollments').upsert(
+          {
+            id: `enr_${resolvedStudentId}_${targetClassId}`,
+            student_id: resolvedStudentId,
+            class_id: targetClassId,
+            status: isTrial ? 'trial' : 'active',
+            is_trial: isTrial,
+            enrollment_type: isTrial ? 'trial' : 'official',
+            registered_sessions: isTrial ? 1 : actualSessionsVal,
+            joined_date: startDateVal,
+          },
+          { onConflict: 'student_id,class_id' }
+        );
+
+        await client.from('tuition_invoices').upsert(
+          {
+            id: `inv_${resolvedStudentId}_${targetClassId}`,
+            invoice_code: `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+            student_id: resolvedStudentId,
+            class_id: targetClassId,
+            registered_sessions: isTrial ? 1 : actualSessionsVal,
+            session_rate: isTrial ? 0 : sessionRateVal,
+            gross_amount: calculatedTuitionFee,
+            net_payable: calculatedTuitionFee,
+            paid_amount: 0,
+            outstanding_amount: calculatedTuitionFee,
+            payment_status: isTrial ? 'trial_pending' : 'unpaid',
+            created_at: new Date().toISOString().split('T')[0],
+          },
+          { onConflict: 'id' }
+        );
+      } else if (result && !result.success) {
+        throw new Error(result.error);
+      }
+
+      // Cập nhật đơn parent_registrations sang trạng thái enrolled
+      if (registrationData.id) {
+        const { error: regUpdErr } = await client
+          .from('parent_registrations')
+          .update({
+            status: 'enrolled',
+            allocated_student_id: resolvedStudentId,
+            student_id: resolvedStudentId,
+            assigned_student_code: studentCode,
+            assigned_class_id: targetClassId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', registrationData.id);
 
         if (regUpdErr) {
-          await client.from('parent_registrations').update({
-            status: 'enrolled',
-            student_id: studentCode,
-            assigned_class_id: targetClassId
-          }).eq('id', registrationData.id);
+          await client
+            .from('parent_registrations')
+            .update({
+              status: 'enrolled',
+              student_id: resolvedStudentId,
+              assigned_class_id: targetClassId,
+            })
+            .eq('id', registrationData.id);
         }
-      } catch (directErr) {
-        console.warn('Direct fallback warning:', directErr);
       }
 
-      if (!rpcOk && !directOk && rpcErrDetail) {
-        throw new Error(rpcErrDetail);
+      // Thông báo thành công
+      if (isTrial) {
+        alert(`✅ Đã xếp học sinh ${studentName} vào lớp học thử thành công!`);
+      } else {
+        alert(`✅ Ghi danh & Tạo hóa đơn thành công! Mã HĐ: ${result?.invoice_code || 'Tự động'}`);
       }
 
-      alert(`✅ Thành công! Đã lưu học sinh ${registrationData.student_name || registrationData.name} (${studentCode}) và xếp lớp ${isTrial ? 'HỌC THỬ' : 'CHÍNH THỨC'} vào CSDL.`);
-      
-      // Đóng modal và nạp lại danh sách Leads & Hồ Sơ Học Viên
       onClose();
       if (typeof refreshData === 'function') {
         await refreshData();
-      } else {
-        window.location.reload();
       }
     } catch (err: any) {
-      console.error('Lỗi xếp lớp:', err);
-      alert('Không thể hoàn tất xếp lớp: ' + (err.message || err.toString()));
+      console.error('Lỗi khi ghi danh & tạo hóa đơn:', err);
+      alert('Không thể hoàn tất ghi danh: ' + (err.message || err.toString()));
     } finally {
       setIsSubmitting(false);
     }
