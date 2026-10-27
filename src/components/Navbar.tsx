@@ -28,7 +28,8 @@ import {
   HeartHandshake,
   LogIn,
   LogOut,
-  CalendarOff
+  CalendarOff,
+  Database
 } from 'lucide-react';
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
@@ -230,6 +231,14 @@ export const Navbar: React.FC<NavbarProps> = ({
           badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/30'
         },
         { 
+          id: 'sub_backup', 
+          label: 'Sao Lưu Toàn Bộ CSDL (Backup)', 
+          icon: Database, 
+          desc: 'Tải toàn bộ 18 bảng dữ liệu Supabase về máy tính dạng Excel (.xlsx), CSV hoặc JSON',
+          badge: 'Cloud Export',
+          badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+        },
+        { 
           id: 'sub_settings', 
           label: 'Quản Trị Dữ Liệu & Bảng Tính Tổng Thể', 
           icon: Settings, 
@@ -269,6 +278,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       case 'sub_pricing':
       case 'sub_settings':
       case 'sub_holidays':
+      case 'sub_backup':
         return !!(perms.can_config_system || perms.can_manage_classes);
       case 'sub_classes':
         return !!(perms.can_manage_classes || perms.can_view_classes || perms.can_take_attendance);

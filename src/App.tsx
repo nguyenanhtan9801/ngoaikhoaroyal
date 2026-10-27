@@ -821,6 +821,16 @@ export default function App() {
               onOpenLoginModal={() => setIsLoginModalOpen(true)}
             />
           )}
+
+          {currentRoute === 'sub_backup' && (
+            <SettingsDataTab
+              store={store}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              onUpdateStore={updateStore}
+              initialSection="backup"
+            />
+          )}
         </div>
 
       </main>

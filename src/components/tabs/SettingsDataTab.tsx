@@ -76,6 +76,7 @@ import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { AuditLogsTab } from './AuditLogsTab';
 import { UserManagementTab } from './UserManagementTab';
 import { HolidayManagementView } from '../settings/HolidayManagementView';
+import { DatabaseBackupView } from '../settings/DatabaseBackupView';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
@@ -119,7 +120,7 @@ interface SettingsDataTabProps {
   currentRole: UserRole;
   currentUser?: AppUser | null;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
-  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs';
+  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs' | 'backup';
   initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
@@ -131,7 +132,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   initialSection = 'pricing',
   initialSubTab = 'terms',
 }) => {
-  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs'>(initialSection || 'pricing');
+  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs' | 'backup'>(initialSection || 'pricing');
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
@@ -2375,6 +2376,18 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         >
           <Database className="w-3.5 h-3.5 shrink-0" />
           <span>Kết Nối CSDL &amp; Supabase (10 Bảng)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSection('backup')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+            activeSection === 'backup'
+              ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/20'
+              : 'bg-slate-900 text-emerald-400 hover:text-white border border-emerald-500/30'
+          }`}
+        >
+          <Database className="w-3.5 h-3.5 shrink-0" />
+          <span>Sao Lưu CSDL (Backup 18 Bảng)</span>
         </button>
 
         <button
@@ -7180,6 +7193,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           currentUser={currentUser}
           onUpdateStore={onUpdateStore}
         />
+      )}
+
+      {/* SECTION 8: SAO LƯU DỮ LIỆU CSDL SUPABASE (18 BẢNG) */}
+      {activeSection === 'backup' && (
+        <DatabaseBackupView store={store} />
       )}
 
     </div>
