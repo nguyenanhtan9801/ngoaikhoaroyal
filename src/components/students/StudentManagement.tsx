@@ -19,6 +19,7 @@ import { AppState } from '../../services/storage';
 import { Student, ParentRegistration } from '../../types';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { DatePickerVN } from '../common/DatePickerVN';
+import { checkIsRoyalStudent } from '../../lib/storage';
 
 interface StudentManagementProps {
   state: AppState;
@@ -61,9 +62,10 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
 
   // Filter students
   const filteredStudents = students.filter(s => {
+    const isRoyal = checkIsRoyalStudent(s);
     const matchesType = filterType === 'all' || 
-      (filterType === 'royal' && s.is_royal_student) || 
-      (filterType === 'external' && !s.is_royal_student);
+      (filterType === 'royal' && isRoyal) || 
+      (filterType === 'external' && !isRoyal);
     
     const matchesSearch = !searchTerm ||
       s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -230,83 +232,84 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {filteredStudents.map((st) => (
-                  <tr key={st.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="py-3.5 px-4">
-                      <div className="font-mono font-bold text-amber-400">{st.code}</div>
-                      {st.previous_student_code && (
-                        <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
-                          <span className="text-slate-500">Mã cũ:</span> {st.previous_student_code}
+                {filteredStudents.map((st) => {
+                  const isRoyal = checkIsRoyalStudent(st);
+                  return (
+                    <tr key={st.id} className="hover:bg-slate-800/40 transition-colors">
+                      <td className="py-3.5 px-4">
+                        <div className="font-mono font-bold text-amber-400">{st.code}</div>
+                        {st.previous_student_code && (
+                          <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
+                            <span className="text-slate-500">Mã cũ:</span> {st.previous_student_code}
+                          </div>
+                        )}
+                      </td>
+
+                      <td className="py-3.5 px-4">
+                        <div className="font-extrabold text-white text-sm">{st.name}</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          {st.gender} &bull; Sinh: {st.dob}
                         </div>
-                      )}
-                    </td>
+                      </td>
 
-                    <td className="py-3.5 px-4">
-                      <div className="font-extrabold text-white text-sm">{st.name}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">
-                        {st.gender} &bull; Sinh: {st.dob}
-                      </div>
-                    </td>
+                      <td className="py-3 px-4">
+                        {isRoyal ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                            👑 Royal (Bánh sữa)
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                            Ngoài trường
+                          </span>
+                        )}
+                      </td>
 
-                    <td className="py-3.5 px-4">
-                      {st.is_royal_student ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold text-[11px]">
-                          <Milk className="w-3.5 h-3.5 text-amber-400" />
-                          Học sinh Royal
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-medium text-[11px]">
-                          Học sinh ngoài
-                        </span>
-                      )}
-                    </td>
+                      <td className="py-3.5 px-4">
+                        <div className="font-semibold text-slate-200">{st.school_name || 'N/A'}</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">{st.regular_class || '-'}</div>
+                      </td>
 
-                    <td className="py-3.5 px-4">
-                      <div className="font-semibold text-slate-200">{st.school_name || 'N/A'}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">{st.regular_class || '-'}</div>
-                    </td>
-
-                    <td className="py-3.5 px-4">
-                      <div className="font-medium text-slate-300">{st.parent_name}</div>
-                      <a 
-                        href={`tel:${st.parent_phone}`}
-                        className="text-cyan-400 hover:underline font-mono text-[11px] flex items-center gap-1 mt-0.5"
-                      >
-                        <PhoneCall className="w-3 h-3" />
-                        {st.parent_phone}
-                      </a>
-                    </td>
-
-                    <td className="py-3.5 px-4">
-                      {st.medical_notes ? (
-                        <div className="flex items-start gap-1 text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/20 p-1.5 rounded-lg max-w-xs">
-                          <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                          <span>{st.medical_notes}</span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-500 italic">Bình thường</span>
-                      )}
-                    </td>
-
-                    <td className="py-3.5 px-4 text-center">
-                      {!st.is_royal_student ? (
-                        <button
-                          onClick={() => handleOpenConvertModal(st)}
-                          className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[11px] font-bold flex items-center gap-1 mx-auto transition-all"
-                          title="Học sinh ngoài chuyển sang học Royal"
+                      <td className="py-3.5 px-4">
+                        <div className="font-medium text-slate-300">{st.parent_name}</div>
+                        <a 
+                          href={`tel:${st.parent_phone}`}
+                          className="text-cyan-400 hover:underline font-mono text-[11px] flex items-center gap-1 mt-0.5"
                         >
-                          <ArrowRightLeft className="w-3 h-3" />
-                          <span>Chuyển sang Royal</span>
-                        </button>
-                      ) : (
-                        <span className="text-[11px] text-emerald-400 font-semibold flex items-center justify-center gap-1">
-                          <CheckCircle className="w-3.5 h-3.5" />
-                          Chính khóa
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                          <PhoneCall className="w-3 h-3" />
+                          {st.parent_phone}
+                        </a>
+                      </td>
+
+                      <td className="py-3.5 px-4">
+                        {st.medical_notes ? (
+                          <div className="flex items-start gap-1 text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/20 p-1.5 rounded-lg max-w-xs">
+                            <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                            <span>{st.medical_notes}</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 italic">Bình thường</span>
+                        )}
+                      </td>
+
+                      <td className="py-3.5 px-4 text-center">
+                        {!isRoyal ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenConvertModal(st)}
+                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 font-bold text-xs transition-colors"
+                          >
+                            Chuyển Royal
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-emerald-400 font-semibold flex items-center justify-center gap-1">
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            Chính khóa
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

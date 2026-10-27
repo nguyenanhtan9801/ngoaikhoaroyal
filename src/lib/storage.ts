@@ -298,9 +298,26 @@ export function normalizeSubjectRecord(sub: Subject): Subject {
   };
 }
 
+// Helper xác định chính xác học sinh Royal hay Ngoài trường (Single Source of Truth)
+export const checkIsRoyalStudent = (student: any): boolean => {
+  if (!student) return true;
+  // Ưu tiên 1: Dựa theo tiền tố mã học viên (Mã RY- chắc chắn là học sinh trường Royal)
+  const code = String(student.code || student.student_code || student.id || student.allocated_student_id || '');
+  if (code.startsWith('RY-')) return true;
+  if (code.startsWith('EXT-')) return false;
+
+  // Ưu tiên 2: Dựa theo student_type hoặc is_royal_student
+  if (student.student_type === 'royal') return true;
+  if (student.student_type === 'external') return false;
+  if (typeof student.is_royal_student === 'boolean') return student.is_royal_student;
+  if (typeof student.is_royal === 'boolean') return student.is_royal;
+
+  return true; // Mặc định là Royal
+};
+
 export function normalizeStudentRecord(student: Student): Student {
   const campus_id = resolveStudentCampusId(student);
-  const isRoyal = Boolean(student.is_royal_student ?? (student.student_type === 'royal'));
+  const isRoyal = checkIsRoyalStudent(student);
   const dob = student.dob || student.birth_date || '2016-01-01';
   const regular_class = student.regular_class || student.class_name || '';
   return {

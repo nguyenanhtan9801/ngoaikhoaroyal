@@ -30,7 +30,7 @@ import {
   AppUser,
   TermSubjectConfig,
 } from '../types';
-import { resolveStudentCampusId, resolveSubjectCategoryCode } from './storage';
+import { resolveStudentCampusId, resolveSubjectCategoryCode, checkIsRoyalStudent } from './storage';
 
 export interface TableColumnSpec {
   dbCol: string;
@@ -1667,7 +1667,7 @@ export async function pullAllTablesFromSupabase(
           break;
         case 'students':
           nextStore.students = data.map((r: any): Student => {
-            const isRoyal = Boolean(r.is_royal_student ?? (r.student_type === 'royal'));
+            const isRoyal = checkIsRoyalStudent(r);
             const dob = r.dob || r.birth_date || '2016-01-01';
             const regularClass = r.regular_class || r.class_name || '';
             const campusId = resolveStudentCampusId(r);
@@ -1997,7 +1997,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
       };
 
     case 'students': {
-      const isRoyal = Boolean(r.is_royal_student ?? (r.student_type === 'royal'));
+      const isRoyal = checkIsRoyalStudent(r);
       const dob = r.dob || r.birth_date || r.date_of_birth || '2016-01-01';
       const regularClass = r.regular_class || r.class_name || r.grade_level || r.grade || '';
       const campusId = resolveStudentCampusId(r);
@@ -2178,8 +2178,8 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
             }))
           : (Array.isArray(r.registered_subjects) ? r.registered_subjects : []),
         selected_subjects: Array.isArray(r.selected_subjects) ? r.selected_subjects : (r.registered_subjects || []),
-        is_royal_student: r.student_type ? r.student_type === 'royal' : Boolean(r.is_royal_student ?? r.is_royal ?? true),
-        is_royal: r.student_type ? r.student_type === 'royal' : Boolean(r.is_royal_student ?? r.is_royal ?? true),
+        is_royal_student: checkIsRoyalStudent(r),
+        is_royal: checkIsRoyalStudent(r),
         medical_notes: r.medical_notes || '',
         notes: r.parent_notes || r.notes || '',
         parent_notes: r.parent_notes || r.notes || '',

@@ -47,7 +47,8 @@ import {
   calculateRemainingSessions,
   calculateClassProratedPricing,
   getCampusPricingForClass,
-  resolveStudentCampusId
+  resolveStudentCampusId,
+  checkIsRoyalStudent
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
@@ -57,6 +58,8 @@ import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { EnrollmentModal } from '../modals/EnrollmentModal';
 import { DatePickerVN } from '../common/DatePickerVN';
+
+export { checkIsRoyalStudent };
 
 interface StudentsTabProps {
   store: AppStore;
@@ -290,13 +293,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             }
 
             const existing = studentMap.get(sid) || Array.from(studentMap.values()).find(s => s.code === scode);
-            const isRoyal = Boolean(
-              r.is_royal_student !== undefined && r.is_royal_student !== null
-                ? r.is_royal_student
-                : r.student_type
-                ? r.student_type === 'royal'
-                : existing?.is_royal_student
-            );
+            const isRoyal = checkIsRoyalStudent({ ...existing, ...r, code: scode, id: sid });
             const dob = r.dob || r.birth_date || r.date_of_birth || existing?.dob || '2016-01-01';
             const regularClass = r.regular_class || r.class_name || r.grade_level || existing?.regular_class || '';
             const campusId = resolveStudentCampusId({ ...existing, ...r });
@@ -530,7 +527,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       const studentCampus = resolveStudentCampusId(student);
       const matchCampus = selectedCampus === 'all' || studentCampus === selectedCampus;
 
-      const isRoyal = Boolean(student.is_royal_student ?? (student.student_type === 'royal'));
+      const isRoyal = checkIsRoyalStudent(student);
       const matchType =
         filterType === 'all' ? true :
         filterType === 'royal' ? isRoyal :
@@ -563,6 +560,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             code: newCode,
             previous_student_code: s.code,
             is_royal_student: true,
+            student_type: 'royal' as const,
+            has_snack: true,
             school_name: s.school_name?.includes('Royal') ? s.school_name : 'Royal School (Chính khóa)',
           };
         }
@@ -586,6 +585,25 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ],
       };
     });
+
+    // Đồng bộ trực tiếp vào Supabase
+    try {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        client.from('students').update({
+          code: newCode,
+          student_code: newCode,
+          previous_student_code: student.code,
+          is_royal_student: true,
+          student_type: 'royal',
+          has_snack: true,
+          school_name: student.school_name?.includes('Royal') ? student.school_name : 'Royal School (Chính khóa)',
+          updated_at: new Date().toISOString()
+        }).eq('id', student.id).then();
+      }
+    } catch (e) {
+      console.warn('Sync convert to Supabase error:', e);
+    }
 
     setConvertingStudent(null);
     showToast(`Đã chuyển đổi học sinh ${student.name} sang mã ROYAL SCHOOL (${newCode})!`, 'success', {
@@ -642,7 +660,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 ...formData,
                 birth_date: formData.dob,
                 class_name: formData.regular_class,
-                student_type: formData.is_royal_student ? 'royal' : 'external',
+                is_royal_student: formData.is_royal_student,
+                student_type: (formData.is_royal_student ? 'royal' : 'external') as ('royal' | 'external'),
                 has_snack: formData.is_royal_student,
                 photo_stored_at: storedAt, 
                 photo_updated_at: formData.avatar_url ? (s.photo_updated_at || new Date().toISOString().split('T')[0]) : undefined 
@@ -651,6 +670,35 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ),
         auditLogs: [updateLog, ...(prev.auditLogs || [])],
       }));
+
+      // Đồng bộ cập nhật vào Supabase
+      try {
+        const client = getSupabaseClient() || supabase;
+        if (client) {
+          const isRoyal = formData.is_royal_student;
+          client.from('students').update({
+            full_name: formData.name,
+            name: formData.name,
+            date_of_birth: formData.dob,
+            dob: formData.dob,
+            gender: formData.gender,
+            campus_id: formData.campus_id,
+            parent_name: formData.parent_name,
+            parent_phone: formData.parent_phone,
+            school_name: formData.school_name,
+            regular_class: formData.regular_class,
+            class_name: formData.regular_class,
+            is_royal_student: isRoyal,
+            student_type: isRoyal ? 'royal' : 'external',
+            has_snack: isRoyal,
+            medical_notes: formData.medical_notes,
+            avatar_url: formData.avatar_url || null,
+            updated_at: new Date().toISOString()
+          }).eq('id', editingStudent.id).then();
+        }
+      } catch (err) {
+        console.warn('Sync student update to Supabase error:', err);
+      }
     } else {
       // Add
       const code = generateStudentCode(formData.is_royal_student, store.students);
@@ -666,7 +714,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         birth_date: formData.dob,
         gender: formData.gender,
         campus_id: formData.campus_id,
-        student_type: formData.is_royal_student ? 'royal' : 'external',
+        student_type: (formData.is_royal_student ? 'royal' : 'external') as ('royal' | 'external'),
         has_snack: formData.is_royal_student,
         parent_name: formData.parent_name,
         parent_phone: formData.parent_phone,
@@ -735,7 +783,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       parent_phone: student.parent_phone,
       school_name: student.school_name || '',
       regular_class: student.regular_class || student.class_name || '',
-      is_royal_student: student.is_royal_student,
+      is_royal_student: checkIsRoyalStudent(student),
       medical_notes: student.medical_notes || '',
       avatar_url: student.avatar_url || '',
       photo_stored_at: student.photo_stored_at || '',
@@ -1134,7 +1182,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
-            Học sinh Royal ({store.students.filter(s => s.is_royal_student).length})
+            Học sinh Royal ({store.students.filter(s => checkIsRoyalStudent(s)).length})
           </button>
           <button
             onClick={() => setFilterType('outside')}
@@ -1144,7 +1192,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
             }`}
           >
-            Học sinh ngoài trường ({store.students.filter(s => !s.is_royal_student).length})
+            Học sinh ngoài trường ({store.students.filter(s => !checkIsRoyalStudent(s)).length})
           </button>
           <button
             onClick={() => setOnlyHealth(!onlyHealth)}
@@ -1234,6 +1282,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               <tbody className="divide-y divide-slate-800/60">
                 {filteredStudents.map(student => {
                   const studentEnrollments = getStudentEnrollmentsList(student);
+                  const isRoyal = checkIsRoyalStudent(student);
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
@@ -1274,7 +1323,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
                       <td className="py-3 px-3 whitespace-nowrap">
                         <span className={`px-2 py-0.5 rounded font-mono font-bold text-xs inline-block whitespace-nowrap ${
-                          student.is_royal_student
+                          isRoyal
                             ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                             : 'bg-slate-800 text-slate-300 border border-slate-700'
                         }`}>
@@ -1296,14 +1345,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         <div className="text-[10px] text-slate-500">{student.gender}</div>
                       </td>
 
-                      <td className="py-3 px-3">
-                        {student.is_royal_student ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 inline-flex items-center gap-1 whitespace-nowrap">
-                            <Crown className="w-3 h-3 text-amber-400 shrink-0" />
-                            Royal (Bánh sữa)
+                      <td className="py-3 px-4">
+                        {isRoyal ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                            👑 Royal (Bánh sữa)
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
                             Ngoài trường
                           </span>
                         )}
@@ -1459,10 +1507,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           >
                             <FileText className="w-3.5 h-3.5" />
                           </button>
-                          {!student.is_royal_student && (
+                          {!isRoyal && (
                             <button
+                              type="button"
                               onClick={() => setConvertingStudent(student)}
-                              className="px-2 py-1 rounded-lg bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 text-[10px] font-bold"
+                              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 font-bold text-xs transition-colors"
                               title="Chuyển sang Royal"
                             >
                               Chuyển Royal
@@ -1496,6 +1545,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredStudents.map(student => {
             const studentEnrollments = getStudentEnrollmentsList(student);
+            const isRoyal = checkIsRoyalStudent(student);
 
             return (
               <div
@@ -1540,20 +1590,19 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
                       <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-bold border ${
-                        student.is_royal_student
+                        isRoyal
                           ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
                           : 'bg-slate-800 text-slate-300 border-slate-700'
                       }`}>
                         {student.code}
                       </span>
 
-                      {student.is_royal_student ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
-                          <Crown className="w-3 h-3 text-amber-400" />
-                          Royal
+                      {isRoyal ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                          👑 Royal (Bánh sữa)
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
                           Ngoài trường
                         </span>
                       )}
@@ -1733,8 +1782,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {!student.is_royal_student && (
+                    {!isRoyal && (
                       <button
+                        type="button"
                         onClick={() => setConvertingStudent(student)}
                         className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 font-bold text-[11px] transition-all flex items-center gap-1"
                         title="Chuyển đổi thành Học sinh chính khóa Royal (Cấp mã RY... và suất bánh sữa)"
