@@ -524,6 +524,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   } | null>(null);
   const [trialNotes, setTrialNotes] = useState('');
 
+  // Wrong Class Removal / Quick Switch Modal State (Hủy ghi danh nhầm môn / Đổi sang lớp khác)
+  const [wrongClassModal, setWrongClassModal] = useState<{
+    mode: 'remove' | 'switch';
+    student: Student;
+    enrollment: Enrollment;
+    className: string;
+  } | null>(null);
+  const [switchTargetClassId, setSwitchTargetClassId] = useState<string>('');
+  const [switchEnrollType, setSwitchEnrollType] = useState<'official' | 'trial'>('official');
+  const [isRemovingOrSwitching, setIsRemovingOrSwitching] = useState(false);
+
   // Filter students combining Campus ('all' | 'pmh' | 'pl'), Type, Medical & Search Query
   const filteredStudents = useMemo(() => {
     return store.students.filter((student) => {
@@ -1069,6 +1080,336 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
   };
 
+  // Mở Modal Hủy lớp hoặc Đổi sang lớp khác nhanh ngay trên badge môn học
+  const openWrongClassModal = (
+    student: Student,
+    enrollment: Enrollment,
+    className: string,
+    mode: 'remove' | 'switch' = 'remove'
+  ) => {
+    const isTrial = Boolean(
+      (enrollment.is_trial === true || (enrollment as any).enrollment_type === 'trial') &&
+      enrollment.status !== 'active'
+    );
+    const studentCampus = resolveStudentCampusId(student);
+    const targetCampusCode = studentCampus === 'pl' ? 'camp_pl' : 'camp_pmh';
+    const availableClasses = store.classes.filter(
+      c =>
+        c.id !== enrollment.class_id &&
+        c.status !== 'canceled' &&
+        (c.campus_id === targetCampusCode || c.campus_id === studentCampus || !c.campus_id)
+    );
+    const fallbackClasses = availableClasses.length > 0
+      ? availableClasses
+      : store.classes.filter(c => c.id !== enrollment.class_id);
+
+    setSwitchTargetClassId(fallbackClasses[0]?.id || '');
+    setSwitchEnrollType(isTrial ? 'trial' : 'official');
+    setWrongClassModal({
+      mode,
+      student,
+      enrollment,
+      className,
+    });
+  };
+
+  // Xử lý thao tác "Hủy ghi danh do xếp nhầm" (Gọi RPC remove_student_from_class + xóa trực tiếp trên Supabase + cập nhật UI tức thì)
+  const handleRemoveWrongClass = async (
+    student: Student,
+    enrollment: Enrollment,
+    classNameInput?: string,
+    reopenEnrollAfterRemove: boolean = false
+  ) => {
+    const studentName = student.name || (student as any).full_name || student.code;
+    const nestedClsRaw = (enrollment as any).extracurricular_classes;
+    const nestedCls = Array.isArray(nestedClsRaw) ? nestedClsRaw[0] : nestedClsRaw;
+    const matchedClass = store.classes.find(c => c.id === enrollment.class_id);
+    const className =
+      classNameInput ||
+      nestedCls?.name ||
+      matchedClass?.name ||
+      enrollment.class_id ||
+      'lớp học này';
+
+    const candidateStudentIds = Array.from(
+      new Set([student.id, student.code, enrollment.student_id].filter(Boolean) as string[])
+    );
+
+    try {
+      setIsRemovingOrSwitching(true);
+      const client = getSupabaseClient() || supabase;
+
+      if (client) {
+        // 1. Gọi RPC xóa ghi danh và hóa đơn chưa thu trên Supabase
+        const { error: rpcErr } = await client.rpc('remove_student_from_class', {
+          p_student_id: student.id || student.code,
+          p_class_id: enrollment.class_id,
+        });
+
+        if (rpcErr) {
+          console.warn('RPC remove_student_from_class thông báo, thực hiện xóa trực tiếp:', rpcErr.message);
+        }
+
+        // 2. Xóa trực tiếp trên bảng tuition_invoices (chưa thu) & enrollments để đảm bảo đồng bộ 100% khi F5
+        await client
+          .from('tuition_invoices')
+          .delete()
+          .in('student_id', candidateStudentIds)
+          .eq('class_id', enrollment.class_id)
+          .neq('payment_status', 'paid');
+
+        await client
+          .from('enrollments')
+          .delete()
+          .in('student_id', candidateStudentIds)
+          .eq('class_id', enrollment.class_id);
+
+        if (enrollment.id) {
+          await client.from('enrollments').delete().eq('id', enrollment.id);
+        }
+      }
+
+      // 3. Cập nhật ngay trên giao diện (Xóa badge môn học & hóa đơn chưa thu khỏi dòng của học sinh đó)
+      onUpdateStore(prev => ({
+        ...prev,
+        students: prev.students.map(s => {
+          if (candidateStudentIds.includes(String(s.id)) || candidateStudentIds.includes(String(s.code))) {
+            const nextNested = ((s as any).enrollments || []).filter(
+              (ne: any) => ne && ne.class_id !== enrollment.class_id && ne.id !== enrollment.id
+            );
+            return {
+              ...s,
+              enrollments: nextNested,
+            } as Student;
+          }
+          return s;
+        }),
+        enrollments: prev.enrollments.filter(
+          e =>
+            !(
+              (candidateStudentIds.includes(String(e.student_id)) && e.class_id === enrollment.class_id) ||
+              (enrollment.id && e.id === enrollment.id)
+            )
+        ),
+        invoices: prev.invoices.filter(
+          inv =>
+            !(
+              candidateStudentIds.includes(String(inv.student_id)) &&
+              inv.class_id === enrollment.class_id &&
+              inv.payment_status !== 'paid'
+            )
+        ),
+      }));
+
+      setWrongClassModal(null);
+
+      showToast(
+        `Đã hủy ghi danh lớp "${className}" của học sinh ${studentName}. Bạn có thể bấm "+ Lớp" để xếp lại lớp đúng!`,
+        'success',
+        { title: 'Đã hủy lớp xếp nhầm' }
+      );
+
+      if (reopenEnrollAfterRemove) {
+        await handleOpenEnrollModal(student);
+      }
+    } catch (err: any) {
+      console.error('Lỗi khi hủy lớp:', err);
+      showToast('Lỗi khi hủy lớp: ' + (err.message || String(err)), 'error', {
+        title: 'Lỗi hủy lớp học',
+      });
+    } finally {
+      setIsRemovingOrSwitching(false);
+    }
+  };
+
+  // Xử lý thao tác "Đổi sang lớp khác" (Hủy lớp nhầm cũ + Ghi danh sang lớp mới & cập nhật hóa đơn)
+  const handleQuickSwitchClass = async () => {
+    if (!wrongClassModal || !switchTargetClassId) return;
+    const { student, enrollment, className: oldClassName } = wrongClassModal;
+    const newClass = store.classes.find(c => c.id === switchTargetClassId);
+    if (!newClass) {
+      showToast('Vui lòng chọn lớp học mới hợp lệ để chuyển sang!', 'warning');
+      return;
+    }
+
+    const candidateStudentIds = Array.from(
+      new Set([student.id, student.code, enrollment.student_id].filter(Boolean) as string[])
+    );
+    const isTrial = switchEnrollType === 'trial';
+    const todayStr = new Date().toISOString().split('T')[0];
+    const totalSess = Number(newClass.total_sessions || 24);
+    const grossFee = Number(newClass.full_course_fee || 3990000);
+    const sessionRate = Number(newClass.price_per_session || Math.ceil(grossFee / Math.max(1, totalSess)));
+    const newEnrollmentId = `enr_${student.id}_${newClass.id}`;
+    const newInvoiceCode = `INV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
+    const newInvoiceId = `inv_${student.id}_${newClass.id}`;
+
+    try {
+      setIsRemovingOrSwitching(true);
+      const client = getSupabaseClient() || supabase;
+
+      if (client) {
+        // 1. Xóa lớp cũ bị xếp nhầm trên Supabase
+        await client.rpc('remove_student_from_class', {
+          p_student_id: student.id || student.code,
+          p_class_id: enrollment.class_id,
+        });
+
+        await client
+          .from('tuition_invoices')
+          .delete()
+          .in('student_id', candidateStudentIds)
+          .eq('class_id', enrollment.class_id)
+          .neq('payment_status', 'paid');
+
+        await client
+          .from('enrollments')
+          .delete()
+          .in('student_id', candidateStudentIds)
+          .eq('class_id', enrollment.class_id);
+
+        // 2. Ghi danh vào lớp mới trên Supabase (Upsert an toàn tránh lỗi duplicate key)
+        await client.rpc('assign_student_to_class', {
+          p_student_id: student.id,
+          p_class_id: newClass.id,
+          p_enrollment_type: isTrial ? 'trial' : 'official',
+          p_is_trial: isTrial,
+        });
+
+        await client.from('enrollments').upsert(
+          {
+            id: newEnrollmentId,
+            student_id: student.id,
+            class_id: newClass.id,
+            registered_sessions: totalSess,
+            joined_date: todayStr,
+            enrolled_days_of_week: newClass.days_of_week || ['T2', 'T4'],
+            is_partial_schedule: false,
+            is_trial: isTrial,
+            enrollment_type: isTrial ? 'trial' : 'official',
+            status: isTrial ? 'trial' : 'active',
+          },
+          { onConflict: 'student_id,class_id' }
+        );
+
+        await client.from('tuition_invoices').upsert(
+          {
+            id: newInvoiceId,
+            invoice_code: newInvoiceCode,
+            student_id: student.id,
+            class_id: newClass.id,
+            registered_sessions: totalSess,
+            total_class_sessions: totalSess,
+            session_rate: sessionRate,
+            gross_amount: grossFee,
+            credit_deducted: 0,
+            discount_amount: 0,
+            net_payable: grossFee,
+            paid_amount: 0,
+            outstanding_amount: grossFee,
+            payment_status: 'unpaid',
+            created_at: todayStr,
+          },
+          { onConflict: 'id' }
+        );
+      }
+
+      // 3. Cập nhật ngay trên State giao diện
+      const newEnrollmentObj: Enrollment = {
+        id: newEnrollmentId,
+        student_id: student.id,
+        class_id: newClass.id,
+        registered_sessions: totalSess,
+        joined_date: todayStr,
+        enrolled_days_of_week: newClass.days_of_week || ['T2', 'T4'],
+        is_partial_schedule: false,
+        status: isTrial ? 'trial' : 'active',
+        is_trial: isTrial,
+        ...({
+          enrollment_type: isTrial ? 'trial' : 'official',
+          extracurricular_classes: {
+            id: newClass.id,
+            name: newClass.name,
+            days_of_week: newClass.days_of_week,
+          },
+        } as any),
+      };
+
+      const newInvoiceObj: TuitionInvoice = {
+        id: newInvoiceId,
+        invoice_code: newInvoiceCode,
+        student_id: student.id,
+        class_id: newClass.id,
+        registered_sessions: totalSess,
+        total_class_sessions: totalSess,
+        session_rate: sessionRate,
+        gross_amount: grossFee,
+        credit_deducted: 0,
+        discount_amount: 0,
+        net_payable: grossFee,
+        paid_amount: 0,
+        outstanding_amount: grossFee,
+        payment_status: 'unpaid',
+        due_date: todayStr,
+        is_trial_pending: isTrial,
+        created_at: todayStr,
+      };
+
+      onUpdateStore(prev => {
+        const filteredEnrollments = prev.enrollments.filter(
+          e =>
+            !(
+              (candidateStudentIds.includes(String(e.student_id)) &&
+                (e.class_id === enrollment.class_id || e.class_id === newClass.id)) ||
+              (enrollment.id && e.id === enrollment.id)
+            )
+        );
+        const filteredInvoices = prev.invoices.filter(
+          inv =>
+            !(
+              candidateStudentIds.includes(String(inv.student_id)) &&
+              (inv.class_id === enrollment.class_id || inv.class_id === newClass.id) &&
+              inv.payment_status !== 'paid'
+            )
+        );
+
+        return {
+          ...prev,
+          students: prev.students.map(s => {
+            if (candidateStudentIds.includes(String(s.id)) || candidateStudentIds.includes(String(s.code))) {
+              const cleanedNested = ((s as any).enrollments || []).filter(
+                (ne: any) =>
+                  ne &&
+                  ne.class_id !== enrollment.class_id &&
+                  ne.class_id !== newClass.id &&
+                  ne.id !== enrollment.id
+              );
+              return {
+                ...s,
+                enrollments: [...cleanedNested, newEnrollmentObj],
+              } as Student;
+            }
+            return s;
+          }),
+          enrollments: deduplicateEnrollments([newEnrollmentObj, ...filteredEnrollments]),
+          invoices: [newInvoiceObj, ...filteredInvoices],
+        };
+      });
+
+      setWrongClassModal(null);
+      showToast(
+        `Đã đổi lớp cho học sinh ${student.name}: Hủy "${oldClassName}" → Chuyển sang "${newClass.name}" (${isTrial ? 'Học thử' : 'Chính thức'})!`,
+        'success',
+        { title: 'Đổi lớp thành công' }
+      );
+    } catch (err: any) {
+      console.error('Lỗi khi đổi sang lớp khác:', err);
+      showToast('Lỗi khi đổi lớp: ' + (err.message || String(err)), 'error');
+    } finally {
+      setIsRemovingOrSwitching(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       
@@ -1387,14 +1728,48 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         <span>🟣</span>
                                         <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
                                         <span>{shortName} (Học Thử Buổi 1)</span>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                          }}
+                                          className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                          title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                        >
+                                          ✕
+                                        </button>
                                       </span>
                                     ) : (
                                       <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold inline-flex items-center gap-1 w-fit">
                                         <span>🟢</span>
                                         <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                                         <span>{shortName} (Chính thức)</span>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                          }}
+                                          className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                          title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                        >
+                                          ✕
+                                        </button>
                                       </span>
                                     )}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openWrongClassModal(student, enr, c.name || shortName, 'switch');
+                                      }}
+                                      className="px-1.5 py-0.5 rounded bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-[9.5px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                      title="Đổi sang lớp khác (Chuyển lớp nhanh do xếp nhầm)"
+                                    >
+                                      <ArrowRightLeft className="w-2.5 h-2.5 text-sky-400" />
+                                      <span>Đổi lớp</span>
+                                    </button>
                                     <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold border ${
                                       isPartial
                                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
@@ -1652,19 +2027,55 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           return (
                             <div key={enr.id} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
                               <div className="flex items-center justify-between gap-2 flex-wrap">
-                                {isTrial ? (
-                                  <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
-                                    <span>🟣</span>
-                                    <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
-                                    <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
-                                    <span>🟢</span>
-                                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                    <span className="truncate">{shortName} (Chính thức)</span>
-                                  </span>
-                                )}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {isTrial ? (
+                                    <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                      <span>🟣</span>
+                                      <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                      <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                        }}
+                                        className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                        title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                      >
+                                        ✕
+                                      </button>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
+                                      <span>🟢</span>
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      <span className="truncate">{shortName} (Chính thức)</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openWrongClassModal(student, enr, c.name || shortName, 'remove');
+                                        }}
+                                        className="ml-1 px-1 py-0.2 rounded hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 transition-colors cursor-pointer font-bold"
+                                        title="Hủy ghi danh lớp này (Do xếp nhầm môn)"
+                                      >
+                                        ✕
+                                      </button>
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openWrongClassModal(student, enr, c.name || shortName, 'switch');
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-[9.5px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                    title="Đổi sang lớp khác (Chuyển lớp nhanh do xếp nhầm)"
+                                  >
+                                    <ArrowRightLeft className="w-2.5 h-2.5 text-sky-400" />
+                                    <span>Đổi lớp</span>
+                                  </button>
+                                </div>
                                 <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${
                                   isPartial
                                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
@@ -2202,6 +2613,210 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Hủy Ghi Danh Lớp Xếp Nhầm / Đổi Sang Lớp Khác Nhanh */}
+      {wrongClassModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 animate-fadeIn">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                {wrongClassModal.mode === 'remove' ? (
+                  <XCircle className="w-5 h-5 text-rose-400" />
+                ) : (
+                  <ArrowRightLeft className="w-5 h-5 text-sky-400" />
+                )}
+                <h3 className="text-base font-bold text-white">
+                  {wrongClassModal.mode === 'remove'
+                    ? 'Hủy Ghi Danh Lớp Này (Do Xếp Nhầm Môn)'
+                    : 'Đổi Sang Lớp Ngoại Khóa Khác'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWrongClassModal(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Chuyển nhanh giữa 2 chế độ: Hủy lớp này / Đổi sang lớp khác */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => setWrongClassModal({ ...wrongClassModal, mode: 'remove' })}
+                className={`py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  wrongClassModal.mode === 'remove'
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                <span>Hủy ghi danh lớp này</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setWrongClassModal({ ...wrongClassModal, mode: 'switch' })}
+                className={`py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  wrongClassModal.mode === 'switch'
+                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5" />
+                <span>Đổi sang lớp khác</span>
+              </button>
+            </div>
+
+            {/* Thông tin Học viên & Lớp hiện tại */}
+            <div className="text-xs text-slate-300 space-y-1.5 p-3.5 rounded-2xl bg-slate-900/90 border border-slate-800">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Học sinh:</span>
+                <span className="font-bold text-white">
+                  {wrongClassModal.student.name} ({wrongClassModal.student.code})
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Lớp đang chọn xử lý:</span>
+                <span className="font-bold text-rose-300">{wrongClassModal.className}</span>
+              </div>
+            </div>
+
+            {wrongClassModal.mode === 'remove' ? (
+              <div className="space-y-3 text-xs">
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-slate-300 space-y-1.5">
+                  <div className="font-bold text-rose-300 flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>Xác nhận hủy lớp &quot;{wrongClassModal.className}&quot; (do xếp nhầm)?</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Hệ thống sẽ xóa bản ghi ghi danh của lớp này trên CSDL Supabase và tự động xóa hóa đơn học phí chưa thu tương ứng. Hồ sơ học sinh vẫn được giữ nguyên.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() => setWrongClassModal(null)}
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Đóng
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() =>
+                      handleRemoveWrongClass(
+                        wrongClassModal.student,
+                        wrongClassModal.enrollment,
+                        wrongClassModal.className,
+                        true
+                      )
+                    }
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Hủy Lớp &amp; Mở Bảng Xếp Lớp Lại
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() =>
+                      handleRemoveWrongClass(
+                        wrongClassModal.student,
+                        wrongClassModal.enrollment,
+                        wrongClassModal.className,
+                        false
+                      )
+                    }
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+                  >
+                    {isRemovingOrSwitching ? 'Đang hủy lớp...' : 'Xác Nhận Hủy Lớp Này'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3.5 text-xs">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1.5">
+                    Chọn lớp ngoại khóa mới để chuyển sang:
+                  </label>
+                  <select
+                    value={switchTargetClassId}
+                    onChange={(e) => setSwitchTargetClassId(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="">-- Chọn lớp học đúng --</option>
+                    {store.classes
+                      .filter(c => c.id !== wrongClassModal.enrollment.class_id && c.status !== 'canceled')
+                      .map(cls => {
+                        const campusBadge = cls.campus_id === 'camp_pl' || cls.campus_id === 'pl' ? '[PL]' : '[PMH]';
+                        const daysStr = Array.isArray(cls.days_of_week) ? cls.days_of_week.join(', ') : 'T2, T4';
+                        return (
+                          <option key={cls.id} value={cls.id}>
+                            {campusBadge} {cls.name} • Lịch: {daysStr} • {formatVND(cls.full_course_fee || 3990000)}
+                          </option>
+                        );
+                      })}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1.5">
+                    Hình thức ghi danh ở lớp mới:
+                  </label>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setSwitchEnrollType('official')}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        switchEnrollType === 'official'
+                          ? 'bg-emerald-500/15 border-emerald-500 text-emerald-300 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>🟢 Học Chính Thức</div>
+                      <div className="text-[10px] font-normal text-slate-400 mt-0.5">Kích hoạt hóa đơn toàn khóa</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSwitchEnrollType('trial')}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        switchEnrollType === 'trial'
+                          ? 'bg-purple-500/20 border-purple-500 text-purple-300 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>🟣 Học Thử Buổi 1</div>
+                      <div className="text-[10px] font-normal text-slate-400 mt-0.5">Tạm hoãn thu phí buổi đầu</div>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching}
+                    onClick={() => setWrongClassModal(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRemovingOrSwitching || !switchTargetClassId}
+                    onClick={handleQuickSwitchClass}
+                    className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-sky-600/20 transition-all cursor-pointer flex items-center gap-1.5"
+                  >
+                    <ArrowRightLeft className="w-3.5 h-3.5" />
+                    <span>{isRemovingOrSwitching ? 'Đang chuyển lớp...' : 'Xác Nhận Đổi Sang Lớp Này'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
