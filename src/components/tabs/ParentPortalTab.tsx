@@ -38,7 +38,6 @@ import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
 import { 
   AppStore, 
   generateStudentCode, 
-  generateStudentCodeSync,
   formatVND, 
   calculateCeilSessionRate, 
   getEffectivePrice, 
@@ -698,15 +697,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     const matchRes = matchLeadWithDatabase(lead, store);
     const matchedStudent = matchRes.matchedStudent;
 
-    // Lock code to existing student code if matched, otherwise generate a new one via RPC get_next_student_code
+    // Lock code to existing student code if matched, otherwise generate a new one
     const existingCode = matchedStudent?.code || (lead as any).allocated_student_id || lead.assigned_student_code;
-    const suggestedCode = existingCode || generateStudentCodeSync(lead.is_royal_student, store.students);
+    const suggestedCode = existingCode || generateStudentCode(lead.is_royal_student, store.students);
     setCustomStudentCode(suggestedCode);
-    if (!existingCode) {
-      generateStudentCode(lead.is_royal_student, store.students).then(nextCode => {
-        setCustomStudentCode(nextCode);
-      });
-    }
     setMergedMedicalNotes(
       matchedStudent
         ? mergeMedicalNotes(matchedStudent.medical_notes, lead.medical_notes)
@@ -859,10 +853,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       // Ensure 1 student has strictly 1 unique student code across all terms
       const studentCode = existingStudent
         ? existingStudent.code
-        : customStudentCode.trim() || (lead as any).allocated_student_id || (await generateStudentCode(lead.is_royal_student, store.students));
+        : customStudentCode.trim() || (lead as any).allocated_student_id || generateStudentCode(lead.is_royal_student, store.students);
       const studentId = existingStudent
         ? existingStudent.id
-        : customStudentCode.trim() || (lead as any).allocated_student_id || studentCode;
+        : customStudentCode.trim() || (lead as any).allocated_student_id || studentCode || 'EXT-2026-00102';
       const finalMedicalNotes = mergedMedicalNotes.trim() || existingStudent?.medical_notes || lead.medical_notes || 'Bình thường';
       const targetCampusId: 'pmh' | 'pl' =
         lead.desired_campus_id === 'camp_pl' || lead.desired_campus_id === 'pl' ? 'pl' : 'pmh';
@@ -985,44 +979,63 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         const actualSessionsVal = Number(effectiveSessions || 12);
         const feeVal = Number(pricing.netPayable || 3000000);
 
-        // 1. Gọi trực tiếp RPC create_enrollment_with_invoice để đảm bảo student, enrollment và tuition_invoice đồng bộ 100% không lỗi khóa ngoại
-        let rpcInvoiceCode = `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`;
-        let rpcInvoiceId = `inv_${studentId}_${cls.id}`;
-
+        // 1. Gọi trực tiếp RPC assign_student_to_class hoặc Upsert với onConflict: 'student_id,class_id'
         if (client) {
-          const cleanCampusRpc = targetCampusId === 'pl' ? 'camp_pl' : 'camp_pmh';
-          const { data: createEnrRes, error: createEnrErr } = await client.rpc('create_enrollment_with_invoice', {
+          const { data: rpcData, error: rpcError } = await client.rpc('assign_student_to_class', {
             p_student_id: studentId,
-            p_student_code: studentCode,
-            p_student_name: lead.student_name.trim(),
-            p_campus_id: cleanCampusRpc,
-            p_parent_name: lead.parent_name?.trim() || 'Phụ huynh',
-            p_parent_phone: lead.parent_phone?.trim() || '',
             p_class_id: cls.id,
             p_is_trial: isTrial,
             p_start_date: startDateVal,
             p_actual_sessions: actualSessionsVal,
-            p_session_rate: Number(pricing.sessionRate || cls.price_per_session || 250000),
-            p_total_tuition: isTrial ? 0 : feeVal,
+            p_tuition_fee: feeVal
           });
 
-          if (!createEnrErr && createEnrRes && createEnrRes.success !== false) {
-            if (createEnrRes.enrollment_id) finalEnrId = createEnrRes.enrollment_id;
-            if (createEnrRes.invoice_id) rpcInvoiceId = createEnrRes.invoice_id;
-            if (createEnrRes.invoice_code) rpcInvoiceCode = createEnrRes.invoice_code;
-          } else {
-            // Fallback nếu RPC chưa được tạo trên DB
-            const { data: existingRemoteEnr } = await client
-              .from('enrollments')
-              .select('id')
-              .eq('student_id', studentId)
-              .eq('class_id', cls.id)
-              .maybeSingle();
+          if (rpcError || (rpcData && rpcData.success === false)) {
+            console.warn(
+              'RPC assign_student_to_class thông báo (chuyển sang upsert onConflict student_id,class_id):',
+              rpcError?.message || rpcData?.error
+            );
+          }
 
-            if (existingRemoteEnr?.id) {
-              finalEnrId = existingRemoteEnr.id;
-            }
+          const { data: existingRemoteEnr } = await client
+            .from('enrollments')
+            .select('id')
+            .eq('student_id', studentId)
+            .eq('class_id', cls.id)
+            .maybeSingle();
 
+          if (existingRemoteEnr?.id) {
+            finalEnrId = existingRemoteEnr.id;
+          }
+
+          // Luôn đồng bộ bản ghi trong bảng enrollments qua upsert (onConflict: 'student_id,class_id') để không bao giờ lỗi duplicate key
+          const enrollmentPayload: any = {
+            id: finalEnrId,
+            student_id: studentId,
+            class_id: cls.id,
+            term_id: cls.term_id,
+            enrollment_type: isTrial ? 'trial' : 'official',
+            status: isTrial ? 'trial' : 'active',
+            is_trial: isTrial,
+            trial_session_count: isTrial ? 1 : 0,
+            trial_session_date: isTrial ? startDateVal : null,
+            trial_attended: false,
+            start_date: startDateVal,
+            joined_date: startDateVal,
+            total_sessions: isTrial ? 1 : actualSessionsVal,
+            registered_sessions: isTrial ? 1 : actualSessionsVal,
+            total_tuition: isTrial ? 0 : feeVal,
+            tuition_status: isTrial ? 'trial_deferred' : 'pending',
+            enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+            is_partial_schedule: autoCalc.isPartialSchedule,
+            trial_notes: isTrial ? `Học thử 1 buổi đầu (${scheduleLabel})` : null,
+          };
+
+          const { error: enrollError } = await client
+            .from('enrollments')
+            .upsert([enrollmentPayload], { onConflict: 'student_id,class_id' });
+
+          if (enrollError) {
             const fallbackEnrollPayload: any = {
               id: finalEnrId,
               student_id: studentId,
@@ -1046,26 +1059,6 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                 .from('enrollments')
                 .upsert([fallbackEnrollPayload], { onConflict: 'student_id,class_id' });
             }
-
-            await client.from('tuition_invoices').upsert(
-              [
-                {
-                  id: rpcInvoiceId,
-                  invoice_code: rpcInvoiceCode,
-                  student_id: studentId,
-                  class_id: cls.id,
-                  registered_sessions: isTrial ? 1 : actualSessionsVal,
-                  session_rate: isTrial ? 0 : Number(pricing.sessionRate || 250000),
-                  gross_amount: isTrial ? 0 : feeVal,
-                  net_payable: isTrial ? 0 : feeVal,
-                  paid_amount: 0,
-                  outstanding_amount: isTrial ? 0 : feeVal,
-                  payment_status: isTrial ? 'trial_pending' : 'unpaid',
-                  created_at: todayStr,
-                },
-              ],
-              { onConflict: 'id' }
-            );
           }
         }
 
@@ -1088,39 +1081,52 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         };
         newEnrollments.push(enrRecord);
 
-        // Hóa đơn local state
-        const proratedNote = autoCalc.isPartialSchedule
-          ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${pricing.effectiveSessions} buổi x ${formatVND(pricing.sessionRate)}/buổi)`
-          : pricing.isMidCourse
-          ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDateVal)})`
-          : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
+        // Hóa đơn
+        const alreadyInvoiced = store.invoices.some(
+          inv => inv.student_id === studentId && inv.class_id === cls.id && inv.payment_status !== 'cancelled'
+        );
+        if (!alreadyInvoiced) {
+          const proratedNote = autoCalc.isPartialSchedule
+            ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${pricing.effectiveSessions} buổi x ${formatVND(pricing.sessionRate)}/buổi)`
+            : pricing.isMidCourse
+            ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDateVal)})`
+            : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
 
-        const invoicePayload: TuitionInvoice = {
-          id: rpcInvoiceId,
-          invoice_code: rpcInvoiceCode,
-          student_id: studentId,
-          class_id: cls.id,
-          gross_amount: isTrial ? 0 : pricing.proratedGrossFee,
-          discount_amount: isTrial ? 0 : pricing.discountAmount,
-          credit_deducted: 0,
-          net_payable: isTrial ? 0 : pricing.netPayable,
-          paid_amount: 0,
-          outstanding_amount: isTrial ? 0 : pricing.netPayable,
-          payment_status: isTrial ? 'trial_pending' : 'unpaid',
-          is_trial_pending: isTrial,
-          trial_fee: 0,
-          registered_sessions: isTrial ? 1 : pricing.effectiveSessions,
-          total_class_sessions: pricing.totalSessions,
-          session_rate: isTrial ? 0 : pricing.sessionRate,
-          start_date: startDateVal,
-          enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
-          is_partial_schedule: autoCalc.isPartialSchedule,
-          is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
-          prorated_note: proratedNote,
-          created_at: todayStr,
-          due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        };
-        newInvoices.push(invoicePayload);
+          const invoicePayload: TuitionInvoice = {
+            id: `inv_${Date.now()}_${idx}`,
+            invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`,
+            student_id: studentId,
+            class_id: cls.id,
+            gross_amount: pricing.proratedGrossFee,
+            discount_amount: pricing.discountAmount,
+            credit_deducted: 0,
+            net_payable: pricing.netPayable,
+            paid_amount: 0,
+            outstanding_amount: pricing.netPayable,
+            payment_status: 'unpaid',
+            is_trial_pending: isTrial,
+            trial_fee: 0,
+            registered_sessions: pricing.effectiveSessions,
+            total_class_sessions: pricing.totalSessions,
+            session_rate: pricing.sessionRate,
+            start_date: startDateVal,
+            enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+            is_partial_schedule: autoCalc.isPartialSchedule,
+            is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
+            prorated_note: proratedNote,
+            created_at: todayStr,
+            due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          };
+          newInvoices.push(invoicePayload);
+
+          if (client) {
+            try {
+              await client.from('tuition_invoices').upsert([invoicePayload], { onConflict: 'id' });
+            } catch {
+              // ignore
+            }
+          }
+        }
       }
 
       // ========================================================
@@ -1461,7 +1467,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
 
         const studentCode = existingStudent
           ? existingStudent.code
-          : lead.assigned_student_code || generateStudentCodeSync(lead.is_royal_student, updatedStudents);
+          : lead.assigned_student_code || generateStudentCode(lead.is_royal_student, updatedStudents);
         const studentId = existingStudent ? existingStudent.id : `std_bulk_${Date.now()}_${leadIdx}`;
 
         if (!existingStudent) {
@@ -2956,14 +2962,11 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                         />
                         <button
                           type="button"
-                          onClick={async () => {
-                            const nextCode = await generateStudentCode(lead.is_royal_student, store.students);
-                            setCustomStudentCode(nextCode);
-                          }}
-                          className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
-                          title="Lấy mã học viên tuần tự tiếp theo từ CSDL"
+                          onClick={() => setCustomStudentCode(generateStudentCode(lead.is_royal_student, store.students))}
+                          className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                          title="Tạo lại mã học viên ngẫu nhiên mới"
                         >
-                          Cấp mã mới
+                          Tạo lại
                         </button>
                       </div>
                     </div>

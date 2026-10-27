@@ -130,7 +130,6 @@ export interface EnrollmentModalProps {
   store: AppStore;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onSuccess?: (enrollment: Enrollment) => void;
-  refreshData?: () => Promise<void> | void;
 }
 
 export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
@@ -140,15 +139,15 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
   store,
   onUpdateStore,
   onSuccess,
-  refreshData,
 }) => {
+  if (!isOpen || !enrollingStudent) return null;
+
   // Lọc danh sách các lớp học sinh đã ghi danh đang active
   const enrolledClassIds = useMemo(() => {
-    if (!enrollingStudent) return [];
     return store.enrollments
       .filter((e) => String(e.student_id) === String(enrollingStudent.id) && e.status === 'active')
       .map((e) => String(e.class_id));
-  }, [store.enrollments, enrollingStudent?.id]);
+  }, [store.enrollments, enrollingStudent.id]);
 
   // Danh sách Khóa học (Academic Terms) & Khóa học đang chọn
   const [terms, setTerms] = useState<AcademicTerm[]>(store.terms || []);
@@ -474,7 +473,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
 
   const effectiveSessions = isTrialMode ? 1 : (isManualOverride ? manualSessions : calculatedSessions);
 
-  // Form submission via RPC create_enrollment_with_invoice
+  // Form submission
   const handleConfirmEnrollment = async () => {
     if (!enrollingStudent) return;
     if (!selectedClassId || !selectedClass) {
@@ -509,257 +508,177 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     setIsSubmitting(true);
 
     try {
-      // Xác định đúng ID và Code của học sinh
-      const studentId = enrollingStudent.id || enrollingStudent.code;
-      const studentCode = enrollingStudent.code || enrollingStudent.id;
-      const studentName = enrollingStudent.name || (enrollingStudent as any).full_name || 'Học viên';
-      const isTrial = isTrialMode;
       const isPartial = selectedDays.length < classDaysCount;
+      const existingLocalEnr = store.enrollments.find(
+        e => String(e.student_id) === String(enrollingStudent.id) && String(e.class_id) === String(selectedClass.id)
+      );
+      let enrollmentId = existingLocalEnr?.id || `ENR-${Date.now()}`;
       const trialDateVal = trialSessionDate || startDate;
-      const todayStr = new Date().toISOString().split('T')[0];
-      const actualSessionsVal = Number(effectiveSessions || 16);
-      const sessionRateVal = Number(selectedClass.price_per_session || rate || 250000);
-      const calculatedTuitionFee = isTrial ? 0 : Number(totalTuition || 3000000);
 
-      let resolvedStudentId = studentId;
-      let resolvedEnrollmentId = `enr_${studentId}_${selectedClass.id}`;
-      let resolvedInvoiceId = `inv_${studentId}_${selectedClass.id}`;
-      let resolvedInvoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
-
+      // 1. Lưu trực tiếp vào Supabase (Upsert với onConflict: 'student_id,class_id')
       const client = getSupabaseClient() || supabase;
       if (client) {
-        const { data: result, error: rpcError } = await client.rpc('create_enrollment_with_invoice', {
-          p_student_id: studentId,
-          p_student_code: studentCode,
-          p_student_name: studentName,
-          p_campus_id: enrollingStudent.campus_id || 'camp_pmh',
-          p_parent_name: enrollingStudent.parent_name || 'Phụ huynh',
-          p_parent_phone: enrollingStudent.parent_phone || '',
-          p_class_id: selectedClassId,
-          p_is_trial: isTrial,
-          p_start_date: startDate || todayStr,
-          p_actual_sessions: actualSessionsVal,
-          p_session_rate: sessionRateVal,
-          p_total_tuition: calculatedTuitionFee,
-        });
+        const { data: existingRemoteEnr } = await client
+          .from('enrollments')
+          .select('id')
+          .eq('student_id', enrollingStudent.id)
+          .eq('class_id', selectedClass.id)
+          .maybeSingle();
 
-        if (rpcError) {
-          // Nếu lỗi do RPC chưa tồn tại trên Supabase, thực hiện đảm bảo tồn tại học sinh trong bảng students trước khi lưu enrollments & tuition_invoices
-          const isFnMissing =
-            rpcError.code === 'PGRST202' ||
-            rpcError.code === '42883' ||
-            String(rpcError.message || '').includes('does not exist') ||
-            String(rpcError.message || '').includes('schema cache');
+        if (existingRemoteEnr?.id) {
+          enrollmentId = existingRemoteEnr.id;
+        }
 
-          if (!isFnMissing) {
-            throw rpcError;
+        const payload: any = {
+          id: enrollmentId,
+          student_id: enrollingStudent.id,
+          class_id: selectedClass.id,
+          registered_sessions: isTrialMode ? 1 : effectiveSessions,
+          enrolled_days_of_week: isTrialMode ? [] : selectedDays,
+          is_partial_schedule: isTrialMode ? false : isPartial,
+          is_trial: isTrialMode,
+          enrollment_type: isTrialMode ? 'trial' : 'official',
+          trial_session_date: isTrialMode ? trialDateVal : null,
+          trial_attended: false,
+          status: isTrialMode ? 'trial' : 'active',
+          joined_date: startDate,
+        };
+
+        const { error } = await client
+          .from('enrollments')
+          .upsert([payload], { onConflict: 'student_id,class_id' });
+
+        if (error) {
+          delete payload.enrollment_type;
+          const { error: fbErr } = await client
+            .from('enrollments')
+            .upsert([payload], { onConflict: 'student_id,class_id' });
+          if (fbErr) {
+            console.error('Lỗi khi lưu enrollment vào Supabase:', fbErr);
+            showToast('Cảnh báo CSDL: ' + fbErr.message, 'warning');
           }
-
-          // Fallback an toàn đảm bảo khóa ngoại student_id luôn tồn tại trong bảng students
-          const { data: existingStd } = await client
-            .from('students')
-            .select('id, code')
-            .or(`id.eq.${studentId},code.eq.${studentCode}`)
-            .maybeSingle();
-
-          if (existingStd?.id) {
-            resolvedStudentId = existingStd.id;
-          } else {
-            await client.from('students').upsert(
-              {
-                id: studentId,
-                code: studentCode,
-                name: studentName,
-                campus_id: String(enrollingStudent.campus_id) === 'pl' || String(enrollingStudent.campus_id) === 'camp_pl' ? 'pl' : 'pmh',
-                parent_name: enrollingStudent.parent_name || 'Phụ huynh',
-                parent_phone: enrollingStudent.parent_phone || '',
-                status: 'active',
-              },
-              { onConflict: 'id' }
-            );
-          }
-
-          resolvedEnrollmentId = `enr_${resolvedStudentId}_${selectedClassId}`;
-          resolvedInvoiceId = `inv_${resolvedStudentId}_${selectedClassId}`;
-
-          await client.from('enrollments').upsert(
-            {
-              id: resolvedEnrollmentId,
-              student_id: resolvedStudentId,
-              class_id: selectedClassId,
-              registered_sessions: isTrial ? 1 : actualSessionsVal,
-              joined_date: startDate || todayStr,
-              enrolled_days_of_week: isTrial ? [] : selectedDays,
-              is_partial_schedule: isTrial ? false : isPartial,
-              is_trial: isTrial,
-              enrollment_type: isTrial ? 'trial' : 'official',
-              status: isTrial ? 'trial' : 'active',
-            },
-            { onConflict: 'student_id,class_id' }
-          );
-
-          await client.from('tuition_invoices').upsert(
-            {
-              id: resolvedInvoiceId,
-              invoice_code: resolvedInvoiceCode,
-              student_id: resolvedStudentId,
-              class_id: selectedClassId,
-              registered_sessions: isTrial ? 1 : actualSessionsVal,
-              session_rate: isTrial ? 0 : sessionRateVal,
-              gross_amount: calculatedTuitionFee,
-              net_payable: calculatedTuitionFee,
-              paid_amount: 0,
-              outstanding_amount: calculatedTuitionFee,
-              payment_status: isTrial ? 'trial_pending' : 'unpaid',
-              created_at: todayStr,
-            },
-            { onConflict: 'id' }
-          );
-        } else {
-          if (result && result.success === false) {
-            throw new Error(result.error || 'Không thể hoàn tất ghi danh & tạo hóa đơn');
-          }
-          if (result?.student_id) resolvedStudentId = result.student_id;
-          if (result?.enrollment_id) resolvedEnrollmentId = result.enrollment_id;
-          if (result?.invoice_id) resolvedInvoiceId = result.invoice_id;
-          if (result?.invoice_code) resolvedInvoiceCode = result.invoice_code;
         }
       }
 
-      // Đồng bộ State Local cho students, enrollments và tuition_invoices
+      // 2. Lưu hóa đơn trực tiếp vào bảng public.tuition_invoices trên Supabase
+      const invoiceId = `inv_${Date.now()}`;
+      const invoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      const grossAmount = isTrialMode ? 0 : totalTuition;
+      const todayStr = new Date().toISOString().split('T')[0];
       const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
       const totalStd = selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 24;
       const scheduleLabel = formatStudentScheduleLabel(selectedDays, totalClassDays);
       const proratedNote = isPartial
-        ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${actualSessionsVal} buổi x ${formatVND(sessionRateVal)}/buổi)`
-        : `Học phí môn ${subShortName}: ${actualSessionsVal}/${totalStd} buổi (${formatDaysListLabel(totalClassDays)})`;
+        ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${effectiveSessions} buổi x ${formatVND(rate)}/buổi)`
+        : `Học phí môn ${subShortName}: ${effectiveSessions}/${totalStd} buổi (${formatDaysListLabel(totalClassDays)})`;
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
 
-      const newEnrollment: Enrollment = {
-        id: resolvedEnrollmentId,
-        student_id: resolvedStudentId,
+      const invoicePayload = {
+        id: invoiceId,
+        invoice_code: invoiceCode,
+        student_id: enrollingStudent.id,
         class_id: selectedClass.id,
-        registered_sessions: isTrial ? 1 : actualSessionsVal,
-        joined_date: startDate || todayStr,
-        enrolled_days_of_week: isTrial ? [] : selectedDays,
-        is_partial_schedule: isTrial ? false : isPartial,
-        status: isTrial ? 'trial' : 'active',
-        is_trial: isTrial,
-        trial_session_date: isTrial ? trialDateVal : undefined,
+        registered_sessions: isTrialMode ? 1 : effectiveSessions,
+        total_class_sessions: totalStd,
+        session_rate: isTrialMode ? 0 : rate,
+        gross_amount: grossAmount,
+        credit_deducted: 0,
+        discount_amount: 0,
+        net_payable: grossAmount,
+        paid_amount: 0,
+        outstanding_amount: grossAmount,
+        payment_status: isTrialMode ? 'trial_pending' : 'unpaid',
+        due_date: dueDate,
+        payment_history: [],
+        created_at: todayStr,
+        updated_at: new Date().toISOString()
+      };
+
+      if (client) {
+        const { error: invError } = await client.from('tuition_invoices').upsert([invoicePayload], { onConflict: 'id' });
+        if (invError) {
+          console.error('Lỗi khi lưu tuition_invoice vào Supabase:', invError);
+          showToast('Cảnh báo lưu hóa đơn: ' + invError.message, 'warning');
+        } else {
+          console.log('✅ Đã tạo hóa đơn học phí trên Supabase:', invoiceCode);
+        }
+      }
+
+      // 3. Tạo đối tượng Enrollment & TuitionInvoice cho Local Store
+      const newEnrollment: Enrollment = {
+        id: enrollmentId,
+        student_id: enrollingStudent.id,
+        class_id: selectedClass.id,
+        registered_sessions: isTrialMode ? 1 : effectiveSessions,
+        joined_date: startDate,
+        enrolled_days_of_week: isTrialMode ? [] : selectedDays,
+        is_partial_schedule: isTrialMode ? false : isPartial,
+        status: isTrialMode ? 'trial' : 'active',
+        is_trial: isTrialMode,
+        trial_session_date: isTrialMode ? trialDateVal : undefined,
         trial_attended: false,
-        trial_notes: isTrial
+        trial_notes: isTrialMode
           ? `Học sinh đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(trialDateVal)} (${scheduleLabel})`
           : undefined,
-        ...({
-          enrollment_type: isTrial ? 'trial' : 'official',
-          extracurricular_classes: {
-            id: selectedClass.id,
-            name: selectedClass.name,
-            days_of_week: selectedClass.days_of_week,
-          },
-        } as any),
+        ...({ enrollment_type: isTrialMode ? 'trial' : 'official' } as any),
       };
 
       const newInvoice: TuitionInvoice = {
-        id: resolvedInvoiceId,
-        invoice_code: resolvedInvoiceCode,
-        student_id: resolvedStudentId,
+        id: invoiceId,
+        invoice_code: invoiceCode,
+        student_id: enrollingStudent.id,
         class_id: selectedClass.id,
-        gross_amount: calculatedTuitionFee,
+        gross_amount: grossAmount,
         discount_amount: 0,
         credit_deducted: 0,
-        net_payable: calculatedTuitionFee,
+        net_payable: grossAmount,
         paid_amount: 0,
-        outstanding_amount: calculatedTuitionFee,
-        payment_status: isTrial ? 'trial_pending' : 'unpaid',
+        outstanding_amount: grossAmount,
+        payment_status: isTrialMode ? 'trial_pending' : 'unpaid',
         due_date: dueDate,
-        is_trial_pending: isTrial,
+        is_trial_pending: isTrialMode,
         trial_fee: 0,
-        registered_sessions: isTrial ? 1 : actualSessionsVal,
+        registered_sessions: isTrialMode ? 1 : effectiveSessions,
         total_class_sessions: totalStd,
-        session_rate: isTrial ? 0 : sessionRateVal,
-        start_date: startDate || todayStr,
-        enrolled_days_of_week: isTrial ? [] : selectedDays,
+        session_rate: isTrialMode ? 0 : rate,
+        start_date: startDate,
+        enrolled_days_of_week: isTrialMode ? [] : selectedDays,
         is_partial_schedule: isPartial,
         is_prorated: isPartial,
         prorated_note: proratedNote,
         payment_history: [],
         created_at: todayStr,
-        ...({
-          student_name: studentName,
-          student_code: studentCode,
-          parent_name: enrollingStudent.parent_name || 'Phụ huynh',
-          parent_phone: enrollingStudent.parent_phone || '',
-          class_name: selectedClass.name,
-          campus_id: selectedClass.campus_id || enrollingStudent.campus_id || 'camp_pmh',
-        } as any),
       };
 
       onUpdateStore((prev) => {
-        const candidateIds = [resolvedStudentId, studentId, studentCode].filter(Boolean);
-        const cleanExistingEnrollments = prev.enrollments.filter(
-          (e) => !(candidateIds.includes(String(e.student_id)) && String(e.class_id) === String(selectedClass.id))
+        const cleanExisting = prev.enrollments.filter(
+          (e) => !(e.student_id === enrollingStudent.id && e.class_id === selectedClass.id && e.status === 'active')
         );
-        const cleanEnrollments = deduplicateEnrollments([newEnrollment, ...cleanExistingEnrollments]);
-
-        const cleanInvoices = (prev.invoices || []).filter(
-          (i) =>
-            i.id !== resolvedInvoiceId &&
-            !(candidateIds.includes(String(i.student_id)) && String(i.class_id) === String(selectedClass.id) && i.payment_status !== 'paid')
-        );
-
-        const updatedStudents = prev.students.map((s) => {
-          if (candidateIds.includes(String(s.id)) || candidateIds.includes(String(s.code))) {
-            const existingNested = Array.isArray((s as any).enrollments)
-              ? (s as any).enrollments.filter((ne: any) => ne && String(ne.class_id) !== String(selectedClass.id))
-              : [];
-            return {
-              ...s,
-              id: resolvedStudentId,
-              enrollments: [...existingNested, newEnrollment],
-            } as Student;
-          }
-          return s;
-        });
-
+        const cleanEnrollments = deduplicateEnrollments([...cleanExisting, newEnrollment]);
         return {
           ...prev,
-          students: updatedStudents,
           enrollments: cleanEnrollments,
-          invoices: [newInvoice, ...cleanInvoices],
+          invoices: [newInvoice, ...(prev.invoices || []).filter(i => i.id !== invoiceId)],
         };
       });
 
-      // Thông báo thành công (không hiện bất kỳ popup cảnh báo vàng nào)
-      if (isTrial) {
-        showToast(`✅ Đã xếp học sinh ${studentName} vào lớp học thử thành công!`, 'success', {
-          title: 'Đăng ký học thử thành công',
-        });
-      } else {
-        showToast(
-          `✅ Ghi danh & Tạo hóa đơn thành công! Mã HĐ: ${resolvedInvoiceCode || 'Tự động'} (${formatVND(calculatedTuitionFee)})`,
-          'success',
-          { title: 'Ghi danh & Tạo hóa đơn thành công' }
-        );
-      }
+      showToast(
+        isTrialMode
+          ? `Ghi danh thành công! Đã đăng ký học thử 1 buổi (Mã HĐ: ${invoiceCode})`
+          : `Ghi danh thành công! Đã tạo hóa đơn: ${invoiceCode} (${formatVND(grossAmount)})`,
+        'success',
+        { title: isTrialMode ? 'Đăng ký học thử thành công' : 'Ghi danh & Tạo hóa đơn thành công' }
+      );
 
       onSuccess?.(newEnrollment);
       onClose();
-
-      if (typeof refreshData === 'function') {
-        await refreshData();
-      }
     } catch (err: any) {
-      console.error('Lỗi khi ghi danh & tạo hóa đơn:', err);
-      showToast('Không thể hoàn tất ghi danh: ' + (err.message || err.toString()), 'error', {
-        title: 'Lỗi ghi danh',
-      });
+      console.error('Lỗi khi ghi danh học sinh:', err);
+      alert('Không thể lưu ghi danh: ' + (err.message || String(err)));
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  if (!isOpen || !enrollingStudent) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">

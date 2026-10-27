@@ -16,7 +16,6 @@ import {
   GraduationCap
 } from 'lucide-react';
 import { AppState } from '../../services/storage';
-import { generateStudentCode, generateStudentCodeSync } from '../../lib/storage';
 import { Student, ParentRegistration } from '../../types';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { DatePickerVN } from '../common/DatePickerVN';
@@ -75,11 +74,9 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
     return matchesType && matchesSearch;
   });
 
-  const handleOpenConvertModal = async (st: Student) => {
+  const handleOpenConvertModal = (st: Student) => {
     setConvertingStudent(st);
-    setNewRoyalCode(generateStudentCodeSync(true, students));
-    const nextCode = await generateStudentCode(true, students);
-    setNewRoyalCode(nextCode);
+    setNewRoyalCode(`RY-2026-${Math.floor(10000 + Math.random() * 90000)}`);
   };
 
   const handleConfirmConvert = (e: React.FormEvent) => {
@@ -89,11 +86,12 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
     setConvertingStudent(null);
   };
 
-  const handleAddStudentSubmit = async (e: React.FormEvent) => {
+  const handleAddStudentSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStudent.name || !newStudent.parent_phone) return;
 
-    const code = await generateStudentCode(Boolean(newStudent.is_royal_student), students);
+    const prefix = newStudent.is_royal_student ? 'RY-2026' : 'EXT-2026';
+    const code = `${prefix}-${Math.floor(10000 + Math.random() * 90000)}`;
 
     const studentToAdd: Student = {
       id: 'stu-' + Date.now(),

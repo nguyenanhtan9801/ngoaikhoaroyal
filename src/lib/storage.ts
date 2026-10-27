@@ -1266,98 +1266,13 @@ export function calculateClassProratedPricing(
   };
 }
 
-export function generateStudentCodeSync(isRoyal: boolean, existingStudents: Student[] = []): string {
-  const prefix = isRoyal ? 'RY' : 'EXT';
-  const year = new Date().getFullYear();
-  const searchPrefix = `${prefix}-${year}-`;
-  let nextNumber = 1;
-
-  for (const s of existingStudents) {
-    if (s?.code && s.code.toUpperCase().startsWith(searchPrefix)) {
-      const match = s.code.toUpperCase().match(new RegExp(`${searchPrefix}(\\d+)`));
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (!isNaN(num) && num >= nextNumber) {
-          nextNumber = num + 1;
-        }
-      }
-    }
-  }
-  return `${searchPrefix}${String(nextNumber).padStart(5, '0')}`;
+export function generateStudentCode(isRoyal: boolean, existingStudents: Student[]): string {
+  const currentYear = new Date().getFullYear();
+  const prefix = isRoyal ? `RY-${currentYear}-` : `EXT-${currentYear}-`;
+  const relevant = existingStudents.filter(s => s.code.startsWith(prefix));
+  const nextNum = relevant.length + 101;
+  return `${prefix}${String(nextNum).padStart(5, '0')}`;
 }
-
-export const generateStudentCode = async (
-  isRoyal: boolean,
-  existingStudents: Student[] = []
-): Promise<string> => {
-  const prefix = isRoyal ? 'RY' : 'EXT';
-  const year = new Date().getFullYear();
-  const searchPrefix = `${prefix}-${year}-`;
-  const client = getSupabaseClient();
-
-  try {
-    if (!client) throw new Error('Supabase client not initialized');
-    const { data, error } = await client.rpc('get_next_student_code', {
-      p_prefix: prefix,
-    });
-    if (error || !data) throw error;
-    const rpcCode = typeof data === 'string' ? data.trim() : String((data as any).code || data).trim();
-
-    // Đảm bảo mã trả về từ RPC cũng không trùng với bất kỳ học sinh nào đang có trên state local
-    if (existingStudents.length > 0 && existingStudents.some(s => s.code?.toUpperCase() === rpcCode.toUpperCase())) {
-      const m = rpcCode.toUpperCase().match(new RegExp(`${searchPrefix}(\\d+)`));
-      let nextNum = m ? parseInt(m[1], 10) + 1 : 1;
-      for (const s of existingStudents) {
-        const sm = s.code?.toUpperCase().match(new RegExp(`${searchPrefix}(\\d+)`));
-        if (sm) {
-          const num = parseInt(sm[1], 10);
-          if (!isNaN(num) && num >= nextNum) {
-            nextNum = num + 1;
-          }
-        }
-      }
-      return `${searchPrefix}${String(nextNum).padStart(5, '0')}`;
-    }
-
-    return rpcCode;
-  } catch (err) {
-    console.warn('Lỗi gọi RPC get_next_student_code, dùng fallback:', err);
-    // Fallback: Tìm mã lớn nhất trong bảng students
-    let nextNumber = 1;
-    if (client) {
-      try {
-        const { data: latest } = await client
-          .from('students')
-          .select('code')
-          .ilike('code', `${searchPrefix}%`)
-          .order('code', { ascending: false })
-          .limit(1);
-
-        if (latest && latest.length > 0 && latest[0]?.code) {
-          const match = String(latest[0].code).toUpperCase().match(new RegExp(`${searchPrefix}(\\d+)`));
-          if (match) nextNumber = parseInt(match[1], 10) + 1;
-        }
-      } catch (fallbackErr) {
-        console.warn('Lỗi truy vấn mã lớn nhất từ bảng students:', fallbackErr);
-      }
-    }
-
-    // Đối chiếu thêm với danh sách existingStudents trên state để đảm bảo duy nhất 100%
-    for (const s of existingStudents) {
-      if (s?.code && s.code.toUpperCase().startsWith(searchPrefix)) {
-        const match = s.code.toUpperCase().match(new RegExp(`${searchPrefix}(\\d+)`));
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (!isNaN(num) && num >= nextNumber) {
-            nextNumber = num + 1;
-          }
-        }
-      }
-    }
-
-    return `${searchPrefix}${String(nextNumber).padStart(5, '0')}`;
-  }
-};
 
 export function formatVND(amount: number): string {
   return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
