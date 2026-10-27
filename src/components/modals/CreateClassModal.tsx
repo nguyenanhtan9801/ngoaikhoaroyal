@@ -179,8 +179,6 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   initialSubjectId,
   onSuccess,
 }) => {
-  if (!isOpen) return null;
-
   // Active term list sorted chronologically
   const sortedTerms = useMemo(() => {
     return [...store.terms].sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
@@ -502,6 +500,8 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
 
     return conflicts;
   }, [store.classes, store.facilities, facilityList, store.teachers, formData, editingClass]);
+
+  if (!isOpen) return null;
 
   // Form Submission
   const handleSaveClass = async (e: React.FormEvent) => {

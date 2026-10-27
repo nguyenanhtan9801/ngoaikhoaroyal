@@ -61,6 +61,21 @@ import { DatePickerVN } from '../common/DatePickerVN';
 
 export { checkIsRoyalStudent };
 
+export const getDisplaySchoolName = (student: any): string => {
+  const isRoyal = student.is_royal_student !== false && student.student_type !== 'external' && !student.code?.startsWith('EXT-');
+  
+  if (!isRoyal) {
+    return student.school_name || 'Ngoài trường';
+  }
+
+  // Nếu là học sinh Royal, luôn gắn đúng đuôi cơ sở PMH hoặc PL
+  const campus = (student.campus_id || '').toLowerCase();
+  if (campus.includes('pl')) {
+    return 'Royal School PL';
+  }
+  return 'Royal School PMH';
+};
+
 interface StudentsTabProps {
   store: AppStore;
   currentRole: UserRole;
@@ -351,7 +366,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               student_type: isRoyal ? 'royal' : 'external',
               has_snack: isRoyal,
               campus_id: campusId,
-              school_name: r.school_name || existing?.school_name || (campusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH'),
+              school_name: getDisplaySchoolName({ ...r, campus_id: campusId, is_royal_student: isRoyal, student_type: isRoyal ? 'royal' : 'external', code: scode, school_name: r.school_name || existing?.school_name }),
               regular_class: regularClass,
               class_name: regularClass,
               parent_name: r.parent_name || existing?.parent_name || '',
@@ -635,7 +650,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         p_dob: studentFormData.dob || studentFormData.date_of_birth || '2016-01-01',
         p_gender: studentFormData.gender || 'Nam',
         p_is_royal: isRoyal,
-        p_school_name: studentFormData.school_name || (isRoyal ? 'Royal School' : 'Ngoài trường'),
+        p_school_name: getDisplaySchoolName({ ...studentFormData, is_royal_student: isRoyal }),
         p_regular_class: studentFormData.regular_class || '',
         p_grade: studentFormData.grade || '',
         p_medical_notes: studentFormData.medical_notes || ''
@@ -667,7 +682,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         has_snack: isRoyal,
         parent_name: studentFormData.parent_name,
         parent_phone: studentFormData.parent_phone,
-        school_name: studentFormData.school_name,
+        school_name: getDisplaySchoolName({ ...studentFormData, is_royal_student: isRoyal, code: assignedCode }),
         regular_class: studentFormData.regular_class,
         class_name: studentFormData.regular_class,
         is_royal_student: isRoyal,
@@ -852,7 +867,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       campus_id: resolveStudentCampusId(student),
       parent_name: student.parent_name,
       parent_phone: student.parent_phone,
-      school_name: student.school_name || '',
+      school_name: getDisplaySchoolName(student),
       regular_class: student.regular_class || student.class_name || '',
       is_royal_student: checkIsRoyalStudent(student),
       medical_notes: student.medical_notes || '',
@@ -1458,7 +1473,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       </td>
 
                       <td className="py-3 px-3 text-slate-300">
-                        <div className="font-medium text-white">{student.school_name || 'Royal School'}</div>
+                        <div className="font-medium text-white">{getDisplaySchoolName(student)}</div>
                         <div className="flex items-center gap-1.5 mt-1">
                           {resolveStudentCampusId(student) === 'pl' ? (
                             <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono font-bold text-[10px] leading-none">
@@ -1735,7 +1750,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             [PMH]
                           </span>
                         )}
-                        <span className="text-slate-300">{student.school_name || 'Royal School'} &bull; {student.regular_class || student.class_name || 'Chưa xếp lớp'}</span>
+                        <span className="text-slate-300">{getDisplaySchoolName(student)} &bull; {student.regular_class || student.class_name || 'Chưa xếp lớp'}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">

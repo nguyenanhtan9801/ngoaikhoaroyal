@@ -30,13 +30,13 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   users,
   onLoginSuccess,
 }) => {
-  if (!isOpen) return null;
-
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('123456');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

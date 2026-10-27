@@ -140,14 +140,13 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
   onUpdateStore,
   onSuccess,
 }) => {
-  if (!isOpen || !enrollingStudent) return null;
-
   // Lọc danh sách các lớp học sinh đã ghi danh đang active
   const enrolledClassIds = useMemo(() => {
+    if (!enrollingStudent) return [];
     return store.enrollments
       .filter((e) => String(e.student_id) === String(enrollingStudent.id) && e.status === 'active')
       .map((e) => String(e.class_id));
-  }, [store.enrollments, enrollingStudent.id]);
+  }, [store.enrollments, enrollingStudent?.id]);
 
   // Danh sách Khóa học (Academic Terms) & Khóa học đang chọn
   const [terms, setTerms] = useState<AcademicTerm[]>(store.terms || []);
@@ -472,6 +471,8 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
   );
 
   const effectiveSessions = isTrialMode ? 1 : (isManualOverride ? manualSessions : calculatedSessions);
+
+  if (!isOpen || !enrollingStudent) return null;
 
   // Form submission
   const handleConfirmEnrollment = async () => {
