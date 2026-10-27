@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { supabase, getSupabaseClient } from '@/supabaseClient';
+import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { Zap, Sparkles, X } from 'lucide-react';
+import { checkIsRoyalStudent } from '../../lib/storage';
 
 export interface LeadAssignmentModalProps {
   isOpen: boolean;
@@ -111,6 +112,7 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
       try {
         // Chuẩn hóa ngày sinh
         const birthDateValue = registrationData.date_of_birth || registrationData.dob || registrationData.student_dob || '2016-05-15';
+        const isRoyal = checkIsRoyalStudent({ ...registrationData, code: studentCode, id: studentCode });
 
         const studentPayload: any = {
           id: studentCode,
@@ -119,12 +121,13 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
           name: registrationData.student_name || registrationData.name || 'Học viên mới',
           full_name: registrationData.student_name || registrationData.name || 'Học viên mới',
           campus_id: cleanCampus === 'camp_pl' ? 'pl' : 'pmh',
-          student_type: registrationData.student_type || (registrationData.is_royal_student ? 'royal' : 'external'),
-          is_royal_student: Boolean(registrationData.is_royal_student),
+          student_type: isRoyal ? 'royal' : 'external',
+          is_royal_student: isRoyal,
+          has_snack: isRoyal,
           parent_name: registrationData.parent_name || 'Phụ huynh',
           parent_phone: registrationData.parent_phone || '',
           parent_email: registrationData.parent_email || '',
-          school_name: registrationData.is_royal_student ? 'Royal School' : 'Trường ngoài',
+          school_name: isRoyal ? 'Royal School' : 'Trường ngoài',
           regular_class: registrationData.student_grade || 'Khối Mầm Non',
           medical_notes: registrationData.medical_notes || '',
           status: 'active',

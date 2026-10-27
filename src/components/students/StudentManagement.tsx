@@ -20,6 +20,8 @@ import { Student, ParentRegistration } from '../../types';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { DatePickerVN } from '../common/DatePickerVN';
 import { checkIsRoyalStudent } from '../../lib/storage';
+import { supabase, getSupabaseClient } from '../../supabaseClient';
+import { showToast } from '../../lib/toast';
 
 interface StudentManagementProps {
   state: AppState;
@@ -88,42 +90,86 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
     setConvertingStudent(null);
   };
 
-  const handleAddStudentSubmit = (e: React.FormEvent) => {
+  const handleAddStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStudent.name || !newStudent.parent_phone) return;
 
-    const prefix = newStudent.is_royal_student ? 'RY-2026' : 'EXT-2026';
-    const code = `${prefix}-${Math.floor(10000 + Math.random() * 90000)}`;
+    try {
+      const isRoyal = newStudent.is_royal_student !== false && (newStudent as any).student_type !== 'external';
+      const client = getSupabaseClient() || supabase;
+      
+      let assignedCode = '';
+      let assignedId = '';
 
-    const studentToAdd: Student = {
-      id: 'stu-' + Date.now(),
-      code: code,
-      name: newStudent.name || '',
-      dob: newStudent.dob || '2016-01-01',
-      gender: (newStudent.gender as 'Nam' | 'Nữ') || 'Nam',
-      parent_name: newStudent.parent_name || '',
-      parent_phone: newStudent.parent_phone || '',
-      school_name: newStudent.school_name,
-      regular_class: newStudent.regular_class,
-      is_royal_student: Boolean(newStudent.is_royal_student),
-      medical_notes: newStudent.medical_notes,
-      status: 'active',
-      created_at: new Date().toISOString().split('T')[0]
-    };
+      if (client) {
+        const { data: res, error: rpcError } = await client.rpc('create_new_student', {
+          p_name: newStudent.name,
+          p_campus_id: (newStudent as any).campus_id || 'pmh',
+          p_parent_name: newStudent.parent_name || 'Phụ huynh',
+          p_parent_phone: newStudent.parent_phone || '',
+          p_parent_email: (newStudent as any).parent_email || '',
+          p_dob: newStudent.dob || '2016-01-01',
+          p_gender: newStudent.gender || 'Nam',
+          p_is_royal: isRoyal,
+          p_school_name: newStudent.school_name || (isRoyal ? 'Royal School' : 'Ngoài trường'),
+          p_regular_class: newStudent.regular_class || '',
+          p_grade: (newStudent as any).grade || '',
+          p_medical_notes: newStudent.medical_notes || 'Bình thường'
+        });
 
-    onAddStudent(studentToAdd);
-    setShowAddModal(false);
-    setNewStudent({
-      name: '',
-      dob: '2016-01-01',
-      gender: 'Nam',
-      parent_name: '',
-      parent_phone: '',
-      school_name: 'Royal School PMH',
-      regular_class: 'Lớp 4A1',
-      is_royal_student: true,
-      medical_notes: ''
-    });
+        if (rpcError) throw rpcError;
+        if (res && !res.success) throw new Error(res.error || 'CSDL từ chối lưu học sinh');
+
+        assignedCode = res.student_code || res.code;
+        assignedId = res.student_id || res.id || assignedCode;
+      }
+
+      if (!assignedCode) {
+        const prefix = isRoyal ? 'RY-2026' : 'EXT-2026';
+        assignedCode = `${prefix}-${Math.floor(10000 + Math.random() * 90000)}`;
+        assignedId = 'stu-' + Date.now();
+      }
+
+      const studentToAdd: Student = {
+        id: assignedId,
+        code: assignedCode,
+        name: newStudent.name || '',
+        dob: newStudent.dob || '2016-01-01',
+        gender: (newStudent.gender as 'Nam' | 'Nữ') || 'Nam',
+        parent_name: newStudent.parent_name || '',
+        parent_phone: newStudent.parent_phone || '',
+        school_name: newStudent.school_name || (isRoyal ? 'Royal School' : 'Ngoài trường'),
+        regular_class: newStudent.regular_class,
+        is_royal_student: isRoyal,
+        student_type: isRoyal ? 'royal' : 'external',
+        medical_notes: newStudent.medical_notes || 'Bình thường',
+        status: 'active',
+        created_at: new Date().toISOString().split('T')[0]
+      };
+
+      onAddStudent(studentToAdd);
+      setShowAddModal(false);
+      setNewStudent({
+        name: '',
+        dob: '2016-01-01',
+        gender: 'Nam',
+        parent_name: '',
+        parent_phone: '',
+        school_name: 'Royal School PMH',
+        regular_class: 'Lớp 4A1',
+        is_royal_student: true,
+        medical_notes: ''
+      });
+
+      showToast({
+        title: 'Thành công',
+        message: `Đã lưu hồ sơ học sinh: ${newStudent.name} (${assignedCode})!`,
+        type: 'success'
+      });
+    } catch (err: any) {
+      console.error('Lỗi lưu học sinh:', err);
+      alert('Không thể lưu học sinh vào CSDL: ' + (err.message || err.toString()));
+    }
   };
 
   return (

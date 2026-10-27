@@ -14,12 +14,16 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 function getPort(): number {
-  const portArgIndex = process.argv.indexOf('--port');
-  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
-    return Number(process.argv[portArgIndex + 1]);
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === '--port' && process.argv[i + 1]) {
+      return Number(process.argv[i + 1]);
+    }
+    if (process.argv[i].startsWith('--port=')) {
+      return Number(process.argv[i].split('=')[1]);
+    }
   }
-  if (process.env.NODE_ENV === 'production') {
-    return Number(process.env.PORT || 3000);
+  if (process.env.PORT) {
+    return Number(process.env.PORT);
   }
   return 3000;
 }

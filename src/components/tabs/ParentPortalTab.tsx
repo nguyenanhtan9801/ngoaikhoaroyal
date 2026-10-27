@@ -52,7 +52,8 @@ import {
   calculateRemainingSessions,
   calculateClassProratedPricing,
   matchLeadWithDatabase,
-  mergeMedicalNotes
+  mergeMedicalNotes,
+  checkIsRoyalStudent
 } from '../../lib/storage';
 import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice, AppUser } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -862,7 +863,8 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         lead.desired_campus_id === 'camp_pl' || lead.desired_campus_id === 'pl' ? 'pl' : 'pmh';
       const regularCls = lead.student_grade || (lead.is_royal_student ? 'Royal Primary' : 'Khối Mầm Non');
       const rawDob = lead.student_dob || (lead as any).dob || '2016-05-15';
-      const studentType = lead.is_royal_student ? 'royal' : 'external';
+      const isRoyalLead = checkIsRoyalStudent({ ...lead, code: studentCode, id: studentId });
+      const studentType = isRoyalLead ? 'royal' : 'external';
 
       let newStudent: Student | null = null;
       if (!existingStudent) {
@@ -875,17 +877,17 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           gender: 'Nam',
           campus_id: targetCampusId,
           student_type: studentType,
-          has_snack: lead.is_royal_student,
+          has_snack: isRoyalLead,
           parent_name: lead.parent_name?.trim() || 'Phụ huynh',
           parent_phone: lead.parent_phone?.trim() || '',
-          school_name: lead.is_royal_student
+          school_name: isRoyalLead
             ? targetCampusId === 'pl'
               ? 'Royal School Phú Lâm'
               : 'Royal School PMH'
             : lead.current_school || 'Trường ngoài',
           regular_class: regularCls,
           class_name: regularCls,
-          is_royal_student: lead.is_royal_student,
+          is_royal_student: isRoyalLead,
           medical_notes: finalMedicalNotes,
           status: 'active',
           created_at: new Date().toISOString().split('T')[0],
@@ -908,13 +910,14 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           gender: 'Nam',
           campus_id: targetCampusId,
           student_type: studentType,
-          is_royal_student: Boolean(lead.is_royal_student),
+          is_royal_student: isRoyalLead,
+          has_snack: isRoyalLead,
           parent_name: lead.parent_name?.trim() || 'Phụ huynh',
           parent_phone: lead.parent_phone?.trim() || '',
           parent_email: lead.parent_email?.trim() || '',
           medical_notes: finalMedicalNotes,
           status: 'active',
-          school_name: lead.is_royal_student
+          school_name: isRoyalLead
             ? (targetCampusId === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH')
             : lead.current_school || 'Trường ngoài',
           regular_class: regularCls,

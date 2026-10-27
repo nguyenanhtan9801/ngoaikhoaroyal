@@ -339,6 +339,8 @@ export interface Student {
   gender: 'Nam' | 'Nữ';
   parent_name: string;
   parent_phone: string;
+  parent_email?: string;
+  grade?: string;
   school_name?: string; // Royal School PMH / Royal School PL
   regular_class?: string; // 3A1, 2A1...
   class_name?: string; // 3A1, 2A1...

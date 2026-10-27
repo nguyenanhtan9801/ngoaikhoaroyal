@@ -392,6 +392,15 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           });
         }
 
+        // Bảo lưu các học sinh vừa tạo hợp lệ trong prev.students để tránh hiện tượng flicker loop
+        prev.students.forEach(s => {
+          if (!studentMap.has(String(s.id)) && !studentMap.has(String(s.code))) {
+            if (!deletedStudentIdsRef.current.has(String(s.id)) && !deletedStudentIdsRef.current.has(String(s.code))) {
+              studentMap.set(String(s.id), s);
+            }
+          }
+        });
+
         return {
           ...prev,
           classes: Array.from(classMap.values()),
@@ -649,6 +658,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const handleCreateStudent = async (studentFormData: any) => {
     if (isSubmitting) return;
     setIsSubmitting(true);
+
     try {
       const isRoyal = studentFormData.is_royal_student !== false && studentFormData.student_type !== 'external';
       const client = getSupabaseClient() || supabase;
@@ -656,7 +666,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         throw new Error('Không thể kết nối tới máy chủ Supabase.');
       }
 
-      // Gọi hàm RPC tự động cấp mã kế tiếp và lưu vào CSDL trong 1 giao dịch
+      // 1. Gọi hàm RPC create_new_student trên Supabase
       const { data: res, error: rpcError } = await client.rpc('create_new_student', {
         p_name: studentFormData.name || studentFormData.full_name,
         p_campus_id: studentFormData.campus_id || 'pmh',
@@ -669,91 +679,65 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         p_school_name: getDisplaySchoolName({ ...studentFormData, is_royal_student: isRoyal }),
         p_regular_class: studentFormData.regular_class || '',
         p_grade: studentFormData.grade || '',
-        p_medical_notes: studentFormData.medical_notes || ''
+        p_medical_notes: studentFormData.medical_notes || 'Bình thường'
       });
 
       if (rpcError) {
         throw rpcError;
       }
       if (res && !res.success) {
-        throw new Error(res.error || 'Lỗi khi lưu học sinh vào CSDL');
+        throw new Error(res.error || 'CSDL từ chối lưu học sinh');
       }
 
-      const assignedCode = res?.student_code || res?.code || (typeof res === 'string' ? res : '');
-      const assignedId = res?.student_id || res?.id || assignedCode;
+      const assignedCode = res.student_code || res.student_id;
+      const assignedId = res.student_id || assignedCode;
 
-      const storedAt = studentFormData.avatar_url
-        ? `${cloudProviderLabel}: ${cloudFolder}/TheHocVien/${assignedCode}.jpg`
-        : undefined;
-
+      // 2. Tạo đối tượng học sinh chuẩn xác từ kết quả CSDL trả về
       const newStudent: Student = {
-        id: assignedId || `std_${Date.now()}`,
+        id: assignedId,
         code: assignedCode,
         name: studentFormData.name,
-        dob: studentFormData.dob,
-        birth_date: studentFormData.dob,
-        gender: studentFormData.gender,
-        campus_id: studentFormData.campus_id,
-        student_type: (isRoyal ? 'royal' : 'external') as ('royal' | 'external'),
+        dob: studentFormData.dob || '2016-01-01',
+        birth_date: studentFormData.dob || '2016-01-01',
+        gender: studentFormData.gender || 'Nam',
+        campus_id: (studentFormData.campus_id || 'pmh').replace('camp_', '') as 'pmh' | 'pl',
+        student_type: isRoyal ? 'royal' : 'external',
         has_snack: isRoyal,
         parent_name: studentFormData.parent_name,
         parent_phone: studentFormData.parent_phone,
+        parent_email: studentFormData.parent_email || '',
         school_name: getDisplaySchoolName({ ...studentFormData, is_royal_student: isRoyal, code: assignedCode }),
-        regular_class: studentFormData.regular_class,
-        class_name: studentFormData.regular_class,
+        regular_class: studentFormData.regular_class || '',
+        class_name: studentFormData.regular_class || '',
+        grade: studentFormData.grade || '',
         is_royal_student: isRoyal,
-        medical_notes: studentFormData.medical_notes,
+        medical_notes: studentFormData.medical_notes || 'Bình thường',
         avatar_url: studentFormData.avatar_url || undefined,
-        photo_stored_at: storedAt,
-        photo_updated_at: studentFormData.avatar_url ? new Date().toISOString().split('T')[0] : undefined,
         status: 'active',
         created_at: new Date().toISOString().split('T')[0],
       };
 
-      const createLog = createAuditRecord(
-        'STUDENT_CREATE',
-        'ACADEMIC',
-        'Hồ sơ Học sinh',
-        `Thêm mới hồ sơ học sinh ${newStudent.name} (Mã: ${assignedCode}, Cơ sở: ${(studentFormData.campus_id || 'pmh').toUpperCase()})${newStudent.avatar_url ? ' kèm hình thẻ' : ' (chưa tải hình thẻ)'}`,
-        null,
-        {
-          target_id: assignedCode,
-          details: {
-            status: 'success',
-            has_photo: !!newStudent.avatar_url,
-            photo_stored_at: storedAt,
-            after: {
-              code: assignedCode,
-              name: newStudent.name,
-              campus_id: newStudent.campus_id,
-              parent_phone: newStudent.parent_phone,
-              is_royal: newStudent.is_royal_student,
-            }
-          }
-        }
-      );
-
+      // 3. Cập nhật state an toàn & đồng bộ
       onUpdateStore(prev => ({
         ...prev,
-        students: [newStudent, ...prev.students.filter(s => s.id !== newStudent.id && s.code !== assignedCode)],
-        auditLogs: [createLog, ...(prev.auditLogs || [])],
+        students: [newStudent, ...prev.students.filter(s => s.id !== assignedId && s.code !== assignedCode)],
       }));
 
-      // Hiển thị toast thông báo kèm mã học viên thực tế được sinh ra
       showToast({
-        title: 'Thêm mới học sinh',
-        message: `Đã thêm mới hồ sơ học viên ${studentFormData.name} (${assignedCode}) thành công!`,
+        title: 'Thêm mới học sinh thành công',
+        message: `Đã lưu học sinh ${newStudent.name} (${assignedCode}) vào CSDL!`,
         type: 'success'
       });
 
-      // Đóng modal và tải lại dữ liệu từ Supabase
       setShowAddModal(false);
       setEditingStudent(null);
+
+      // 4. Fetch lại dữ liệu nền từ Supabase để đảm bảo khớp 100%
       if (typeof fetchStudents === 'function') {
         await fetchStudents();
       }
     } catch (err: any) {
-      console.error('Lỗi thêm học sinh:', err);
+      console.error('Lỗi khi lưu học sinh:', err);
       alert('Không thể lưu học sinh vào CSDL: ' + (err.message || err.toString()));
     } finally {
       setIsSubmitting(false);
@@ -936,55 +920,57 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     try {
       const client = getSupabaseClient() || supabase;
 
-      // 1. Ưu tiên gọi hàm RPC delete_student_cascade
-      const { data: rpcRes, error: rpcErr } = await client.rpc('delete_student_cascade', {
-        p_student_id: targetId
-      });
-
-      if (targetCode && targetCode !== targetId) {
-        await client.rpc('delete_student_cascade', {
-          p_student_id: targetCode
+      if (client) {
+        // 1. Ưu tiên gọi hàm RPC delete_student_cascade
+        const { data: rpcRes, error: rpcErr } = await client.rpc('delete_student_cascade', {
+          p_student_id: targetId
         });
-      }
 
-      // 2. Nếu RPC không phản hồi hoặc để đảm bảo xóa sạch cả theo id lẫn code, chạy lệnh DELETE trực tiếp
-      if (rpcErr || (rpcRes && !rpcRes.success)) {
-        console.warn('RPC thất bại, fallback chạy DELETE trực tiếp:', rpcErr || rpcRes?.error);
-        await client.from('parent_registrations')
-          .update({ student_code: null, student_id: null })
-          .or(`student_id.eq.${targetId},student_code.eq.${targetCode}`);
-
-        await client.from('enrollments')
-          .delete()
-          .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
-
-        await client.from('tuition_invoices')
-          .delete()
-          .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
-
-        await client.from('attendance_records')
-          .delete()
-          .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
-
-        await client.from('credit_notes')
-          .delete()
-          .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
-
-        const { error: delErr } = await client
-          .from('students')
-          .delete()
-          .or(`id.eq.${targetId},code.eq.${targetCode}`);
-
-        if (delErr) {
-          // Trường hợp cột id là UUID mà targetId là chuỗi code thì xóa riêng theo code và id
-          const { error: codeDelErr } = await client.from('students').delete().eq('code', targetCode);
-          await client.from('students').delete().eq('id', targetId);
-          if (codeDelErr) throw delErr;
+        if (targetCode && targetCode !== targetId) {
+          await client.rpc('delete_student_cascade', {
+            p_student_id: targetCode
+          });
         }
-      } else {
-        // Đảm bảo dọn sạch bản ghi trùng mã code trong bảng students nếu có
-        await client.from('students').delete().eq('code', targetCode);
-        await client.from('students').delete().eq('id', targetId);
+
+        // 2. Nếu RPC không phản hồi hoặc để đảm bảo xóa sạch cả theo id lẫn code, chạy lệnh DELETE trực tiếp
+        if (rpcErr || (rpcRes && !rpcRes.success)) {
+          console.warn('RPC thất bại, fallback chạy DELETE trực tiếp:', rpcErr || rpcRes?.error);
+          await client.from('parent_registrations')
+            .update({ student_code: null, student_id: null })
+            .or(`student_id.eq.${targetId},student_code.eq.${targetCode}`);
+
+          await client.from('enrollments')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          await client.from('tuition_invoices')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          await client.from('attendance_records')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          await client.from('credit_notes')
+            .delete()
+            .or(`student_id.eq.${targetId},student_id.eq.${targetCode}`);
+
+          const { error: delErr } = await client
+            .from('students')
+            .delete()
+            .or(`id.eq.${targetId},code.eq.${targetCode}`);
+
+          if (delErr) {
+            // Trường hợp cột id là UUID mà targetId là chuỗi code thì xóa riêng theo code và id
+            const { error: codeDelErr } = await client.from('students').delete().eq('code', targetCode);
+            await client.from('students').delete().eq('id', targetId);
+            if (codeDelErr) throw delErr;
+          }
+        } else {
+          // Đảm bảo dọn sạch bản ghi trùng mã code trong bảng students nếu có
+          await client.from('students').delete().eq('code', targetCode);
+          await client.from('students').delete().eq('id', targetId);
+        }
       }
 
       // 3. XÓA NGAY LẬP TỨC KHỎI STATE REACT (UI cập nhật tức thì)
