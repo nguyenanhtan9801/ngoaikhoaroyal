@@ -36,7 +36,11 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
       setIsSubmitting(true);
 
       const isTrial = forceTrial !== undefined ? forceTrial : selectedEnrollType === 'trial';
-      const studentCode = currentStudentCode || registrationData.assigned_student_code || 'EXT-2026-00101';
+      const studentCode =
+        currentStudentCode ||
+        registrationData.allocated_student_id ||
+        registrationData.assigned_student_code ||
+        'EXT-2026-00102';
       
       // Chuẩn hóa campus_id
       const rawCampus = registrationData.desired_campus_id || registrationData.campus_id || 'camp_pmh';
@@ -56,30 +60,47 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
         throw new Error('Chưa kết nối tới cơ sở dữ liệu Supabase');
       }
 
-      // 1. Gọi hàm RPC confirm_lead_enrollment trực tiếp trên Supabase
+      const startDateVal = registrationData.start_date || new Date().toISOString().split('T')[0];
+      const actualSessionsVal = Number(actualSessions || 12);
+      const totalFeeVal = isTrial ? 0 : Number(calculatedFee || 3000000);
+
+      // 1. Gọi hàm RPC assign_student_to_class / confirm_lead_enrollment trực tiếp trên Supabase
       let rpcOk = false;
       let rpcErrDetail = '';
       try {
-        const { data, error } = await client.rpc('confirm_lead_enrollment', {
-          p_reg_id: registrationData.id,
-          p_student_code: studentCode,
-          p_student_name: registrationData.student_name || registrationData.name,
-          p_date_of_birth: registrationData.date_of_birth || registrationData.student_dob || '2016-05-15',
-          p_campus_id: cleanCampus,
-          p_parent_name: registrationData.parent_name || 'Na',
-          p_parent_phone: registrationData.parent_phone || '0915279768',
+        const { data: assignRpcData, error: assignRpcErr } = await client.rpc('assign_student_to_class', {
+          p_student_id: studentCode,
           p_class_id: targetClassId,
           p_is_trial: isTrial,
-          p_total_fee: isTrial ? 0 : Number(calculatedFee || 3250000),
-          p_actual_sessions: Number(actualSessions || 13)
+          p_start_date: startDateVal,
+          p_actual_sessions: actualSessionsVal,
+          p_tuition_fee: totalFeeVal
         });
 
-        if (error) {
-          rpcErrDetail = error.message;
-        } else if (data && !data.success) {
-          rpcErrDetail = data.error || 'Lỗi không xác định từ CSDL';
-        } else {
+        if (!assignRpcErr && (!assignRpcData || assignRpcData.success !== false)) {
           rpcOk = true;
+        } else {
+          const { data, error } = await client.rpc('confirm_lead_enrollment', {
+            p_reg_id: registrationData.id,
+            p_student_code: studentCode,
+            p_student_name: registrationData.student_name || registrationData.name,
+            p_date_of_birth: registrationData.date_of_birth || registrationData.student_dob || '2016-05-15',
+            p_campus_id: cleanCampus,
+            p_parent_name: registrationData.parent_name || 'Na',
+            p_parent_phone: registrationData.parent_phone || '0915279768',
+            p_class_id: targetClassId,
+            p_is_trial: isTrial,
+            p_total_fee: totalFeeVal,
+            p_actual_sessions: actualSessionsVal
+          });
+
+          if (error) {
+            rpcErrDetail = error.message;
+          } else if (data && !data.success) {
+            rpcErrDetail = data.error || 'Lỗi không xác định từ CSDL';
+          } else {
+            rpcOk = true;
+          }
         }
       } catch (err: any) {
         rpcErrDetail = err.message;
@@ -133,20 +154,34 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
           directOk = true;
         }
 
-        await client.from('enrollments').upsert({
-          id: `enr_${Date.now()}_${targetClassId}`,
+        const { data: existingEnr } = await client
+          .from('enrollments')
+          .select('id')
+          .eq('student_id', studentCode)
+          .eq('class_id', targetClassId)
+          .maybeSingle();
+
+        const finalEnrId = existingEnr?.id || `enr_${Date.now()}_${targetClassId}`;
+
+        const { error: enrollUpsertErr } = await client.from('enrollments').upsert({
+          id: finalEnrId,
           student_id: studentCode,
           class_id: targetClassId,
           status: isTrial ? 'trial' : 'active',
           is_trial: isTrial,
           enrollment_type: isTrial ? 'trial' : 'official',
-          registered_sessions: isTrial ? 1 : Number(actualSessions || 13),
-          total_sessions: isTrial ? 1 : Number(actualSessions || 13),
-          joined_date: new Date().toISOString().split('T')[0],
+          trial_session_count: isTrial ? 1 : 0,
+          registered_sessions: isTrial ? 1 : actualSessionsVal,
+          total_sessions: isTrial ? 1 : actualSessionsVal,
+          joined_date: startDateVal,
           created_at: new Date().toISOString()
         }, { onConflict: 'student_id,class_id' });
 
-        await client.from('parent_registrations').update({
+        if (!enrollUpsertErr) {
+          directOk = true;
+        }
+
+        const { error: regUpdErr } = await client.from('parent_registrations').update({
           status: 'enrolled',
           allocated_student_id: studentCode,
           student_id: studentCode,
@@ -154,6 +189,14 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
           assigned_class_id: targetClassId,
           updated_at: new Date().toISOString()
         }).eq('id', registrationData.id);
+
+        if (regUpdErr) {
+          await client.from('parent_registrations').update({
+            status: 'enrolled',
+            student_id: studentCode,
+            assigned_class_id: targetClassId
+          }).eq('id', registrationData.id);
+        }
       } catch (directErr) {
         console.warn('Direct fallback warning:', directErr);
       }

@@ -972,13 +972,14 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         const subObj = store.subjects.find(s => s.id === cls.subject_id);
         const subShortName = (subObj?.name || cls.name).split('(')[0].trim();
         const scheduleLabel = formatStudentScheduleLabel(autoCalc.enrolledDaysOfWeek, autoCalc.daysOfWeek);
-        const enrId = `enr_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`;
+        const existingLocalEnr = existingEnrollmentsForStudent.find(e => e.class_id === cls.id);
+        let finalEnrId = existingLocalEnr?.id || `enr_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`;
 
         const startDateVal = startDate || '2026-10-24';
         const actualSessionsVal = Number(effectiveSessions || 12);
         const feeVal = Number(pricing.netPayable || 3000000);
 
-        // 1. Gọi trực tiếp RPC assign_student_to_class trên Supabase
+        // 1. Gọi trực tiếp RPC assign_student_to_class hoặc Upsert với onConflict: 'student_id,class_id'
         if (client) {
           const { data: rpcData, error: rpcError } = await client.rpc('assign_student_to_class', {
             p_student_id: studentId,
@@ -989,91 +990,96 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             p_tuition_fee: feeVal
           });
 
-          if (rpcError) {
-            console.warn('Thông báo khi gọi RPC assign_student_to_class:', rpcError.message);
-          } else if (rpcData && rpcData.success === false) {
-            throw new Error(rpcData.error || 'Lỗi từ hàm RPC assign_student_to_class');
+          if (rpcError || (rpcData && rpcData.success === false)) {
+            console.warn(
+              'RPC assign_student_to_class thông báo (chuyển sang upsert onConflict student_id,class_id):',
+              rpcError?.message || rpcData?.error
+            );
           }
-        }
 
-        const alreadyInClass = existingEnrollmentsForStudent.some(
-          e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial')
-        );
-        if (!alreadyInClass) {
-          const enrRecord: Enrollment = {
-            id: enrId,
+          const { data: existingRemoteEnr } = await client
+            .from('enrollments')
+            .select('id')
+            .eq('student_id', studentId)
+            .eq('class_id', cls.id)
+            .maybeSingle();
+
+          if (existingRemoteEnr?.id) {
+            finalEnrId = existingRemoteEnr.id;
+          }
+
+          // Luôn đồng bộ bản ghi trong bảng enrollments qua upsert (onConflict: 'student_id,class_id') để không bao giờ lỗi duplicate key
+          const enrollmentPayload: any = {
+            id: finalEnrId,
             student_id: studentId,
             class_id: cls.id,
-            registered_sessions: isTrial ? 1 : pricing.effectiveSessions,
-            joined_date: startDateVal,
-            enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
-            is_partial_schedule: autoCalc.isPartialSchedule,
+            term_id: cls.term_id,
+            enrollment_type: isTrial ? 'trial' : 'official',
             status: isTrial ? 'trial' : 'active',
             is_trial: isTrial,
-            trial_session_date: isTrial ? startDateVal : undefined,
+            trial_session_count: isTrial ? 1 : 0,
+            trial_session_date: isTrial ? startDateVal : null,
             trial_attended: false,
-            trial_notes: isTrial
-              ? `Đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(startDateVal)} (${scheduleLabel} • ${pricing.effectiveSessions}/${pricing.totalSessions} buổi)`
-              : undefined,
+            start_date: startDateVal,
+            joined_date: startDateVal,
+            total_sessions: isTrial ? 1 : actualSessionsVal,
+            registered_sessions: isTrial ? 1 : actualSessionsVal,
+            total_tuition: isTrial ? 0 : feeVal,
+            tuition_status: isTrial ? 'trial_deferred' : 'pending',
+            enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+            is_partial_schedule: autoCalc.isPartialSchedule,
+            trial_notes: isTrial ? `Học thử 1 buổi đầu (${scheduleLabel})` : null,
           };
-          newEnrollments.push(enrRecord);
 
-          // Đảm bảo đồng bộ bản ghi trong bảng enrollments (nếu RPC chưa tạo hoặc bổ sung đầy đủ trường)
-          if (client) {
-            const { data: existingRemoteEnr } = await client
+          const { error: enrollError } = await client
+            .from('enrollments')
+            .upsert([enrollmentPayload], { onConflict: 'student_id,class_id' });
+
+          if (enrollError) {
+            const fallbackEnrollPayload: any = {
+              id: finalEnrId,
+              student_id: studentId,
+              class_id: cls.id,
+              joined_date: startDateVal,
+              enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+              registered_sessions: isTrial ? 1 : actualSessionsVal,
+              status: isTrial ? 'trial' : 'active',
+              enrollment_type: isTrial ? 'trial' : 'official',
+              is_trial: isTrial,
+              trial_session_date: isTrial ? startDateVal : null,
+              trial_attended: false,
+            };
+            const { error: fbErr } = await client
               .from('enrollments')
-              .select('id')
-              .eq('student_id', studentId)
-              .eq('class_id', cls.id)
-              .maybeSingle();
+              .upsert([fallbackEnrollPayload], { onConflict: 'student_id,class_id' });
 
-            if (!existingRemoteEnr) {
-              const enrollmentPayload: any = {
-                id: enrId,
-                student_id: studentId,
-                class_id: cls.id,
-                term_id: cls.term_id,
-                enrollment_type: isTrial ? 'trial' : 'official',
-                status: isTrial ? 'trial' : 'active',
-                is_trial: isTrial,
-                trial_session_count: isTrial ? 1 : 0,
-                trial_session_date: isTrial ? startDateVal : null,
-                trial_attended: false,
-                start_date: startDateVal,
-                joined_date: startDateVal,
-                total_sessions: isTrial ? 1 : actualSessionsVal,
-                registered_sessions: isTrial ? 1 : actualSessionsVal,
-                total_tuition: isTrial ? 0 : feeVal,
-                tuition_status: isTrial ? 'trial_deferred' : 'pending',
-                enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
-                is_partial_schedule: autoCalc.isPartialSchedule,
-                trial_notes: isTrial ? `Học thử 1 buổi đầu (${scheduleLabel})` : null,
-                created_at: new Date().toISOString()
-              };
-
-              const { error: enrollError } = await client
+            if (fbErr) {
+              delete fallbackEnrollPayload.enrollment_type;
+              await client
                 .from('enrollments')
-                .upsert([enrollmentPayload], { onConflict: 'student_id,class_id' });
-
-              if (enrollError) {
-                const fallbackEnrollPayload = {
-                  id: enrId,
-                  student_id: studentId,
-                  class_id: cls.id,
-                  joined_date: startDateVal,
-                  enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
-                  registered_sessions: isTrial ? 1 : actualSessionsVal,
-                  status: isTrial ? 'trial' : 'active',
-                  is_trial: isTrial,
-                  trial_session_date: isTrial ? startDateVal : null,
-                  trial_attended: false,
-                  created_at: new Date().toISOString()
-                };
-                await client.from('enrollments').upsert([fallbackEnrollPayload]);
-              }
+                .upsert([fallbackEnrollPayload], { onConflict: 'student_id,class_id' });
             }
           }
         }
+
+        const enrRecord: Enrollment = {
+          id: finalEnrId,
+          student_id: studentId,
+          class_id: cls.id,
+          registered_sessions: isTrial ? 1 : pricing.effectiveSessions,
+          joined_date: startDateVal,
+          enrolled_days_of_week: autoCalc.enrolledDaysOfWeek,
+          is_partial_schedule: autoCalc.isPartialSchedule,
+          status: isTrial ? 'trial' : 'active',
+          is_trial: isTrial,
+          trial_session_date: isTrial ? startDateVal : undefined,
+          trial_attended: false,
+          trial_notes: isTrial
+            ? `Đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(startDateVal)} (${scheduleLabel} • ${pricing.effectiveSessions}/${pricing.totalSessions} buổi)`
+            : undefined,
+          ...({ enrollment_type: isTrial ? 'trial' : 'official' } as any),
+        };
+        newEnrollments.push(enrRecord);
 
         // Hóa đơn
         const alreadyInvoiced = store.invoices.some(
@@ -1174,7 +1180,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           await client
             .from('parent_registrations')
             .update({
-              status: newStatus,
+              status: 'enrolled',
               student_id: studentId,
               assigned_class_id: selectedClassObjects[0]?.id || lead.assigned_class_id,
               assigned_class_ids: mergedClassIds,
@@ -1698,7 +1704,9 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               if (sErr) console.warn('Supabase bulk students upsert notice:', sErr.message);
             }
             if (supabaseEnrollments.length > 0) {
-              const { error: eErr } = await client.from('enrollments').upsert(supabaseEnrollments, { onConflict: 'id' });
+              const { error: eErr } = await client
+                .from('enrollments')
+                .upsert(supabaseEnrollments, { onConflict: 'student_id,class_id' });
               if (eErr) console.warn('Supabase bulk enrollments upsert notice:', eErr.message);
             }
             if (supabaseInvoices.length > 0) {

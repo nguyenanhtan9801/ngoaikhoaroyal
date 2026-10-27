@@ -509,30 +509,54 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
 
     try {
       const isPartial = selectedDays.length < classDaysCount;
-      const enrollmentId = `ENR-${Date.now()}`;
+      const existingLocalEnr = store.enrollments.find(
+        e => String(e.student_id) === String(enrollingStudent.id) && String(e.class_id) === String(selectedClass.id)
+      );
+      let enrollmentId = existingLocalEnr?.id || `ENR-${Date.now()}`;
       const trialDateVal = trialSessionDate || startDate;
 
-      const payload = {
-        id: enrollmentId,
-        student_id: enrollingStudent.id,
-        class_id: selectedClass.id,
-        registered_sessions: isTrialMode ? 1 : effectiveSessions,
-        enrolled_days_of_week: isTrialMode ? [] : selectedDays,
-        is_partial_schedule: isTrialMode ? false : isPartial,
-        is_trial: isTrialMode,
-        trial_session_date: isTrialMode ? trialDateVal : null,
-        trial_attended: false,
-        status: 'active',
-        joined_date: startDate,
-      };
-
-      // 1. Lưu trực tiếp vào Supabase
+      // 1. Lưu trực tiếp vào Supabase (Upsert với onConflict: 'student_id,class_id')
       const client = getSupabaseClient() || supabase;
       if (client) {
-        const { error } = await client.from('enrollments').upsert([payload], { onConflict: 'student_id,class_id' });
+        const { data: existingRemoteEnr } = await client
+          .from('enrollments')
+          .select('id')
+          .eq('student_id', enrollingStudent.id)
+          .eq('class_id', selectedClass.id)
+          .maybeSingle();
+
+        if (existingRemoteEnr?.id) {
+          enrollmentId = existingRemoteEnr.id;
+        }
+
+        const payload: any = {
+          id: enrollmentId,
+          student_id: enrollingStudent.id,
+          class_id: selectedClass.id,
+          registered_sessions: isTrialMode ? 1 : effectiveSessions,
+          enrolled_days_of_week: isTrialMode ? [] : selectedDays,
+          is_partial_schedule: isTrialMode ? false : isPartial,
+          is_trial: isTrialMode,
+          enrollment_type: isTrialMode ? 'trial' : 'official',
+          trial_session_date: isTrialMode ? trialDateVal : null,
+          trial_attended: false,
+          status: isTrialMode ? 'trial' : 'active',
+          joined_date: startDate,
+        };
+
+        const { error } = await client
+          .from('enrollments')
+          .upsert([payload], { onConflict: 'student_id,class_id' });
+
         if (error) {
-          console.error('Lỗi khi lưu enrollment vào Supabase:', error);
-          showToast('Cảnh báo CSDL: ' + error.message, 'warning');
+          delete payload.enrollment_type;
+          const { error: fbErr } = await client
+            .from('enrollments')
+            .upsert([payload], { onConflict: 'student_id,class_id' });
+          if (fbErr) {
+            console.error('Lỗi khi lưu enrollment vào Supabase:', fbErr);
+            showToast('Cảnh báo CSDL: ' + fbErr.message, 'warning');
+          }
         }
       }
 
@@ -571,7 +595,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       };
 
       if (client) {
-        const { error: invError } = await client.from('tuition_invoices').insert([invoicePayload]);
+        const { error: invError } = await client.from('tuition_invoices').upsert([invoicePayload], { onConflict: 'id' });
         if (invError) {
           console.error('Lỗi khi lưu tuition_invoice vào Supabase:', invError);
           showToast('Cảnh báo lưu hóa đơn: ' + invError.message, 'warning');
@@ -589,13 +613,14 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
         joined_date: startDate,
         enrolled_days_of_week: isTrialMode ? [] : selectedDays,
         is_partial_schedule: isTrialMode ? false : isPartial,
-        status: 'active',
+        status: isTrialMode ? 'trial' : 'active',
         is_trial: isTrialMode,
         trial_session_date: isTrialMode ? trialDateVal : undefined,
         trial_attended: false,
         trial_notes: isTrialMode
           ? `Học sinh đăng ký học thử 1 buổi đầu tiên từ ngày ${formatDateVN(trialDateVal)} (${scheduleLabel})`
           : undefined,
+        ...({ enrollment_type: isTrialMode ? 'trial' : 'official' } as any),
       };
 
       const newInvoice: TuitionInvoice = {

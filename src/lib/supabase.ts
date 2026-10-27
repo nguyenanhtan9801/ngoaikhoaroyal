@@ -1311,14 +1311,15 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         created_at: s.created_at || new Date().toISOString().split('T')[0],
       }));
 
-    case 'enrollments':
-      return (store.enrollments || []).map(e => {
+    case 'enrollments': {
+      const dedupMap = new Map<string, any>();
+      (store.enrollments || []).forEach(e => {
+        if (!e || !e.student_id || !e.class_id) return;
         const isTrial = Boolean(
-          e.is_trial === true ||
-          (e as any).enrollment_type === 'trial' ||
-          (e.status as string) === 'trial_pending'
+          (e.is_trial === true || (e as any).enrollment_type === 'trial') &&
+          e.status !== 'active'
         );
-        return {
+        dedupMap.set(`${e.student_id}__${e.class_id}`, {
           id: e.id,
           student_id: e.student_id,
           class_id: e.class_id,
@@ -1331,8 +1332,10 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
           trial_session_date: e.trial_session_date || null,
           trial_attended: Boolean(e.trial_attended),
           status: isTrial ? 'trial' : (e.status === 'dropped' || e.status === 'trial_dropped' ? e.status : 'active'),
-        };
+        });
       });
+      return Array.from(dedupMap.values());
+    }
 
     case 'attendance_records':
       return (store.attendance || []).map(a => ({
@@ -1534,7 +1537,8 @@ export async function pushSingleTableToSupabase(
   }
 
   try {
-    const { error } = await client.from(safeTableName).upsert(rows, { onConflict: 'id' });
+    const conflictTarget = safeTableName === 'enrollments' ? 'student_id,class_id' : 'id';
+    const { error } = await client.from(safeTableName).upsert(rows, { onConflict: conflictTarget });
     if (error) {
       return {
         success: false,
@@ -1694,9 +1698,8 @@ export async function pullAllTablesFromSupabase(
         case 'enrollments':
           nextStore.enrollments = data.map((r: any): Enrollment => {
             const isTrial = Boolean(
-              r.is_trial === true ||
-              r.enrollment_type === 'trial' ||
-              r.status === 'trial_pending'
+              (r.is_trial === true || r.enrollment_type === 'trial') &&
+              r.status !== 'active'
             );
             return {
               id: r.id,
@@ -2024,9 +2027,8 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
 
     case 'enrollments': {
       const isTrial = Boolean(
-        r.is_trial === true ||
-        r.enrollment_type === 'trial' ||
-        r.status === 'trial_pending'
+        (r.is_trial === true || r.enrollment_type === 'trial') &&
+        r.status !== 'active'
       );
       return {
         id: r.id,
@@ -2366,10 +2368,11 @@ export async function syncStoreDeltaToSupabase(
         const serializedAll = serializeTableRowsForSupabase(table, nextStore);
         const rowsToUpsert = serializedAll.filter(r => toUpsertIds.has(String(r.id)));
         if (rowsToUpsert.length > 0) {
+          const conflictTarget = table === 'enrollments' ? 'student_id,class_id' : 'id';
           Promise.resolve(
             client
               .from(table)
-              .upsert(rowsToUpsert, { onConflict: 'id' })
+              .upsert(rowsToUpsert, { onConflict: conflictTarget })
           ).catch(() => {});
         }
       }

@@ -212,9 +212,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           const sid = raw.student_id || fallbackStudentId;
           if (!sid) return;
           const isTrial = Boolean(
-            raw.is_trial === true ||
-            raw.enrollment_type === 'trial' ||
-            raw.status === 'trial_pending'
+            (raw.is_trial === true || raw.enrollment_type === 'trial') &&
+            raw.status !== 'active'
           );
           const nestedCls = Array.isArray(raw.extracurricular_classes)
             ? raw.extracurricular_classes[0]
@@ -367,24 +366,25 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     nestedRaw.forEach(raw => {
       if (!raw || !raw.class_id) return;
       if (raw.status === 'dropped' || raw.status === 'trial_dropped' || raw.status === 'cancelled') return;
-      if (!combinedMap.has(raw.class_id)) {
-        const isTrial = Boolean(
-          raw.is_trial === true ||
-          raw.enrollment_type === 'trial' ||
-          raw.status === 'trial_pending'
-        );
+      const isTrial = Boolean(
+        (raw.is_trial === true || raw.enrollment_type === 'trial') &&
+        raw.status !== 'active'
+      );
+      const existing = combinedMap.get(raw.class_id);
+      if (!existing || (!isTrial && existing.is_trial)) {
         combinedMap.set(raw.class_id, {
-          id: raw.id || `enr_${student.id}_${raw.class_id}`,
+          ...(existing || {}),
+          id: raw.id || existing?.id || `enr_${student.id}_${raw.class_id}`,
           student_id: student.id,
           class_id: raw.class_id,
-          registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || 24),
-          joined_date: raw.joined_date || raw.start_date || new Date().toISOString().split('T')[0],
-          enrolled_days_of_week: Array.isArray(raw.enrolled_days_of_week) ? raw.enrolled_days_of_week : undefined,
+          registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || existing?.registered_sessions || 24),
+          joined_date: raw.joined_date || raw.start_date || existing?.joined_date || new Date().toISOString().split('T')[0],
+          enrolled_days_of_week: Array.isArray(raw.enrolled_days_of_week) ? raw.enrolled_days_of_week : existing?.enrolled_days_of_week,
           status: isTrial ? 'trial' : 'active',
           is_trial: isTrial,
           ...( {
-            enrollment_type: isTrial ? 'trial' : (raw.enrollment_type || 'official'),
-            extracurricular_classes: raw.extracurricular_classes,
+            enrollment_type: isTrial ? 'trial' : 'official',
+            extracurricular_classes: raw.extracurricular_classes || (existing as any)?.extracurricular_classes,
           } as any ),
         });
       }
@@ -846,49 +846,45 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       );
 
       if (client) {
-        // 1. Thử gọi qua RPC function đã tạo trên Supabase
-        const { data: rpcRes, error: rpcErr } = await client.rpc('convert_trial_to_official', {
+        // 1. Gọi RPC cập nhật triệt để trong DB
+        const { error } = await client.rpc('convert_trial_to_official', {
           p_student_id: studentId,
           p_class_id: classId || null,
         });
 
-        if (rpcErr || (rpcRes && !rpcRes.success)) {
-          console.warn('RPC thất bại, fallback sang update trực tiếp bảng enrollments:', rpcErr || rpcRes);
+        if (error) {
+          console.warn('RPC convert_trial_to_official thông báo, thực hiện update trực tiếp:', error.message);
+        }
 
-          // 2. Fallback: Update trực tiếp tất cả các cột liên quan đến học thử trên bảng enrollments
-          let query = client
+        // Luôn đồng bộ trực tiếp cả is_trial, enrollment_type và status = 'active' trên bảng enrollments để đảm bảo F5 không bao giờ trả về tím
+        let updateQuery = client
+          .from('enrollments')
+          .update({
+            is_trial: false,
+            enrollment_type: 'official',
+            status: 'active',
+            trial_session_count: 0,
+          })
+          .in('student_id', candidateStudentIds);
+
+        if (classId) {
+          updateQuery = updateQuery.eq('class_id', classId);
+        }
+
+        const { error: updateErr } = await updateQuery;
+        if (updateErr) {
+          let minQuery = client
             .from('enrollments')
             .update({
               is_trial: false,
               enrollment_type: 'official',
               status: 'active',
-              trial_session_count: 0,
-              tuition_status: 'pending',
-              updated_at: new Date().toISOString(),
             })
             .in('student_id', candidateStudentIds);
-
           if (classId) {
-            query = query.eq('class_id', classId);
+            minQuery = minQuery.eq('class_id', classId);
           }
-
-          const { error: updateErr } = await query;
-          if (updateErr) {
-            // Fallback tối giản nếu bảng enrollments trên Supabase không có cột phụ trial_session_count / tuition_status
-            let minQuery = client
-              .from('enrollments')
-              .update({
-                is_trial: false,
-                enrollment_type: 'official',
-                status: 'active',
-              })
-              .in('student_id', candidateStudentIds);
-            if (classId) {
-              minQuery = minQuery.eq('class_id', classId);
-            }
-            const { error: minErr } = await minQuery;
-            if (minErr) throw minErr;
-          }
+          await minQuery;
         }
 
         // Kích hoạt hóa đơn học phí liên quan nếu đang ở trạng thái chờ học thử
@@ -905,7 +901,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         await invQuery;
       }
 
-      // 3. Cập nhật lại state danh sách học sinh & ghi danh trên giao diện
+      // 2. Cập nhật ngay trên State UI
       onUpdateStore(prev => {
         const student = prev.students.find(
           s => candidateStudentIds.includes(String(s.id)) || candidateStudentIds.includes(String(s.code))
@@ -914,26 +910,27 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
         return {
           ...prev,
-          students: prev.students.map(stu => {
-            if (!candidateStudentIds.includes(String(stu.id)) && !candidateStudentIds.includes(String(stu.code))) {
-              return stu;
+          students: prev.students.map(s => {
+            if (
+              s.id === studentId ||
+              s.code === studentId ||
+              candidateStudentIds.includes(String(s.id)) ||
+              candidateStudentIds.includes(String(s.code))
+            ) {
+              const updated = ((s as any).enrollments || []).map((e: any) => {
+                if (!classId || e.class_id === classId) {
+                  return {
+                    ...e,
+                    is_trial: false,
+                    enrollment_type: 'official',
+                    status: 'active',
+                  };
+                }
+                return e;
+              });
+              return { ...s, enrollments: updated } as Student;
             }
-            const nestedEnr = Array.isArray((stu as any).enrollments)
-              ? (stu as any).enrollments.map((enr: any) =>
-                  !classId || enr.class_id === classId
-                    ? {
-                        ...enr,
-                        is_trial: false,
-                        enrollment_type: 'official',
-                        status: 'active',
-                      }
-                    : enr
-                )
-              : undefined;
-            return {
-              ...stu,
-              ...(nestedEnr ? { enrollments: nestedEnr } : {}),
-            };
+            return s;
           }),
           enrollments: prev.enrollments.map(e => {
             const matchStudent = candidateStudentIds.includes(String(e.student_id));
@@ -978,18 +975,15 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       setTrialActionModal(null);
       setTrialNotes('');
 
-      alert('Đã lưu thành công trạng thái CHÍNH THỨC vào CSDL Supabase!');
-      showToast('Đã lưu thành công trạng thái CHÍNH THỨC vào CSDL Supabase!', 'success', {
+      alert('Đã chuyển học viên lên học CHÍNH THỨC thành công!');
+      showToast('Đã chuyển học viên lên học CHÍNH THỨC thành công!', 'success', {
         title: 'Chuyển lên học chính thức',
       });
 
-      // Load lại dữ liệu từ DB để đảm bảo đồng bộ 100%
-      if (typeof fetchStudents === 'function') {
-        await fetchStudents();
-      }
+      await fetchStudents();
     } catch (err: any) {
       console.error('Lỗi khi chuyển lên chính thức:', err);
-      alert('Không thể lưu trạng thái chính thức: ' + (err.message || JSON.stringify(err)));
+      alert('Lỗi cập nhật: ' + (err.message || String(err)));
     }
   };
 
@@ -1361,10 +1355,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                 days_of_week: ['T2', 'T4'],
                                 total_sessions: 24,
                               };
+                              // Chỉ coi là học thử khi VÀ CHỈ KHI cả 2 cờ xác nhận là trial và status khác 'active'
                               const isTrial = Boolean(
-                                enr.is_trial === true ||
-                                (enr as any).enrollment_type === 'trial' ||
-                                (enr.status as string) === 'trial_pending'
+                                (enr.is_trial === true || (enr as any).enrollment_type === 'trial') &&
+                                enr.status !== 'active'
                               );
                               const shortName = (c.name || 'Môn học').split('-')[0].trim();
                               const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
@@ -1631,10 +1625,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                             days_of_week: ['T2', 'T4'],
                             total_sessions: 24,
                           };
+                          // Chỉ coi là học thử khi VÀ CHỈ KHI cả 2 cờ xác nhận là trial và status khác 'active'
                           const isTrial = Boolean(
-                            enr.is_trial === true ||
-                            (enr as any).enrollment_type === 'trial' ||
-                            (enr.status as string) === 'trial_pending'
+                            (enr.is_trial === true || (enr as any).enrollment_type === 'trial') &&
+                            enr.status !== 'active'
                           );
                           const shortName = (c.name || 'Môn học').split('-')[0].trim();
                           const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
