@@ -2004,6 +2004,241 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       showToast(result.message || `Import đồng bộ 10 bảng từ "${file.name}" thành công!`, 'success', {
         title: 'Nhập Bảng Tính Tổng Thể (10 Bảng)',
       });
+
+      // TỰ ĐỘNG ĐẨY THẲNG LÊN SUPABASE CLOUD
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        showToast({
+          title: 'Đang đẩy lên CSDL',
+          message: 'Đang tự động đồng bộ dữ liệu vừa đọc từ Excel lên Supabase Cloud...',
+          type: 'info'
+        });
+
+        try {
+          // 1. Đẩy cơ sở nếu có
+          if (result.data.campuses && result.data.campuses.length > 0) {
+            const campusesPayload = result.data.campuses.map((c: any) => ({
+              id: c.id,
+              code: c.code || c.id,
+              name: c.name,
+              address: c.address || '',
+              phone: c.phone || '',
+              email: c.email || '',
+              status: c.status || 'active'
+            }));
+            await client.from('campuses').upsert(campusesPayload, { onConflict: 'id' });
+          }
+
+          // 2. Đẩy niên khóa nếu có
+          if (result.data.terms && result.data.terms.length > 0) {
+            const termsPayload = result.data.terms.map((t: any) => ({
+              id: t.id,
+              code: t.code || t.id,
+              name: t.name,
+              start_date: t.start_date,
+              end_date: t.end_date,
+              status: t.status || 'active',
+              is_active: t.is_active !== false
+            }));
+            await client.from('academic_terms').upsert(termsPayload, { onConflict: 'id' });
+          }
+
+          // 3. Đẩy danh mục môn nếu có
+          if (result.data.subjects && result.data.subjects.length > 0) {
+            const subjectsPayload = result.data.subjects.map((s: any) => ({
+              id: s.id,
+              code: s.code || s.id,
+              name: s.name,
+              category: s.category || 'Thể thao',
+              category_code: s.category_code || resolveSubjectCategoryCode(s.category, s.name),
+              standard_duration: s.standard_duration || '90 phút',
+              standard_sessions: s.standard_sessions || 24,
+              standard_course_fee: s.standard_course_fee || 3990000,
+              standard_session_rate: s.standard_session_rate || 166250,
+              description: s.description || '',
+              is_active: s.is_active !== false
+            }));
+            await client.from('subjects').upsert(subjectsPayload, { onConflict: 'id' });
+          }
+
+          // 4. Đẩy hồ sơ giáo viên nếu có
+          if (result.data.teachers && result.data.teachers.length > 0) {
+            const teachersPayload = result.data.teachers.map((t: any) => ({
+              id: t.id,
+              code: t.code || t.id,
+              name: t.name,
+              phone: t.phone || '',
+              email: t.email || '',
+              campus_id: t.campus_id || 'camp_pmh',
+              type: t.type || t.teacher_type || 'permanent',
+              teacher_type: t.teacher_type || t.type || 'permanent',
+              fixed_rate_per_session: t.fixed_rate_per_session || 300000,
+              default_rate_per_period: t.default_rate_per_period || 150000,
+              periods_per_session: t.periods_per_session || 2,
+              bank_account: t.bank_account || null,
+              status: t.status || 'active'
+            }));
+            await client.from('teachers').upsert(teachersPayload, { onConflict: 'id' });
+          }
+
+          // 5. Đẩy danh sách lớp học nếu có
+          if (result.data.classes && result.data.classes.length > 0) {
+            const classesPayload = result.data.classes.map((c: any) => ({
+              id: c.id,
+              code: c.code || c.id,
+              name: c.name,
+              term_id: c.term_id,
+              campus_id: c.campus_id,
+              subject_id: c.subject_id,
+              primary_teacher_id: c.primary_teacher_id || null,
+              days_of_week: c.days_of_week || ['T2', 'T4'],
+              start_date: c.start_date || null,
+              end_date: c.end_date || null,
+              max_students: c.max_students || 25,
+              total_sessions: c.total_sessions || 24,
+              full_course_fee: c.full_course_fee || 3990000,
+              price_per_session: c.price_per_session || 166250,
+              status: c.status || 'active'
+            }));
+            await client.from('extracurricular_classes').upsert(classesPayload, { onConflict: 'id' });
+          }
+
+          // 6. Đẩy học sinh nếu có
+          if (result.data.students && result.data.students.length > 0) {
+            const studentsPayload = result.data.students.map((s: any) => {
+              const isRoyal = Boolean(s.is_royal_student ?? (s.student_type !== 'external'));
+              const rawCampus = (s.campus_id || 'pmh').toString().toLowerCase();
+              const cleanCampus = rawCampus.includes('pl') || rawCampus.includes('phú lâm') ? 'pl' : 'pmh';
+              return {
+                id: s.id,
+                code: s.code || s.id,
+                previous_student_code: s.previous_student_code || null,
+                name: s.name,
+                dob: s.dob || s.birth_date || '2016-01-01',
+                gender: s.gender || 'Nam',
+                is_royal_student: isRoyal,
+                campus_id: cleanCampus,
+                school_name: s.school_name || (cleanCampus === 'pl' ? 'Royal School Phú Lâm' : 'Royal School PMH'),
+                regular_class: s.regular_class || s.class_name || '',
+                parent_name: s.parent_name || 'Phụ huynh',
+                parent_phone: s.parent_phone || '',
+                medical_notes: s.medical_notes || '',
+                avatar_url: s.avatar_url && !s.avatar_url.startsWith('data:') ? s.avatar_url : null,
+                status: s.status || 'active',
+                created_at: s.created_at || new Date().toISOString().split('T')[0]
+              };
+            });
+            await client.from('students').upsert(studentsPayload, { onConflict: 'id' });
+          }
+
+          // 7. Đẩy ghi danh nếu có
+          if (result.data.enrollments && result.data.enrollments.length > 0) {
+            const enrollmentsPayload = result.data.enrollments.map((e: any) => ({
+              id: e.id,
+              student_id: e.student_id,
+              class_id: e.class_id,
+              registered_sessions: e.registered_sessions || 24,
+              joined_date: e.joined_date || new Date().toISOString().split('T')[0],
+              enrolled_days_of_week: e.enrolled_days_of_week || ['T2', 'T4'],
+              is_partial_schedule: Boolean(e.is_partial_schedule),
+              is_trial: Boolean(e.is_trial),
+              status: e.status || 'active'
+            }));
+            await client.from('enrollments').upsert(enrollmentsPayload, { onConflict: 'id' });
+          }
+
+          // 8. Đẩy điểm danh nếu có
+          if (result.data.attendance && result.data.attendance.length > 0) {
+            const attendancePayload = result.data.attendance.map((a: any) => ({
+              id: a.id,
+              session_id: a.session_id || '',
+              class_id: a.class_id,
+              student_id: a.student_id,
+              session_date: a.session_date,
+              status: a.status || 'present',
+              note: a.note || '',
+              proof_file_name: a.proof_file_name || null,
+              proof_url: a.proof_url && !a.proof_url.startsWith('data:') ? a.proof_url : null,
+              uploaded_by: a.uploaded_by || null,
+              uploaded_at: a.uploaded_at || null
+            }));
+            await client.from('attendance_records').upsert(attendancePayload, { onConflict: 'id' });
+          }
+
+          // 9. Đẩy chấm công giáo viên nếu có
+          if (result.data.teacherAttendance && result.data.teacherAttendance.length > 0) {
+            const teacherWorkPayload = result.data.teacherAttendance.map((ta: any) => ({
+              id: ta.id,
+              class_id: ta.class_id,
+              term_id: ta.term_id,
+              campus_id: ta.campus_id,
+              session_date: ta.session_date,
+              session_number: ta.session_number || 1,
+              periods_count: ta.periods_count || 2,
+              assigned_teacher_id: ta.assigned_teacher_id || null,
+              actual_teacher_id: ta.actual_teacher_id || null,
+              is_substitute: Boolean(ta.is_substitute),
+              substitute_reason: ta.substitute_reason || null,
+              status: ta.status || 'present',
+              late_minutes: ta.late_minutes || 0,
+              check_in_time: ta.check_in_time || '16:40',
+              rate_per_period: ta.rate_per_period || 150000,
+              rate_applied: ta.rate_applied || 300000,
+              earned_amount: ta.earned_amount ?? ta.total_payout ?? 300000,
+              total_payout: ta.total_payout || 300000,
+              verified_by: ta.verified_by || '',
+              notes: ta.notes || '',
+              recalculated_at: ta.recalculated_at || null
+            }));
+            await client.from('teacher_work_sessions').upsert(teacherWorkPayload, { onConflict: 'id' });
+          }
+
+          // 10. Đẩy hóa đơn học phí nếu có
+          if (result.data.invoices && result.data.invoices.length > 0) {
+            const invoicesPayload = result.data.invoices.map((inv: any) => ({
+              id: inv.id,
+              invoice_code: inv.invoice_code,
+              student_id: inv.student_id,
+              class_id: inv.class_id,
+              registered_sessions: inv.registered_sessions || 24,
+              total_class_sessions: inv.total_class_sessions || 24,
+              session_rate: inv.session_rate || 166250,
+              gross_amount: inv.gross_amount || 0,
+              credit_deducted: inv.credit_deducted || 0,
+              discount_amount: inv.discount_amount || 0,
+              net_payable: inv.net_payable || 0,
+              paid_amount: inv.paid_amount || 0,
+              outstanding_amount: inv.outstanding_amount || 0,
+              payment_status: inv.payment_status || 'unpaid',
+              due_date: inv.due_date || null,
+              payment_reference: inv.payment_reference || null,
+              verified_by: inv.verified_by || null,
+              verified_at: inv.verified_at || null,
+              payment_history: inv.payment_history || [],
+              created_at: inv.created_at || new Date().toISOString().split('T')[0]
+            }));
+            await client.from('tuition_invoices').upsert(invoicesPayload, { onConflict: 'id' });
+          }
+
+          showToast({
+            title: 'Đồng bộ Cloud thành công',
+            message: 'Toàn bộ dữ liệu từ Excel đã được lưu vĩnh viễn vào CSDL Supabase!',
+            type: 'success'
+          });
+
+          // Tải lại kiểm tra trạng thái bảng
+          if (typeof handleInspectDatabaseHealth === 'function') {
+            handleInspectDatabaseHealth();
+          }
+        } catch (pushErr: any) {
+          console.error('Lỗi khi đẩy dữ liệu lên Supabase:', pushErr);
+          showToast({
+            title: 'Cảnh báo lưu Cloud',
+            message: 'Dữ liệu đã lưu ở App nhưng chưa lên Cloud: ' + (pushErr.message || pushErr.toString()),
+            type: 'warning'
+          });
+        }
+      }
     } else {
       setImportStatus({ loading: false, message: result.message, isError: true });
       showToast(result.message || 'Lỗi khi đọc tệp Excel!', 'error');
