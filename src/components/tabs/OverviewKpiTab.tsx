@@ -161,37 +161,53 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   // ==========================================
   // KPI CALCULATIONS (Synchronized with Supabase & Local Store)
   // ==========================================
-  // 1. TỔNG HỌC VIÊN ĐANG HỌC
+  // 1. Lấy danh sách ID học sinh đang học thực tế
   const totalStudents = store.students.length;
-  const activeEnrollments = store.enrollments.filter(e => e.status === 'active');
-  const uniqueActiveStudentIds = Array.from(new Set(activeEnrollments.map(e => e.student_id)));
+  const activeEnrollments = (store.enrollments || []).filter(e => e.status === 'active');
+  const uniqueActiveStudentIds = Array.from(new Set(activeEnrollments.map(e => String(e.student_id || ''))))
+    .filter(id => id !== '');
+
+  // Số lượng học sinh đang học thực tế
   const activeStudentsCount = uniqueActiveStudentIds.length;
 
   // 2. HỌC VIÊN THEO CƠ SỞ (PMH vs Phú Lâm)
-  const studentMap = React.useMemo(() => new Map(store.students.map(s => [s.id, s])), [store.students]);
-  const classMap = React.useMemo(() => new Map(store.classes.map(c => [c.id, c])), [store.classes]);
+  const studentMap = React.useMemo(() => 
+    new Map((store.students || []).map(s => [String(s.id || s.code), s])), 
+    [store.students]
+  );
+
+  const classMap = React.useMemo(() => 
+    new Map((store.classes || []).map(c => [String(c.id), c])), 
+    [store.classes]
+  );
 
   const { activePMH, activePL } = React.useMemo(() => {
+    // NẾU KHÔNG CÓ HỌC SINH NÀO ĐANG HỌC -> CẢ 2 CƠ SỞ ĐỀU BẰNG 0
+    if (uniqueActiveStudentIds.length === 0) {
+      return { activePMH: 0, activePL: 0 };
+    }
+
     let pmh = 0;
     let pl = 0;
 
     uniqueActiveStudentIds.forEach(studentId => {
-      const student = studentMap.get(studentId);
+      const student = studentMap.get(String(studentId));
       let campus = '';
+
       if (student?.campus_id) {
-        campus = student.campus_id.toLowerCase();
+        campus = String(student.campus_id).toLowerCase();
       } else if (student?.school_name) {
-        const sn = student.school_name.toLowerCase();
+        const sn = String(student.school_name).toLowerCase();
         if (sn.includes('pmh') || sn.includes('phú mỹ hưng') || sn.includes('phu my hung')) campus = 'pmh';
         else if (sn.includes('pl') || sn.includes('phú lâm') || sn.includes('phu lam')) campus = 'pl';
       }
 
       if (!campus) {
-        const studentEnrolls = activeEnrollments.filter(e => e.student_id === studentId);
+        const studentEnrolls = activeEnrollments.filter(e => String(e.student_id) === String(studentId));
         for (const enr of studentEnrolls) {
-          const cls = classMap.get(enr.class_id);
+          const cls = classMap.get(String(enr.class_id));
           if (cls) {
-            const cId = (cls.campus_id || '').toLowerCase();
+            const cId = String(cls.campus_id || '').toLowerCase();
             if (cId.includes('pmh')) { campus = 'pmh'; break; }
             if (cId.includes('pl')) { campus = 'pl'; break; }
           }
@@ -200,7 +216,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
 
       if (campus.includes('pl')) {
         pl += 1;
-      } else {
+      } else if (campus.includes('pmh')) {
         pmh += 1;
       }
     });
@@ -264,17 +280,21 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     return () => { isMounted = false; };
   }, [selectedTermId]);
 
-  const displayTotalStudents = liveDb?.totalStudents ?? totalStudents;
+  // Đồng bộ với dữ liệu liveDb nếu có: Nếu tổng học viên đang học = 0 thì ép PMH và PL về 0
   const displayActiveStudents = liveDb?.activeCount ?? activeStudentsCount;
+  const finalActivePMH = displayActiveStudents === 0 ? 0 : activePMH;
+  const finalActivePL = displayActiveStudents === 0 ? 0 : activePL;
+
+  const displayTotalStudents = liveDb?.totalStudents ?? totalStudents;
   const displayParticipationRate = displayTotalStudents > 0
     ? ((displayActiveStudents / displayTotalStudents) * 100).toFixed(1)
     : '0.0';
 
-  const activePMHPercent = displayTotalStudents > 0 ? ((activePMH / displayTotalStudents) * 100).toFixed(1) : '0.0';
-  const activePLPercent = displayTotalStudents > 0 ? ((activePL / displayTotalStudents) * 100).toFixed(1) : '0.0';
-  const totalCampusActive = activePMH + activePL || 1;
-  const pmhRatio = Math.round((activePMH / totalCampusActive) * 100);
-  const plRatio = 100 - pmhRatio;
+  const activePMHPercent = displayTotalStudents > 0 ? ((finalActivePMH / displayTotalStudents) * 100).toFixed(1) : '0.0';
+  const activePLPercent = displayTotalStudents > 0 ? ((finalActivePL / displayTotalStudents) * 100).toFixed(1) : '0.0';
+  const totalCampusActive = finalActivePMH + finalActivePL;
+  const pmhRatio = totalCampusActive > 0 ? Math.round((finalActivePMH / totalCampusActive) * 100) : 0;
+  const plRatio = totalCampusActive > 0 ? 100 - pmhRatio : 0;
 
   return (
     <div className="space-y-4">
@@ -325,7 +345,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
                 PMH:
               </span>
               <span className="font-semibold text-white">
-                {activePMH}/{displayTotalStudents} <span className="text-amber-400 text-[11px]">({activePMHPercent}%)</span>
+                {finalActivePMH}/{displayTotalStudents} <span className="text-amber-400 text-[11px]">({activePMHPercent}%)</span>
               </span>
             </div>
             <div className="flex items-center justify-between text-slate-300">
@@ -334,7 +354,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
                 Phú Lâm:
               </span>
               <span className="font-semibold text-white">
-                {activePL}/{displayTotalStudents} <span className="text-cyan-400 text-[11px]">({activePLPercent}%)</span>
+                {finalActivePL}/{displayTotalStudents} <span className="text-cyan-400 text-[11px]">({activePLPercent}%)</span>
               </span>
             </div>
           </div>

@@ -76,7 +76,6 @@ import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { AuditLogsTab } from './AuditLogsTab';
 import { UserManagementTab } from './UserManagementTab';
 import { HolidayManagementView } from '../settings/HolidayManagementView';
-import { DatabaseBackupView } from '../settings/DatabaseBackupView';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
@@ -7428,11 +7427,6 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           currentUser={currentUser}
           onUpdateStore={onUpdateStore}
         />
-      )}
-
-      {/* SECTION 8: SAO LƯU DỮ LIỆU CSDL SUPABASE (18 BẢNG) */}
-      {activeSection === 'backup' && (
-        <DatabaseBackupView store={store} />
       )}
 
     </div>
