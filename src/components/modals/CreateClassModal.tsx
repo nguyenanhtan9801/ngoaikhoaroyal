@@ -192,19 +192,54 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     ? initialCampusId
     : (store.campuses[0]?.id || 'camp_pmh');
 
+  // Hàm tạo tên lớp tự động theo chuẩn: [TÊN MÔN] - [NGÀY HỌC] - [CƠ SỞ] - [KHÓA]
+  const buildAutoClassName = (
+    subjId: string,
+    campId: string,
+    termId: string,
+    days: string[]
+  ): string => {
+    const subj = store.subjects.find(s => s.id === subjId);
+    const camp = store.campuses.find(c => c.id === campId);
+    const term = store.terms.find(t => t.id === termId);
+
+    // 1. Tên môn
+    const subjTitle = (subj?.name || 'Lớp Ngoại Khóa').replace(/★.*$/, '').trim();
+
+    // 2. Ngày học: T2, T4 -> 24; T3, T5 -> 35; T7, CN -> 7CN
+    const daysCodeMap: Record<string, string> = {
+      'T2': '2', 'T3': '3', 'T4': '4', 'T5': '5', 'T6': '6', 'T7': '7', 'CN': 'CN'
+    };
+    const daysStr = days.map(d => daysCodeMap[d] || d.replace(/\D/g, '')).join('');
+
+    // 3. Cơ sở
+    const campusCode = (camp?.code || campId || 'PMH').toUpperCase().includes('PL') ? 'PL' : 'PMH';
+
+    // 4. Khóa học (K1, K2, K3...)
+    const rawTerm = term?.name || term?.code || '';
+    const termNumMatch = rawTerm.match(/(\d+)/);
+    const termCode = termNumMatch ? `K${termNumMatch[1]}` : 'K1';
+
+    return `${subjTitle} - ${daysStr || '24'} - ${campusCode} - ${termCode}`;
+  };
+
+  const initialDays = (editingClass?.days_of_week && editingClass.days_of_week.length === 2)
+    ? editingClass.days_of_week
+    : (store.timeSlots[0]?.days_of_week && store.timeSlots[0].days_of_week.length === 2)
+    ? store.timeSlots[0].days_of_week
+    : ['T2', 'T4'];
+  const defaultSubj = editingClass?.subject_id || initialSubjectId || store.subjects[0]?.id || '';
+  const initialAutoName = editingClass?.name || buildAutoClassName(defaultSubj, editingClass?.campus_id || defaultCampusId, editingClass?.term_id || defaultTermId, initialDays);
+
   // Form State
   const [formData, setFormData] = useState({
-    name: editingClass?.name || '',
+    name: initialAutoName,
     term_id: editingClass?.term_id || defaultTermId,
     campus_id: editingClass?.campus_id || defaultCampusId,
-    subject_id: editingClass?.subject_id || initialSubjectId || store.subjects[0]?.id || '',
+    subject_id: defaultSubj,
     facility_id: editingClass?.facility_id || store.facilities[0]?.id || '',
     time_slot_id: editingClass?.time_slot_id || store.timeSlots[0]?.id || '',
-    days_of_week: (editingClass?.days_of_week && editingClass.days_of_week.length === 2)
-      ? editingClass.days_of_week
-      : (store.timeSlots[0]?.days_of_week && store.timeSlots[0].days_of_week.length === 2)
-      ? store.timeSlots[0].days_of_week
-      : ['T2', 'T4'],
+    days_of_week: initialDays,
     start_date: editingClass?.start_date || store.terms.find(t => t.id === defaultTermId)?.start_date || '2026-09-01',
     primary_teacher_id: editingClass?.primary_teacher_id || store.teachers[0]?.id || '',
     max_students: editingClass?.max_students || 15,
@@ -243,14 +278,17 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     } else {
       // Reset form trống khi bấm "+ Mở Lớp Mới"
       const termTarget = store.terms.find(t => t.id === defaultTermId);
+      const initSubj = initialSubjectId || store.subjects[0]?.id || '';
+      const initDays = ['T2', 'T4'];
+      const autoName = buildAutoClassName(initSubj, defaultCampusId, defaultTermId, initDays);
       setFormData({
-        name: '',
+        name: autoName,
         term_id: defaultTermId,
         campus_id: defaultCampusId,
-        subject_id: initialSubjectId || store.subjects[0]?.id || '',
+        subject_id: initSubj,
         facility_id: store.facilities[0]?.id || '',
         time_slot_id: store.timeSlots[0]?.id || '',
-        days_of_week: ['T2', 'T4'],
+        days_of_week: initDays,
         start_date: termTarget?.start_date || '2026-09-01',
         primary_teacher_id: store.teachers[0]?.id || '',
         max_students: 15,
@@ -385,10 +423,8 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     const termObj = store.terms.find(t => t.id === newTermId) || store.terms[0];
     const isCampusChanged = newCampusId !== formData.campus_id;
     
-    // Auto generate suggested class name
-    const subj = store.subjects.find(s => s.id === newSubjId);
-    const camp = store.campuses.find(c => c.id === newCampusId);
-    const suggestedName = subj && camp ? `${subj.name} ${camp.code} (${formData.days_of_week.join('-')})` : formData.name;
+    // Auto generate standardized class name
+    const autoName = buildAutoClassName(newSubjId, newCampusId, newTermId, formData.days_of_week);
 
     setFormData(prev => ({
       ...prev,
@@ -397,7 +433,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       subject_id: newSubjId,
       facility_id: isCampusChanged ? '' : prev.facility_id,
       start_date: termObj?.start_date || prev.start_date,
-      name: editingClass ? prev.name : suggestedName,
+      name: autoName, // Tự động áp dụng tên chuẩn
     }));
   };
 
@@ -406,7 +442,8 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     if (formData.days_of_week.includes(code)) {
       if (formData.days_of_week.length > 1) {
         const nextDays = formData.days_of_week.filter(d => d !== code);
-        setFormData(prev => ({ ...prev, days_of_week: nextDays }));
+        const autoName = buildAutoClassName(formData.subject_id, formData.campus_id, formData.term_id, nextDays);
+        setFormData(prev => ({ ...prev, days_of_week: nextDays, name: autoName }));
         setDayPickerNotice(null);
       } else {
         setDayPickerNotice('Lớp học cần tối thiểu 1 ngày trước khi chọn ngày khác.');
@@ -418,7 +455,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
         setTimeout(() => setDayPickerNotice(null), 3000);
       } else {
         const nextDays = [...formData.days_of_week, code];
-        setFormData(prev => ({ ...prev, days_of_week: nextDays }));
+        const autoName = buildAutoClassName(formData.subject_id, formData.campus_id, formData.term_id, nextDays);
+        setFormData(prev => ({
+          ...prev,
+          days_of_week: nextDays,
+          name: autoName,
+        }));
         setDayPickerNotice(null);
       }
     }
