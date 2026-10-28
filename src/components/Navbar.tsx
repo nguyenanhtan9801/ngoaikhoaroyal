@@ -339,7 +339,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <div className="flex items-center gap-1.5">
                     <span className="font-extrabold text-sm tracking-wider text-white">ROYAL SCHOOL</span>
                   </div>
-                  <p className="text-[10px] text-slate-400 font-medium leading-none mt-0.5">Hệ Thống Ngoại Khóa Toàn Diện</p>
+                  <p className="text-[10px] text-slate-400 font-medium leading-none mt-0.5">Hệ thống quản lý Ngoại khóa</p>
                 </div>
               </div>
             </div>
@@ -627,8 +627,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* Drawer Footer */}
             <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-500">
-              <span>Trường Song Ngữ Quốc Tế Hoàng Gia</span>
-              <span className="font-mono text-amber-400/80">Phiên bản 2.6</span>
+              <span>Trung tâm Quản lý Học vụ - Dịch vụ</span>
+              <span className="font-mono text-amber-400/80">Version 3.1</span>
             </div>
 
           </div>

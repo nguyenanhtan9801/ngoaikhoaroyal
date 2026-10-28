@@ -838,8 +838,8 @@ export default function App() {
       {/* Footer */}
       <footer className="mt-auto border-t border-slate-900 bg-[#07090E] py-3 text-center text-xs text-slate-500">
         <div className="max-w-[1780px] mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>&copy; 2026 Trường Song Ngữ Quốc Tế Hoàng Gia. Bảo lưu mọi quyền.</span>
-          <span className="font-mono text-amber-500/80">Hệ Thống Quản Lý Ngoại Khóa v2.6</span>
+          <span>&copy; 2026 Trung tâm Quản lý Học vụ - Dịch vụ</span>
+          <span className="font-mono text-amber-500/80">Version 3.1</span>
         </div>
       </footer>
 

@@ -510,7 +510,7 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
                       type="text"
                       value={staffUsername}
                       onChange={e => { setStaffUsername(e.target.value); setStaffError(null); }}
-                      placeholder="Ví dụ: ntp.hanh hoặc ntp.hanh@royal.edu.vn"
+                      placeholder=""
                       className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs focus:outline-none focus:border-amber-500 transition-colors placeholder:text-slate-500"
                       autoFocus
                       required
@@ -671,30 +671,11 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
           )}
         </div>
 
-        {/* Chân Modal Đăng Nhập */}
-        <div className="flex items-center justify-between pt-4 border-t border-slate-800 text-xs text-slate-400 p-4 bg-slate-950/80">
-          <div>
-            Phiên làm việc: <span className="text-amber-400 font-semibold">{currentUser?.username || 'Chưa đăng nhập'}</span>
-          </div>
-          
-          {currentUser && (
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="flex items-center gap-1.5 px-3 py-1 rounded bg-slate-800 text-slate-300 hover:bg-rose-500/20 hover:text-rose-400 border border-slate-700 transition-colors"
-            >
-              <span>[→ Đăng Xuất]</span>
-            </button>
-          )}
-        </div>
-
-        {/* Security & Support Info */}
-        <div className="px-5 py-2.5 bg-black/60 border-t border-slate-900/80 text-[10px] text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-1">
-          <div>
-            🔒 Hệ thống bảo mật nội bộ Royal School &bull; SSL 256-bit &bull; Supabase Engine
-          </div>
-          <div>
-            Hotline Học Vụ &amp; CNTT: <strong className="text-amber-400/90 font-mono">(028) 7101 6669</strong>
+        {/* Support Info */}
+        <div className="px-5 py-2.5 bg-black/60 border-t border-slate-900/80 text-[10px] text-slate-400 flex items-center justify-center">
+          <div className="text-center space-y-0.5 leading-relaxed">
+            <div>CƠ SỞ PHÚ MỸ HƯNG: <strong className="text-amber-400/90 font-mono">(028) 7108 7676 - 076 5420 355</strong></div>
+            <div>CƠ SỞ PHÚ LÂM: <strong className="text-amber-400/90 font-mono">(028) 7107 7676 - 076 7648 166</strong></div>
           </div>
         </div>
       </div>
