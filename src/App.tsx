@@ -30,7 +30,7 @@ import { safeStorage, supabase } from './supabaseClient';
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
 
-  // User Authentication State (Persists across F5 via safeStorage unless explicitly logged out)
+  // User Authentication State: BẮT BUỘC PHẢI CÓ SESSION HỢP LỆ MỚI ĐƯỢC ĐĂNG NHẬP
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
     try {
       if (safeStorage.getItem('royal_logged_out') === 'true') {
@@ -38,13 +38,14 @@ export default function App() {
       }
       const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (parsed && parsed.id) return parsed;
       }
     } catch {
       // noop
     }
-    const initialStore = loadStore();
-    return initialStore.users[0] || null;
+    // Mặc định là NULL, TUYỆT ĐỐI KHÔNG tự động lấy users[0]
+    return null;
   });
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -53,20 +54,19 @@ export default function App() {
         return false;
       }
       const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
-      if (stored) return true;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && parsed.id) return true;
+      }
     } catch {
       // noop
     }
-    const initialStore = loadStore();
-    return Boolean(initialStore.users[0]);
+    return false;
   });
 
   // Set currentRole based on currentUser if logged in
   const [currentRole, setCurrentRole] = useState<UserRole>(() => {
     try {
-      if (safeStorage.getItem('royal_logged_out') === 'true') {
-        return 'super_admin';
-      }
       const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
       if (stored) {
         const u = JSON.parse(stored);
