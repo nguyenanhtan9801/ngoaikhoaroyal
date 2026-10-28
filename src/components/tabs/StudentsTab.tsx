@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Users, 
   UserPlus, 
@@ -98,6 +98,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const [selectedCampus, setSelectedCampus] = useState<'all' | 'pmh' | 'pl'>('all');
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
   const [onlyHealth, setOnlyHealth] = useState(focusHealth);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number | 'all'>(50); // Mặc định 50 học sinh/trang
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -179,7 +181,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               days_of_week
             )
           )
-        `);
+        `)
+        .order('code', { ascending: true })
+        .range(0, 4999); // Ép tải toàn bộ học sinh, không bị chặn ở 20 dòng
 
       if (studentsErr) {
         const fallbackJoin = await client
@@ -192,11 +196,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 *
               )
             )
-          `);
+          `)
+          .order('code', { ascending: true })
+          .range(0, 4999);
         if (!fallbackJoin.error && fallbackJoin.data) {
           studentsData = fallbackJoin.data;
         } else {
-          const plainStudents = await client.from('students').select('*');
+          const plainStudents = await client
+            .from('students')
+            .select('*')
+            .order('code', { ascending: true })
+            .range(0, 4999);
           if (!plainStudents.error && plainStudents.data) {
             studentsData = plainStudents.data;
           }
@@ -204,15 +214,15 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       }
 
       const [enrRes, clsRes] = await Promise.all([
-        client.from('enrollments').select('*, extracurricular_classes(*)'),
-        client.from('extracurricular_classes').select('*'),
+        client.from('enrollments').select('*, extracurricular_classes(*)').range(0, 9999),
+        client.from('extracurricular_classes').select('*').range(0, 999),
       ]);
 
       let remoteEnrollmentsRaw: any[] = [];
       if (!enrRes.error && Array.isArray(enrRes.data)) {
         remoteEnrollmentsRaw = enrRes.data;
       } else {
-        const plainEnr = await client.from('enrollments').select('*');
+        const plainEnr = await client.from('enrollments').select('*').range(0, 9999);
         if (!plainEnr.error && Array.isArray(plainEnr.data)) {
           remoteEnrollmentsRaw = plainEnr.data;
         }
@@ -593,6 +603,19 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       return matchCampus && matchType && matchHealth && matchSearch;
     });
   }, [store.students, selectedCampus, filterType, onlyHealth, search]);
+
+  const paginatedStudents = useMemo(() => {
+    if (pageSize === 'all') return filteredStudents;
+    const startIdx = (currentPage - 1) * pageSize;
+    return filteredStudents.slice(startIdx, startIdx + pageSize);
+  }, [filteredStudents, currentPage, pageSize]);
+
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filteredStudents.length / pageSize);
+
+  // Tự động reset về trang 1 khi đổi bộ lọc tìm kiếm hoặc cơ sở
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedCampus, filterType, search, onlyHealth]);
 
   // Convert Outside Student to Royal Student
   const handleConfirmConvert = (student: Student) => {
@@ -1508,7 +1531,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {filteredStudents.map(student => {
+                {paginatedStudents.map(student => {
                   const studentEnrollments = getStudentEnrollmentsList(student);
                   const isRoyal = checkIsRoyalStudent(student);
 
@@ -1768,11 +1791,59 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               </tbody>
             </table>
           </div>
+          <div className="p-4 bg-slate-900/90 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-300">
+            <div className="flex items-center gap-2">
+              <span>Hiển thị:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
+              >
+                <option value={20}>20 học sinh/trang</option>
+                <option value={50}>50 học sinh/trang</option>
+                <option value={100}>100 học sinh/trang</option>
+                <option value="all">Xem tất cả ({filteredStudents.length})</option>
+              </select>
+              <span className="text-slate-400">
+                (Đang xem {filteredStudents.length === 0 ? 0 : (currentPage - 1) * (pageSize === 'all' ? filteredStudents.length : pageSize) + 1} - {Math.min(currentPage * (pageSize === 'all' ? filteredStudents.length : pageSize), filteredStudents.length)} trên tổng {filteredStudents.length} học sinh)
+              </span>
+            </div>
+
+            {pageSize !== 'all' && totalPages > 1 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={currentPage === 1}
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-white font-semibold transition-colors"
+                >
+                  ← Trước
+                </button>
+
+                <span className="px-3 py-1.5 font-mono text-amber-400 font-bold bg-slate-950 rounded-xl border border-slate-800">
+                  Trang {currentPage} / {totalPages}
+                </span>
+
+                <button
+                  type="button"
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-white font-semibold transition-colors"
+                >
+                  Tiếp theo →
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         /* VIEW MODE 2: DẠNG THẺ (CARDS VIEW) */
+        <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredStudents.map(student => {
+          {paginatedStudents.map(student => {
             const studentEnrollments = getStudentEnrollmentsList(student);
             const isRoyal = checkIsRoyalStudent(student);
 
@@ -2044,6 +2115,54 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               </div>
             );
           })}
+        </div>
+        <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-300">
+          <div className="flex items-center gap-2">
+            <span>Hiển thị:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
+            >
+              <option value={20}>20 học sinh/trang</option>
+              <option value={50}>50 học sinh/trang</option>
+              <option value={100}>100 học sinh/trang</option>
+              <option value="all">Xem tất cả ({filteredStudents.length})</option>
+            </select>
+            <span className="text-slate-400">
+              (Đang xem {filteredStudents.length === 0 ? 0 : (currentPage - 1) * (pageSize === 'all' ? filteredStudents.length : pageSize) + 1} - {Math.min(currentPage * (pageSize === 'all' ? filteredStudents.length : pageSize), filteredStudents.length)} trên tổng {filteredStudents.length} học sinh)
+            </span>
+          </div>
+
+          {pageSize !== 'all' && totalPages > 1 && (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-white font-semibold transition-colors"
+              >
+                ← Trước
+              </button>
+
+              <span className="px-3 py-1.5 font-mono text-amber-400 font-bold bg-slate-950 rounded-xl border border-slate-800">
+                Trang {currentPage} / {totalPages}
+              </span>
+
+              <button
+                type="button"
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-white font-semibold transition-colors"
+              >
+                Tiếp theo →
+              </button>
+            </div>
+          )}
+        </div>
         </div>
       )}
 
