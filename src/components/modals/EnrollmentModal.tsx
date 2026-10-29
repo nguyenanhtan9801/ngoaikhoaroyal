@@ -6,7 +6,8 @@ import {
   Calendar, 
   Sparkles, 
   CheckCircle2, 
-  AlertCircle 
+  AlertCircle,
+  Building2 
 } from 'lucide-react';
 import { Student, ExtracurricularClass, Enrollment, TuitionInvoice, AppStore, Holiday, AcademicTerm } from '../../types';
 import { 
@@ -157,13 +158,40 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     return activeTerm?.id || '';
   });
 
-  // Lọc các lớp thuộc khóa học đang chọn
+  // Mặc định lấy theo cơ sở của học sinh đang ghi danh (PMH hoặc PL)
+  const [selectedCampusFilter, setSelectedCampusFilter] = useState<string>(() => {
+    const cId = String(enrollingStudent?.campus_id || '').toLowerCase();
+    if (cId.includes('pl')) return 'pl';
+    if (cId.includes('pmh')) return 'pmh';
+    return 'all';
+  });
+
+  // Reset theo cơ sở của học sinh mỗi khi mở modal với học sinh mới
+  useEffect(() => {
+    if (enrollingStudent?.campus_id) {
+      const cId = String(enrollingStudent.campus_id).toLowerCase();
+      setSelectedCampusFilter(cId.includes('pl') ? 'pl' : 'pmh');
+    } else {
+      setSelectedCampusFilter('all');
+    }
+  }, [enrollingStudent]);
+
+  // Lọc lớp theo cả Khóa học và Cơ sở
   const termClasses = useMemo(() => {
-    if (!selectedTermId) return store.classes;
-    return store.classes.filter(
-      (cls) => cls.term_id === selectedTermId || (cls as any).primary_term_id === selectedTermId
-    );
-  }, [store.classes, selectedTermId]);
+    return (store.classes || []).filter((cls) => {
+      const matchTerm = !selectedTermId || cls.term_id === selectedTermId || (cls as any).primary_term_id === selectedTermId;
+      
+      // Lọc theo cơ sở
+      const cCampus = String(cls.campus_id || '').toLowerCase();
+      const matchCampus = selectedCampusFilter === 'all' 
+        ? true 
+        : selectedCampusFilter === 'pl' 
+        ? (cCampus === 'pl' || cCampus === 'camp_pl' || cls.name.toUpperCase().includes('PL'))
+        : (cCampus === 'pmh' || cCampus === 'camp_pmh' || cls.name.toUpperCase().includes('PMH'));
+
+      return matchTerm && matchCampus;
+    });
+  }, [store.classes, selectedTermId, selectedCampusFilter]);
 
   const availableClasses = useMemo(() => {
     return termClasses.filter((cls) => !enrolledClassIds.includes(String(cls.id)));
@@ -259,15 +287,18 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     }
   };
 
-  // Đồng bộ selectedClassId khi termClasses thay đổi
+  // Khi đổi cơ sở hoặc danh sách lớp thay đổi, tự động chọn lớp đầu tiên hợp lệ của cơ sở đó
   useEffect(() => {
-    if (!selectedTermId) return;
-    const isCurrentValid = termClasses.some((c) => String(c.id) === String(selectedClassId));
-    if (!isCurrentValid && termClasses.length > 0) {
-      const openClass = termClasses.find((c) => !enrolledClassIds.includes(String(c.id))) || termClasses[0];
-      setSelectedClassId(openClass?.id || '');
+    if (termClasses.length > 0) {
+      const isStillValid = termClasses.some(c => String(c.id) === String(selectedClassId));
+      if (!isStillValid) {
+        const openClass = termClasses.find((c) => !enrolledClassIds.includes(String(c.id))) || termClasses[0];
+        setSelectedClassId(openClass?.id || termClasses[0].id);
+      }
+    } else {
+      setSelectedClassId('');
     }
-  }, [selectedTermId, termClasses, selectedClassId, enrolledClassIds]);
+  }, [selectedCampusFilter, termClasses, selectedClassId, enrolledClassIds]);
 
   const [isTrialMode, setIsTrialMode] = useState<boolean>(false);
   const [trialSessionDate, setTrialSessionDate] = useState<string>('');
@@ -824,12 +855,61 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
             </select>
           </div>
 
-          {/* 1. Chọn Môn Học */}
+          {/* 1. Chọn Cơ sở trường (Campus) */}
+          <div className="space-y-1.5 pb-1">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                <Building2 className="w-3.5 h-3.5 text-amber-400"/>
+                <span>1. Chọn Cơ sở đào tạo (Campus) <span className="text-rose-400">*</span>:</span>
+              </label>
+              <span className="text-[11px] font-mono text-slate-400">
+                {selectedCampusFilter === 'all' ? 'Toàn hệ thống' : selectedCampusFilter === 'pmh' ? 'Cơ sở PMH' : 'Cơ sở PL'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedCampusFilter('all')}
+                className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                  selectedCampusFilter === 'all'
+                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20'
+                    : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                Tất cả cơ sở
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedCampusFilter('pmh')}
+                className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                  selectedCampusFilter === 'pmh'
+                    ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20'
+                    : 'bg-slate-900 text-emerald-400 border-slate-700 hover:border-emerald-500/40'
+                }`}
+              >
+                Phú Mỹ Hưng (PMH)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedCampusFilter('pl')}
+                className={`py-2 px-2.5 rounded-xl text-xs font-bold transition-all border ${
+                  selectedCampusFilter === 'pl'
+                    ? 'bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-600/20'
+                    : 'bg-slate-900 text-purple-300 border-slate-700 hover:border-purple-500/40'
+                }`}
+              >
+                Phú Lâm (PL)
+              </button>
+            </div>
+          </div>
+
+          {/* Chọn Môn Học */}
           <div>
             <label className="block text-slate-400 font-medium mb-1 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <BookOpen className="w-3.5 h-3.5 text-amber-400" />
-                <span>1. Chọn môn học:</span>
+                <span>Chọn môn học:</span>
               </span>
               {selectedEnrollSubjectId !== 'all' && (
                 <button
