@@ -27,6 +27,60 @@ import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, 
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
 import { safeStorage, supabase } from './supabaseClient';
 
+const ROUTE_HASH_MAP: Record<string, string> = {
+  sub_kpi: 'kpi',
+  sub_parents: 'parents',
+  sub_students: 'students',
+  sub_students_health: 'students-health',
+  sub_credits: 'credits',
+  sub_term_subjects: 'term-subjects',
+  sub_pricing: 'pricing',
+  sub_classes: 'classes',
+  sub_schedule: 'schedule',
+  sub_attendance: 'attendance',
+  sub_snacks: 'snacks',
+  sub_finance_invoices: 'invoices',
+  sub_finance_payroll: 'payroll',
+  sub_finance_transfer: 'transfer',
+  sub_users: 'users',
+  sub_settings: 'settings',
+  sub_holidays: 'holidays',
+  sub_audit_logs: 'audit-logs',
+  sub_backup: 'backup',
+};
+
+// Hàm đọc route từ Hash URL hoặc Session khi khởi tạo
+const getInitialRouteFromUrl = (): string => {
+  if (typeof window === 'undefined') return 'sub_kpi';
+
+  // 1. Kiểm tra Hash trên URL (#pricing, #students...)
+  const hash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
+  if (hash) {
+    for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
+      if (hash === hashName || hash === routeId) return routeId;
+    }
+  }
+
+  // 2. Kiểm tra query param (?tab=pricing...)
+  const params = new URLSearchParams(window.location.search);
+  const tab = (params.get('tab') || params.get('view') || '').trim().toLowerCase();
+  if (tab) {
+    for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
+      if (tab === hashName || tab === routeId) return routeId;
+    }
+  }
+
+  // 3. Kiểm tra sessionStorage lưu gần nhất
+  try {
+    const saved = sessionStorage.getItem('royal_last_active_route') || localStorage.getItem('royal_last_active_route');
+    if (saved && ROUTE_HASH_MAP[saved]) return saved;
+  } catch {
+    // ignore
+  }
+
+  return 'sub_kpi';
+};
+
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
 
@@ -158,8 +212,8 @@ export default function App() {
     setIsLoginModalOpen(true);
   };
   
-  // Current active navigation route (handled via top navbar dropdowns and direct links)
-  const [currentRoute, setCurrentRoute] = useState<string>('sub_kpi');
+  // Current active navigation route (handled via top navbar dropdowns, direct links, and URL Hash)
+  const [currentRoute, setCurrentRoute] = useState<string>(() => getInitialRouteFromUrl());
 
   // Filter states (respect campus scope if user is restricted to PMH or PL)
   const [selectedCampusId, setSelectedCampusId] = useState<string>(() =>
@@ -206,9 +260,37 @@ export default function App() {
 
   const [isStandalonePortal, setIsStandalonePortal] = useState<boolean>(() => checkIsStandalonePortal());
 
+  // Đồng bộ 2 chiều: Khi currentRoute thay đổi -> Cập nhật URL Hash & lưu sessionStorage/localStorage
+  useEffect(() => {
+    if (typeof window === 'undefined' || checkIsStandalonePortal()) return;
+    const targetHash = ROUTE_HASH_MAP[currentRoute] || 'kpi';
+    const currentCleanHash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
+    if (currentCleanHash !== targetHash) {
+      window.history.replaceState(null, '', `#${targetHash}`);
+    }
+    try {
+      sessionStorage.setItem('royal_last_active_route', currentRoute);
+      localStorage.setItem('royal_last_active_route', currentRoute);
+    } catch {
+      // ignore
+    }
+  }, [currentRoute]);
+
   useEffect(() => {
     const handleUrlChange = () => {
-      setIsStandalonePortal(checkIsStandalonePortal());
+      const isPortal = checkIsStandalonePortal();
+      setIsStandalonePortal(isPortal);
+      if (!isPortal) {
+        const hash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
+        if (hash) {
+          for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
+            if (hash === hashName || hash === routeId) {
+              setCurrentRoute(routeId);
+              break;
+            }
+          }
+        }
+      }
     };
     window.addEventListener('popstate', handleUrlChange);
     window.addEventListener('hashchange', handleUrlChange);

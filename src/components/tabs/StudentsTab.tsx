@@ -1292,6 +1292,75 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     await handlePromoteToOfficial(studentId, enr?.class_id, enrollmentId);
   };
 
+  // Hủy ghi danh lớp học (Khi nhân sự xếp nhầm lớp cho học sinh)
+  const handleCancelEnrollment = async (student: Student, classId: string, className: string) => {
+    const confirmMsg = `Xác nhận hủy ghi danh học sinh "${student.name}" khỏi lớp "${className}"?\n(Thao tác này sẽ giải phóng sĩ số lớp và tự động dọn hóa đơn học phí chưa thanh toán của lớp này).`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        // 1. Gọi RPC xóa an toàn trên Supabase
+        const { data: res, error: rpcErr } = await client.rpc('cancel_class_enrollment', {
+          p_student_id: student.id,
+          p_class_id: classId,
+          p_reason: 'Nhân sự hủy do xếp nhầm lớp'
+        });
+        if (rpcErr || (res && res.success === false)) {
+          console.warn('Lỗi RPC cancel_class_enrollment, thực hiện fallback DELETE:', rpcErr || res);
+          await client.from('enrollments').delete().eq('class_id', classId).or(`student_id.eq.${student.id},student_id.eq.${student.code}`);
+          await client.from('tuition_invoices').delete().eq('class_id', classId).in('payment_status', ['unpaid', 'trial_pending']).or(`student_id.eq.${student.id},student_id.eq.${student.code}`);
+        }
+      }
+
+      // 2. Cập nhật Local Store
+      onUpdateStore(prev => ({
+        ...prev,
+        students: prev.students.map(s => {
+          if (String(s.id) === String(student.id) || String(s.code) === String(student.code)) {
+            const nested = Array.isArray((s as any).enrollments)
+              ? (s as any).enrollments.filter((ne: any) => String(ne?.class_id) !== String(classId))
+              : undefined;
+            return {
+              ...s,
+              ...(nested !== undefined ? { enrollments: nested } : {}),
+            };
+          }
+          return s;
+        }),
+        enrollments: prev.enrollments.filter(
+          e => !(
+            (String(e.student_id) === String(student.id) || String(e.student_id) === String(student.code)) &&
+            String(e.class_id) === String(classId)
+          )
+        ),
+        invoices: prev.invoices.filter(
+          inv => !(
+            (String(inv.student_id) === String(student.id) || String(inv.student_id) === String(student.code)) &&
+            String(inv.class_id) === String(classId) &&
+            (inv.payment_status === 'unpaid' || inv.payment_status === 'trial_pending')
+          )
+        ),
+        classes: prev.classes.map(c =>
+          c.id === classId ? ({ ...c, enrolled_count: Math.max(0, ((c as any).enrolled_count || 1) - 1) } as any) : c
+        )
+      }));
+
+      showToast({
+        title: 'Đã hủy xếp lớp',
+        message: `Đã rút học sinh ${student.name} khỏi lớp ${className} thành công!`,
+        type: 'success'
+      });
+
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
+    } catch (err: any) {
+      console.error('Lỗi khi hủy xếp lớp:', err);
+      alert('Không thể hủy xếp lớp: ' + (err.message || String(err)));
+    }
+  };
+
   // Drop Trial Enrollment (Nghỉ sau buổi học thử 1 - Hủy hóa đơn, không nợ, giải phóng chỗ)
   const handleConfirmDropTrial = (enrollmentId: string, notes?: string) => {
     const enr = store.enrollments.find(e => e.id === enrollmentId);
@@ -1680,12 +1749,12 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
                               return (
                                 <div key={enr.id} className="flex flex-col gap-1">
-                                  <div className="flex items-center gap-1 flex-wrap">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
                                     {isTrial ? (
                                       <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold inline-flex items-center gap-1 shadow-sm w-fit">
                                         <span>🟣</span>
                                         <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
-                                        <span>{shortName} (Học Thử Buổi 1)</span>
+                                        <span>{shortName} (Học Thử)</span>
                                       </span>
                                     ) : (
                                       <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold inline-flex items-center gap-1 w-fit">
@@ -1694,6 +1763,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         <span>{shortName} (Chính thức)</span>
                                       </span>
                                     )}
+
+                                    {/* Nút Hủy Xếp Lớp */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCancelEnrollment(student, c.id, c.name)}
+                                      className="p-1 rounded-md bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-rose-100 border border-rose-500/30 transition-all cursor-pointer"
+                                      title={`Hủy ghi danh bé khỏi lớp ${c.name} (Xóa nếu xếp nhầm)`}
+                                    >
+                                      <X className="w-3 h-3 text-rose-400" />
+                                    </button>
+
                                     <span className={`px-1.5 py-0.5 rounded text-[9.5px] font-mono font-bold border ${
                                       isPartial
                                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
@@ -2001,19 +2081,32 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           return (
                             <div key={enr.id} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
                               <div className="flex items-center justify-between gap-2 flex-wrap">
-                                {isTrial ? (
-                                  <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
-                                    <span>🟣</span>
-                                    <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
-                                    <span className="truncate">{shortName} (Học Thử Buổi 1)</span>
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
-                                    <span>🟢</span>
-                                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                    <span className="truncate">{shortName} (Chính thức)</span>
-                                  </span>
-                                )}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {isTrial ? (
+                                    <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
+                                      <span>🟣</span>
+                                      <Sparkles className="w-3 h-3 text-purple-400 shrink-0" />
+                                      <span className="truncate">{shortName} (Học Thử)</span>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold flex items-center gap-1">
+                                      <span>🟢</span>
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      <span className="truncate">{shortName} (Chính thức)</span>
+                                    </span>
+                                  )}
+
+                                  {/* Nút Hủy Xếp Lớp */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelEnrollment(student, c.id, c.name)}
+                                    className="p-1 rounded-md bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-rose-100 border border-rose-500/30 transition-all cursor-pointer"
+                                    title={`Hủy ghi danh bé khỏi lớp ${c.name} (Xóa nếu xếp nhầm)`}
+                                  >
+                                    <X className="w-3 h-3 text-rose-400" />
+                                  </button>
+                                </div>
+
                                 <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${
                                   isPartial
                                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
