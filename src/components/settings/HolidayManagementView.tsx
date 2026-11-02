@@ -13,6 +13,7 @@ import {
 import { AppStore, Holiday } from '../../types';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { HolidayModal, calculateHolidayDaysCount } from '../modals/HolidayModal';
+import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 
 interface HolidayManagementViewProps {
   store: AppStore;
@@ -40,46 +41,49 @@ export const HolidayManagementView: React.FC<HolidayManagementViewProps> = ({
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingHoliday, setEditingHoliday] = useState<Holiday | null>(null);
 
-  // 1. Nạp danh sách ngày nghỉ từ Supabase
+  // Đồng bộ từ store trung tâm (không tự động gọi Supabase khi mở màn hình)
+  useEffect(() => {
+    const all = store.holidays || [];
+    if (filterCampus === 'all') {
+      setHolidays(all);
+    } else if (filterCampus === 'all_campuses') {
+      setHolidays(all.filter(h => !h.campus_id));
+    } else {
+      setHolidays(all.filter(h => !h.campus_id || h.campus_id === filterCampus));
+    }
+  }, [store.holidays, filterCampus]);
+
+  // 1. Nạp danh sách ngày nghỉ từ Supabase (chỉ chạy khi bấm "Làm mới" hoặc sau khi ghi dữ liệu)
   const fetchHolidays = async () => {
     const client = getSupabaseClient() || supabase;
     if (!client) return;
     setIsLoading(true);
     try {
-      let query = client.from('holidays').select('*').order('start_date', { ascending: true });
-      if (filterCampus && filterCampus !== 'all') {
-        if (filterCampus === 'all_campuses') {
-          query = query.is('campus_id', null);
-        } else {
-          query = query.or(`campus_id.eq.${filterCampus},campus_id.is.null`);
-        }
-      }
-      const { data, error } = await query;
-      if (!error && data) {
-        setHolidays(data as Holiday[]);
-      }
+      invalidateFetchOnce('holidays:');
+      const allHolidays = await fetchOnce(
+        'holidays:all',
+        async () => {
+          const { data, error } = await client
+            .from('holidays')
+            .select('*')
+            .order('start_date', { ascending: true });
+          if (error) throw error;
+          return Array.isArray(data) ? (data as Holiday[]) : [];
+        },
+        60000,
+        { force: true }
+      );
 
-      // Đồng bộ toàn bộ ngày nghỉ vào store.holidays để dùng cho tính toán buổi học
-      const { data: allHolidays } = await client
-        .from('holidays')
-        .select('*')
-        .order('start_date', { ascending: true });
-      if (allHolidays) {
-        onUpdateStore((prev) => ({
-          ...prev,
-          holidays: allHolidays as Holiday[],
-        }));
-      }
+      onUpdateStore((prev) => ({
+        ...prev,
+        holidays: allHolidays,
+      }));
     } catch (err) {
       console.error('Lỗi tải danh sách ngày nghỉ lễ:', err);
     } finally {
       setIsLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchHolidays();
-  }, [filterCampus]);
 
   // 2. Thêm mới / Cập nhật ngày nghỉ lễ
   const handleSaveHoliday = async (formData: any) => {

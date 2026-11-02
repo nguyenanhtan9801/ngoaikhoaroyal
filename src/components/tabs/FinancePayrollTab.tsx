@@ -41,6 +41,7 @@ import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
+import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 
 interface FinancePayrollTabProps {
   store: AppStore;
@@ -94,43 +95,45 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       .toLowerCase();
   };
 
-  // Fetch invoices directly from Supabase to guarantee real-time sync
-  const fetchInvoicesFromSupabase = async () => {
+  // Chỉ tải lại danh sách hóa đơn từ Supabase khi người dùng bấm "Làm mới" hoặc sau khi vừa ghi dữ liệu (không tự gọi khi mở tab)
+  const fetchInvoicesFromSupabase = async (forceOrEvent?: boolean | React.MouseEvent<HTMLButtonElement>) => {
     const client = getSupabaseClient() || supabase;
     if (!client) return;
+    const force = typeof forceOrEvent === 'boolean' ? forceOrEvent : true;
     try {
       setIsRefreshingInvoices(true);
-      let { data, error } = await client
-        .from('tuition_invoices')
-        .select(`
-          *,
-          students (
-            id,
-            code,
-            name,
-            parent_phone
-          ),
-          extracurricular_classes (
-            id,
-            name,
-            code
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        const fallbackRes = await client
-          .from('tuition_invoices')
-          .select('*')
-          .order('created_at', { ascending: false });
-        data = fallbackRes.data as any;
-        error = fallbackRes.error;
+      if (force) {
+        invalidateFetchOnce('tuition_invoices:');
       }
+      const data = await fetchOnce(
+        'tuition_invoices:list',
+        async () => {
+          const { data: rows, error } = await client
+            .from('tuition_invoices')
+            .select(`
+              *,
+              students (
+                id,
+                code,
+                name,
+                parent_phone
+              ),
+              extracurricular_classes (
+                id,
+                name,
+                code
+              )
+            `)
+            .order('created_at', { ascending: false });
 
-      if (error) {
-        console.warn('Lỗi fetch tuition_invoices từ Supabase:', error);
-        return;
-      }
+          if (error) {
+            throw error;
+          }
+          return Array.isArray(rows) ? rows : [];
+        },
+        60000,
+        { force }
+      );
 
       if (Array.isArray(data)) {
         const mappedInvoices = data.map((r: any) => mapSupabaseRowToStoreEntity('tuition_invoices', r));
@@ -145,10 +148,6 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       setIsRefreshingInvoices(false);
     }
   };
-
-  useEffect(() => {
-    fetchInvoicesFromSupabase();
-  }, []);
 
   React.useEffect(() => {
     if (initialSection) {

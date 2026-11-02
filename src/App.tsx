@@ -43,6 +43,7 @@ import { isRouteAllowed, getDefaultRouteForUser } from './lib/permissions';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
+import { buildGuestCatalogStore, loadPublicCatalogSafely } from './services/dataLoader';
 import { supabase } from './supabaseClient';
 import { ShieldAlert, ArrowLeft, KeyRound, X, Loader2 } from 'lucide-react';
 
@@ -101,8 +102,6 @@ const getInitialRouteFromUrl = (): string => {
 };
 
 export default function App() {
-  const [store, setStore] = useState<AppStore>(() => loadStore());
-
   // User Authentication State: Khi VITE_LEGACY_LOGIN='false', không chấp nhận phiên nào chỉ dựa trên JSON trong localStorage
   const [currentUser, setCurrentUser] = useState<AppUser | null>(() =>
     isLegacyLoginEnabled() ? getActiveSessionUser() : null
@@ -111,6 +110,12 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() =>
     isLegacyLoginEnabled() ? Boolean(getActiveSessionUser()) : false
   );
+
+  // Store cho khách (chưa đăng nhập nhân sự) chỉ chứa dữ liệu danh mục từ GET /api/public/catalog
+  const [store, setStore] = useState<AppStore>(() => {
+    const initialUser = isLegacyLoginEnabled() ? getActiveSessionUser() : null;
+    return initialUser ? loadStore() : buildGuestCatalogStore();
+  });
 
   // Nguyên tắc phân quyền: currentRole luôn lấy trực tiếp từ currentUser.role (bỏ mặc định 'super_admin' khi chưa đăng nhập)
   const currentRole: UserRole = currentUser?.role || 'teacher';
@@ -207,9 +212,12 @@ export default function App() {
       updateStore(prev => appendAuditLog(prev, logoutRecord));
     }
 
-    // 2. Reset toàn bộ state người dùng
+    // 2. Reset toàn bộ state người dùng & đưa store về chế độ danh mục công khai dành cho khách
     setCurrentUser(null);
     setIsAuthenticated(false);
+    loadPublicCatalogSafely().then(res => setStore(res.store)).catch(() => {
+      setStore(prev => buildGuestCatalogStore(prev));
+    });
 
     // 3. Xóa sạch dữ liệu phiên đăng nhập cục bộ sau khi signOut()
     try {
@@ -312,18 +320,31 @@ export default function App() {
     };
 
     if (supabase?.auth) {
-      supabase.auth
-        .getSession()
-        .then(({ data }) => {
-          syncSessionWithProfiles(data?.session?.user || null);
-        })
-        .catch(() => {
-          if (!isLegacyLoginEnabled() && isMounted) {
-            clearActiveSessionUser();
-            setCurrentUser(null);
-            setIsAuthenticated(false);
-          }
-        });
+      let hasStoredAuthSession = false;
+      try {
+        hasStoredAuthSession = Boolean(localStorage.getItem('royal_school_supabase_auth'));
+      } catch {
+        hasStoredAuthSession = false;
+      }
+
+      if (hasStoredAuthSession) {
+        supabase.auth
+          .getSession()
+          .then(({ data }) => {
+            syncSessionWithProfiles(data?.session?.user || null);
+          })
+          .catch(() => {
+            if (!isLegacyLoginEnabled() && isMounted) {
+              clearActiveSessionUser();
+              setCurrentUser(null);
+              setIsAuthenticated(false);
+            }
+          });
+      } else if (!isLegacyLoginEnabled()) {
+        clearActiveSessionUser();
+        setCurrentUser(null);
+        setIsAuthenticated(false);
+      }
 
       const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
         if (event === 'SIGNED_OUT') {
@@ -338,7 +359,7 @@ export default function App() {
           event === 'SIGNED_IN' ||
           event === 'TOKEN_REFRESHED' ||
           event === 'USER_UPDATED' ||
-          event === 'INITIAL_SESSION'
+          (event === 'INITIAL_SESSION' && session?.user)
         ) {
           syncSessionWithProfiles(session?.user || null);
         }
@@ -467,14 +488,15 @@ export default function App() {
     };
   }, []);
 
-  // Synchronize localStorage with event listener
+  // Synchronize localStorage with event listener (chỉ khi đã có nhân sự đăng nhập)
   useEffect(() => {
+    if (!currentUser) return;
     const handleStorageUpdate = () => {
       setStore(loadStore());
     };
     window.addEventListener('royal_store_updated', handleStorageUpdate);
     return () => window.removeEventListener('royal_store_updated', handleStorageUpdate);
-  }, []);
+  }, [currentUser]);
 
   // Cơ chế thu hồi phiên tức thì (Instant Session Invalidation) nếu tài khoản bị khóa & đồng bộ quyền hạn
   const forceLockoutCurrentUser = () => {

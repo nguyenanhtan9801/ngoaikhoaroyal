@@ -1608,6 +1608,8 @@ export async function uploadFileToServer(
 ): Promise<{
   success: boolean;
   url: string;
+  path?: string;
+  storedPath?: string;
   driveUrl: string;
   storedAt: string;
   fileName: string;
@@ -1640,12 +1642,15 @@ export async function uploadFileToServer(
       });
       if (res.ok) {
         const data = await res.json();
-        if (data?.url) {
+        const resolvedPath = data?.path || data?.storedPath || data?.url;
+        if (resolvedPath) {
           return {
             success: true,
-            url: data.url,
+            url: resolvedPath,
+            path: resolvedPath,
+            storedPath: resolvedPath,
             driveUrl: GOOGLE_DRIVE_ROOT_URL,
-            storedAt: data.storedPath || info.storedAt,
+            storedAt: resolvedPath,
             fileName: data.fileName || info.sanitizedName,
           };
         }
@@ -1658,6 +1663,8 @@ export async function uploadFileToServer(
   return {
     success: true,
     url: base64Data || info.driveUrl,
+    path: undefined,
+    storedPath: info.storedAt,
     driveUrl: GOOGLE_DRIVE_ROOT_URL,
     storedAt: info.storedAt,
     fileName: info.sanitizedName,

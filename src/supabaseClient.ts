@@ -226,15 +226,15 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
 };
 
 /**
- * Kiểm tra cờ môi trường VITE_LEGACY_LOGIN (mặc định 'true').
+ * Kiểm tra cờ môi trường VITE_LEGACY_LOGIN (mặc định 'false').
  * Khi VITE_LEGACY_LOGIN='false', hệ thống tắt hoàn toàn nhánh đăng nhập cũ và chỉ chấp nhận phiên từ Supabase Auth + bảng profiles.
  */
 export function isLegacyLoginEnabled(): boolean {
   const raw = (import.meta as any).env?.VITE_LEGACY_LOGIN;
   if (raw === undefined || raw === null || String(raw).trim() === '') {
-    return true;
+    return false;
   }
-  return String(raw).trim().toLowerCase() !== 'false';
+  return String(raw).trim().toLowerCase() === 'true';
 }
 
 /**

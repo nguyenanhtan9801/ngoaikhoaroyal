@@ -18,6 +18,7 @@ import {
 import { AppStore, Facility, UserRole } from '../../types';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { FacilityModal } from '../modals/FacilityModal';
+import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 
 interface FacilityManagementViewProps {
   store: AppStore;
@@ -43,41 +44,43 @@ export const FacilityManagementView: React.FC<FacilityManagementViewProps> = ({
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingFacility, setEditingFacility] = useState<Facility | null>(null);
 
-  // 1. Tải danh sách phòng học từ Supabase
+  // Đồng bộ từ store trung tâm (không tự động gọi Supabase khi mở màn hình)
+  useEffect(() => {
+    setFacilities(store.facilities || []);
+  }, [store.facilities]);
+
+  // 1. Tải danh sách phòng học từ Supabase (chỉ chạy khi bấm "Làm mới" hoặc sau khi ghi dữ liệu)
   const fetchFacilities = async () => {
     const client = getSupabaseClient() || supabase;
     if (!client) return;
     setIsLoading(true);
     try {
-      let query = client.from('facilities').select('*').order('created_at', { ascending: false });
-      if (filterCampus !== 'all') {
-        query = query.eq('campus_id', filterCampus);
-      }
-      const { data, error } = await query;
-      if (!error && data) {
-        setFacilities(data as Facility[]);
-        // Đồng bộ danh sách tổng vào store để badge số lượng và modal mở lớp luôn chính xác
-        const { data: allData } = await client
-          .from('facilities')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (allData) {
-          onUpdateStore((prev) => ({
-            ...prev,
-            facilities: allData as Facility[],
-          }));
-        }
-      }
+      invalidateFetchOnce('facilities:');
+      const allData = await fetchOnce(
+        'facilities:all',
+        async () => {
+          const { data, error } = await client
+            .from('facilities')
+            .select('*')
+            .order('created_at', { ascending: false });
+          if (error) throw error;
+          return Array.isArray(data) ? (data as Facility[]) : [];
+        },
+        60000,
+        { force: true }
+      );
+
+      setFacilities(allData);
+      onUpdateStore((prev) => ({
+        ...prev,
+        facilities: allData,
+      }));
     } catch (err) {
       console.error('Lỗi tải danh sách phòng học:', err);
     } finally {
       setIsLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchFacilities();
-  }, [filterCampus]);
 
   // 2. Thêm mới / Cập nhật phòng
   const handleSaveFacility = async (formData: any) => {

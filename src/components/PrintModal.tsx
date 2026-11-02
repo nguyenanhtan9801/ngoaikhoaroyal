@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Printer, QrCode, User } from 'lucide-react';
 import { TuitionInvoice, MakeupCredit, Student, ExtracurricularClass, ClassTransfer } from '../types';
 import { formatVND } from '../lib/storage';
+import { isPrivateStoragePath, resolveSignedFileUrl } from '../lib/fileStorage';
 import { RoyalLogo } from './RoyalLogo';
 
 export type PrintDocumentType = 
@@ -28,6 +29,28 @@ interface PrintModalProps {
 }
 
 export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => {
+  const [resolvedStudentAvatar, setResolvedStudentAvatar] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    const rawAvatar =
+      document && document.type === 'student_card' ? document.student.avatar_url || '' : '';
+    if (!rawAvatar) {
+      setResolvedStudentAvatar('');
+      return;
+    }
+    if (isPrivateStoragePath(rawAvatar)) {
+      resolveSignedFileUrl(rawAvatar).then(signed => {
+        if (active) setResolvedStudentAvatar(signed || '');
+      });
+    } else {
+      setResolvedStudentAvatar(rawAvatar);
+    }
+    return () => {
+      active = false;
+    };
+  }, [document]);
+
   if (!document) return null;
 
   const handlePrint = () => {
@@ -436,9 +459,9 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
               </div>
 
               <div className="flex items-center gap-4">
-                {document.student.avatar_url ? (
+                {resolvedStudentAvatar ? (
                   <img
-                    src={document.student.avatar_url}
+                    src={resolvedStudentAvatar}
                     alt={document.student.name}
                     className="w-24 h-28 rounded-2xl object-cover border-2 border-amber-600 shadow-sm"
                   />

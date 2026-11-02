@@ -1,5 +1,6 @@
 import express from 'express';
 import type { Request, Response } from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -31,18 +32,10 @@ function getPort(): number {
 
 const PORT = getPort();
 
-// Server-Side Uploads & Internal Data Directories
+// Internal Data Directory (cho nhật ký kiểm toán nội bộ)
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const PROOFS_DIR = path.join(UPLOADS_DIR, 'proofs');
-const STUDENTS_DIR = path.join(UPLOFS_DIR_FALLBACK(), 'students');
-function UPLOFS_DIR_FALLBACK() {
-  return UPLOADS_DIR;
-}
 const DATA_DIR = path.join(__dirname, 'data');
 
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-if (!fs.existsSync(PROOFS_DIR)) fs.mkdirSync(PROOFS_DIR, { recursive: true });
-if (!fs.existsSync(STUDENTS_DIR)) fs.mkdirSync(STUDENTS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const ADMIN_AUDIT_LOG_FILE = path.join(DATA_DIR, 'admin_audit.log');
@@ -65,28 +58,7 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ limit: '15mb', extended: true }));
 
-// Tuyệt đối không phục vụ file .log và chỉ phục vụ thư mục ảnh (proofs, students)
-app.use('/uploads', (req: Request, res: Response, next) => {
-  if (req.path.toLowerCase().endsWith('.log')) {
-    res.status(404).json({ error: 'Not Found' });
-    return;
-  }
-  next();
-});
-app.use(
-  '/uploads/proofs',
-  express.static(PROOFS_DIR, {
-    dotfiles: 'deny',
-    index: false,
-  })
-);
-app.use(
-  '/uploads/students',
-  express.static(STUDENTS_DIR, {
-    dotfiles: 'deny',
-    index: false,
-  })
-);
+// Bỏ hoàn toàn express.static cho /uploads: mọi yêu cầu GET /uploads/... đều trả về 404
 app.use('/uploads', (_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not Found' });
 });
@@ -1274,6 +1246,837 @@ const ALLOWED_UPLOAD_MIMES: Record<string, string> = {
   'image/webp': '.webp',
   'application/pdf': '.pdf',
 };
+const PRIVATE_STORAGE_BUCKET = 'attendance-proofs';
+
+// ============================================================================
+// PUBLIC & PARENT PORTAL ENDPOINTS (Server-Side Service Role + Rate Limit + Audit)
+// ============================================================================
+
+const PUBLIC_CATALOG_CACHE_TTL_MS = 5 * 60 * 1000; // 5 phút
+let publicCatalogCache: {
+  expiresAt: number;
+  data: {
+    campuses: Array<Record<string, any>>;
+    terms: Array<Record<string, any>>;
+    subjects: Array<Record<string, any>>;
+    time_slots: Array<Record<string, any>>;
+  };
+} | null = null;
+
+// Bộ giới hạn tần suất (Rate Limiters) cho các endpoint công khai
+const catalogIpRateMap = new Map<string, number[]>();
+const parentLoginIpRateMap = new Map<string, number[]>();
+const parentLoginCodeRateMap = new Map<string, number[]>();
+const parentRegisterIpRateMap = new Map<string, number[]>();
+const parentRegisterPhoneRateMap = new Map<string, number[]>();
+
+function checkSlidingWindowRateLimit(
+  store: Map<string, number[]>,
+  key: string,
+  windowMs: number,
+  maxRequests: number
+): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  const timestamps = (store.get(key) || []).filter((ts) => ts > cutoff);
+  if (timestamps.length >= maxRequests) {
+    const oldest = timestamps[0] || now;
+    const retryAfterSec = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
+    store.set(key, timestamps);
+    return { allowed: false, retryAfterSec };
+  }
+  timestamps.push(now);
+  store.set(key, timestamps);
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+const FALLBACK_EPHEMERAL_PARENT_SECRET = crypto.randomBytes(48).toString('base64url');
+function getParentSessionSecret(): string {
+  const envSecret = (process.env.PARENT_SESSION_SECRET || '').trim();
+  if (envSecret && envSecret !== 'YOUR_PARENT_SESSION_SECRET') {
+    return envSecret;
+  }
+  return FALLBACK_EPHEMERAL_PARENT_SECRET;
+}
+
+function createParentSessionToken(studentId: string, studentCode: string): string {
+  const now = Date.now();
+  const payload = {
+    student_id: studentId,
+    code: studentCode,
+    iat: now,
+    exp: now + 60 * 60 * 1000, // Hết hạn sau 60 phút
+  };
+  const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', getParentSessionSecret())
+    .update(payloadBase64)
+    .digest('base64url');
+  return `${payloadBase64}.${signature}`;
+}
+
+export function verifyParentSessionToken(token: string): { student_id: string; code: string } | null {
+  try {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 2) return null;
+    const [payloadBase64, signature] = parts;
+    const expectedSig = crypto
+      .createHmac('sha256', getParentSessionSecret())
+      .update(payloadBase64)
+      .digest('base64url');
+    const sigBuf = Buffer.from(signature, 'utf8');
+    const expBuf = Buffer.from(expectedSig, 'utf8');
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+    const decoded = JSON.parse(Buffer.from(payloadBase64, 'base64url').toString('utf8'));
+    if (!decoded || typeof decoded.exp !== 'number' || Date.now() > decoded.exp) {
+      return null;
+    }
+    if (!decoded.student_id) return null;
+    return { student_id: String(decoded.student_id), code: String(decoded.code || '') };
+  } catch {
+    return null;
+  }
+}
+
+const DEFAULT_PUBLIC_CAMPUSES = [
+  { id: 'pmh', code: 'PMH', name: 'Cơ sở Phú Mỹ Hưng (Q.7)' },
+  { id: 'pl', code: 'PL', name: 'Cơ sở Phú Lâm (Q.Bình Tân)' },
+];
+
+const DEFAULT_PUBLIC_TERMS = [
+  {
+    id: 'term_hk2_2025_2026',
+    code: 'HK2-2526',
+    name: 'Học kỳ II - Năm học 2025-2026 (12 Tuần)',
+    start_date: '2026-01-12',
+    end_date: '2026-04-12',
+    total_weeks: 12,
+    status: 'open',
+  },
+];
+
+const DEFAULT_PUBLIC_TIME_SLOTS = [
+  {
+    id: 'slot_24_pm',
+    code: 'CA_24_1615',
+    name: 'Thứ 2 - Thứ 4 (16:15 - 17:15)',
+    start_time: '16:15',
+    end_time: '17:15',
+    days_of_week: ['Mon', 'Wed'],
+    is_weekend: false,
+    is_afternoon_weekday: true,
+    campus_id: 'all',
+  },
+  {
+    id: 'slot_35_pm',
+    code: 'CA_35_1615',
+    name: 'Thứ 3 - Thứ 5 (16:15 - 17:15)',
+    start_time: '16:15',
+    end_time: '17:15',
+    days_of_week: ['Tue', 'Thu'],
+    is_weekend: false,
+    is_afternoon_weekday: true,
+    campus_id: 'all',
+  },
+  {
+    id: 'slot_6_pm',
+    code: 'CA_6_1615',
+    name: 'Thứ 6 Chuyên sâu (16:15 - 17:45)',
+    start_time: '16:15',
+    end_time: '17:45',
+    days_of_week: ['Fri'],
+    is_weekend: false,
+    is_afternoon_weekday: true,
+    campus_id: 'all',
+  },
+  {
+    id: 'slot_sat_am',
+    code: 'CA_T7_0830',
+    name: 'Thứ 7 Cuối tuần (08:30 - 10:30)',
+    start_time: '08:30',
+    end_time: '10:30',
+    days_of_week: ['Sat'],
+    is_weekend: true,
+    is_afternoon_weekday: false,
+    campus_id: 'all',
+  },
+  {
+    id: 'slot_sun_am',
+    code: 'CA_CN_0830',
+    name: 'Chủ Nhật Cuối tuần (08:30 - 10:30)',
+    start_time: '08:30',
+    end_time: '10:30',
+    days_of_week: ['Sun'],
+    is_weekend: true,
+    is_afternoon_weekday: false,
+    campus_id: 'all',
+  },
+];
+
+async function getPublicCatalogData(supabaseAdmin: SupabaseClient | null) {
+  const now = Date.now();
+  if (publicCatalogCache && publicCatalogCache.expiresAt > now) {
+    return publicCatalogCache.data;
+  }
+
+  let campuses = DEFAULT_PUBLIC_CAMPUSES;
+  let terms = DEFAULT_PUBLIC_TERMS;
+  let subjects: Array<Record<string, any>> = [];
+  let time_slots = DEFAULT_PUBLIC_TIME_SLOTS;
+
+  if (supabaseAdmin) {
+    try {
+      const [campusesRes, termsRes, subjectsRes, timeSlotsRes] = await Promise.all([
+        supabaseAdmin.from('campuses').select('*'),
+        supabaseAdmin.from('academic_terms').select('*'),
+        supabaseAdmin.from('campus_subject_fees').select('*'),
+        supabaseAdmin.from('time_slots').select('*'),
+      ]);
+
+      if (!campusesRes.error && Array.isArray(campusesRes.data) && campusesRes.data.length > 0) {
+        campuses = campusesRes.data
+          .filter((c: any) => c.is_active !== false && c.status !== 'inactive')
+          .map((c: any) => ({
+            id: String(c.id || c.code || '').toLowerCase() === 'camp_pmh' ? 'pmh' : String(c.id || c.code || '').toLowerCase() === 'camp_pl' ? 'pl' : String(c.id || ''),
+            code: String(c.code || c.id || '').toUpperCase(),
+            name: String(c.name || ''),
+          }));
+      }
+
+      let rawTerms = !termsRes.error && Array.isArray(termsRes.data) ? termsRes.data : [];
+      if (rawTerms.length === 0) {
+        const altTerms = await supabaseAdmin.from('terms').select('*');
+        if (!altTerms.error && Array.isArray(altTerms.data)) {
+          rawTerms = altTerms.data;
+        }
+      }
+      if (rawTerms.length > 0) {
+        const openTerms = rawTerms.filter((t: any) => {
+          const st = String(t.status || 'open').toLowerCase();
+          return t.is_active !== false && st !== 'closed' && st !== 'archived' && st !== 'inactive';
+        });
+        if (openTerms.length > 0) {
+          terms = openTerms.map((t: any) => ({
+            id: String(t.id || ''),
+            code: String(t.code || t.id || ''),
+            name: String(t.name || ''),
+            start_date: String(t.start_date || ''),
+            end_date: String(t.end_date || ''),
+            total_weeks: Number(t.total_weeks) || 12,
+            status: 'open',
+          }));
+        }
+      }
+
+      let rawSubjects = !subjectsRes.error && Array.isArray(subjectsRes.data) ? subjectsRes.data : [];
+      if (rawSubjects.length === 0) {
+        const altSubjects = await supabaseAdmin.from('subjects').select('*');
+        if (!altSubjects.error && Array.isArray(altSubjects.data)) {
+          rawSubjects = altSubjects.data;
+        }
+      }
+      if (rawSubjects.length > 0) {
+        subjects = rawSubjects
+          .filter((s: any) => {
+            const st = String(s.status || 'active').toLowerCase();
+            return s.is_active !== false && st !== 'closed' && st !== 'inactive';
+          })
+          .map((s: any) => {
+            const feePerSession = Number(s.fee_per_session ?? s.price_per_session ?? 150000);
+            const totalSessions = Number(s.total_sessions ?? s.sessions_per_term ?? 24);
+            const packageFee = Number(s.package_fee ?? s.total_fee ?? feePerSession * totalSessions);
+            const rawCampus = String(s.campus_id || 'pmh').toLowerCase();
+            const normalizedCampus =
+              rawCampus === 'camp_pmh' ? 'pmh' : rawCampus === 'camp_pl' ? 'pl' : rawCampus;
+            const slotIds = Array.isArray(s.time_slot_ids)
+              ? s.time_slot_ids.map(String)
+              : s.default_time_slot_id
+              ? [String(s.default_time_slot_id)]
+              : ['slot_24_pm', 'slot_35_pm'];
+            return {
+              id: String(s.id || s.subject_code || ''),
+              code: String(s.code || s.subject_code || ''),
+              name: String(s.name || s.subject_name || ''),
+              category: String(s.category || 'Sports'),
+              campus_id: normalizedCampus,
+              fee_per_session: feePerSession,
+              total_sessions: totalSessions,
+              package_fee: packageFee,
+              time_slot_ids: slotIds,
+              default_time_slot_id: String(s.default_time_slot_id || slotIds[0] || 'slot_24_pm'),
+            };
+          });
+      }
+
+      if (!timeSlotsRes.error && Array.isArray(timeSlotsRes.data) && timeSlotsRes.data.length > 0) {
+        time_slots = timeSlotsRes.data
+          .filter((ts: any) => ts.is_active !== false && ts.status !== 'inactive')
+          .map((ts: any) => ({
+            id: String(ts.id || ''),
+            code: String(ts.code || ts.id || ''),
+            name: String(ts.name || ''),
+            start_time: String(ts.start_time || '16:15'),
+            end_time: String(ts.end_time || '17:15'),
+            days_of_week: Array.isArray(ts.days_of_week) ? ts.days_of_week : ['Mon', 'Wed'],
+            is_weekend: Boolean(ts.is_weekend),
+            is_afternoon_weekday: ts.is_afternoon_weekday !== undefined ? Boolean(ts.is_afternoon_weekday) : !ts.is_weekend,
+            campus_id: String(ts.campus_id || 'all'),
+          }));
+      }
+    } catch (err) {
+      console.warn('[Public Catalog] Fallback catalog used due to query error:', err);
+    }
+  }
+
+  const catalogData = {
+    campuses,
+    terms,
+    subjects,
+    time_slots,
+  };
+
+  publicCatalogCache = {
+    expiresAt: now + PUBLIC_CATALOG_CACHE_TTL_MS,
+    data: catalogData,
+  };
+
+  return catalogData;
+}
+
+// 1. GET /api/public/catalog
+app.get('/api/public/catalog', async (req: Request, res: Response) => {
+  const clientIp = getClientIpFromReq(req);
+  const rateCheck = checkSlidingWindowRateLimit(catalogIpRateMap, clientIp, 60 * 1000, 60);
+  const supabaseAdmin = getServerSupabaseAdmin();
+
+  if (!rateCheck.allowed) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/public/catalog',
+      actionCode: 'PUBLIC_CATALOG_RATE_LIMIT',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Vượt giới hạn tốc độ truy cập danh mục công khai (/api/public/catalog)',
+    });
+    res.setHeader('Retry-After', String(rateCheck.retryAfterSec));
+    res.status(429).json({
+      error: `Quá nhiều yêu cầu từ địa chỉ IP này. Vui lòng thử lại sau ${rateCheck.retryAfterSec} giây.`,
+    });
+    return;
+  }
+
+  try {
+    const catalog = await getPublicCatalogData(supabaseAdmin);
+    res.json(catalog);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Không thể tải danh mục khóa học công khai.' });
+  }
+});
+
+// 2. POST /api/parent/login
+const GENERIC_PARENT_LOGIN_ERROR =
+  'Thông tin không khớp. Vui lòng kiểm tra lại SĐT và Mã học sinh hoặc liên hệ Văn phòng Học vụ.';
+
+app.post('/api/parent/login', async (req: Request, res: Response) => {
+  const clientIp = getClientIpFromReq(req);
+  const supabaseAdmin = getServerSupabaseAdmin();
+
+  // Giới hạn 1: 5 lần mỗi 15 phút mỗi IP
+  const ipRate = checkSlidingWindowRateLimit(parentLoginIpRateMap, clientIp, 15 * 60 * 1000, 5);
+  if (!ipRate.allowed) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_RATE_LIMIT_IP',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Từ chối đăng nhập phụ huynh: Vượt giới hạn 5 lần / 15 phút theo IP',
+    });
+    res.setHeader('Retry-After', String(ipRate.retryAfterSec));
+    res.status(429).json({
+      error: `Quá nhiều lần thử tra cứu từ địa chỉ IP này (tối đa 5 lần / 15 phút). Vui lòng thử lại sau ${ipRate.retryAfterSec} giây.`,
+    });
+    return;
+  }
+
+  const rawPhone = String(req.body?.phone ?? '');
+  const rawStudentCode = String(req.body?.studentCode ?? '');
+
+  // Kiểm tra ký tự điều khiển
+  if (/[\x00-\x1F\x7F]/.test(rawPhone) || /[\x00-\x1F\x7F]/.test(rawStudentCode)) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_INVALID_INPUT',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Từ chối đăng nhập phụ huynh: Dữ liệu đầu vào chứa ký tự điều khiển',
+    });
+    res.status(401).json({ error: GENERIC_PARENT_LOGIN_ERROR });
+    return;
+  }
+
+  const cleanPhone = rawPhone.replace(/\D/g, '');
+  const cleanCode = rawStudentCode.trim().toUpperCase();
+
+  if (!cleanPhone || cleanPhone.length < 9 || cleanPhone.length > 12 || !cleanCode || cleanCode.length > 32) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_FAILED',
+      ip: clientIp,
+      targetId: cleanCode || 'unknown',
+      status: 'failed',
+      description: 'Tra cứu phụ huynh thất bại: Định dạng SĐT hoặc Mã học sinh không hợp lệ',
+    });
+    res.status(401).json({ error: GENERIC_PARENT_LOGIN_ERROR });
+    return;
+  }
+
+  // Giới hạn 2: 10 lần mỗi giờ mỗi mã học sinh
+  const codeRate = checkSlidingWindowRateLimit(parentLoginCodeRateMap, cleanCode, 60 * 60 * 1000, 10);
+  if (!codeRate.allowed) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_RATE_LIMIT_CODE',
+      ip: clientIp,
+      targetId: cleanCode,
+      status: 'failed',
+      description: `Từ chối đăng nhập phụ huynh: Mã học sinh ${cleanCode} vượt giới hạn 10 lần / giờ`,
+    });
+    res.setHeader('Retry-After', String(codeRate.retryAfterSec));
+    res.status(429).json({
+      error: `Mã học sinh này đã được thử quá nhiều lần (tối đa 10 lần / giờ). Vui lòng thử lại sau ${codeRate.retryAfterSec} giây.`,
+    });
+    return;
+  }
+
+  if (!supabaseAdmin) {
+    await recordAdminEndpointAudit({
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_ERROR',
+      ip: clientIp,
+      targetId: cleanCode,
+      status: 'failed',
+      description: 'Không thể xác thực phụ huynh: Thiếu SUPABASE_SERVICE_ROLE_KEY trên server',
+    });
+    res.status(401).json({ error: GENERIC_PARENT_LOGIN_ERROR });
+    return;
+  }
+
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('students')
+      .select('*')
+      .ilike('code', cleanCode)
+      .limit(10);
+
+    let candidateRows = !error && Array.isArray(rows) ? rows : [];
+    if (candidateRows.length === 0) {
+      const altRes = await supabaseAdmin
+        .from('students')
+        .select('*')
+        .ilike('student_code', cleanCode)
+        .limit(10);
+      if (!altRes.error && Array.isArray(altRes.data)) {
+        candidateRows = altRes.data;
+      }
+    }
+
+    const normalizeVnPhone = (p: string): string => {
+      const digits = String(p || '').replace(/\D/g, '');
+      if (digits.startsWith('84') && digits.length >= 10) {
+        return '0' + digits.slice(2);
+      }
+      return digits;
+    };
+
+    const normalizedInputPhone = normalizeVnPhone(cleanPhone);
+
+    const matched = candidateRows.find((s: any) => {
+      const rowCode = String(s.code || s.student_code || '').trim().toUpperCase();
+      const rowPhone = normalizeVnPhone(String(s.parent_phone || s.phone || ''));
+      const rowStatus = String(s.status || 'active').toLowerCase();
+      return (
+        rowCode === cleanCode &&
+        rowPhone.length >= 9 &&
+        rowPhone === normalizedInputPhone &&
+        rowStatus !== 'inactive' &&
+        rowStatus !== 'deleted'
+      );
+    });
+
+    if (!matched) {
+      await recordAdminEndpointAudit({
+        supabaseAdmin,
+        endpoint: '/api/parent/login',
+        actionCode: 'PARENT_LOGIN_FAILED',
+        ip: clientIp,
+        targetId: cleanCode,
+        status: 'failed',
+        description: `Tra cứu phụ huynh thất bại cho mã học sinh ${cleanCode}`,
+      });
+      res.status(401).json({ error: GENERIC_PARENT_LOGIN_ERROR });
+      return;
+    }
+
+    const safeStudent = {
+      id: String(matched.id || ''),
+      code: String(matched.code || matched.student_code || cleanCode),
+      name: String(matched.name || matched.full_name || ''),
+      grade: String(matched.grade || matched.class_name || ''),
+      dob: String(matched.dob || matched.date_of_birth || ''),
+      parent_name: String(matched.parent_name || ''),
+      parent_phone: String(matched.parent_phone || matched.phone || ''),
+      campus_id:
+        String(matched.campus_id || 'pmh').toLowerCase() === 'camp_pmh'
+          ? 'pmh'
+          : String(matched.campus_id || 'pmh').toLowerCase() === 'camp_pl'
+          ? 'pl'
+          : String(matched.campus_id || 'pmh'),
+    };
+
+    const token = createParentSessionToken(safeStudent.id, safeStudent.code);
+
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_SUCCESS',
+      ip: clientIp,
+      callerId: safeStudent.id,
+      callerUsername: safeStudent.code,
+      callerFullName: safeStudent.parent_name || safeStudent.name,
+      targetId: safeStudent.id,
+      status: 'success',
+      description: `Phụ huynh học sinh ${safeStudent.name} (${safeStudent.code}) đăng nhập cổng phụ huynh thành công`,
+    });
+
+    res.json({
+      token,
+      student: safeStudent,
+    });
+  } catch (err: any) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_FAILED',
+      ip: clientIp,
+      targetId: cleanCode,
+      status: 'failed',
+      description: `Lỗi truy vấn khi đăng nhập phụ huynh cho mã ${cleanCode}`,
+    });
+    res.status(401).json({ error: GENERIC_PARENT_LOGIN_ERROR });
+  }
+});
+
+// 3. POST /api/parent/register
+app.post('/api/parent/register', async (req: Request, res: Response) => {
+  const clientIp = getClientIpFromReq(req);
+  const supabaseAdmin = getServerSupabaseAdmin();
+
+  // Giới hạn 1: 5 lần mỗi giờ mỗi IP
+  const ipRate = checkSlidingWindowRateLimit(parentRegisterIpRateMap, clientIp, 60 * 60 * 1000, 5);
+  if (!ipRate.allowed) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/register',
+      actionCode: 'PARENT_REGISTER_RATE_LIMIT_IP',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Từ chối gửi phiếu đăng ký phụ huynh: Vượt giới hạn 5 lần / giờ theo IP',
+    });
+    res.setHeader('Retry-After', String(ipRate.retryAfterSec));
+    res.status(429).json({
+      error: `Quá nhiều lượt gửi đăng ký từ địa chỉ IP này (tối đa 5 lần / giờ). Vui lòng thử lại sau ${ipRate.retryAfterSec} giây.`,
+    });
+    return;
+  }
+
+  const body = req.body || {};
+
+  // Kiểm tra trường ẩn chống bot (honeypot)
+  const honeypotValue = String(body.honeypot ?? body.website_url ?? '').trim();
+  if (honeypotValue.length > 0) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/register',
+      actionCode: 'PARENT_REGISTER_BOT_BLOCKED',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Từ chối đăng ký phụ huynh: Phát hiện bot điền trường ẩn (honeypot)',
+    });
+    res.status(400).json({ error: 'Yêu cầu không hợp lệ.' });
+    return;
+  }
+
+  // Kiểm tra thời gian điền biểu mẫu tối thiểu 3 giây
+  const formStartedAt = Number(body.formStartedAt ?? body.form_started_at ?? 0);
+  if (!Number.isFinite(formStartedAt) || formStartedAt <= 0 || Date.now() - formStartedAt < 3000) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/register',
+      actionCode: 'PARENT_REGISTER_TOO_FAST',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Từ chối đăng ký phụ huynh: Thời gian điền biểu mẫu dưới 3 giây',
+    });
+    res.status(400).json({
+      error: 'Thao tác gửi biểu mẫu quá nhanh (tối thiểu 3 giây). Vui lòng kiểm tra lại thông tin trước khi gửi.',
+    });
+    return;
+  }
+
+  const rawStudentName = String(body.student_name ?? '').trim();
+  const rawStudentDob = String(body.student_dob ?? '').trim();
+  const rawCurrentGrade = String(body.current_grade ?? '').trim();
+  const rawStudentCode = String(body.student_code ?? '').trim();
+  const rawStudentType = String(body.student_type ?? 'royal').trim();
+  const rawCampusId = String(body.campus_id ?? '').trim().toLowerCase();
+  const rawTermId = String(body.term_id ?? body.term ?? '').trim();
+  const rawParentName = String(body.parent_name ?? '').trim();
+  const rawParentPhone = String(body.parent_phone ?? '').trim();
+  const rawParentEmail = String(body.parent_email ?? '').trim();
+  const rawNotes = String(body.notes ?? '').trim();
+  const rawSelectedSubjects = Array.isArray(body.selected_subjects) ? body.selected_subjects : [];
+
+  // Từ chối ký tự điều khiển
+  const singleLineFields = [
+    rawStudentName,
+    rawStudentDob,
+    rawCurrentGrade,
+    rawStudentCode,
+    rawStudentType,
+    rawCampusId,
+    rawTermId,
+    rawParentName,
+    rawParentPhone,
+    rawParentEmail,
+  ];
+  if (
+    singleLineFields.some((val) => /[\x00-\x1F\x7F]/.test(val)) ||
+    /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(rawNotes)
+  ) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/register',
+      actionCode: 'PARENT_REGISTER_INVALID_CHARS',
+      ip: clientIp,
+      status: 'failed',
+      description: 'Từ chối đăng ký phụ huynh: Dữ liệu chứa ký tự điều khiển không hợp lệ',
+    });
+    res.status(400).json({ error: 'Dữ liệu đầu vào chứa ký tự điều khiển không hợp lệ.' });
+    return;
+  }
+
+  if (rawStudentName.length < 2 || rawStudentName.length > 100) {
+    res.status(400).json({ error: 'Họ và tên học sinh phải từ 2 đến 100 ký tự.' });
+    return;
+  }
+  if (rawParentName.length < 2 || rawParentName.length > 100) {
+    res.status(400).json({ error: 'Họ và tên phụ huynh phải từ 2 đến 100 ký tự.' });
+    return;
+  }
+  if (rawNotes.length > 1000) {
+    res.status(400).json({ error: 'Ghi chú không được vượt quá 1000 ký tự.' });
+    return;
+  }
+
+  const cleanPhone = rawParentPhone.replace(/\D/g, '');
+  if (!/^(0|84)\d{8,10}$/.test(cleanPhone)) {
+    res.status(400).json({ error: 'Số điện thoại phụ huynh không hợp lệ (gồm 9-11 chữ số).' });
+    return;
+  }
+
+  // Giới hạn 2: 3 lần mỗi ngày mỗi số điện thoại
+  const normalizedPhoneKey = cleanPhone.startsWith('84') ? '0' + cleanPhone.slice(2) : cleanPhone;
+  const phoneRate = checkSlidingWindowRateLimit(
+    parentRegisterPhoneRateMap,
+    normalizedPhoneKey,
+    24 * 60 * 60 * 1000,
+    3
+  );
+  if (!phoneRate.allowed) {
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/register',
+      actionCode: 'PARENT_REGISTER_RATE_LIMIT_PHONE',
+      ip: clientIp,
+      targetId: normalizedPhoneKey,
+      status: 'failed',
+      description: `Từ chối đăng ký phụ huynh: Số điện thoại ${normalizedPhoneKey} vượt giới hạn 3 lần / ngày`,
+    });
+    res.setHeader('Retry-After', String(phoneRate.retryAfterSec));
+    res.status(429).json({
+      error: 'Số điện thoại này đã gửi tối đa 3 phiếu đăng ký trong ngày. Vui lòng liên hệ Văn phòng Học vụ nếu cần hỗ trợ thêm.',
+    });
+    return;
+  }
+
+  if (rawSelectedSubjects.length === 0 || rawSelectedSubjects.length > 10) {
+    res.status(400).json({ error: 'Vui lòng chọn ít nhất 1 môn ngoại khóa (tối đa 10 môn).' });
+    return;
+  }
+
+  // Đối chiếu với danh mục trên server và TÍNH LẠI tổng học phí từ danh mục
+  const catalog = await getPublicCatalogData(supabaseAdmin);
+  const normalizedCampusId =
+    rawCampusId === 'camp_pmh' ? 'pmh' : rawCampusId === 'camp_pl' ? 'pl' : rawCampusId;
+
+  const validCampus = catalog.campuses.find(
+    (c: any) => String(c.id).toLowerCase() === normalizedCampusId
+  );
+  if (!validCampus) {
+    res.status(400).json({ error: 'Cơ sở đào tạo (campus_id) không tồn tại trong danh mục đang mở.' });
+    return;
+  }
+
+  const validTerm = catalog.terms.find((t: any) => String(t.id) === rawTermId || String(t.code) === rawTermId);
+  if (!validTerm) {
+    res.status(400).json({ error: 'Khóa học (term) không tồn tại hoặc đã đóng đăng ký.' });
+    return;
+  }
+
+  const verifiedSubjects: Array<{
+    subject_id: string;
+    subject_name: string;
+    time_slot_id: string;
+    time_slot_name: string;
+    fee: number;
+  }> = [];
+
+  for (const item of rawSelectedSubjects) {
+    const subId = String(item?.subject_id ?? '').trim();
+    const slotId = String(item?.time_slot_id ?? '').trim();
+    if (!subId || !slotId) {
+      res.status(400).json({ error: 'Thông tin môn học hoặc ca học đã chọn không hợp lệ.' });
+      return;
+    }
+
+    const catalogSubject = catalog.subjects.find(
+      (s: any) =>
+        String(s.id) === subId &&
+        (String(s.campus_id) === normalizedCampusId || String(s.campus_id) === 'all')
+    );
+    if (!catalogSubject) {
+      res.status(400).json({
+        error: `Môn học "${subId}" không thuộc danh mục đang mở của cơ sở đã chọn.`,
+      });
+      return;
+    }
+
+    const catalogSlot = catalog.time_slots.find((ts: any) => String(ts.id) === slotId);
+    if (!catalogSlot) {
+      res.status(400).json({
+        error: `Khung giờ học "${slotId}" không tồn tại trong danh mục đang mở.`,
+      });
+      return;
+    }
+
+    const allowedSlotIds: string[] = Array.isArray(catalogSubject.time_slot_ids)
+      ? catalogSubject.time_slot_ids.map(String)
+      : [];
+    if (allowedSlotIds.length > 0 && !allowedSlotIds.includes(slotId)) {
+      res.status(400).json({
+        error: `Khung giờ "${catalogSlot.name}" không áp dụng cho môn "${catalogSubject.name}".`,
+      });
+      return;
+    }
+
+    const computedFee = Number(
+      catalogSubject.package_fee ??
+        Number(catalogSubject.fee_per_session || 0) * Number(catalogSubject.total_sessions || 24)
+    );
+
+    verifiedSubjects.push({
+      subject_id: String(catalogSubject.id),
+      subject_name: String(catalogSubject.name),
+      time_slot_id: String(catalogSlot.id),
+      time_slot_name: String(catalogSlot.name),
+      fee: computedFee,
+    });
+  }
+
+  // Tính tổng học phí trên server (ưu đãi giảm 5% khi đăng ký từ 2 môn trở lên)
+  const subtotalFee = verifiedSubjects.reduce((sum, s) => sum + s.fee, 0);
+  const multiSubjectDiscount =
+    verifiedSubjects.length >= 2 ? Math.round(subtotalFee * 0.05) : 0;
+  const serverTotalFee = Math.max(0, subtotalFee - multiSubjectDiscount);
+
+  const regCode = `REG-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+  const regId = `reg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const createdAt = new Date().toISOString();
+
+  if (!supabaseAdmin) {
+    res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
+    return;
+  }
+
+  try {
+    const dbRow = {
+      id: regId,
+      reg_code: regCode,
+      student_name: rawStudentName,
+      student_dob: rawStudentDob || '2016-01-01',
+      current_grade: rawCurrentGrade || '1A1',
+      student_type: rawStudentType === 'external' ? 'external' : 'royal',
+      student_code: rawStudentCode || null,
+      campus_id: normalizedCampusId,
+      term_id: String(validTerm.id),
+      parent_name: rawParentName,
+      parent_phone: normalizedPhoneKey,
+      parent_email: rawParentEmail || '',
+      selected_subjects: verifiedSubjects,
+      total_estimated_fee: serverTotalFee,
+      notes: rawNotes,
+      status: 'pending',
+      created_at: createdAt,
+    };
+
+    const { error: insertError } = await supabaseAdmin
+      .from('parent_registrations')
+      .insert(dbRow);
+
+    if (insertError) {
+      await recordAdminEndpointAudit({
+        supabaseAdmin,
+        endpoint: '/api/parent/register',
+        actionCode: 'PARENT_REGISTER_DB_ERROR',
+        ip: clientIp,
+        targetId: regCode,
+        status: 'failed',
+        description: `Lỗi lưu phiếu đăng ký ngoại khóa ${regCode}: ${insertError.message}`,
+      });
+      res.status(500).json({ error: 'Không thể lưu phiếu đăng ký vào hệ thống. Vui lòng thử lại sau.' });
+      return;
+    }
+
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/parent/register',
+      actionCode: 'PARENT_REGISTER_SUCCESS',
+      ip: clientIp,
+      callerId: normalizedPhoneKey,
+      callerUsername: rawParentName,
+      callerFullName: rawParentName,
+      targetId: regId,
+      status: 'success',
+      description: `Phụ huynh ${rawParentName} (${normalizedPhoneKey}) đã gửi phiếu đăng ký ${regCode} cho HS ${rawStudentName} (${verifiedSubjects.length} môn - ${serverTotalFee.toLocaleString('vi-VN')}đ)`,
+    });
+
+    res.json({
+      id: regId,
+      reg_code: regCode,
+      total_estimated_fee: serverTotalFee,
+      selected_subjects: verifiedSubjects,
+      created_at: createdAt,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Lỗi máy chủ khi xử lý đăng ký ngoại khóa.' });
+  }
+});
 
 // Multi-turn Gemini Chat Endpoint (Yêu cầu xác thực Bearer token hợp lệ)
 app.post('/api/chat', requireAuth, async (req: Request, res: Response) => {
@@ -1385,9 +2188,44 @@ Hãy xuất ra bản phân tích hoặc văn bản dự thảo chuẩn xác (n�
   }
 });
 
-// Endpoint to upload files to Server Storage (Yêu cầu xác thực Bearer token hợp lệ, tối đa 5 MB, chỉ nhận png/jpg/webp/pdf)
+function verifyFileMagicBytes(buffer: Buffer, extension: string): boolean {
+  if (!buffer || buffer.length < 4) return false;
+  const ext = extension.toLowerCase();
+  if (ext === '.png') {
+    return (
+      buffer.length >= 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47
+    );
+  }
+  if (ext === '.jpg' || ext === '.jpeg') {
+    return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (ext === '.webp') {
+    return (
+      buffer.length >= 12 &&
+      buffer.toString('ascii', 0, 4) === 'RIFF' &&
+      buffer.toString('ascii', 8, 12) === 'WEBP'
+    );
+  }
+  if (ext === '.pdf') {
+    return buffer.toString('ascii', 0, 4) === '%PDF';
+  }
+  return false;
+}
+
+// C.1 POST /api/upload: lưu tệp vào bucket riêng tư 'attendance-proofs' của Supabase Storage bằng service role
 app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
   try {
+    const authUser = (req as AuthenticatedRequest).authUser;
+    const supabaseAdmin = authUser?.supabaseAdmin || getServerSupabaseAdmin();
+    if (!supabaseAdmin) {
+      res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
+      return;
+    }
+
     const { fileData, fileName, folder = 'proofs' } = req.body || {};
 
     if (!fileData || typeof fileData !== 'string') {
@@ -1398,11 +2236,6 @@ app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
     if (folder !== 'proofs' && folder !== 'students') {
       res.status(400).json({ error: 'Thư mục lưu trữ không hợp lệ. Chỉ chấp nhận proofs hoặc students.' });
       return;
-    }
-
-    const targetFolder = folder === 'students' ? STUDENTS_DIR : PROOFS_DIR;
-    if (!fs.existsSync(targetFolder)) {
-      fs.mkdirSync(targetFolder, { recursive: true });
     }
 
     let base64Content = fileData.trim();
@@ -1445,7 +2278,6 @@ app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
-    // Nếu cả MIME và phần mở rộng đều có mặt, kiểm tra tính tương thích
     if (mimeExt && fileExt) {
       const normalizedFileExt = fileExt === '.jpeg' ? '.jpg' : fileExt;
       if (normalizedFileExt !== mimeExt) {
@@ -1477,6 +2309,13 @@ app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
+    if (!verifyFileMagicBytes(buffer, finalExtension)) {
+      res.status(400).json({
+        error: 'Chữ ký tệp (magic bytes) không khớp với định dạng PNG, JPG, WEBP hoặc PDF.',
+      });
+      return;
+    }
+
     const timestamp = Date.now();
     const baseNameWithoutExt = rawFileName
       ? path.basename(rawFileName, path.extname(rawFileName))
@@ -1485,61 +2324,135 @@ app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
       baseNameWithoutExt.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || `proof_${timestamp}`;
 
     const uniqueFileName = `${timestamp}_${safeBaseName}${finalExtension}`;
-    const destinationPath = path.join(targetFolder, uniqueFileName);
+    const storagePath = `${folder}/${uniqueFileName}`;
+    const contentType =
+      resolvedMimeType ||
+      (finalExtension === '.pdf'
+        ? 'application/pdf'
+        : finalExtension === '.png'
+        ? 'image/png'
+        : finalExtension === '.webp'
+        ? 'image/webp'
+        : 'image/jpeg');
 
-    await fs.promises.writeFile(destinationPath, buffer);
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from(PRIVATE_STORAGE_BUCKET)
+      .upload(storagePath, buffer, {
+        contentType,
+        upsert: true,
+      });
 
-    const relativeUrl = `/uploads/${folder}/${uniqueFileName}`;
-
-    console.log(`[Server Storage] File saved successfully: ${destinationPath} (${buffer.length} bytes)`);
+    if (uploadError) {
+      res.status(500).json({
+        error: 'Không thể lưu tệp vào Supabase Storage: ' + uploadError.message,
+      });
+      return;
+    }
 
     res.json({
       success: true,
-      url: relativeUrl,
+      path: storagePath,
+      url: storagePath,
       fileName: uniqueFileName,
-      storedPath: `Server: ${relativeUrl}`,
+      storedPath: `Supabase Bucket (${PRIVATE_STORAGE_BUCKET}): ${storagePath}`,
       size: buffer.length,
-      mimeType:
-        resolvedMimeType ||
-        (finalExtension === '.pdf'
-          ? 'application/pdf'
-          : finalExtension === '.png'
-          ? 'image/png'
-          : finalExtension === '.webp'
-          ? 'image/webp'
-          : 'image/jpeg'),
+      mimeType: contentType,
     });
   } catch (err: any) {
-    console.error('[Server Storage] Error saving file to server:', err);
-    res.status(500).json({ error: 'Không thể lưu tệp lên server: ' + (err?.message || 'Lỗi không xác định') });
+    console.error('[Supabase Storage Upload] Error saving file:', err);
+    res.status(500).json({ error: 'Không thể lưu tệp lên hệ thống: ' + (err?.message || 'Lỗi không xác định') });
   }
 });
 
-// Endpoint to list uploaded files in server (Yêu cầu xác thực Bearer token hợp lệ)
-app.get('/api/files/proofs', requireAuth, async (_req: Request, res: Response) => {
+// C.2 GET /api/files/sign?path=... (requireAuth): trả về signed URL có hạn 60 phút
+app.get('/api/files/sign', requireAuth, async (req: Request, res: Response) => {
   try {
-    if (!fs.existsSync(PROOFS_DIR)) {
+    const authUser = (req as AuthenticatedRequest).authUser;
+    const supabaseAdmin = authUser?.supabaseAdmin || getServerSupabaseAdmin();
+    if (!supabaseAdmin) {
+      res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
+      return;
+    }
+
+    const rawPath = String(req.query.path || '').trim();
+    if (!rawPath || /[\x00-\x1F\x7F]/.test(rawPath) || rawPath.includes('..') || rawPath.includes('\\')) {
+      res.status(400).json({ error: 'Đường dẫn tệp (path) không hợp lệ.' });
+      return;
+    }
+
+    // Chuẩn hóa đường dẫn cũ (/uploads/proofs/... -> proofs/..., /uploads/students/... -> students/...)
+    let cleanPath = rawPath.replace(/^\/+/, '');
+    if (cleanPath.startsWith('uploads/')) {
+      cleanPath = cleanPath.slice('uploads/'.length);
+    }
+    if (cleanPath.startsWith(`${PRIVATE_STORAGE_BUCKET}/`)) {
+      cleanPath = cleanPath.slice(`${PRIVATE_STORAGE_BUCKET}/`.length);
+    }
+
+    if (!cleanPath.startsWith('proofs/') && !cleanPath.startsWith('students/')) {
+      res.status(400).json({ error: 'Đường dẫn tệp phải thuộc thư mục proofs/ hoặc students/.' });
+      return;
+    }
+
+    const ext = path.extname(cleanPath).toLowerCase();
+    if (!ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
+      res.status(400).json({ error: 'Định dạng tệp không được phép tạo liên kết ký.' });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin.storage
+      .from(PRIVATE_STORAGE_BUCKET)
+      .createSignedUrl(cleanPath, 3600); // Hạn 60 phút (3600 giây)
+
+    if (error || !data?.signedUrl) {
+      res.status(404).json({
+        error: 'Không thể tạo liên kết truy cập tệp: ' + (error?.message || 'Không tìm thấy tệp'),
+      });
+      return;
+    }
+
+    res.json({
+      signedUrl: data.signedUrl,
+      path: cleanPath,
+      expiresIn: 3600,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Lỗi tạo signed URL cho tệp.' });
+  }
+});
+
+// Endpoint to list uploaded proof files in private bucket (Yêu cầu xác thực Bearer token hợp lệ)
+app.get('/api/files/proofs', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const authUser = (req as AuthenticatedRequest).authUser;
+    const supabaseAdmin = authUser?.supabaseAdmin || getServerSupabaseAdmin();
+    if (!supabaseAdmin) {
       res.json({ files: [] });
       return;
     }
-    const files = await fs.promises.readdir(PROOFS_DIR);
-    const validFiles = files.filter((file) =>
-      ALLOWED_UPLOAD_EXTENSIONS.has(path.extname(file).toLowerCase())
-    );
-    const fileStats = await Promise.all(
-      validFiles.map(async (file) => {
-        const stat = await fs.promises.stat(path.join(PROOFS_DIR, file));
-        return {
-          fileName: file,
-          url: `/uploads/proofs/${file}`,
-          size: stat.size,
-          createdAt: stat.birthtime,
-        };
-      })
-    );
-    res.json({ files: fileStats });
+
+    const { data, error } = await supabaseAdmin.storage
+      .from(PRIVATE_STORAGE_BUCKET)
+      .list('proofs', { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+
+    if (error || !Array.isArray(data)) {
+      res.json({ files: [] });
+      return;
+    }
+
+    const files = data
+      .filter((item) => item.name && ALLOWED_UPLOAD_EXTENSIONS.has(path.extname(item.name).toLowerCase()))
+      .map((item) => ({
+        fileName: item.name,
+        path: `proofs/${item.name}`,
+        url: `proofs/${item.name}`,
+        size: Number(item.metadata?.size || 0),
+        createdAt: item.created_at || new Date().toISOString(),
+      }));
+
+    res.json({ files });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Lỗi đọc danh sách tệp trên server' });
+    res.status(500).json({ error: err?.message || 'Lỗi đọc danh sách tệp trên Supabase Storage' });
   }
 });
 

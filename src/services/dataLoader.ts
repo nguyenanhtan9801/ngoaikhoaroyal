@@ -15,6 +15,46 @@ import {
 } from '../lib/supabase';
 import { loadStore, saveStore } from '../lib/storage';
 import { showToast } from '../lib/toast';
+import { fetchOnce } from '../lib/fetchOnce';
+
+export const STUDENTS_DISPLAY_SELECT = `
+  id,
+  code,
+  previous_student_code,
+  name,
+  dob,
+  gender,
+  is_royal_student,
+  campus_id,
+  school_name,
+  regular_class,
+  parent_name,
+  parent_phone,
+  medical_notes,
+  avatar_url,
+  status,
+  created_at,
+  enrollments (
+    id,
+    student_id,
+    class_id,
+    registered_sessions,
+    joined_date,
+    enrolled_days_of_week,
+    is_partial_schedule,
+    is_trial,
+    enrollment_type,
+    trial_session_date,
+    trial_attended,
+    status,
+    extracurricular_classes (
+      id,
+      name,
+      days_of_week,
+      total_sessions
+    )
+  )
+`;
 
 export interface SafeDataLoadResult {
   store: AppStore;
@@ -53,17 +93,27 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
 
   const fetchTable = async (tableName: string): Promise<any[]> => {
     if (!client) return [];
-    try {
-      const { data, error } = await client.from(tableName).select('*');
-      if (error) {
-        console.warn(`Lỗi khi đọc bảng ${tableName}:`, error.message);
+    return fetchOnce(`appDataSafe:${tableName}`, async () => {
+      try {
+        const query =
+          tableName === 'students'
+            ? client
+                .from('students')
+                .select(STUDENTS_DISPLAY_SELECT)
+                .order('code', { ascending: true })
+                .range(0, 99)
+            : client.from(tableName).select('*');
+        const { data, error } = await query;
+        if (error) {
+          console.warn(`Lỗi khi đọc bảng ${tableName}:`, error.message);
+          return [];
+        }
+        return Array.isArray(data) ? data : [];
+      } catch (e) {
+        console.warn(`Exception bảng ${tableName}:`, e);
         return [];
       }
-      return Array.isArray(data) ? data : [];
-    } catch (e) {
-      console.warn(`Exception bảng ${tableName}:`, e);
-      return [];
-    }
+    });
   };
 
   const results = await Promise.allSettled([
@@ -136,12 +186,152 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
 }
 
 /**
- * Cơ chế Khởi Động & Tải Dữ Liệu An Toàn (Safe Data Loader) cho AppStore
- * - Sử dụng Promise.allSettled nạp song song độc lập tất cả các bảng.
- * - Từng bảng được xử lý riêng biệt trong try/catch: nếu một bảng bị lỗi RLS, rỗng,
- *   hoặc timeout trên iOS/macOS WebKit, các bảng còn lại vẫn nạp thành công bình thường.
- * - Giữ nguyên cấu trúc dữ liệu Local / Mặc định cho những bảng không lấy được từ Cloud.
- * - Tuyệt đối không để màn hình trắng (White Screen) hay treo ứng dụng.
+ * Tạo Store an toàn dành riêng cho khách / phụ huynh chưa đăng nhập nhân sự:
+ * Chỉ chứa dữ liệu danh mục từ GET /api/public/catalog, không chứa bất kỳ dữ liệu cá nhân hay bảng nội bộ nào.
+ */
+export function buildGuestCatalogStore(
+  baseStore?: AppStore,
+  catalog?: {
+    campuses?: any[];
+    terms?: any[];
+    subjects?: any[];
+    time_slots?: any[];
+  }
+): AppStore {
+  const fallback = baseStore || loadStore();
+  const mappedCampuses = Array.isArray(catalog?.campuses)
+    ? catalog!.campuses.map((c: any) => ({
+        id: String(c.id || ''),
+        code: String(c.code || c.id || '').toUpperCase(),
+        name: String(c.name || ''),
+        address: '',
+        phone: '',
+        bank_name: '',
+        bank_account: '',
+        bank_owner: '',
+        status: 'active' as const,
+      }))
+    : [];
+
+  const mappedTerms = Array.isArray(catalog?.terms)
+    ? catalog!.terms.map((t: any) => ({
+        id: String(t.id || ''),
+        code: String(t.code || t.id || ''),
+        name: String(t.name || ''),
+        academic_year: '2025-2026',
+        start_date: String(t.start_date || ''),
+        end_date: String(t.end_date || ''),
+        registration_deadline: String(t.end_date || ''),
+        total_weeks: Number(t.total_weeks) || 12,
+        status: 'open_enrollment' as const,
+        is_active: true,
+      }))
+    : [];
+
+  const mappedSubjects = Array.isArray(catalog?.subjects)
+    ? catalog!.subjects.map((s: any) => ({
+        id: String(s.id || ''),
+        code: String(s.code || s.id || ''),
+        name: String(s.name || ''),
+        category: (s.category || 'Sports') as any,
+        campus_id: String(s.campus_id || 'pmh'),
+        fee_per_session: Number(s.fee_per_session || 0),
+        total_sessions: Number(s.total_sessions || 24),
+        package_fee: Number(s.package_fee || 0),
+        sessions_per_week: 2,
+        duration_weeks: 12,
+        description: '',
+        time_slot_ids: Array.isArray(s.time_slot_ids) ? s.time_slot_ids.map(String) : [],
+        default_time_slot_id: String(s.default_time_slot_id || ''),
+        is_active: true,
+        status: 'active' as const,
+      }))
+    : [];
+
+  const mappedTimeSlots = Array.isArray(catalog?.time_slots)
+    ? catalog!.time_slots.map((ts: any) => ({
+        id: String(ts.id || ''),
+        code: String(ts.code || ts.id || ''),
+        name: String(ts.name || ''),
+        start_time: String(ts.start_time || '16:15'),
+        end_time: String(ts.end_time || '17:15'),
+        duration_minutes: 60,
+        days_of_week: Array.isArray(ts.days_of_week) ? ts.days_of_week : ['Mon', 'Wed'],
+        is_weekend: Boolean(ts.is_weekend),
+        is_afternoon_weekday:
+          ts.is_afternoon_weekday !== undefined ? Boolean(ts.is_afternoon_weekday) : !ts.is_weekend,
+        campus_id: String(ts.campus_id || 'all'),
+        status: 'active' as const,
+        is_active: true,
+      }))
+    : [];
+
+  return {
+    ...fallback,
+    campuses: mappedCampuses,
+    terms: mappedTerms,
+    subjects: mappedSubjects,
+    timeSlots: mappedTimeSlots,
+    subjectCategories: [],
+    termSubjects: [],
+    teachers: [],
+    students: [],
+    classes: [],
+    enrollments: [],
+    attendance: [],
+    makeupCredits: [],
+    transfers: [],
+    invoices: [],
+    notifications: [],
+    parentRegistrations: [],
+    users: [],
+    auditLogs: [],
+  };
+}
+
+/**
+ * Tải danh mục công khai từ GET /api/public/catalog cho khách / phụ huynh chưa đăng nhập.
+ * Tuyệt đối KHÔNG gọi *.supabase.co trực tiếp.
+ */
+export async function loadPublicCatalogSafely(
+  currentStore?: AppStore
+): Promise<SafeDataLoadResult> {
+  try {
+    const catalog = await fetchOnce('public:catalog', async () => {
+      const res = await fetch('/api/public/catalog', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      return res.json();
+    });
+    const guestStore = buildGuestCatalogStore(currentStore, catalog);
+    const totalCount =
+      guestStore.campuses.length +
+      guestStore.terms.length +
+      guestStore.subjects.length +
+      (guestStore.timeSlots?.length || 0);
+    return {
+      store: guestStore,
+      isOfflineFallback: false,
+      loadedFromCloud: false,
+      totalRecordsLoaded: totalCount,
+    };
+  } catch (err: any) {
+    return {
+      store: buildGuestCatalogStore(currentStore),
+      isOfflineFallback: true,
+      loadedFromCloud: false,
+      totalRecordsLoaded: 0,
+      errorMessage: err?.message || 'Failed to load public catalog',
+    };
+  }
+}
+
+/**
+ * Cơ chế Khởi Động & Tải Dữ Liệu An Toàn (Safe Data Loader) cho AppStore (CHỈ dành cho nhân sự đã đăng nhập)
  */
 export async function loadInitialDataSafely(
   currentStore?: AppStore
@@ -187,6 +377,24 @@ export async function loadInitialDataSafely(
     };
   }
 
+  // Bảo vệ nghiêm ngặt: nếu chưa có phiên đăng nhập nhân sự hợp lệ thì tuyệt đối không gọi *.supabase.co
+  if (!isLegacyLoginEnabled()) {
+    try {
+      const hasSavedToken =
+        typeof window !== 'undefined' &&
+        Boolean(window.localStorage.getItem('royal_school_supabase_auth'));
+      if (!hasSavedToken) {
+        return loadPublicCatalogSafely(currentStore);
+      }
+      const { data: sessionData } = await client.auth.getSession();
+      if (!sessionData?.session?.user) {
+        return loadPublicCatalogSafely(currentStore);
+      }
+    } catch {
+      return loadPublicCatalogSafely(currentStore);
+    }
+  }
+
   try {
     const nextStore: AppStore = { ...fallbackStore };
     let totalRecordsLoaded = 0;
@@ -205,24 +413,34 @@ export async function loadInitialDataSafely(
       { tableName: 'term_subjects', storeKey: 'termSubjects' },
     ];
 
-    // Nạp song song độc lập từng bảng với Promise.allSettled
+    // Nạp song song độc lập từng bảng với Promise.allSettled & fetchOnce (chống gọi đúp do StrictMode)
     const fetchPromises = allTableDefinitions.map(async item => {
-      try {
-        const { data, error } = await client.from(item.tableName).select('*');
-        if (error) {
-          console.warn(`[SafeLoader] Bảng ${item.tableName} không nạp được (${error.message}), giữ dữ liệu cục bộ.`);
+      return fetchOnce(`init:${item.tableName}`, async () => {
+        try {
+          const query =
+            item.tableName === 'students'
+              ? client
+                  .from('students')
+                  .select(STUDENTS_DISPLAY_SELECT)
+                  .order('code', { ascending: true })
+                  .range(0, 99)
+              : client.from(item.tableName).select('*');
+          const { data, error } = await query;
+          if (error) {
+            console.warn(`[SafeLoader] Bảng ${item.tableName} không nạp được (${error.message}), giữ dữ liệu cục bộ.`);
+            return { tableName: item.tableName, storeKey: item.storeKey, data: [], success: false };
+          }
+          return {
+            tableName: item.tableName,
+            storeKey: item.storeKey,
+            data: Array.isArray(data) ? data : [],
+            success: true,
+          };
+        } catch (err: any) {
+          console.warn(`[SafeLoader] Exception khi đọc bảng ${item.tableName}:`, err?.message || err);
           return { tableName: item.tableName, storeKey: item.storeKey, data: [], success: false };
         }
-        return {
-          tableName: item.tableName,
-          storeKey: item.storeKey,
-          data: Array.isArray(data) ? data : [],
-          success: true,
-        };
-      } catch (err: any) {
-        console.warn(`[SafeLoader] Exception khi đọc bảng ${item.tableName}:`, err?.message || err);
-        return { tableName: item.tableName, storeKey: item.storeKey, data: [], success: false };
-      }
+      });
     });
 
     const settledResults = await Promise.allSettled(fetchPromises);
@@ -232,7 +450,13 @@ export async function loadInitialDataSafely(
         const { tableName, storeKey, data } = res.value;
         const mapperKey = tableName === 'app_users' ? 'profiles' : tableName;
         const mappedRows = data
-          .map(row => mapSupabaseRowToStoreEntity(mapperKey, row))
+          .map(row => {
+            const entity = mapSupabaseRowToStoreEntity(mapperKey, row);
+            if (tableName === 'students' && entity && Array.isArray(row?.enrollments)) {
+              (entity as any).enrollments = row.enrollments;
+            }
+            return entity;
+          })
           .filter(Boolean);
 
         if (mappedRows.length > 0) {

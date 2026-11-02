@@ -475,11 +475,11 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
     }
   };
 
-  const handleParentPhoneLogin = (e: React.FormEvent) => {
+  const handleParentPhoneLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setParentError(null);
 
-    // Giới hạn 5 lần thử / 15 phút trên thiết bị
+    // Giữ giới hạn lần thử ở client như lớp phụ (5 lần / 15 phút)
     const recentAttempts = getParentRecentAttempts();
     if (recentAttempts.length >= PARENT_MAX_ATTEMPTS) {
       setParentError('Bạn đã thử quá 5 lần trong 15 phút. Vui lòng thử lại sau hoặc liên hệ Văn phòng Học vụ.');
@@ -491,63 +491,78 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
 
     if (!cleanDigits || cleanDigits.length < 9 || !cleanStudentCode) {
       recordParentAttempt();
-      setParentError('Thông tin không khớp. Vui lòng liên hệ Văn phòng Học vụ.');
+      setParentError('Thông tin không khớp. Vui lòng kiểm tra lại SĐT và Mã học sinh hoặc liên hệ Văn phòng Học vụ.');
       return;
     }
 
     setIsParentSubmitting(true);
 
-    setTimeout(async () => {
-      // Yêu cầu SĐT + Mã học sinh (student.code) khớp cùng một học sinh mới cho vào
-      const foundStudent = store.students.find(s => {
-        const sPhoneClean = (s.parent_phone || '').replace(/\D/g, '');
-        const sCodeClean = String(s.code || '').trim().toUpperCase();
-        return sPhoneClean === cleanDigits && sCodeClean === cleanStudentCode;
+    try {
+      const res = await fetch('/api/parent/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          phone: cleanDigits,
+          studentCode: cleanStudentCode,
+        }),
       });
 
-      if (foundStudent) {
-        if (onSetParentStudent) onSetParentStudent(foundStudent);
-        if (onOpenParentPortalWithStudent) {
-          onOpenParentPortalWithStudent(foundStudent);
-        }
+      const data = await res.json().catch(() => ({}));
 
-        const clientIp = await fetchClientIpAddress();
-
-        if (onUpdateStore) {
-          const log = createAuditRecord(
-            'AUTH_LOGIN_SUCCESS',
-            'AUTH',
-            'Cổng Phụ Huynh',
-            `Phụ huynh học sinh ${foundStudent.name} (${foundStudent.code}) đã xác thực thành công qua SĐT ${parentPhone}`,
-            null,
-            {
-              target_id: foundStudent.id,
-              details: {
-                ip_address: clientIp || getClientIpAddress(),
-                student_name: foundStudent.name,
-                student_code: foundStudent.code,
-                parent_phone: parentPhone,
-                status: 'success',
-              },
-            }
-          );
-          onUpdateStore(prev => appendAuditLog(prev, log));
-        }
-
-        setLoginSuccess(`Chào mừng Phụ huynh bé ${foundStudent.name}! Đang mở Cổng Tra Cứu...`);
-        setIsParentSubmitting(false);
-
-        setTimeout(() => {
-          setLoginSuccess(null);
-          onClose();
-        }, 700);
-      } else {
-        // Mọi trường hợp không khớp đều trả cùng một thông báo, không tiết lộ SĐT có tồn tại hay có đơn đăng ký chờ duyệt
+      if (!res.ok || !data?.token || !data?.student) {
         recordParentAttempt();
-        setParentError('Thông tin không khớp. Vui lòng liên hệ Văn phòng Học vụ.');
+        setParentError(
+          data?.error ||
+            'Thông tin không khớp. Vui lòng kiểm tra lại SĐT và Mã học sinh hoặc liên hệ Văn phòng Học vụ.'
+        );
         setIsParentSubmitting(false);
+        return;
       }
-    }, 350);
+
+      // Lưu token HMAC-SHA256 vào sessionStorage
+      try {
+        sessionStorage.setItem('royal_parent_session_token', String(data.token));
+      } catch {
+        // ignore storage error
+      }
+
+      // Đối tượng student gọn từ server: { id, code, name, grade, dob, parent_name, parent_phone, campus_id }
+      const verifiedStudent: Student = {
+        id: String(data.student.id || ''),
+        code: String(data.student.code || cleanStudentCode),
+        name: String(data.student.name || ''),
+        grade: String(data.student.grade || ''),
+        dob: String(data.student.dob || ''),
+        gender: 'Nam',
+        parent_name: String(data.student.parent_name || ''),
+        parent_phone: String(data.student.parent_phone || cleanDigits),
+        campus_id: String(data.student.campus_id || 'pmh').toLowerCase() === 'pl' ? 'pl' : 'pmh',
+        student_type: String(data.student.code || cleanStudentCode).startsWith('EXT-') ? 'external' : 'royal',
+        is_royal_student: !String(data.student.code || cleanStudentCode).startsWith('EXT-'),
+        status: 'active',
+        created_at: '',
+      };
+
+      if (onSetParentStudent) onSetParentStudent(verifiedStudent);
+      if (onOpenParentPortalWithStudent) {
+        onOpenParentPortalWithStudent(verifiedStudent);
+      }
+
+      setLoginSuccess(`Chào mừng Phụ huynh bé ${verifiedStudent.name}! Đang mở Cổng Tra Cứu...`);
+      setIsParentSubmitting(false);
+
+      setTimeout(() => {
+        setLoginSuccess(null);
+        onClose();
+      }, 600);
+    } catch {
+      recordParentAttempt();
+      setParentError('Thông tin không khớp. Vui lòng kiểm tra lại SĐT và Mã học sinh hoặc liên hệ Văn phòng Học vụ.');
+      setIsParentSubmitting(false);
+    }
   };
 
   const handleLogout = async () => {

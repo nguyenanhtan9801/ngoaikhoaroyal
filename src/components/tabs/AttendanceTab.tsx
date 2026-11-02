@@ -54,6 +54,7 @@ import {
   getTeacherEffectiveSessionRate,
 } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
+import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 
@@ -642,30 +643,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         ratio: result.compressionRatio,
       });
 
-      // 2. Upload file to Supabase Storage Bucket 'attendance-proofs' if configured
-      let uploadedUrl: string | undefined = undefined;
-      if (proofModalStudent && currentClass) {
-        const sbRes = await uploadToSupabaseBucket(
-          file,
-          'attendance-proofs'
-        );
-        if (sbRes.success && sbRes.url) {
-          uploadedUrl = sbRes.url;
-        }
-      }
-
-      if (uploadedUrl) {
-        setProofUrlInput(uploadedUrl);
+      // 2. Upload file lên bucket riêng tư 'attendance-proofs' qua endpoint server /api/upload
+      const serverRes = await uploadFileToServer(result.base64, result.fileName, 'proofs');
+      if (serverRes.success && (serverRes.path || serverRes.url)) {
+        setProofUrlInput(serverRes.path || serverRes.url || '');
+        if (serverRes.fileName) setProofFileNameInput(serverRes.fileName);
       } else {
-        // Fallback to local server route /api/upload
-        const serverRes = await uploadFileToServer(result.base64, result.fileName, 'proofs');
-        if (serverRes.success && serverRes.url) {
-          setProofUrlInput(serverRes.url);
-          if (serverRes.fileName) setProofFileNameInput(serverRes.fileName);
-        } else {
-          // Fallback to local Base64/link if server offline
-          setProofUrlInput(result.base64);
-        }
+        setProofUrlInput(result.base64);
       }
     } catch (err: any) {
       setProofError(err?.message || 'Lỗi khi xử lý và lưu tệp lên server!');
@@ -673,6 +657,27 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       setProofUploadActive(false);
     }
   };
+
+  const [resolvedPreviewUrl, setResolvedPreviewUrl] = useState<string>('');
+  useEffect(() => {
+    let active = true;
+    const rawUrl = previewProofModal?.record?.proof_url || '';
+    const rawBase64 = previewProofModal?.record?.proof_base64 || '';
+    if (!previewProofModal) {
+      setResolvedPreviewUrl('');
+      return;
+    }
+    if (isPrivateStoragePath(rawUrl)) {
+      resolveSignedFileUrl(rawUrl).then(signed => {
+        if (active) setResolvedPreviewUrl(signed || rawBase64);
+      });
+    } else {
+      setResolvedPreviewUrl(rawBase64 || rawUrl);
+    }
+    return () => {
+      active = false;
+    };
+  }, [previewProofModal]);
 
   const handleSimulateUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2634,13 +2639,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
             {/* Image / Document Preview Area */}
             <div className="max-h-[60vh] overflow-auto flex flex-col items-center justify-center p-3 rounded-2xl bg-slate-950 border border-slate-800">
-              {previewProofModal.record.proof_base64 || (previewProofModal.record.proof_url && (previewProofModal.record.proof_url.startsWith('data:') || previewProofModal.record.proof_url.startsWith('/uploads/'))) ? (
+              {resolvedPreviewUrl || previewProofModal.record.proof_base64 ? (
                 previewProofModal.record.proof_file_name?.toLowerCase().endsWith('.pdf') ? (
                   <div className="w-full h-[50vh] flex flex-col items-center justify-center p-4 text-center space-y-3">
                     <Paperclip className="w-12 h-12 text-amber-400" />
                     <div className="text-sm font-bold text-white">{previewProofModal.record.proof_file_name}</div>
                     <a
-                      href={previewProofModal.record.proof_url || previewProofModal.record.proof_base64}
+                      href={resolvedPreviewUrl || previewProofModal.record.proof_base64}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-600 text-slate-950 text-xs font-bold transition-colors flex items-center gap-1.5"
@@ -2651,7 +2656,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   </div>
                 ) : (
                   <img
-                    src={previewProofModal.record.proof_base64 || previewProofModal.record.proof_url}
+                    src={resolvedPreviewUrl || previewProofModal.record.proof_base64}
                     alt="Minh chứng nghỉ phép"
                     className="max-h-[50vh] max-w-full object-contain rounded-xl shadow-lg border border-slate-700"
                   />
@@ -2676,7 +2681,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 </div>
               ) : (
                 <div className="p-6 text-center text-slate-400 text-xs">
-                  <span>Không tìm thấy bản xem trước trực quan. Vui lòng mở qua Google Drive hoặc tải về.</span>
+                  <span>Không tìm thấy bản xem trước trực quan. Vui lòng mở qua liên kết hoặc tải về.</span>
                 </div>
               )}
             </div>

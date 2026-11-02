@@ -13,8 +13,9 @@ import {
   syncStoreDeltaToSupabase,
   RealtimeMutationEvent,
 } from '../lib/supabase';
-import { saveStore } from '../lib/storage';
-import { loadInitialDataSafely } from '../services/dataLoader';
+import { loadStore, saveStore } from '../lib/storage';
+import { loadInitialDataSafely, loadPublicCatalogSafely } from '../services/dataLoader';
+import { createDebouncedReload, invalidateFetchOnce } from '../lib/fetchOnce';
 
 export type RealtimeConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 
@@ -188,7 +189,8 @@ export function useSupabaseRealtime({
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const hasAttemptedInitialLoadRef = useRef<boolean>(false);
+  const hasAttemptedGuestCatalogLoadRef = useRef<boolean>(false);
+  const loadedAuthenticatedUserIdRef = useRef<string | null>(null);
 
   const currentUserRef = useRef<AppUser | null>(currentUser);
   currentUserRef.current = currentUser;
@@ -268,8 +270,8 @@ export function useSupabaseRealtime({
         let didMutate = false;
 
         if (eventType === 'INSERT' && mappedNew && mappedNew.id) {
-          const exists = currentList.some(item => String(item.id) === String(mappedNew.id));
-          if (!exists) {
+          const idx = currentList.findIndex(item => String(item.id) === String(mappedNew.id));
+          if (idx === -1) {
             updatedList = [mappedNew, ...currentList];
             didMutate = true;
 
@@ -278,11 +280,31 @@ export function useSupabaseRealtime({
                 mappedNew as ParentRegistration
               );
             }
+          } else {
+            // Đã có bản ghi trùng ID -> gộp trực tiếp payload vào bản ghi hiện có, không tải lại bảng
+            const mergedItem = {
+              ...currentList[idx],
+              ...mappedNew,
+              ...(table === 'students' && (currentList[idx] as any)?.enrollments && !(mappedNew as any)?.enrollments
+                ? { enrollments: (currentList[idx] as any).enrollments }
+                : {}),
+            };
+            if (JSON.stringify(currentList[idx]) !== JSON.stringify(mergedItem)) {
+              updatedList = [...currentList];
+              updatedList[idx] = mergedItem;
+              didMutate = true;
+            }
           }
         } else if (eventType === 'UPDATE' && mappedNew && mappedNew.id) {
           const idx = currentList.findIndex(item => String(item.id) === String(mappedNew.id));
           if (idx !== -1) {
-            const mergedItem = { ...currentList[idx], ...mappedNew };
+            const mergedItem = {
+              ...currentList[idx],
+              ...mappedNew,
+              ...(table === 'students' && (currentList[idx] as any)?.enrollments && !(mappedNew as any)?.enrollments
+                ? { enrollments: (currentList[idx] as any).enrollments }
+                : {}),
+            };
             if (JSON.stringify(currentList[idx]) !== JSON.stringify(mergedItem)) {
               updatedList = [...currentList];
               updatedList[idx] = mergedItem;
@@ -342,10 +364,28 @@ export function useSupabaseRealtime({
     [setStore]
   );
 
-  // Khởi động tải dữ liệu an toàn (Safe Data Loader) một lần khi mở ứng dụng
+  // Khởi động tải dữ liệu an toàn:
+  // - Khi chưa có nhân sự đăng nhập (currentUser === null): KHÔNG gọi loadInitialDataSafely, chỉ tải danh mục từ GET /api/public/catalog
+  // - Khi đã có nhân sự đăng nhập (currentUser !== null): mới gọi loadInitialDataSafely
   useEffect(() => {
-    if (hasAttemptedInitialLoadRef.current) return;
-    hasAttemptedInitialLoadRef.current = true;
+    if (!currentUser) {
+      loadedAuthenticatedUserIdRef.current = null;
+      setIsSupabaseCloudActive(false);
+      if (hasAttemptedGuestCatalogLoadRef.current) return;
+      hasAttemptedGuestCatalogLoadRef.current = true;
+
+      loadPublicCatalogSafely(store)
+        .then(res => {
+          isApplyingRemoteUpdateRef.current = true;
+          prevStoreRef.current = res.store;
+          setStore(res.store);
+        })
+        .catch(() => {});
+      return;
+    }
+
+    if (loadedAuthenticatedUserIdRef.current === currentUser.id) return;
+    loadedAuthenticatedUserIdRef.current = currentUser.id;
 
     const { url, anonKey } = getResolvedSupabaseConfig(
       store.supabaseConfig?.url,
@@ -353,7 +393,7 @@ export function useSupabaseRealtime({
     );
 
     if (url && anonKey) {
-      loadInitialDataSafely(store)
+      loadInitialDataSafely(loadStore())
         .then(res => {
           if (res.isOfflineFallback) {
             setIsOffline(true);
@@ -374,10 +414,16 @@ export function useSupabaseRealtime({
     } else {
       setIsOffline(true);
     }
-  }, [store, setStore]);
+  }, [currentUser, store, setStore]);
 
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
+  // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
   useEffect(() => {
+    if (!currentUser) {
+      prevStoreRef.current = store;
+      return;
+    }
+
     const recomputed = recomputeDerivedRealtimeState(store);
     if (recomputed !== store) {
       prevStoreRef.current = recomputed;
@@ -413,7 +459,7 @@ export function useSupabaseRealtime({
         }
       })
       .catch(() => {});
-  }, [store, setStore]);
+  }, [currentUser, store, setStore]);
 
   // Thiết lập kênh BroadcastChannel đồng bộ đa tab/cửa sổ và lắng nghe sự kiện mạng Online/Offline
   useEffect(() => {
@@ -459,11 +505,18 @@ export function useSupabaseRealtime({
     };
   }, [handleRealtimePayload]);
 
-  // Đăng ký kênh Supabase Realtime ('royal_system_changes') với kiểm tra khóa JWT nghiêm ngặt và tự động ngắt khi lỗi
+  // Đăng ký kênh Supabase Realtime ('royal_system_changes') CHỈ khi đã có nhân sự đăng nhập (currentUser !== null)
   useEffect(() => {
     if (pollingIntervalRef.current) {
       window.clearInterval(pollingIntervalRef.current);
       pollingIntervalRef.current = null;
+    }
+
+    // Khi chưa có nhân sự đăng nhập: tuyệt đối KHÔNG mở kênh Realtime tới *.supabase.co
+    if (!currentUser) {
+      setIsSupabaseCloudActive(false);
+      setConnectionState('disconnected');
+      return;
     }
 
     const { url: supabaseUrl, anonKey: supabaseAnonKey } = getResolvedSupabaseConfig(
@@ -539,14 +592,12 @@ export function useSupabaseRealtime({
           setIsSupabaseCloudActive(false);
           setConnectionState('reconnecting');
 
-          // Sau 3 giây nếu không kết nối lại được, chuyển sang fallback an toàn và giữ trạng thái tĩnh (Polling mode)
-          // Tuyệt đối KHÔNG gọi removeChannel hay unsubscribe ở đây vì sẽ gây đệ quy vô hạn RangeError
           if (reconnectTimerRef.current) {
             clearTimeout(reconnectTimerRef.current);
           }
           reconnectTimerRef.current = setTimeout(() => {
             if (!isUnmounted) {
-              setConnectionState('connected'); // Chuyển badge về kết nối (Polling mode) để không gây hoang mang
+              setConnectionState('connected');
             }
           }, 3000);
         }
@@ -574,23 +625,32 @@ export function useSupabaseRealtime({
       }
     };
   }, [
+    currentUser?.id,
     store.supabaseConfig?.url,
     store.supabaseConfig?.anonKey,
     reconnectTrigger,
     handleRealtimePayload,
   ]);
 
-  const reconnectNow = useCallback(() => {
-    setReconnectAttempt(0);
-    setConnectionState('reconnecting');
-    setReconnectTrigger(t => t + 1);
+  // Mọi thao tác tải lại / kết nối lại đều phải debounce 2 giây (2000ms) và chỉ áp dụng payload sự kiện Realtime
+  const debouncedReloadRef = useRef<() => void>(
+    createDebouncedReload(() => {
+      invalidateFetchOnce('init:');
+      setReconnectAttempt(0);
+      setConnectionState('reconnecting');
+      setReconnectTrigger(t => t + 1);
 
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-    }
-    reconnectTimerRef.current = setTimeout(() => {
-      setConnectionState('connected');
-    }, 2500);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+      reconnectTimerRef.current = setTimeout(() => {
+        setConnectionState('connected');
+      }, 2000);
+    }, 2000)
+  );
+
+  const reconnectNow = useCallback(() => {
+    debouncedReloadRef.current();
   }, []);
 
   return {

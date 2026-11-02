@@ -224,50 +224,24 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     return availableClasses[0]?.id || termClasses[0]?.id || store.classes[0]?.id || '';
   });
 
-  // Nạp danh sách Khóa học từ Supabase (bảng academic_terms)
+  // Sử dụng danh sách Khóa học đã có trong store trung tâm (không tự động gọi Supabase khi mở modal)
   useEffect(() => {
-    let isMounted = true;
-    const fetchTerms = async () => {
-      const client = getSupabaseClient() || supabase;
-      if (!client) {
-        if (store.terms && store.terms.length > 0 && isMounted) {
-          setTerms(store.terms);
-          const activeTerm = store.terms.find(
-            (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
-          ) || store.terms[0];
-          if (activeTerm && !selectedTermId) {
-            setSelectedTermId(activeTerm.id);
-          }
-        }
-        return;
+    if (store.terms && store.terms.length > 0) {
+      setTerms(store.terms);
+      const activeTerm =
+        store.terms.find(
+          (t: any) =>
+            t.is_active ||
+            t.status === 'active' ||
+            t.status === 'recruiting' ||
+            t.status === 'open_enrollment' ||
+            t.status === 'in_progress'
+        ) || store.terms[0];
+      if (activeTerm && !selectedTermId) {
+        setSelectedTermId(activeTerm.id);
       }
-
-      try {
-        const { data, error } = await client
-          .from('academic_terms')
-          .select('*')
-          .order('start_date', { ascending: false });
-
-        if (isMounted) {
-          const termsData = (!error && data && data.length > 0) ? (data as AcademicTerm[]) : store.terms;
-          if (termsData && termsData.length > 0) {
-            setTerms(termsData);
-            const activeTerm = termsData.find(
-              (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
-            ) || termsData[0];
-            if (activeTerm && !selectedTermId) {
-              setSelectedTermId(activeTerm.id);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Lỗi tải academic_terms từ supabase:', err);
-      }
-    };
-
-    fetchTerms();
-    return () => { isMounted = false; };
-  }, [store.terms]);
+    }
+  }, [store.terms, selectedTermId]);
 
   // Xử lý khi thay đổi Khóa học (Academic Term)
   const handleTermChange = (newTermId: string) => {
@@ -317,30 +291,10 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     (store.holidays || []).filter((h) => h.status !== 'inactive')
   );
 
-  // Nạp danh sách ngày nghỉ lễ đang active từ Supabase để loại trừ khi đếm buổi thực học
+  // Đồng bộ ngày nghỉ lễ từ store trung tâm (không gọi truy vấn Supabase mỗi khi mở modal xếp lớp)
   useEffect(() => {
-    const fetchActiveHolidays = async () => {
-      const client = getSupabaseClient() || supabase;
-      if (!client) return;
-      try {
-        const { data, error } = await client
-          .from('holidays')
-          .select('*')
-          .eq('status', 'active')
-          .order('start_date', { ascending: true });
-        if (!error && Array.isArray(data)) {
-          setActiveHolidays(data as Holiday[]);
-          onUpdateStore((prev) => ({
-            ...prev,
-            holidays: data as Holiday[],
-          }));
-        }
-      } catch (err) {
-        console.warn('Lỗi tải holidays khi xếp lớp:', err);
-      }
-    };
-    fetchActiveHolidays();
-  }, []);
+    setActiveHolidays((store.holidays || []).filter((h) => h.status !== 'inactive'));
+  }, [store.holidays]);
 
   // Selected Class & Subject
   const selectedClass = useMemo(() => {
@@ -359,9 +313,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     if (!selectedClass) return [];
     return Array.isArray(selectedClass.days_of_week) && selectedClass.days_of_week.length > 0
       ? selectedClass.days_of_week
-      : (Array.isArray((selectedClass as any).schedule_days) && (selectedClass as any).schedule_days.length > 0
-          ? (selectedClass as any).schedule_days
-          : getClassDaysOfWeek(selectedClass, store));
+      : getClassDaysOfWeek(selectedClass, store);
   }, [selectedClass, store]);
 
   const classDaysCount = Math.max(1, totalClassDays.length);
@@ -984,9 +936,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                 const teacher = store.teachers.find((t) => t.id === c.primary_teacher_id);
                 const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
                   ? c.days_of_week
-                  : (Array.isArray((c as any).schedule_days) && (c as any).schedule_days.length > 0
-                      ? (c as any).schedule_days
-                      : getClassDaysOfWeek(c, store));
+                  : getClassDaysOfWeek(c, store);
                 const campusLabel = campus ? campus.name.split('-')[0].trim() : (c.campus_id || '').toUpperCase();
                 const teacherLabel = teacher ? teacher.name : 'Chưa phân công GV';
                 const daysLabel = clsDays.join(', ');

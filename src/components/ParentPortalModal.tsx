@@ -27,12 +27,12 @@ import {
   LogOut,
   RefreshCw
 } from 'lucide-react';
-import { supabase, getSupabaseClient } from '@/supabaseClient';
-import { AppStore, formatVND, getEffectivePrice, matchLeadWithDatabase } from '../lib/storage';
+import { AppStore, formatVND, matchLeadWithDatabase } from '../lib/storage';
 import { formatCapitalizedName } from '../lib/formatters';
 import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 import { DatePickerVN } from './common/DatePickerVN';
+import { showToast } from '../lib/toast';
 
 interface ParentPortalModalProps {
   store: AppStore;
@@ -130,12 +130,20 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   onLogout,
   onRegistrationSuccess,
 }) => {
-  // Trạng thái gửi đơn vào Supabase
+  // Trạng thái gửi đơn qua POST /api/parent/register
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [subjectSearch, setSubjectSearch] = useState<string>('');
   const [copyToast, setCopyToast] = useState<string | null>(null);
+  const [honeypot, setHoneypot] = useState<string>('');
+  const formStartedAtRef = useRef<number>(Date.now());
+
+  // Danh mục công khai tải từ GET /api/public/catalog
+  const [catalogCampuses, setCatalogCampuses] = useState<any[]>(() => store.campuses || []);
+  const [catalogTerms, setCatalogTerms] = useState<any[]>(() => store.terms || []);
+  const [catalogSubjects, setCatalogSubjects] = useState<any[]>(() => store.subjects || []);
+  const [timeSlots, setTimeSlots] = useState<any[]>(() => store.timeSlots || []);
 
   // Phone number formatter
   const formatPhoneNumber = (val: string) => {
@@ -145,7 +153,9 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     return `${digits.slice(0, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`;
   };
 
-  const activeTerm = store.terms.find(t => t.is_active || t.status === 'open_enrollment') || store.terms[0];
+  const activeTerm =
+    catalogTerms.find((t: any) => t.is_active || t.status === 'open' || t.status === 'open_enrollment') ||
+    catalogTerms[0];
 
   // 1. THÔNG TIN HỌC SINH VÀ PHỤ HUYNH
   const [regForm, setRegForm] = useState({
@@ -157,61 +167,65 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     parent_name: '',
     parent_phone: '',
     parent_email: '',
-    desired_campus_id: store.campuses[0]?.id || '',
+    desired_campus_id: catalogCampuses[0]?.id || 'pmh',
     desired_term_id: activeTerm?.id || '',
     notes: '',
   });
 
-  // Nạp động khung giờ học từ bảng public.time_slots trên CSDL Supabase
-  const [timeSlots, setTimeSlots] = useState<any[]>(() => {
-    if (store.timeSlots && store.timeSlots.length > 0) {
-      return store.timeSlots.filter(
-        (slot) => slot.status === 'active' || (slot.status as string) === 'Đang áp dụng'
-      );
-    }
-    return [];
-  });
-
+  // Nạp danh mục { campuses, terms, subjects, time_slots } từ GET /api/public/catalog
   useEffect(() => {
-    const fetchTimeSlots = async () => {
+    if (!isOpen) return;
+    formStartedAtRef.current = Date.now();
+    let isMounted = true;
+
+    const fetchPublicCatalog = async () => {
       try {
-        const client = supabase || getSupabaseClient();
-        if (client) {
-          const { data, error } = await client
-            .from('time_slots')
-            .select('*')
-            .order('start_time', { ascending: true });
+        const res = await fetch('/api/public/catalog', {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted || !data) return;
 
-          if (!error && data && data.length > 0) {
-            // Chỉ lấy các khung giờ đang áp dụng (status = 'active' hoặc 'Đang áp dụng')
-            const activeSlots = data.filter(
-              (slot: any) => slot.status === 'active' || slot.status === 'Đang áp dụng'
-            );
-            if (activeSlots.length > 0) {
-              setTimeSlots(activeSlots);
-              return;
-            }
-          }
+        if (Array.isArray(data.campuses) && data.campuses.length > 0) {
+          setCatalogCampuses(data.campuses);
+          setRegForm(prev => ({
+            ...prev,
+            desired_campus_id:
+              data.campuses.some((c: any) => c.id === prev.desired_campus_id)
+                ? prev.desired_campus_id
+                : data.campuses[0].id,
+          }));
         }
-      } catch (err) {
-        console.warn('Lỗi khi nạp time_slots từ Supabase:', err);
-      }
-
-      // Fallback nếu CSDL Supabase chưa có bảng hoặc rỗng
-      if (store.timeSlots && store.timeSlots.length > 0) {
-        const activeSlots = store.timeSlots.filter(
-          (slot: any) => slot.status === 'active' || (slot.status as string) === 'Đang áp dụng'
-        );
-        if (activeSlots.length > 0) {
-          setTimeSlots(activeSlots);
+        if (Array.isArray(data.terms) && data.terms.length > 0) {
+          setCatalogTerms(data.terms);
+          setRegForm(prev => ({
+            ...prev,
+            desired_term_id:
+              data.terms.some((t: any) => t.id === prev.desired_term_id)
+                ? prev.desired_term_id
+                : data.terms[0].id,
+          }));
         }
+        if (Array.isArray(data.subjects)) {
+          setCatalogSubjects(data.subjects);
+        }
+        if (Array.isArray(data.time_slots) && data.time_slots.length > 0) {
+          setTimeSlots(data.time_slots);
+        }
+      } catch {
+        // ignore network error
       }
     };
 
-    fetchTimeSlots();
-  }, [store.timeSlots]);
+    fetchPublicCatalog();
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
 
-  // Danh sách các option khung giờ học nạp động
+  // Danh sách các option khung giờ học nạp động từ catalog
   const slotOptions = useMemo(() => {
     if (timeSlots && timeSlots.length > 0) {
       const currentCampusId = regForm.desired_campus_id;
@@ -238,8 +252,8 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   const [selectedSubjectConfigs, setSelectedSubjectConfigs] = useState<
     { subjectId: string; timeSlot: string; timeSlotLabel: string }[]
   >(() => {
-    const firstSub = store.subjects[0];
-    const initialSlot = (store.timeSlots && store.timeSlots.find(s => s.status === 'active' || (s.status as string) === 'Đang áp dụng')) || null;
+    const firstSub = catalogSubjects[0];
+    const initialSlot = (timeSlots && timeSlots[0]) || null;
     const defaultVal = initialSlot ? (initialSlot.id || initialSlot.code) : TIME_SLOT_OPTIONS[0].value;
     const defaultLabel = initialSlot ? formatSlotLabel(initialSlot) : TIME_SLOT_OPTIONS[0].label;
     return firstSub
@@ -287,9 +301,11 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Selected campus & term entities
-  const selectedCampus = store.campuses.find(c => c.id === regForm.desired_campus_id) || store.campuses[0];
-  const selectedTerm = store.terms.find(t => t.id === regForm.desired_term_id) || activeTerm;
+  // Selected campus & term entities từ catalog
+  const selectedCampus =
+    catalogCampuses.find((c: any) => c.id === regForm.desired_campus_id) || catalogCampuses[0];
+  const selectedTerm =
+    catalogTerms.find((t: any) => t.id === regForm.desired_term_id) || activeTerm;
 
   // Handle Medical chip toggle
   const medicalChips = [
@@ -362,16 +378,24 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     setSelectedSubjectConfigs(prev => prev.filter(c => c.subjectId !== subjectId));
   };
 
-  // Calculate pricing for each selected subject
+  // Danh sách môn học của cơ sở đang chọn từ catalog
+  const campusCatalogSubjects = catalogSubjects.filter((s: any) => {
+    const targetCampus = (regForm.desired_campus_id || 'pmh').replace(/^camp_/, '');
+    const subCampus = String(s.campus_id || 'pmh').replace(/^camp_/, '');
+    return !s.campus_id || subCampus === 'all' || subCampus === targetCampus;
+  });
+  const effectiveCatalogSubjects =
+    campusCatalogSubjects.length > 0 ? campusCatalogSubjects : catalogSubjects;
+
+  // Calculate pricing for each selected subject from public catalog
   const detailedSelectedSubjects = selectedSubjectConfigs.map(c => {
-    const sub = store.subjects.find(s => s.id === c.subjectId);
-    const pricing = getEffectivePrice(
-      regForm.desired_term_id,
-      regForm.desired_campus_id,
-      c.subjectId,
-      store
+    const sub =
+      effectiveCatalogSubjects.find((s: any) => s.id === c.subjectId) ||
+      catalogSubjects.find((s: any) => s.id === c.subjectId);
+    const fee = Number(
+      sub?.package_fee ??
+        Number(sub?.fee_per_session || 150000) * Number(sub?.total_sessions || 24)
     );
-    const fee = pricing.course_fee || pricing.base_course_fee || 3600000;
     return {
       ...c,
       subject: sub,
@@ -380,7 +404,9 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   });
 
   const totalBaseFee = detailedSelectedSubjects.reduce((sum, item) => sum + item.fee, 0);
-  const finalTotalAmount = totalBaseFee;
+  const multiSubjectDiscount =
+    detailedSelectedSubjects.length >= 2 ? Math.round(totalBaseFee * 0.05) : 0;
+  const finalTotalAmount = Math.max(0, totalBaseFee - multiSubjectDiscount);
 
   // Copy Direct Link to Clipboard for sending to parents
   const handleCopyPortalLink = () => {
@@ -398,20 +424,20 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
   };
 
   // Filtered Subject Catalog
-  const filteredSubjects = store.subjects.filter(s => {
+  const filteredSubjects = effectiveCatalogSubjects.filter((s: any) => {
     if (selectedCategory !== 'all' && s.category !== selectedCategory) return false;
     if (subjectSearch.trim()) {
       const q = subjectSearch.toLowerCase();
       return (
-        s.name.toLowerCase().includes(q) ||
-        s.category.toLowerCase().includes(q) ||
-        (s.description && s.description.toLowerCase().includes(q))
+        String(s.name || '').toLowerCase().includes(q) ||
+        String(s.category || '').toLowerCase().includes(q) ||
+        (s.description && String(s.description).toLowerCase().includes(q))
       );
     }
     return true;
   });
 
-  const categoriesList = Array.from(new Set(store.subjects.map(s => s.category)));
+  const categoriesList = Array.from(new Set(effectiveCatalogSubjects.map((s: any) => s.category)));
 
   const getSubjectIcon = (category: string) => {
     switch (category) {
@@ -429,7 +455,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
   };
 
-  // Handle Form Submit / Gửi Đơn Đăng Ký Tuyển Sinh vào CSDL Supabase
+  // Handle Form Submit / Gửi Đơn Đăng Ký Tuyển Sinh qua POST /api/parent/register
   const handleSubmitRegistration = async (e?: React.FormEvent) => {
     if (e && typeof e.preventDefault === 'function') {
       e.preventDefault();
@@ -444,7 +470,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
     const cleanPhone = regForm.parent_phone.replace(/\s+/g, '');
     if (!cleanPhone || cleanPhone.length < 9) {
-      errors.parent_phone = 'Vui lòng nhập số điện thoại hợp lệ (từ 10 chữ số)';
+      errors.parent_phone = 'Vui lòng nhập số điện thoại hợp lệ (từ 9-11 chữ số)';
     }
     if (selectedSubjectConfigs.length === 0) {
       errors.subjects = 'Vui lòng chọn ít nhất 1 môn học ngoại khóa cho bé';
@@ -456,199 +482,188 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
     }
     setFormErrors({});
 
-    // Tạo mã đăng ký ngẫu nhiên chuẩn Royal School
-    const currentYear = new Date().getFullYear();
-    const regCode = `REG-${currentYear}-${Math.floor(100000 + Math.random() * 900000)}`;
     const campus = selectedCampus;
     const term = selectedTerm;
+    const campusIdShort = (regForm.desired_campus_id || 'pmh').replace(/^camp_/, '') || 'pmh';
 
-    // Chuẩn bị dữ liệu danh sách môn học đã chọn kèm khung giờ
-    const formattedSubjects = detailedSelectedSubjects.map((sub: any) => ({
-      subject_id: sub.subjectId || sub.id,
-      subject_code: sub.subject?.code || sub.subjectId,
-      subject_name: sub.subject?.name || 'Môn ngoại khóa',
-      category: sub.subject?.category_code || sub.subject?.category || 'Ngoại khóa',
-      time_slot: sub.timeSlotLabel || sub.selected_time_slot || sub.timeSlot || 'Sau giờ chính khóa (16:45 - 18:15)',
-      fee: sub.fee || sub.standard_course_fee || 3990000
-    }));
+    const combinedNotes = [
+      regForm.medical_notes?.trim() ? `[Lưu ý sức khỏe: ${regForm.medical_notes.trim()}]` : '',
+      regForm.notes?.trim() || '',
+    ]
+      .filter(Boolean)
+      .join(' | ');
 
-    const subjectNamesList = formattedSubjects.map(s => s.subject_name).join(', ');
-
-    const discountPolicy = regForm.is_royal_student
-      ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
-      : `Học sinh Ngoài trường / Vãng lai (${detailedSelectedSubjects.length} môn - Không áp dụng suất bánh sữa)`;
-
-    const campusIdShort = (regForm.desired_campus_id || 'camp_pmh').replace(/^camp_/, '') || 'pmh';
-
-    const payload = {
-      reg_code: regCode,
+    const registerRequestBody = {
       student_name: regForm.student_name.trim(),
-      student_dob: regForm.student_dob || null,
-      student_grade: regForm.student_grade || 'Lớp 3 - Tiểu học',
-      student_type: regForm.is_royal_student ? 'royal' : 'external', // 'royal' | 'external'
-      medical_notes: regForm.medical_notes?.trim() || 'Bình thường',
+      student_dob: regForm.student_dob || '2016-01-01',
+      current_grade: regForm.student_grade || 'Lớp 3 - Tiểu học',
+      student_type: regForm.is_royal_student ? 'royal' : 'external',
+      campus_id: campusIdShort,
+      term_id: term?.id || regForm.desired_term_id || 'term_hk2_2025_2026',
       parent_name: regForm.parent_name.trim(),
-      parent_phone: regForm.parent_phone.trim(),
+      parent_phone: cleanPhone,
       parent_email: regForm.parent_email?.trim() || '',
-      campus_id: campusIdShort, // 'pmh' | 'pl'
-      term_name: term?.name || 'KHÓA HỌC 1 (Đang mở tuyển sinh)',
-      selected_subjects: formattedSubjects,
-      total_estimated_fee: finalTotalAmount || 0,
-      parent_notes: regForm.notes?.trim() || '',
-      status: 'pending', // Trạng thái mặc định: Chờ xử lý
-      submitted_at: new Date().toISOString()
+      notes: combinedNotes,
+      selected_subjects: detailedSelectedSubjects.map((sub: any) => ({
+        subject_id: sub.subjectId,
+        time_slot_id: sub.timeSlot,
+      })),
+      honeypot,
+      formStartedAt: formStartedAtRef.current,
     };
-
-    let insertedId = `preg_${Date.now()}`;
 
     try {
       setIsSubmitting(true);
-      const client = supabase || getSupabaseClient();
-      if (client) {
-        const { data, error } = await client
-          .from('parent_registrations')
-          .insert([payload])
-          .select();
+      const res = await fetch('/api/parent/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(registerRequestBody),
+      });
 
-        if (error) {
-          console.error('Lỗi Supabase khi lưu đơn:', error);
-          alert('Không thể lưu đơn đăng ký: ' + error.message);
-          setIsSubmitting(false);
-          return;
-        }
-
-        if (data && data[0] && data[0].id) {
-          insertedId = data[0].id;
-        }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.reg_code) {
+        const errMsg = data?.error || 'Không thể gửi phiếu đăng ký. Vui lòng kiểm tra lại thông tin.';
+        setFormErrors({ submit: errMsg });
+        showToast(errMsg, 'error');
+        setIsSubmitting(false);
+        return;
       }
 
-      // Hiển thị thông báo thành công và chuyển sang màn hình xác nhận / đóng modal
-      alert(`Đăng ký thành công! Mã tiếp nhận của bé là: ${regCode}`);
-      
-      // Gọi callback reload danh sách nếu đang mở trong giao diện quản trị
+      const insertedId = String(data.id || `reg_${Date.now()}`);
+      const regCode = String(data.reg_code);
+      const serverTotalFee = Number(data.total_estimated_fee ?? finalTotalAmount);
+      const serverSubjects = Array.isArray(data.selected_subjects)
+        ? data.selected_subjects
+        : detailedSelectedSubjects.map((sub: any) => ({
+            subject_id: sub.subjectId,
+            subject_name: sub.subject?.name || 'Môn ngoại khóa',
+            time_slot_id: sub.timeSlot,
+            time_slot_name: sub.timeSlotLabel,
+            fee: sub.fee,
+          }));
+
+      showToast(`✓ Đăng ký thành công! Mã hồ sơ tiếp nhận: ${regCode}`, 'success');
+
       if (typeof onRegistrationSuccess === 'function') {
         onRegistrationSuccess();
       }
+
+      const discountPolicy = regForm.is_royal_student
+        ? `Học sinh chính khóa Royal School (Được phục vụ suất ăn nhẹ bánh sữa sau giờ)`
+        : `Học sinh Ngoài trường / Vãng lai (${serverSubjects.length} môn - Không áp dụng suất bánh sữa)`;
+
+      const registeredSubjectItems: RegisteredSubjectItem[] = serverSubjects.map((item: any) => ({
+        subject_id: item.subject_id,
+        subject_name: item.subject_name || 'Môn ngoại khóa',
+        time_slot: item.time_slot_id || item.time_slot,
+        time_slot_label: item.time_slot_name || item.time_slot || '',
+        estimated_fee: Number(item.fee || 0),
+      }));
+
+      // Nếu đang có nhân sự đăng nhập mở màn hình này thì cập nhật thêm vào store nội bộ
+      if (currentUser) {
+        const draftLead: ParentRegistration = {
+          id: insertedId,
+          registration_code: regCode,
+          code: regCode,
+          reg_code: regCode,
+          parent_name: regForm.parent_name.trim(),
+          parent_phone: regForm.parent_phone.trim(),
+          parent_email: regForm.parent_email.trim() || undefined,
+          student_name: regForm.student_name.trim(),
+          student_dob: regForm.student_dob,
+          dob: regForm.student_dob,
+          student_grade: regForm.student_grade,
+          student_type: regForm.is_royal_student ? 'royal' : 'external',
+          desired_campus_id: regForm.desired_campus_id,
+          campus_id: campusIdShort,
+          desired_term_id: regForm.desired_term_id,
+          term_name: term?.name || 'Niên khóa hiện tại',
+          desired_subject_id: selectedSubjectConfigs[0]?.subjectId || '',
+          desired_time_slot_type:
+            selectedSubjectConfigs[0]?.timeSlot === 'after_school' ? 'after_school' : 'weekend',
+          registered_subjects: registeredSubjectItems,
+          selected_subjects: serverSubjects,
+          is_royal_student: regForm.is_royal_student,
+          is_royal: regForm.is_royal_student,
+          medical_notes: regForm.medical_notes?.trim() || 'Bình thường',
+          notes: combinedNotes,
+          parent_notes: combinedNotes,
+          estimated_fee: serverTotalFee,
+          total_estimated_fee: serverTotalFee,
+          discount_policy: discountPolicy,
+          status: 'pending',
+          created_at: data.created_at || new Date().toISOString(),
+          submitted_at: data.created_at || new Date().toISOString(),
+        };
+
+        const matchRes = matchLeadWithDatabase(draftLead, store);
+        const newLead: ParentRegistration = {
+          ...draftLead,
+          linked_student_id: matchRes.matchedStudent?.id,
+        };
+
+        onUpdateStore(prev => ({
+          ...prev,
+          parentRegistrations: [newLead, ...prev.parentRegistrations.filter(r => r.id !== newLead.id)],
+        }));
+      }
+
+      const summary: ParentRegistrationSummary = {
+        leadCode: regCode,
+        parentName: regForm.parent_name.trim(),
+        parentPhone: regForm.parent_phone.trim(),
+        parentEmail: regForm.parent_email.trim() || undefined,
+        studentName: regForm.student_name.trim(),
+        studentGrade: regForm.student_grade,
+        campusName: campus?.name || 'Royal School',
+        termName: term?.name || 'Niên khóa hiện tại',
+        registeredSubjects: serverSubjects.map((item: any) => ({
+          name: item.subject_name || 'Môn ngoại khóa',
+          category: 'Ngoại khóa',
+          timeSlotLabel: item.time_slot_name || item.time_slot || '',
+          fee: Number(item.fee || 0),
+        })),
+        isRoyal: regForm.is_royal_student,
+        totalAmount: totalBaseFee,
+        discountAmount: Math.max(0, totalBaseFee - serverTotalFee),
+        finalAmount: serverTotalFee,
+        discountNote: discountPolicy,
+        submittedAt:
+          new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) +
+          ' ' +
+          new Date().toLocaleDateString('vi-VN'),
+      };
+
+      setSubmittedRegistration(summary);
+      setCurrentStep('success');
+
+      setTimeout(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        if (isStandalonePage && typeof window !== 'undefined') {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }, 50);
     } catch (err: any) {
-      console.error('Lỗi ngoại lệ:', err);
-      alert('Không thể lưu đơn đăng ký: ' + (err?.message || 'Lỗi không xác định'));
-      setIsSubmitting(false);
-      return;
+      const errMsg = err?.message || 'Lỗi kết nối máy chủ khi gửi đơn đăng ký.';
+      setFormErrors({ submit: errMsg });
+      showToast(errMsg, 'error');
     } finally {
       setIsSubmitting(false);
     }
-
-    const registeredSubjectItems: RegisteredSubjectItem[] = detailedSelectedSubjects.map(item => ({
-      subject_id: item.subjectId,
-      subject_name: item.subject?.name || 'Môn ngoại khóa',
-      time_slot: item.timeSlot,
-      time_slot_label: item.timeSlotLabel,
-      estimated_fee: item.fee,
-    }));
-
-    const draftLead: ParentRegistration = {
-      id: insertedId,
-      registration_code: regCode,
-      code: regCode,
-      reg_code: regCode,
-      parent_name: regForm.parent_name.trim(),
-      parent_phone: regForm.parent_phone.trim(),
-      parent_email: regForm.parent_email.trim() || undefined,
-      student_name: regForm.student_name.trim(),
-      student_dob: regForm.student_dob,
-      dob: regForm.student_dob,
-      student_grade: regForm.student_grade,
-      student_type: regForm.is_royal_student ? 'royal' : 'external',
-      desired_campus_id: regForm.desired_campus_id,
-      campus_id: campusIdShort,
-      desired_term_id: regForm.desired_term_id,
-      term_name: payload.term_name,
-      desired_subject_id: selectedSubjectConfigs[0]?.subjectId || '',
-      desired_time_slot_type: selectedSubjectConfigs[0]?.timeSlot === 'after_school' ? 'after_school' : 'weekend',
-      registered_subjects: registeredSubjectItems,
-      selected_subjects: formattedSubjects,
-      is_royal_student: regForm.is_royal_student,
-      is_royal: regForm.is_royal_student,
-      medical_notes: payload.medical_notes,
-      notes: payload.parent_notes,
-      parent_notes: payload.parent_notes,
-      estimated_fee: finalTotalAmount,
-      total_estimated_fee: finalTotalAmount,
-      discount_policy: discountPolicy,
-      status: 'pending',
-      created_at: payload.submitted_at,
-      submitted_at: payload.submitted_at,
-    };
-
-    const matchRes = matchLeadWithDatabase(draftLead, store);
-    const newLead: ParentRegistration = {
-      ...draftLead,
-      linked_student_id: matchRes.matchedStudent?.id,
-    };
-
-    // Live sync to store
-    onUpdateStore(prev => ({
-      ...prev,
-      parentRegistrations: [newLead, ...prev.parentRegistrations.filter(r => r.id !== newLead.id)],
-      notifications: [
-        {
-          id: `notif_lead_${Date.now()}`,
-          type: 'new_lead_registration',
-          title: matchRes.matchedStudent
-            ? `Đơn đăng ký thêm môn từ Học viên hiện tại (${matchRes.matchedStudent.code})`
-            : 'Đơn đăng ký mới từ Cổng Phụ Huynh',
-          message: matchRes.matchedStudent
-            ? `Phụ huynh ${regForm.parent_name} vừa đăng ký thêm ${detailedSelectedSubjects.length} môn (${subjectNamesList}) cho học sinh ${matchRes.matchedStudent.name} (${matchRes.matchedStudent.code}).`
-            : `Phụ huynh ${regForm.parent_name} vừa đăng ký ${detailedSelectedSubjects.length} môn (${subjectNamesList}) cho bé ${regForm.student_name} tại cơ sở ${campus?.name || 'Royal School'}.`,
-          date: new Date().toISOString().split('T')[0],
-          severity: 'medium',
-          read: false,
-        },
-        ...prev.notifications,
-      ],
-    }));
-
-    const summary: ParentRegistrationSummary = {
-      leadCode: regCode,
-      parentName: regForm.parent_name.trim(),
-      parentPhone: regForm.parent_phone.trim(),
-      parentEmail: regForm.parent_email.trim() || undefined,
-      studentName: regForm.student_name.trim(),
-      studentGrade: regForm.student_grade,
-      campusName: campus?.name || 'Royal School',
-      termName: term?.name || 'Niên khóa hiện tại',
-      registeredSubjects: detailedSelectedSubjects.map(item => ({
-        name: item.subject?.name || 'Môn ngoại khóa',
-        category: item.subject?.category || 'Ngoại khóa',
-        timeSlotLabel: item.timeSlotLabel,
-        fee: item.fee,
-      })),
-      isRoyal: regForm.is_royal_student,
-      totalAmount: totalBaseFee,
-      discountAmount: 0,
-      finalAmount: finalTotalAmount,
-      discountNote: discountPolicy,
-      submittedAt: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ' + new Date().toLocaleDateString('vi-VN'),
-    };
-
-    setSubmittedRegistration(summary);
-    setCurrentStep('success');
-
-    // Auto-scroll to top smoothly upon submission
-    setTimeout(() => {
-      if (scrollContainerRef.current) {
-        scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
-      }
-      if (isStandalonePage && typeof window !== 'undefined') {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }
-    }, 50);
   };
 
   const handleRegisterSubmit = handleSubmitRegistration;
 
   // Reset form and transition back to 'form' step for registering another child
   const handleRegisterAnotherChild = () => {
+    formStartedAtRef.current = Date.now();
+    setHoneypot('');
     setRegForm(prev => ({
       ...prev,
       student_name: '',
@@ -1148,7 +1163,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                       onChange={(e) => setRegForm({ ...regForm, desired_campus_id: e.target.value })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
                     >
-                      {store.campuses.map(c => (
+                      {catalogCampuses.map((c: any) => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
                     </select>
@@ -1163,9 +1178,9 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                       onChange={(e) => setRegForm({ ...regForm, desired_term_id: e.target.value })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
                     >
-                      {store.terms.map(t => (
+                      {catalogTerms.map((t: any) => (
                         <option key={t.id} value={t.id}>
-                          {t.name} ({t.status === 'open_enrollment' ? 'Đang mở tuyển sinh' : t.academic_year})
+                          {t.name} ({t.status === 'open' || t.status === 'open_enrollment' ? 'Đang mở tuyển sinh' : t.code || ''})
                         </option>
                       ))}
                     </select>
@@ -1208,7 +1223,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                         : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
                     }`}
                   >
-                    Tất cả ({store.subjects.length})
+                    Tất cả ({effectiveCatalogSubjects.length})
                   </button>
                   {categoriesList.map(cat => (
                     <button
@@ -1387,6 +1402,26 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* Trường ẩn chống bot (Honeypot) */}
+                <div className="sr-only" aria-hidden="true">
+                  <label htmlFor="royal_website_url">Website</label>
+                  <input
+                    id="royal_website_url"
+                    name="website_url"
+                    type="text"
+                    tabIndex={-1}
+                    autoComplete="off"
+                    value={honeypot}
+                    onChange={(e) => setHoneypot(e.target.value)}
+                  />
+                </div>
+
+                {formErrors.submit && (
+                  <div className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 font-semibold">
+                    {formErrors.submit}
+                  </div>
+                )}
 
                 {/* NÚT GỬI ĐĂNG KÝ */}
                 <div className="pt-2">

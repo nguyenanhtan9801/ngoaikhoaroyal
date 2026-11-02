@@ -59,6 +59,7 @@ import { ParentRegistration, Student, UserRole, ExtracurricularClass, Enrollment
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { DatePickerVN } from '../common/DatePickerVN';
+import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 
 interface ParentPortalTabProps {
   store: AppStore;
@@ -123,6 +124,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const [isRefreshingFromSupabase, setIsRefreshingFromSupabase] = useState(false);
   const [lastSupabaseSyncTime, setLastSupabaseSyncTime] = useState<string | null>(null);
 
+  // Chỉ tải lại từ Supabase khi người dùng bấm nút "Làm mới" hoặc sau khi vừa ghi dữ liệu (không tự gọi khi mở tab)
   const fetchLeadsFromSupabase = async (showSuccessToast = false) => {
     try {
       setIsRefreshingFromSupabase(true);
@@ -132,43 +134,45 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         return;
       }
 
-      const { data, error } = await client
-        .from('parent_registrations')
-        .select('*')
-        .order('submitted_at', { ascending: false });
+      invalidateFetchOnce('parent_registrations:');
+      const data = await fetchOnce(
+        'parent_registrations:list',
+        async () => {
+          const { data: rows, error } = await client
+            .from('parent_registrations')
+            .select('*')
+            .order('submitted_at', { ascending: false });
 
-      if (error) {
-        console.error('Lỗi Supabase khi tải parent_registrations:', error);
-        if (showSuccessToast) {
-          showToast('Không thể tải từ Supabase: ' + error.message, 'error');
-        }
-        return;
-      }
+          if (error) {
+            throw error;
+          }
+          return Array.isArray(rows) ? rows : [];
+        },
+        60000,
+        { force: true }
+      );
 
-      if (data && Array.isArray(data)) {
-        const mappedRecords: ParentRegistration[] = data.map((row: any) =>
-          mapSupabaseRowToStoreEntity('parent_registrations', row)
-        );
+      const mappedRecords: ParentRegistration[] = data.map((row: any) =>
+        mapSupabaseRowToStoreEntity('parent_registrations', row)
+      );
 
-        onUpdateStore(prev => ({
-          ...prev,
-          parentRegistrations: mappedRecords,
-        }));
-        setLastSupabaseSyncTime(new Date().toLocaleTimeString('vi-VN'));
-        if (showSuccessToast) {
-          showToast(`Đã đồng bộ ${mappedRecords.length} hồ sơ từ CSDL Supabase!`, 'success');
-        }
+      onUpdateStore(prev => ({
+        ...prev,
+        parentRegistrations: mappedRecords,
+      }));
+      setLastSupabaseSyncTime(new Date().toLocaleTimeString('vi-VN'));
+      if (showSuccessToast) {
+        showToast(`Đã đồng bộ ${mappedRecords.length} hồ sơ từ CSDL Supabase!`, 'success');
       }
     } catch (err: any) {
       console.error('Lỗi khi tải parent_registrations:', err);
+      if (showSuccessToast) {
+        showToast('Không thể tải từ Supabase: ' + (err?.message || String(err)), 'error');
+      }
     } finally {
       setIsRefreshingFromSupabase(false);
     }
   };
-
-  useEffect(() => {
-    fetchLeadsFromSupabase(false);
-  }, []);
 
   const handleCopyShareLink = () => {
     try {

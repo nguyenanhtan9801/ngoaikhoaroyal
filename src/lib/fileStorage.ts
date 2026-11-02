@@ -137,13 +137,89 @@ export async function compressAndConvertToBase64(
   });
 }
 
+const signedUrlCache = new Map<string, { signedUrl: string; expiresAt: number }>();
+
 /**
- * Direct file download trigger in browser
+ * Kiểm tra xem chuỗi có phải đường dẫn trong bucket riêng tư ('proofs/...', 'students/...' hoặc '/uploads/...') không
  */
-export function triggerFileDownload(fileName: string, dataUrlOrUrl: string) {
+export function isPrivateStoragePath(pathOrUrl?: string | null): boolean {
+  if (!pathOrUrl || typeof pathOrUrl !== 'string') return false;
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:') || /^https?:\/\//i.test(trimmed)) {
+    return false;
+  }
+  const clean = trimmed.replace(/^\/+/, '');
+  return (
+    clean.startsWith('proofs/') ||
+    clean.startsWith('students/') ||
+    clean.startsWith('uploads/proofs/') ||
+    clean.startsWith('uploads/students/') ||
+    clean.startsWith('attendance-proofs/')
+  );
+}
+
+/**
+ * Lấy signed URL (có hạn 60 phút) từ endpoint bảo vệ /api/files/sign?path=...
+ */
+export async function resolveSignedFileUrl(pathOrUrl?: string | null): Promise<string> {
+  if (!pathOrUrl || typeof pathOrUrl !== 'string') return '';
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed) return '';
+  if (!isPrivateStoragePath(trimmed)) {
+    return trimmed;
+  }
+
+  let normalizedPath = trimmed.replace(/^\/+/, '');
+  if (normalizedPath.startsWith('uploads/')) {
+    normalizedPath = normalizedPath.slice('uploads/'.length);
+  }
+  if (normalizedPath.startsWith('attendance-proofs/')) {
+    normalizedPath = normalizedPath.slice('attendance-proofs/'.length);
+  }
+
+  const cached = signedUrlCache.get(normalizedPath);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.signedUrl;
+  }
+
   try {
+    const authHeaders = await getAuthBearerHeaders();
+    const res = await fetch(`/api/files/sign?path=${encodeURIComponent(normalizedPath)}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...authHeaders,
+      },
+    });
+    if (!res.ok) {
+      return '';
+    }
+    const data = await res.json();
+    if (data?.signedUrl) {
+      // Cache trong 50 phút (signed URL sống 60 phút)
+      signedUrlCache.set(normalizedPath, {
+        signedUrl: data.signedUrl,
+        expiresAt: Date.now() + 50 * 60 * 1000,
+      });
+      return data.signedUrl;
+    }
+  } catch {
+    // ignore network error
+  }
+  return '';
+}
+
+/**
+ * Direct file download trigger in browser (tự động lấy signed URL nếu là đường dẫn bucket)
+ */
+export async function triggerFileDownload(fileName: string, dataUrlOrUrl: string) {
+  try {
+    const resolvedUrl = isPrivateStoragePath(dataUrlOrUrl)
+      ? await resolveSignedFileUrl(dataUrlOrUrl)
+      : dataUrlOrUrl;
+    if (!resolvedUrl) return;
     const link = document.createElement('a');
-    link.href = dataUrlOrUrl;
+    link.href = resolvedUrl;
     link.download = fileName || 'minh_chung_vang_phep.jpg';
     link.target = '_blank';
     document.body.appendChild(link);
@@ -151,58 +227,29 @@ export function triggerFileDownload(fileName: string, dataUrlOrUrl: string) {
     document.body.removeChild(link);
   } catch (err) {
     console.error('Lỗi khi tải file:', err);
-    window.open(dataUrlOrUrl, '_blank');
   }
 }
 
 /**
- * Upload to Supabase Storage Bucket if connected
+ * Upload to Private Supabase Storage Bucket via Server Endpoint (/api/upload)
  */
 export async function uploadToSupabaseBucket(
   _supabaseUrl: string,
   _anonKey: string,
-  bucketName: string,
+  _bucketName: string,
   path: string,
   base64Data: string,
-  contentType = 'image/jpeg'
-): Promise<{ success: boolean; publicUrl?: string; error?: string }> {
-  try {
-    const supabase = getConfiguredSupabaseClient();
-    if (!supabase) {
-      return { success: false, error: 'Chưa khởi tạo được kết nối Supabase Client' };
-    }
-
-    // Convert Base64 data URI to Blob
-    const base64Content = base64Data.split(',')[1] || base64Data;
-    const byteCharacters = atob(base64Content);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: contentType });
-
-    const { data, error } = await supabase.storage.from(bucketName).upload(path, blob, {
-      upsert: true,
-      contentType,
-    });
-
-    if (error) {
-      return { success: false, error: error.message };
-    }
-
-    const { data: publicData } = supabase.storage.from(bucketName).getPublicUrl(path);
-
-    return {
-      success: true,
-      publicUrl: publicData?.publicUrl || '',
-    };
-  } catch (err: any) {
-    return {
-      success: false,
-      error: err?.message || 'Lỗi khi upload lên Supabase Storage',
-    };
-  }
+  _contentType = 'image/jpeg'
+): Promise<{ success: boolean; publicUrl?: string; path?: string; error?: string }> {
+  const folder: 'proofs' | 'students' = path.startsWith('students/') ? 'students' : 'proofs';
+  const fileName = path.split('/').pop() || `file_${Date.now()}.jpg`;
+  const result = await uploadFileToServer(base64Data, fileName, folder);
+  return {
+    success: result.success,
+    publicUrl: result.path || result.url,
+    path: result.path || result.url,
+    error: result.error,
+  };
 }
 
 /**
@@ -224,7 +271,7 @@ export async function getAuthBearerHeaders(): Promise<Record<string, string>> {
 }
 
 /**
- * Upload a file directly to the backend server (/api/upload)
+ * Upload a file directly to the backend server (/api/upload -> bucket 'attendance-proofs')
  */
 export async function uploadFileToServer(
   base64Data: string,
@@ -232,6 +279,7 @@ export async function uploadFileToServer(
   folder: 'proofs' | 'students' = 'proofs'
 ): Promise<{
   success: boolean;
+  path?: string;
   url?: string;
   storedPath?: string;
   fileName?: string;
@@ -259,20 +307,20 @@ export async function uploadFileToServer(
     }
 
     const data = await res.json();
+    const bucketPath = data.path || data.url;
     return {
       success: true,
-      url: data.url,
+      path: bucketPath,
+      url: bucketPath,
       storedPath: data.storedPath,
       fileName: data.fileName,
       size: data.size,
     };
   } catch (err: any) {
-    console.warn('Server upload error, falling back to local base64:', err);
+    console.warn('Server upload error:', err);
     return {
       success: false,
       error: err?.message || 'Không thể upload lên server',
-      url: base64Data, // fallback
-      storedPath: 'Local: Browser Base64 Storage',
       fileName,
     };
   }
