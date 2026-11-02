@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Crown, 
   Bell, 
@@ -29,11 +29,15 @@ import {
   LogIn,
   LogOut,
   CalendarOff,
-  Database
+  Database,
+  RefreshCw,
+  AlertTriangle,
+  KeyRound
 } from 'lucide-react';
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
-import { getUserPermissions, getRoleLabelVN, getCampusLabelVN } from '../lib/storage';
+import { getRoleLabelVN, getCampusLabelVN, SupabaseSyncStatus } from '../lib/storage';
+import { isRouteAllowed as checkRouteAllowed, isUserSuperAdmin } from '../lib/permissions';
 
 interface SubMenuItem {
   id: string;
@@ -55,7 +59,6 @@ interface NavbarProps {
   currentRoute: string;
   onNavigate: (routeId: string) => void;
   currentRole: UserRole;
-  onChangeRole: (role: UserRole) => void;
   onOpenTeacherApp: () => void;
   onOpenParentPortal: () => void;
   onOpenLoginModal: () => void;
@@ -64,6 +67,7 @@ interface NavbarProps {
   onOpenNotifications: () => void;
   currentUser?: AppUser | null;
   onLogout?: () => void;
+  onOpenChangePassword?: () => void;
   realtimeStatus?: 'connected' | 'reconnecting' | 'disconnected';
   onReconnectRealtime?: () => void;
   pendingRegistrationsCount?: number;
@@ -72,8 +76,6 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   currentRoute,
   onNavigate,
-  currentRole,
-  onChangeRole,
   onOpenTeacherApp,
   onOpenParentPortal,
   onOpenLoginModal,
@@ -82,28 +84,32 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenNotifications,
   currentUser,
   onLogout,
+  onOpenChangePassword,
   realtimeStatus = 'connected',
   onReconnectRealtime,
   pendingRegistrationsCount = 0,
 }) => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [showRoleMenu, setShowRoleMenu] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SupabaseSyncStatus>('synced');
+
+  useEffect(() => {
+    const handleSyncEvent = (e: Event) => {
+      const customEv = e as CustomEvent<{ status: SupabaseSyncStatus }>;
+      if (customEv?.detail?.status) {
+        setSyncStatus(customEv.detail.status);
+      }
+    };
+    window.addEventListener('royal_sync_status', handleSyncEvent);
+    return () => window.removeEventListener('royal_sync_status', handleSyncEvent);
+  }, []);
 
   const unreadCount = notifications.filter(n => !n.read).length;
   const consecutiveAlertCount = notifications.filter(n => n.type === 'consecutive_absence' && !n.read).length;
 
-  const rolesList: { id: UserRole; label: string; desc: string }[] = [
-    { id: 'super_admin', label: 'Quản trị viên Cấp cao', desc: 'Toàn quyền cấu hình, phân quyền RBAC, đặt lại dữ liệu & xuất bảng tính tổng thể' },
-    { id: 'campus_manager', label: 'Quản lý cơ sở (PMH / PL)', desc: 'Quản lý toàn diện đào tạo, tuyển sinh & tài chính tại cơ sở phụ trách' },
-    { id: 'academic_accountant', label: 'Học vụ kiêm Kế toán', desc: 'Quản lý lớp, chuyên cần, bảo lưu & duyệt thu học phí' },
-    { id: 'academic_admissions', label: 'Học vụ kiêm Tuyển sinh', desc: 'Xếp lớp, bánh sữa, chuyển lớp, ghi danh' },
-    { id: 'admissions', label: 'Chuyên viên Tuyển sinh', desc: 'Tiếp nhận đơn cổng phụ huynh, xếp lớp nhanh 1-Click' },
-    { id: 'accountant', label: 'Kế toán Học phí & Thù lao', desc: 'Quản lý hóa đơn VietQR, bảo lưu & quyết toán thù lao giáo viên' },
-    { id: 'teacher', label: 'Giáo viên bộ môn', desc: 'Chỉ điểm danh & y tế, khóa hoàn toàn tài chính' },
-  ];
-
-  const currentRoleInfo = rolesList.find(r => r.id === currentRole) || rolesList[0];
-  const perms = getUserPermissions(currentUser, currentRole);
+  const currentRoleLabel = currentUser
+    ? getRoleLabelVN(currentUser.role, currentUser)
+    : 'Chưa đăng nhập';
 
   // Danh mục phân hệ điều hướng hệ thống
   const allMenuGroups: MenuGroup[] = [
@@ -263,39 +269,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   ];
 
   const isRouteAllowed = (routeId: string): boolean => {
-    if (currentRole === 'super_admin' || currentUser?.role === 'super_admin' || currentUser?.is_root) {
-      return true;
-    }
-    switch (routeId) {
-      case 'sub_kpi':
-        return true;
-      case 'sub_parents':
-      case 'sub_students':
-        return !!(perms.can_manage_enrollment || perms.can_view_registrations || perms.can_manage_classes);
-      case 'sub_credits':
-        return !!(perms.can_manage_credits || perms.can_manage_finance);
-      case 'sub_term_subjects':
-      case 'sub_pricing':
-      case 'sub_settings':
-      case 'sub_holidays':
-      case 'sub_backup':
-        return !!(perms.can_config_system || perms.can_manage_classes);
-      case 'sub_classes':
-        return !!(perms.can_manage_classes || perms.can_view_classes || perms.can_take_attendance);
-      case 'sub_attendance':
-      case 'sub_snacks':
-        return !!perms.can_take_attendance;
-      case 'sub_finance_invoices':
-      case 'sub_finance_transfer':
-        return !!perms.can_manage_finance;
-      case 'sub_finance_payroll':
-        return !!(perms.can_settle_payroll || perms.can_manage_finance);
-      case 'sub_users':
-      case 'sub_audit_logs':
-        return !!perms.can_manage_users;
-      default:
-        return true;
-    }
+    return checkRouteAllowed(routeId, currentUser);
   };
 
   const menuGroups: MenuGroup[] = allMenuGroups
@@ -381,33 +355,41 @@ export const Navbar: React.FC<NavbarProps> = ({
                 )}
               </button>
 
-              {/* Realtime Connection Status Indicator (Cạnh thông tin người dùng) */}
-              {realtimeStatus === 'connected' ? (
+              {/* Trạng thái đồng bộ Supabase (đã đồng bộ / đang đồng bộ / lỗi) */}
+              {syncStatus === 'syncing' ? (
+                <div
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-bold shadow-sm shrink-0"
+                  title="Đang đồng bộ dữ liệu lên Supabase"
+                >
+                  <RefreshCw className="w-3 h-3 animate-spin text-amber-400" />
+                  <span className="hidden md:inline">Đang đồng bộ</span>
+                </div>
+              ) : syncStatus === 'error' || realtimeStatus === 'disconnected' ? (
                 <button
                   type="button"
                   onClick={onReconnectRealtime}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold shadow-sm shadow-emerald-500/10 hover:bg-emerald-500/15 transition-all shrink-0"
-                  title="Kênh đồng bộ thời gian thực (royal_hub_realtime) đang hoạt động ổn định"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[11px] font-bold shadow-sm hover:bg-rose-500/25 transition-all shrink-0"
+                  title="Lỗi đồng bộ dữ liệu Supabase — Bấm để kết nối lại"
                 >
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
-                  </span>
-                  <span className="hidden md:inline">Realtime Connected</span>
-                  <span className="md:hidden">Realtime</span>
+                  <AlertTriangle className="w-3 h-3 text-rose-400" />
+                  <span className="hidden md:inline">Lỗi đồng bộ</span>
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={onReconnectRealtime}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-bold shadow-sm shadow-amber-500/10 animate-pulse hover:bg-amber-500/25 transition-all shrink-0"
-                  title="Đang tự động kết nối lại theo cơ chế Exponential Backoff — Bấm để thử kết nối ngay"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold shadow-sm shadow-emerald-500/10 hover:bg-emerald-500/15 transition-all shrink-0"
+                  title="Dữ liệu đã đồng bộ với Supabase"
                 >
-                  <span>⚠️ Reconnecting...</span>
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                  </span>
+                  <span className="hidden md:inline">Đã đồng bộ</span>
                 </button>
               )}
 
-              {/* Role Switcher & Login Portal Button */}
+              {/* User Profile & Logout Button */}
               <div className="relative flex items-center gap-1.5">
                 {currentParentStudent ? (
                   <div className="flex items-center gap-1.5 bg-cyan-500/10 border border-cyan-500/30 px-2.5 py-1 rounded-xl text-xs">
@@ -425,19 +407,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <button
                   onClick={() => setShowRoleMenu(!showRoleMenu)}
                   className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-900/90 border border-slate-700/80 hover:border-amber-500/50 transition-all text-left group"
-                  title="Tài khoản & Phân quyền hệ thống"
+                  title="Thông tin tài khoản đăng nhập"
                 >
                   <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-amber-600 to-amber-500 flex items-center justify-center text-[10px] font-extrabold text-slate-950 shadow-sm">
-                    {currentUser ? currentUser.full_name.slice(0, 1).toUpperCase() : currentRole === 'super_admin' ? 'AD' : currentRole === 'teacher' ? 'GV' : 'NV'}
+                    {currentUser?.full_name ? currentUser.full_name.slice(0, 1).toUpperCase() : isUserSuperAdmin(currentUser) ? 'AD' : currentUser?.role === 'teacher' ? 'GV' : 'NV'}
                   </div>
                   <div className="hidden xl:block">
                     <div className="text-[11px] font-bold text-white leading-tight flex items-center gap-1">
-                      <span>{currentUser ? currentUser.full_name : currentRoleInfo.label.split('(')[0].trim()}</span>
+                      <span>{currentUser ? currentUser.full_name : currentRoleLabel}</span>
                       <ShieldCheck className="w-3 h-3 text-amber-400" />
                     </div>
                     {currentUser && (
                       <div className="text-[9px] text-amber-400/90 leading-none mt-0.5">
-                        {currentUser.role === 'super_admin' ? 'Quản trị cấp cao' : currentUser.department}
+                        {isUserSuperAdmin(currentUser) ? 'Quản trị cấp cao' : currentUser.department}
                       </div>
                     )}
                   </div>
@@ -456,59 +438,48 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 )}
 
-                {showRoleMenu && (
-                  <div className="absolute right-0 top-full mt-2 w-72 rounded-2xl bg-[#111827] border border-slate-700 shadow-2xl p-2 z-50 animate-fadeIn">
-                    {currentUser && (
-                      <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 mb-2 space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[11px] font-bold text-white">{currentUser.full_name}</span>
-                          <span className="text-[10px] font-mono text-amber-400 font-bold">@{currentUser.username}</span>
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          {currentUser.department} &bull; <span className="text-amber-300">{currentRoleInfo.label.split('(')[0].trim()}</span>
-                        </div>
+                {showRoleMenu && currentUser && (
+                  <div className="absolute right-0 top-full mt-2 w-72 rounded-2xl bg-[#111827] border border-slate-700 shadow-2xl p-2.5 z-50 animate-fadeIn">
+                    <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-white">{currentUser.full_name}</span>
+                        <span className="text-[10px] font-mono text-amber-400 font-bold">@{currentUser.username}</span>
                       </div>
-                    )}
-
-                    <div className="px-2.5 py-1 text-[10px] font-bold text-amber-400 uppercase tracking-wider border-b border-slate-800 flex items-center justify-between">
-                      <span>Chuyển đổi vai trò kiểm thử</span>
+                      <div className="text-[10px] text-slate-400">
+                        {currentUser.department} &bull; <span className="text-amber-300">{currentRoleLabel}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        Phạm vi cơ sở: <span className="text-slate-300 font-semibold">{getCampusLabelVN(currentUser.campus_id)}</span>
+                      </div>
                     </div>
 
-                    <div className="mt-1 space-y-1 max-h-56 overflow-y-auto">
-                      {rolesList.map(r => (
+                    <div className="pt-2 mt-2 border-t border-slate-800 space-y-1.5">
+                      {onOpenChangePassword && (
                         <button
-                          key={r.id}
+                          type="button"
                           onClick={() => {
-                            onChangeRole(r.id);
                             setShowRoleMenu(false);
+                            onOpenChangePassword();
                           }}
-                          className={`w-full text-left p-2 rounded-xl text-xs transition-colors ${
-                            currentRole === r.id && !currentParentStudent
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                              : 'hover:bg-slate-800/80 text-slate-300'
-                          }`}
+                          className="w-full py-1.5 px-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
                         >
-                          <div className="font-bold flex items-center justify-between">
-                            <span>{r.label}</span>
-                            {currentRole === r.id && !currentParentStudent && <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>}
-                          </div>
-                          <div className="text-[10px] text-slate-400 mt-0.5">{r.desc}</div>
+                          <KeyRound className="w-3.5 h-3.5" />
+                          <span>Đổi mật khẩu</span>
                         </button>
-                      ))}
+                      )}
 
                       {onLogout && (
-                        <div className="pt-1.5 border-t border-slate-800 mt-1">
-                          <button
-                            onClick={() => {
-                              setShowRoleMenu(false);
-                              onLogout();
-                            }}
-                            className="w-full py-1.5 px-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
-                          >
-                            <LogOut className="w-3.5 h-3.5" />
-                            <span>Đăng Xuất Khỏi Hệ Thống</span>
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowRoleMenu(false);
+                            onLogout();
+                          }}
+                          className="w-full py-1.5 px-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          <LogOut className="w-3.5 h-3.5" />
+                          <span>Đăng Xuất Khỏi Hệ Thống</span>
+                        </button>
                       )}
                     </div>
                   </div>

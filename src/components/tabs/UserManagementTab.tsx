@@ -41,9 +41,12 @@ import {
   createAuditRecord,
   appendAuditLog,
   syncAppUserToSupabase,
+  sanitizeUserForClient,
   APP_USERS_SQL_DDL,
 } from '../../lib/storage';
+import { isUserSuperAdmin } from '../../lib/permissions';
 import { showToast } from '../../lib/toast';
+import { supabase } from '../../supabaseClient';
 
 interface UserManagementTabProps {
   store: AppStore;
@@ -74,7 +77,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
   // Edit / Create Form state
   const [formUsername, setFormUsername] = useState('');
-  const [formPassword, setFormPassword] = useState('123456');
+  const [formPassword, setFormPassword] = useState('');
   const [formFullName, setFormFullName] = useState('');
   const [formEmail, setFormEmail] = useState('');
   const [formPhone, setFormPhone] = useState('');
@@ -93,20 +96,33 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   );
 
   const currentPerms = useMemo(
-    () => getUserPermissions(currentUser, currentRole),
-    [currentUser, currentRole]
+    () => getUserPermissions(currentUser),
+    [currentUser]
   );
 
   const isSuperAdminOrAllowed =
-    currentRole === 'super_admin' ||
-    currentUser?.role === 'super_admin' ||
-    currentUser?.is_root ||
+    isUserSuperAdmin(currentUser) ||
     currentPerms.can_manage_users;
+
+  // Danh sách các tài khoản super_admin đang hoạt động để bảo vệ tài khoản quản trị cuối cùng
+  const activeSuperAdmins = useMemo(
+    () => (store.users || []).filter(u => u.role === 'super_admin' && u.status === 'active'),
+    [store.users]
+  );
+
+  const isLastActiveSuperAdmin = (targetUser: AppUser): boolean => {
+    return (
+      targetUser.role === 'super_admin' &&
+      targetUser.status === 'active' &&
+      activeSuperAdmins.length <= 1 &&
+      activeSuperAdmins.some(a => a.id === targetUser.id || a.username === targetUser.username)
+    );
+  };
 
   // Match role filter helper
   const matchesRoleFilter = (u: AppUser, filter: string): boolean => {
     if (filter === 'all') return true;
-    if (filter === 'super_admin') return u.role === 'super_admin' || !!u.is_root;
+    if (filter === 'super_admin') return u.role === 'super_admin';
     if (filter === 'campus_manager') return u.role === 'campus_manager';
     if (filter === 'academic') {
       return (
@@ -156,7 +172,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     const active = all.filter(u => u.status === 'active').length;
     const locked = all.filter(u => u.status === 'locked').length;
     const teachers = all.filter(u => u.role === 'teacher').length;
-    const admins = all.filter(u => u.role === 'super_admin' || u.is_root).length;
+    const admins = all.filter(u => u.role === 'super_admin').length;
     return { total: all.length, active, locked, teachers, admins };
   }, [store.users]);
 
@@ -164,7 +180,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   const handleOpenAddUser = () => {
     setEditingUser(null);
     setFormUsername('');
-    setFormPassword('Royal@2026');
+    setFormPassword('');
     setFormFullName('');
     setFormEmail('@royal.edu.vn');
     setFormPhone('090');
@@ -181,7 +197,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   const handleOpenEditUser = (u: AppUser) => {
     setEditingUser(u);
     setFormUsername(u.username);
-    setFormPassword(u.password || u.password_hash || '123456');
+    setFormPassword('');
     setFormFullName(u.full_name || u.name || '');
     setFormEmail(u.email || `${u.username}@royal.edu.vn`);
     setFormPhone(u.phone || '');
@@ -196,16 +212,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     setIsAddUserOpen(true);
   };
 
-  // Generate random secure password
+  // Generate random secure password (>= 12 chars)
   const handleGenerateRandomPassword = () => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$';
     let randomPart = '';
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 9; i++) {
       randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     const generated = `RS@${randomPart}`;
     setFormPassword(generated);
-    showToast(`🎲 Đã sinh mật khẩu ngẫu nhiên: ${generated}`, 'info');
+    showToast(`🎲 Đã sinh mật khẩu ngẫu nhiên (12 ký tự): ${generated}`, 'info');
   };
 
   // Role change inside EditUserModal automatically applies default permissions template
@@ -236,14 +252,10 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     const cleanUsername = formUsername.trim().toLowerCase();
     const cleanName = formFullName.trim();
     const cleanEmail = formEmail.trim().toLowerCase();
+    const cleanPassword = formPassword.trim();
 
     if (!cleanUsername || !cleanName) {
       showToast('✕ Vui lòng nhập đầy đủ Tên đăng nhập và Họ tên người dùng.', 'error');
-      return;
-    }
-
-    if (cleanUsername === 'overadmin' && (!editingUser || editingUser.username !== 'overadmin')) {
-      showToast('✕ Tên đăng nhập "overadmin" được bảo lưu cho Tài khoản Quản trị Tối cao (Root).', 'error');
       return;
     }
 
@@ -262,26 +274,117 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return;
     }
 
-    // Prevent self-lock in edit form
-    if (
-      editingUser &&
-      currentUser &&
-      (editingUser.id === currentUser.id || editingUser.username === currentUser.username) &&
-      formStatus === 'locked'
-    ) {
-      showToast('⚠️ Bạn không thể tự khóa tài khoản đang đăng nhập của chính mình!', 'warning');
-      return;
-    }
-
     const nowStr = new Date().toLocaleString('vi-VN');
     const actorName = currentUser?.full_name || 'Quản trị viên';
 
     if (editingUser) {
-      const updatedUser: AppUser = {
+      // Bảo vệ tài khoản super_admin đang hoạt động cuối cùng: không cho khóa hoặc hạ vai trò
+      if (isLastActiveSuperAdmin(editingUser)) {
+        if (formStatus === 'locked') {
+          showToast(
+            '🛡️ Không thể khóa tài khoản Super Admin đang hoạt động cuối cùng! Hệ thống bắt buộc phải có ít nhất 1 Quản trị viên cấp cao đang hoạt động.',
+            'error'
+          );
+          return;
+        }
+        if (formRole !== 'super_admin') {
+          showToast(
+            '🛡️ Không thể hạ vai trò của tài khoản Super Admin đang hoạt động cuối cùng! Hệ thống bắt buộc phải có ít nhất 1 Quản trị viên cấp cao đang hoạt động.',
+            'error'
+          );
+          return;
+        }
+      }
+
+      // Prevent self-lock in edit form
+      if (
+        currentUser &&
+        (editingUser.id === currentUser.id || editingUser.username === currentUser.username) &&
+        formStatus === 'locked'
+      ) {
+        showToast('⚠️ Bạn không thể tự khóa tài khoản đang đăng nhập của chính mình!', 'warning');
+        return;
+      }
+
+      // Kiểm tra mật khẩu khi đặt lại: nếu nhập mật khẩu mới thì bắt buộc tối thiểu 10 ký tự
+      if (cleanPassword.length > 0 && cleanPassword.length < 10) {
+        showToast(
+          '✕ Mật khẩu đặt lại bắt buộc phải có tối thiểu 10 ký tự (hoặc để trống nếu giữ nguyên mật khẩu hiện tại).',
+          'error'
+        );
+        return;
+      }
+
+      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+      const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (!accessToken) {
+        showToast(
+          '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để thực hiện thao tác quản trị.',
+          'error'
+        );
+        return;
+      }
+
+      // 1. Gọi POST /api/admin/update-user kèm Bearer token để cập nhật bảng profiles (và khóa/gỡ khóa Auth nếu đổi status)
+      const updateRes = await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          id: editingUser.id,
+          username: cleanUsername,
+          email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
+          full_name: cleanName,
+          role: formRole,
+          campus_id: formCampusId,
+          status: formStatus,
+          permissions: formPermissions,
+        }),
+      });
+
+      const updateData = await updateRes.json().catch(() => ({}));
+      if (!updateRes.ok || !updateData?.success) {
+        showToast(
+          `✕ ${updateData?.error || 'Không thể cập nhật thông tin người dùng qua máy chủ quản trị.'}`,
+          'error'
+        );
+        return;
+      }
+
+      // 2. Nếu có đặt lại mật khẩu mới: gọi POST /api/admin/reset-password kèm Bearer token thay vì ghi password vào app_users
+      if (cleanPassword.length >= 10) {
+        const resetRes = await fetch('/api/admin/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            id: updateData?.user?.id || editingUser.id,
+            userId: updateData?.user?.id || editingUser.id,
+            username: cleanUsername,
+            email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
+            password: cleanPassword,
+            newPassword: cleanPassword,
+          }),
+        });
+
+        const resetData = await resetRes.json().catch(() => ({}));
+        if (!resetRes.ok || !resetData?.success) {
+          showToast(
+            `✕ ${resetData?.error || 'Không thể đặt lại mật khẩu qua máy chủ quản trị.'}`,
+            'error'
+          );
+          return;
+        }
+      }
+
+      const updatedUserClient: AppUser = sanitizeUserForClient({
         ...editingUser,
+        id: String(updateData?.user?.id || editingUser.id),
         username: cleanUsername,
-        password: formPassword.trim() || editingUser.password || '123456',
-        password_hash: formPassword.trim() || editingUser.password_hash || '123456',
         full_name: cleanName,
         name: cleanName,
         email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
@@ -292,16 +395,79 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         status: formStatus,
         linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || undefined : undefined,
         permissions: formPermissions,
-      };
+      });
 
-      const log = createAuditRecord(
+      const newLogs: ReturnType<typeof createAuditRecord>[] = [];
+      const roleChanged = editingUser.role !== formRole;
+      const statusChanged = editingUser.status !== formStatus;
+
+      if (cleanPassword.length >= 10) {
+        newLogs.push(
+          createAuditRecord(
+            'USER_UPDATE',
+            'SYSTEM',
+            'Tài Khoản Người Dùng',
+            `Admin ${actorName} đã đặt lại mật khẩu cho tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) qua Supabase Auth vào lúc ${nowStr}`,
+            currentUser,
+            {
+              target_id: updatedUserClient.username,
+              details: {
+                status: 'success',
+                endpoint: '/api/admin/reset-password',
+              },
+            }
+          )
+        );
+      }
+
+      if (roleChanged) {
+        newLogs.push(
+          createAuditRecord(
+            'USER_PERMISSION_UPDATE',
+            'SYSTEM',
+            'Tài Khoản Người Dùng',
+            `Admin ${actorName} đã đổi vai trò tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) từ "${getRoleLabelVN(editingUser.role, editingUser)}" sang "${getRoleLabelVN(updatedUserClient.role, updatedUserClient)}" vào lúc ${nowStr}`,
+            currentUser,
+            {
+              target_id: updatedUserClient.username,
+              details: {
+                status: 'success',
+                before: { role: editingUser.role },
+                after: { role: updatedUserClient.role },
+              },
+            }
+          )
+        );
+      }
+
+      if (statusChanged) {
+        newLogs.push(
+          createAuditRecord(
+            formStatus === 'locked' ? 'USER_LOCK' : 'USER_UNLOCK',
+            'SYSTEM',
+            'Tài Khoản Người Dùng',
+            `Admin ${actorName} đã ${formStatus === 'locked' ? 'Khóa' : 'Mở khóa'} tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) vào lúc ${nowStr}`,
+            currentUser,
+            {
+              target_id: updatedUserClient.username,
+              details: {
+                status: 'success',
+                before: { status: editingUser.status },
+                after: { status: updatedUserClient.status },
+              },
+            }
+          )
+        );
+      }
+
+      const updateLog = createAuditRecord(
         'USER_UPDATE',
         'SYSTEM',
         'Tài Khoản Người Dùng',
-        `Admin ${actorName} đã cập nhật thông tin tài khoản ${updatedUser.username} (${updatedUser.full_name}) vào lúc ${nowStr}`,
+        `Admin ${actorName} đã cập nhật thông tin tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) vào lúc ${nowStr}`,
         currentUser,
         {
-          target_id: updatedUser.username,
+          target_id: updatedUserClient.username,
           details: {
             status: 'success',
             before: {
@@ -310,29 +476,81 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
               status: editingUser.status,
             },
             after: {
-              role: updatedUser.role,
-              campus_id: updatedUser.campus_id,
-              status: updatedUser.status,
+              role: updatedUserClient.role,
+              campus_id: updatedUserClient.campus_id,
+              status: updatedUserClient.status,
             },
           },
         }
       );
+      newLogs.push(updateLog);
+
+      await syncAppUserToSupabase(updatedUserClient, 'upsert');
 
       onUpdateStore(prev => ({
         ...prev,
-        users: prev.users.map(u => (u.id === editingUser.id ? updatedUser : u)),
-        auditLogs: [log, ...(prev.auditLogs || [])],
+        users: prev.users.map(u =>
+          u.id === editingUser.id || u.username.toLowerCase() === editingUser.username.toLowerCase()
+            ? updatedUserClient
+            : sanitizeUserForClient(u)
+        ),
+        auditLogs: [...newLogs, ...(prev.auditLogs || [])],
       }));
 
-      await syncAppUserToSupabase(updatedUser, 'upsert');
-      showToast(`✓ Đã cập nhật hồ sơ tài khoản @${updatedUser.username} thành công!`, 'success');
+      showToast(`✓ Đã cập nhật hồ sơ tài khoản @${updatedUserClient.username} thành công!`, 'success');
     } else {
-      const newUser: AppUser = {
-        id: `usr_${Date.now()}`,
+      // Bắt buộc mật khẩu tối thiểu 10 ký tự khi tạo mới
+      if (!cleanPassword || cleanPassword.length < 10) {
+        showToast('✕ Mật khẩu khởi tạo bắt buộc phải có tối thiểu 10 ký tự.', 'error');
+        return;
+      }
+
+      // Gọi POST /api/admin/create-user kèm Bearer token thay vì ghi password vào app_users
+      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+      const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (!accessToken) {
+        showToast(
+          '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để tạo người dùng mới.',
+          'error'
+        );
+        return;
+      }
+
+      const createRes = await fetch('/api/admin/create-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          username: cleanUsername,
+          email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
+          password: cleanPassword,
+          full_name: cleanName,
+          phone: formPhone.trim(),
+          department: formDepartment.trim() || getRoleLabelVN(formRole),
+          campus_id: formCampusId,
+          role: formRole,
+          status: formStatus,
+          linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || undefined : undefined,
+          permissions: formPermissions,
+        }),
+      });
+
+      const createData = await createRes.json().catch(() => ({}));
+      if (!createRes.ok || !createData?.success) {
+        showToast(
+          `✕ ${createData?.error || 'Không thể tạo tài khoản người dùng mới qua máy chủ quản trị.'}`,
+          'error'
+        );
+        return;
+      }
+
+      const createdProfile = createData.user || {};
+      const newUserClient: AppUser = sanitizeUserForClient({
+        id: String(createdProfile.id || `usr_${Date.now()}`),
         code: `NV-${String(store.users.length + 1).padStart(3, '0')}`,
         username: cleanUsername,
-        password: formPassword.trim() || '123456',
-        password_hash: formPassword.trim() || '123456',
         full_name: cleanName,
         name: cleanName,
         email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
@@ -344,37 +562,38 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || undefined : undefined,
         permissions: formPermissions,
         created_at: new Date().toISOString().split('T')[0],
-      };
+      });
 
       const log = createAuditRecord(
         'USER_CREATE',
         'SYSTEM',
         'Tài Khoản Người Dùng',
-        `Admin ${actorName} đã tạo mới tài khoản ${newUser.username} (${newUser.full_name} - ${getRoleLabelVN(newUser.role, newUser)}) vào lúc ${nowStr}`,
+        `Admin ${actorName} đã tạo mới tài khoản ${newUserClient.username} (${newUserClient.full_name} - ${getRoleLabelVN(newUserClient.role, newUserClient)}) vào lúc ${nowStr}`,
         currentUser,
         {
-          target_id: newUser.username,
+          target_id: newUserClient.username,
           details: {
             status: 'success',
             after: {
-              username: newUser.username,
-              full_name: newUser.full_name,
-              role: newUser.role,
-              campus_id: newUser.campus_id,
-              status: newUser.status,
+              username: newUserClient.username,
+              full_name: newUserClient.full_name,
+              role: newUserClient.role,
+              campus_id: newUserClient.campus_id,
+              status: newUserClient.status,
             },
           },
         }
       );
 
+      await syncAppUserToSupabase(newUserClient, 'upsert');
+
       onUpdateStore(prev => ({
         ...prev,
-        users: [newUser, ...prev.users],
+        users: [newUserClient, ...prev.users.map(sanitizeUserForClient)],
         auditLogs: [log, ...(prev.auditLogs || [])],
       }));
 
-      await syncAppUserToSupabase(newUser, 'upsert');
-      showToast(`✓ Đã thêm tài khoản người dùng mới @${newUser.username} (${newUser.full_name})!`, 'success');
+      showToast(`✓ Đã thêm tài khoản người dùng mới @${newUserClient.username} (${newUserClient.full_name})!`, 'success');
     }
 
     setIsAddUserOpen(false);
@@ -383,8 +602,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
   // Toggle Lock / Unlock user account
   const handleToggleLockUser = async (targetUser: AppUser) => {
-    if (targetUser.is_root || targetUser.username === 'overadmin') {
-      showToast('🛡️ Tài khoản Root (overadmin) được bảo vệ cứng và không thể bị khóa!', 'error');
+    if (targetUser.status === 'active' && isLastActiveSuperAdmin(targetUser)) {
+      showToast(
+        '🛡️ Không thể khóa tài khoản Super Admin đang hoạt động cuối cùng! Hệ thống bắt buộc phải có ít nhất 1 Quản trị viên cấp cao đang hoạt động.',
+        'error'
+      );
       return;
     }
 
@@ -396,49 +618,95 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return;
     }
 
-    const nextStatus: 'active' | 'locked' = targetUser.status === 'locked' ? 'active' : 'locked';
-    const updatedUser: AppUser = {
-      ...targetUser,
-      status: nextStatus,
-    };
-
-    const nowStr = new Date().toLocaleString('vi-VN');
-    const actorName = currentUser?.full_name || 'Quản trị viên';
-    const actionLabel = nextStatus === 'locked' ? 'Khóa' : 'Mở khóa';
-
-    const log = createAuditRecord(
-      nextStatus === 'locked' ? 'USER_LOCK' : 'USER_UNLOCK',
-      'SYSTEM',
-      'Tài Khoản Người Dùng',
-      `Admin ${actorName} đã ${actionLabel} tài khoản ${targetUser.username} vào lúc ${nowStr}`,
-      currentUser,
-      {
-        target_id: targetUser.username,
-        details: {
-          status: 'success',
-          before: { status: targetUser.status },
-          after: { status: nextStatus },
-        },
-      }
-    );
-
-    onUpdateStore(prev => ({
-      ...prev,
-      users: prev.users.map(u => (u.id === targetUser.id ? updatedUser : u)),
-      auditLogs: [log, ...(prev.auditLogs || [])],
-    }));
-
-    await syncAppUserToSupabase(updatedUser, 'upsert');
-
-    if (nextStatus === 'locked') {
+    const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+    const accessToken = sessionRes?.data?.session?.access_token || '';
+    if (!accessToken) {
       showToast(
-        `🔒 Đã khóa tài khoản ${targetUser.username}. Người dùng này sẽ không thể đăng nhập vào hệ thống.`,
-        'warning'
+        '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để khóa/mở khóa tài khoản.',
+        'error'
       );
-    } else {
+      return;
+    }
+
+    const nextStatus: 'active' | 'locked' = targetUser.status === 'locked' ? 'active' : 'locked';
+
+    try {
+      const updateRes = await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          id: targetUser.id,
+          username: targetUser.username,
+          email: targetUser.email,
+          status: nextStatus,
+        }),
+      });
+
+      const updateData = await updateRes.json().catch(() => ({}));
+      if (!updateRes.ok || !updateData?.success) {
+        showToast(
+          `✕ ${updateData?.error || 'Không thể cập nhật trạng thái khóa tài khoản qua máy chủ quản trị.'}`,
+          'error'
+        );
+        return;
+      }
+
+      const updatedUser: AppUser = {
+        ...targetUser,
+        id: String(updateData?.user?.id || targetUser.id),
+        status: nextStatus,
+      };
+
+      const nowStr = new Date().toLocaleString('vi-VN');
+      const actorName = currentUser?.full_name || 'Quản trị viên';
+      const actionLabel = nextStatus === 'locked' ? 'Khóa' : 'Mở khóa';
+
+      const log = createAuditRecord(
+        nextStatus === 'locked' ? 'USER_LOCK' : 'USER_UNLOCK',
+        'SYSTEM',
+        'Tài Khoản Người Dùng',
+        `Admin ${actorName} đã ${actionLabel} tài khoản ${targetUser.username} vào lúc ${nowStr}`,
+        currentUser,
+        {
+          target_id: targetUser.username,
+          details: {
+            status: 'success',
+            before: { status: targetUser.status },
+            after: { status: nextStatus },
+          },
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        users: prev.users.map(u =>
+          u.id === targetUser.id || u.username.toLowerCase() === targetUser.username.toLowerCase()
+            ? updatedUser
+            : u
+        ),
+        auditLogs: [log, ...(prev.auditLogs || [])],
+      }));
+
+      await syncAppUserToSupabase(updatedUser, 'upsert');
+
+      if (nextStatus === 'locked') {
+        showToast(
+          `🔒 Đã khóa tài khoản ${targetUser.username}. Người dùng này sẽ không thể đăng nhập vào hệ thống.`,
+          'warning'
+        );
+      } else {
+        showToast(
+          `🔓 Đã mở khóa tài khoản ${targetUser.username}. Người dùng có thể đăng nhập trở lại.`,
+          'success'
+        );
+      }
+    } catch (err: any) {
       showToast(
-        `🔓 Đã mở khóa tài khoản ${targetUser.username}. Người dùng có thể đăng nhập trở lại.`,
-        'success'
+        `✕ ${err?.message || 'Lỗi kết nối máy chủ khi khóa/mở khóa tài khoản.'}`,
+        'error'
       );
     }
   };
@@ -453,42 +721,85 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   const handleSavePermissionMatrix = async () => {
     if (!permissionModalUser) return;
 
-    const updatedUser: AppUser = {
-      ...permissionModalUser,
-      permissions: matrixPerms,
-    };
+    const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+    const accessToken = sessionRes?.data?.session?.access_token || '';
+    if (!accessToken) {
+      showToast(
+        '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để cập nhật phân quyền.',
+        'error'
+      );
+      return;
+    }
 
-    const nowStr = new Date().toLocaleString('vi-VN');
-    const actorName = currentUser?.full_name || 'Quản trị viên';
-
-    const log = createAuditRecord(
-      'USER_PERMISSION_UPDATE',
-      'SYSTEM',
-      'Phân Quyền Truy Cập (RBAC)',
-      `Admin ${actorName} đã Đổi quyền tài khoản ${permissionModalUser.username} vào lúc ${nowStr}`,
-      currentUser,
-      {
-        target_id: permissionModalUser.username,
-        details: {
-          status: 'success',
-          before: getUserPermissions(permissionModalUser),
-          after: matrixPerms,
+    try {
+      const updateRes = await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
         },
+        body: JSON.stringify({
+          id: permissionModalUser.id,
+          username: permissionModalUser.username,
+          email: permissionModalUser.email,
+          permissions: matrixPerms,
+        }),
+      });
+
+      const updateData = await updateRes.json().catch(() => ({}));
+      if (!updateRes.ok || !updateData?.success) {
+        showToast(
+          `✕ ${updateData?.error || 'Không thể lưu phân quyền RBAC qua máy chủ quản trị.'}`,
+          'error'
+        );
+        return;
       }
-    );
 
-    onUpdateStore(prev => ({
-      ...prev,
-      users: prev.users.map(u => (u.id === permissionModalUser.id ? updatedUser : u)),
-      auditLogs: [log, ...(prev.auditLogs || [])],
-    }));
+      const updatedUser: AppUser = {
+        ...permissionModalUser,
+        id: String(updateData?.user?.id || permissionModalUser.id),
+        permissions: matrixPerms,
+      };
 
-    await syncAppUserToSupabase(updatedUser, 'upsert');
-    showToast(
-      `✓ Đã lưu ma trận quyền hạn RBAC cho tài khoản @${permissionModalUser.username}!`,
-      'success'
-    );
-    setPermissionModalUser(null);
+      const nowStr = new Date().toLocaleString('vi-VN');
+      const actorName = currentUser?.full_name || 'Quản trị viên';
+
+      const log = createAuditRecord(
+        'USER_PERMISSION_UPDATE',
+        'SYSTEM',
+        'Phân Quyền Truy Cập (RBAC)',
+        `Admin ${actorName} đã Đổi quyền tài khoản ${permissionModalUser.username} vào lúc ${nowStr}`,
+        currentUser,
+        {
+          target_id: permissionModalUser.username,
+          details: {
+            status: 'success',
+            before: getUserPermissions(permissionModalUser),
+            after: matrixPerms,
+          },
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        users: prev.users.map(u =>
+          u.id === permissionModalUser.id ||
+          u.username.toLowerCase() === permissionModalUser.username.toLowerCase()
+            ? updatedUser
+            : u
+        ),
+        auditLogs: [log, ...(prev.auditLogs || [])],
+      }));
+
+      await syncAppUserToSupabase(updatedUser, 'upsert');
+      showToast(
+        `✓ Đã lưu ma trận quyền hạn RBAC cho tài khoản @${permissionModalUser.username}!`,
+        'success'
+      );
+      setPermissionModalUser(null);
+    } catch (err: any) {
+      showToast(`✕ ${err?.message || 'Lỗi kết nối máy chủ khi cập nhật phân quyền.'}`, 'error');
+    }
   };
 
   // Check if user has historical attendance/payroll data
@@ -515,8 +826,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   const handleConfirmDeleteUser = async () => {
     if (!deletingUser) return;
 
-    if (deletingUser.is_root || deletingUser.username === 'overadmin') {
-      showToast('🛡️ Không thể xóa tài khoản Quản trị viên gốc (overadmin)!', 'error');
+    if (isLastActiveSuperAdmin(deletingUser)) {
+      showToast(
+        '🛡️ Không thể xóa tài khoản Super Admin đang hoạt động cuối cùng! Hệ thống bắt buộc phải có ít nhất 1 Quản trị viên cấp cao đang hoạt động.',
+        'error'
+      );
       setDeletingUser(null);
       return;
     }
@@ -530,41 +844,81 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return;
     }
 
-    const nowStr = new Date().toLocaleString('vi-VN');
-    const actorName = currentUser?.full_name || 'Quản trị viên';
+    const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+    const accessToken = sessionRes?.data?.session?.access_token || '';
+    if (!accessToken) {
+      showToast(
+        '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để xóa người dùng.',
+        'error'
+      );
+      return;
+    }
 
-    const log = createAuditRecord(
-      'USER_DELETE',
-      'SYSTEM',
-      'Tài Khoản Người Dùng',
-      `Admin ${actorName} đã Xóa tài khoản ${deletingUser.username} (${deletingUser.full_name}) vào lúc ${nowStr}`,
-      currentUser,
-      {
-        target_id: deletingUser.username,
-        details: {
-          status: 'success',
-          before: {
-            id: deletingUser.id,
-            username: deletingUser.username,
-            full_name: deletingUser.full_name,
-            role: deletingUser.role,
-          },
+    try {
+      const deleteRes = await fetch('/api/admin/delete-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
         },
+        body: JSON.stringify({
+          id: deletingUser.id,
+          username: deletingUser.username,
+          email: deletingUser.email,
+        }),
+      });
+
+      const deleteData = await deleteRes.json().catch(() => ({}));
+      if (!deleteRes.ok || !deleteData?.success) {
+        showToast(
+          `✕ ${deleteData?.error || 'Không thể xóa người dùng qua máy chủ quản trị.'}`,
+          'error'
+        );
+        return;
       }
-    );
 
-    onUpdateStore(prev => ({
-      ...prev,
-      users: prev.users.filter(u => u.id !== deletingUser.id),
-      auditLogs: [log, ...(prev.auditLogs || [])],
-    }));
+      const nowStr = new Date().toLocaleString('vi-VN');
+      const actorName = currentUser?.full_name || 'Quản trị viên';
 
-    await syncAppUserToSupabase(deletingUser, 'delete');
-    showToast(
-      `🗑️ Đã xóa vĩnh viễn tài khoản @${deletingUser.username} (${deletingUser.full_name}).`,
-      'info'
-    );
-    setDeletingUser(null);
+      const log = createAuditRecord(
+        'USER_DELETE',
+        'SYSTEM',
+        'Tài Khoản Người Dùng',
+        `Admin ${actorName} đã Xóa tài khoản ${deletingUser.username} (${deletingUser.full_name}) vào lúc ${nowStr}`,
+        currentUser,
+        {
+          target_id: deletingUser.username,
+          details: {
+            status: 'success',
+            before: {
+              id: deletingUser.id,
+              username: deletingUser.username,
+              full_name: deletingUser.full_name,
+              role: deletingUser.role,
+            },
+          },
+        }
+      );
+
+      onUpdateStore(prev => ({
+        ...prev,
+        users: prev.users.filter(
+          u =>
+            u.id !== deletingUser.id &&
+            u.username.toLowerCase() !== deletingUser.username.toLowerCase()
+        ),
+        auditLogs: [log, ...(prev.auditLogs || [])],
+      }));
+
+      await syncAppUserToSupabase(deletingUser, 'delete');
+      showToast(
+        `🗑️ Đã xóa vĩnh viễn tài khoản @${deletingUser.username} (${deletingUser.full_name}).`,
+        'info'
+      );
+      setDeletingUser(null);
+    } catch (err: any) {
+      showToast(`✕ ${err?.message || 'Lỗi kết nối máy chủ khi xóa người dùng.'}`, 'error');
+    }
   };
 
   const handleCopySql = () => {
@@ -625,7 +979,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
               Bảo Mật RBAC
             </p>
             <p className="text-sm font-extrabold text-cyan-300 mt-1">Ma Trận 4 Phân Hệ</p>
-            <p className="text-[10px] text-slate-500 mt-0.5">Root OverAdmin bất tử</p>
+            <p className="text-[10px] text-slate-500 mt-0.5">Bảo vệ Super Admin cuối cùng</p>
           </div>
           <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
             <ShieldCheck className="w-5 h-5" />
@@ -737,7 +1091,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                   const isSelf =
                     currentUser &&
                     (u.id === currentUser.id || u.username === currentUser.username);
-                  const isProtectedRoot = u.is_root || u.username === 'overadmin';
+                  const isProtectedRoot = isLastActiveSuperAdmin(u);
                   const roleLabel = getRoleLabelVN(u.role, u);
                   const campusLabel = getCampusLabelVN(u.campus_id);
                   const permSummary = getPermissionSummaryText(u);
@@ -898,14 +1252,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                           <button
                             type="button"
                             onClick={() => handleToggleLockUser(u)}
-                            disabled={!isSuperAdminOrAllowed || isProtectedRoot || !!isSelf}
+                            disabled={!isSuperAdminOrAllowed}
                             className={`px-2.5 py-1.5 rounded-lg font-bold text-[11px] flex items-center gap-1 border transition-all disabled:opacity-40 ${
                               u.status === 'locked'
                                 ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
                                 : 'bg-amber-500/10 hover:bg-red-500/20 text-slate-300 hover:text-red-300 border-slate-700 hover:border-red-500/30'
                             }`}
                             title={
-                              isSelf
+                              isProtectedRoot
+                                ? 'Không thể khóa tài khoản Super Admin đang hoạt động cuối cùng'
+                                : isSelf
                                 ? 'Không thể tự khóa tài khoản đang đăng nhập'
                                 : u.status === 'locked'
                                 ? 'Mở khóa tài khoản để cho phép đăng nhập lại'
@@ -928,11 +1284,26 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                           {/* [Xóa] */}
                           <button
                             type="button"
-                            onClick={() => setDeletingUser(u)}
-                            disabled={!isSuperAdminOrAllowed || isProtectedRoot || !!isSelf}
+                            onClick={() => {
+                              if (isLastActiveSuperAdmin(u)) {
+                                showToast(
+                                  '🛡️ Không thể xóa tài khoản Super Admin đang hoạt động cuối cùng! Hệ thống bắt buộc phải có ít nhất 1 Quản trị viên cấp cao đang hoạt động.',
+                                  'error'
+                                );
+                                return;
+                              }
+                              if (isSelf) {
+                                showToast('⚠️ Không cho phép xóa tài khoản đang đăng nhập hiện tại!', 'error');
+                                return;
+                              }
+                              setDeletingUser(u);
+                            }}
+                            disabled={!isSuperAdminOrAllowed}
                             className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/25 text-red-400 border border-red-500/25 font-bold text-[11px] flex items-center gap-1 transition-all disabled:opacity-40"
                             title={
-                              isSelf
+                              isProtectedRoot
+                                ? 'Không thể xóa tài khoản Super Admin đang hoạt động cuối cùng'
+                                : isSelf
                                 ? 'Không thể tự xóa tài khoản đang đăng nhập'
                                 : 'Xóa tài khoản người dùng'
                             }
@@ -1012,22 +1383,23 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
                   <div>
                     <label className="block font-bold text-slate-300 mb-1">
-                      {editingUser ? 'Đặt lại mật khẩu mới' : 'Mật khẩu khởi tạo *'}
+                      {editingUser ? 'Đặt lại mật khẩu mới (tối thiểu 10 ký tự)' : 'Mật khẩu khởi tạo (tối thiểu 10 ký tự) *'}
                     </label>
                     <div className="flex items-center gap-1.5">
                       <input
                         type="text"
-                        required
+                        required={!editingUser}
+                        minLength={10}
                         value={formPassword}
                         onChange={e => setFormPassword(e.target.value)}
-                        placeholder="Mật khẩu đăng nhập"
+                        placeholder={editingUser ? 'Để trống nếu giữ nguyên mật khẩu' : 'Nhập mật khẩu (>= 10 ký tự)'}
                         className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-amber-300 font-mono focus:outline-none focus:border-amber-500"
                       />
                       <button
                         type="button"
                         onClick={handleGenerateRandomPassword}
                         className="px-3 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-[11px] shrink-0 flex items-center gap-1 transition-all"
-                        title="Sinh mật khẩu ngẫu nhiên an toàn"
+                        title="Sinh mật khẩu ngẫu nhiên an toàn (12 ký tự)"
                       >
                         <Dices className="w-3.5 h-3.5" />
                         <span>🎲 Sinh mật khẩu</span>

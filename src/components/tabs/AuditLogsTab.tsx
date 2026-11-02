@@ -32,6 +32,7 @@ import {
   HelpCircle
 } from 'lucide-react';
 import { AppStore, appendAuditLog, createAuditRecord } from '../../lib/storage';
+import { isUserSuperAdmin } from '../../lib/permissions';
 import { UserRole, AuditLogRecord, LogActionType, AppUser } from '../../types';
 
 interface AuditLogsTabProps {
@@ -44,13 +45,12 @@ interface AuditLogsTabProps {
 
 export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
   store,
-  currentRole,
   currentUser,
   onUpdateStore,
   onOpenLoginModal,
 }) => {
-  // Access check: Super Admin only
-  const isSuperAdmin = currentRole === 'super_admin';
+  // Access check: Super Admin only (derived strictly from currentUser)
+  const isSuperAdmin = isUserSuperAdmin(currentUser);
 
   // State filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -429,7 +429,7 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Vai trò của bạn:</span>
-              <span className="font-mono text-amber-400 font-medium">{currentRole}</span>
+              <span className="font-mono text-amber-400 font-medium">{currentUser?.role || 'guest'}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Quyền truy cập yêu cầu:</span>

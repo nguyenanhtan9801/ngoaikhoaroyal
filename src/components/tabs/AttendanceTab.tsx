@@ -175,7 +175,30 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   }, [selectedClass?.id]);
 
-  // 2. Lọc danh sách lớp học khả dụng theo Khóa Học & Cơ Sở (Bao gồm lớp liên khóa vắt sang khóa sau)
+  // 2. Lọc danh sách lớp học khả dụng theo Khóa Học & Cơ Sở (Với vai trò teacher: chỉ gồm các lớp mà giáo viên là giáo viên chính hoặc phụ giảng)
+  const isTeacherRole = currentUser?.role === 'teacher';
+
+  const matchedTeacherIds = useMemo(() => {
+    if (!currentUser) return new Set<string>();
+    const ids = new Set<string>();
+    if (currentUser.linked_teacher_id) ids.add(currentUser.linked_teacher_id);
+    if (currentUser.teacher_id) ids.add(currentUser.teacher_id);
+    const uname = (currentUser.username || '').toLowerCase();
+    const uemail = (currentUser.email || '').toLowerCase();
+    const unameFull = (currentUser.full_name || '').trim().toLowerCase();
+    for (const t of store.teachers || []) {
+      if (
+        (t.id && (t.id === currentUser.id || t.id === currentUser.linked_teacher_id)) ||
+        (uemail && t.email && t.email.toLowerCase() === uemail) ||
+        (unameFull && t.name && t.name.trim().toLowerCase() === unameFull) ||
+        (uname && t.code && t.code.toLowerCase() === uname)
+      ) {
+        ids.add(t.id);
+      }
+    }
+    return ids;
+  }, [currentUser, store.teachers]);
+
   const availableClasses = useMemo(() => {
     return store.classes.filter(cls => {
       const matchTerm =
@@ -184,33 +207,54 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       const normalizedCampus =
         selectedCampusId === 'pmh' ? 'camp_pmh' : selectedCampusId === 'pl' ? 'camp_pl' : selectedCampusId;
       const matchCampus = cls.campus_id === normalizedCampus || cls.campus_id === selectedCampusId;
-      return matchTerm && matchCampus;
+      if (!matchTerm || !matchCampus) return false;
+
+      if (isTeacherRole) {
+        const isPrimary = matchedTeacherIds.has(cls.primary_teacher_id);
+        const isAssistant =
+          Boolean((cls as any).assistant_teacher_id && matchedTeacherIds.has((cls as any).assistant_teacher_id)) ||
+          Boolean((cls as any).substitute_teacher_id && matchedTeacherIds.has((cls as any).substitute_teacher_id));
+        return isPrimary || isAssistant;
+      }
+
+      return true;
     });
-  }, [store.classes, selectedTermId, selectedCampusId]);
+  }, [store.classes, selectedTermId, selectedCampusId, isTeacherRole, matchedTeacherIds]);
 
-  // 3. State lớp học đang chọn trong phạm vi bộ lọc
-  const [selectedClassId, setSelectedClassId] = useState<string>(
-    selectedClass?.id || availableClasses[0]?.id || ''
-  );
+  // 3. State lớp học đang chọn trong phạm vi bộ lọc (Với teacher có nhiều lớp: không tự mở store.classes[0])
+  const [selectedClassId, setSelectedClassId] = useState<string>(() => {
+    if (selectedClass?.id) return selectedClass.id;
+    if (isTeacherRole) {
+      return availableClasses.length === 1 ? availableClasses[0].id : '';
+    }
+    return availableClasses[0]?.id || '';
+  });
 
-  // Tự động chọn lớp đầu tiên khi đổi Khóa học hoặc Cơ sở
+  // Đồng bộ lớp học khi đổi Khóa học hoặc Cơ sở
   useEffect(() => {
     if (availableClasses.length > 0) {
       const existsInAvailable = availableClasses.some(c => c.id === selectedClassId);
       if (!existsInAvailable) {
-        const firstClass = availableClasses[0];
-        setSelectedClassId(firstClass.id);
-        onSelectClass(firstClass);
+        if (isTeacherRole && availableClasses.length > 1) {
+          setSelectedClassId('');
+        } else {
+          const firstClass = availableClasses[0];
+          setSelectedClassId(firstClass.id);
+          onSelectClass(firstClass);
+        }
       }
     } else {
       setSelectedClassId('');
     }
-  }, [selectedTermId, selectedCampusId, availableClasses]);
+  }, [selectedTermId, selectedCampusId, availableClasses, isTeacherRole]);
 
   const currentClass = useMemo(() => {
     if (availableClasses.length === 0) return null;
-    return availableClasses.find(c => c.id === selectedClassId) || availableClasses[0] || null;
-  }, [availableClasses, selectedClassId]);
+    if (isTeacherRole && availableClasses.length > 1 && !selectedClassId) {
+      return null;
+    }
+    return availableClasses.find(c => c.id === selectedClassId) || (isTeacherRole ? null : availableClasses[0]) || null;
+  }, [availableClasses, selectedClassId, isTeacherRole]);
 
   const activeFilterTerm = useMemo(
     () => store.terms.find(t => t.id === selectedTermId) || defaultActiveTerm,
@@ -338,6 +382,31 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     student: Student;
     record: StudentAttendanceLocal;
   } | null>(null);
+
+  // Cờ "chưa lưu" (isDirty) & các Modal xác nhận trong ứng dụng
+  const [isDirty, setIsDirty] = useState<boolean>(false);
+  const [pendingNavAction, setPendingNavAction] = useState<(() => void) | null>(null);
+  const [removeProofStudentId, setRemoveProofStudentId] = useState<string | null>(null);
+  const [saveConfirmModalOpen, setSaveConfirmModalOpen] = useState<boolean>(false);
+
+  // Cảnh báo khi đóng tab nếu đang có thay đổi chưa lưu (beforeunload)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!isDirty) return;
+      e.preventDefault();
+      e.returnValue = 'Bạn có thay đổi điểm danh chưa lưu. Bạn có chắc muốn rời khỏi trang?';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
+  const requestChangeWithDirtyCheck = (action: () => void) => {
+    if (isDirty) {
+      setPendingNavAction(() => action);
+    } else {
+      action();
+    }
+  };
 
   const [showOffScheduleStudents, setShowOffScheduleStudents] = useState<boolean>(false);
 
@@ -495,6 +564,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       }
     });
     setAttendanceState(newMap);
+    setIsDirty(false);
   }, [selectedDate, currentClass?.id, store.attendance]);
 
   // Royal Snacks live calculation for this session
@@ -517,6 +587,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const handleSetStatus = (student: Student, targetStatus: 'present' | 'absent_excused' | 'absent_unexcused') => {
     if (isFutureDate) return;
 
+    setIsDirty(true);
     setAttendanceState(prev => {
       const existing = prev[student.id];
       return {
@@ -544,6 +615,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   };
 
   const setNote = (studentId: string, note: string) => {
+    setIsDirty(true);
     setAttendanceState(prev => ({
       ...prev,
       [studentId]: {
@@ -609,27 +681,33 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   };
 
-  // Remove proof from student while keeping excused absence status
+  // Remove proof from student while keeping excused absence status (using in-app modal instead of window.confirm)
   const handleRemoveProof = (studentId: string) => {
-    if (confirm('Bạn có chắc muốn gỡ bỏ tệp minh chứng của học sinh này? Trạng thái vắng có phép vẫn sẽ được giữ nguyên.')) {
-      setAttendanceState(prev => ({
-        ...prev,
-        [studentId]: {
-          ...prev[studentId],
-          proof_url: undefined,
-          proof_file_name: undefined,
-          proof_base64: undefined,
-          uploaded_at: undefined,
-          uploaded_by: undefined,
-        },
-      }));
-    }
+    setRemoveProofStudentId(studentId);
+  };
+
+  const confirmRemoveProofNow = () => {
+    if (!removeProofStudentId) return;
+    setIsDirty(true);
+    setAttendanceState(prev => ({
+      ...prev,
+      [removeProofStudentId]: {
+        ...prev[removeProofStudentId],
+        proof_url: undefined,
+        proof_file_name: undefined,
+        proof_base64: undefined,
+        uploaded_at: undefined,
+        uploaded_by: undefined,
+      },
+    }));
+    setRemoveProofStudentId(null);
   };
 
   // Confirm Excused Absence Proof Modal (Proof file is OPTIONAL)
   const handleConfirmProof = () => {
     if (!proofModalStudent) return;
 
+    setIsDirty(true);
     setAttendanceState(prev => ({
       ...prev,
       [proofModalStudent.id]: {
@@ -652,7 +730,84 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     setCompressionStats(null);
   };
 
-  // Save Attendance Session with Strict Validations
+  // Tính toán tóm tắt tác động trước khi lưu (Impact Summary)
+  const saveImpactSummary = useMemo(() => {
+    let presentCount = 0;
+    let excusedCount = 0;
+    let unexcusedCount = 0;
+    let enrollmentsChangedCount = 0;
+    let affectedInvoicesCount = 0;
+    const promotedStudentNames: string[] = [];
+
+    if (currentClass) {
+      enrolledStudents.forEach(s => {
+        const st = attendanceState[s.id]?.status || 'present';
+        if (st === 'present') presentCount += 1;
+        else if (st === 'absent_excused') excusedCount += 1;
+        else unexcusedCount += 1;
+
+        const enr = store.enrollments.find(e => e.student_id === s.id && e.class_id === currentClass.id);
+        if (enr && enr.status === 'trial' && st === 'present') {
+          const priorPresentRecords = store.attendance.filter(
+            a => a.student_id === s.id && a.class_id === currentClass.id && a.session_date !== selectedDate && a.status === 'present'
+          );
+          const hasCompletedFirstTrialSession =
+            priorPresentRecords.length >= 1 ||
+            Boolean(enr.trial_attended && enr.trial_session_date && enr.trial_session_date !== selectedDate);
+
+          enrollmentsChangedCount += 1;
+          if (hasCompletedFirstTrialSession) {
+            promotedStudentNames.push(s.name);
+            const hasPendingInv = store.invoices.some(
+              inv => inv.student_id === s.id && inv.class_id === currentClass.id && inv.is_trial_pending
+            );
+            if (hasPendingInv) affectedInvoicesCount += 1;
+          }
+        }
+      });
+    }
+
+    const existingTeacherAtt = currentClass
+      ? (store.teacherAttendance || []).find(
+          ta => ta.class_id === currentClass.id && ta.session_date === selectedDate
+        )
+      : undefined;
+
+    const hasExistingSession = Boolean(currentSession || existingAttendance.length > 0 || existingTeacherAtt);
+    const savedBy =
+      existingAttendance.find(a => a.uploaded_by)?.uploaded_by ||
+      existingTeacherAtt?.verified_by ||
+      'Cán bộ Học vụ / Giáo viên';
+    const rawSavedAt = existingAttendance.find(a => a.uploaded_at)?.uploaded_at;
+    const savedAtFormatted = rawSavedAt
+      ? new Date(rawSavedAt).toLocaleString('vi-VN')
+      : formatDateVN(selectedDate);
+
+    return {
+      presentCount,
+      excusedCount,
+      unexcusedCount,
+      enrollmentsChangedCount,
+      affectedInvoicesCount,
+      promotedStudentNames,
+      hasExistingSession,
+      savedBy,
+      savedAtFormatted,
+    };
+  }, [
+    currentClass,
+    enrolledStudents,
+    attendanceState,
+    store.enrollments,
+    store.attendance,
+    store.invoices,
+    store.teacherAttendance,
+    selectedDate,
+    currentSession,
+    existingAttendance,
+  ]);
+
+  // Mở modal xác nhận (ghi đè nếu đã có phiên + tóm tắt tác động) trước khi lưu
   const handleSaveAttendance = () => {
     if (!currentClass) return;
     if (isFutureDate) {
@@ -663,6 +818,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       );
       return;
     }
+    setSaveConfirmModalOpen(true);
+  };
+
+  // Thực thi lưu điểm danh sau khi người dùng xác nhận trong modal
+  const executeSaveAttendance = () => {
+    if (!currentClass || isFutureDate) return;
+    setSaveConfirmModalOpen(false);
 
     onUpdateStore(prev => {
       // 1. Session record
@@ -913,8 +1075,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       };
     });
 
+    setIsDirty(false);
+
     showToast(
-      `Đã lưu sổ điểm danh học sinh, chấm công giáo viên (${teacherMode === 'absent' ? '0 buổi' : '1 buổi'} = ${formatVND(liveTeacherTotalPayout)}) và đối soát bánh sữa ngày ${selectedDate}!`,
+      `Đã lưu điểm danh ngày ${selectedDate}: Có mặt ${saveImpactSummary.presentCount} HS, Vắng CP ${saveImpactSummary.excusedCount} HS, Vắng KP ${saveImpactSummary.unexcusedCount} HS | Ghi danh đổi trạng thái: ${saveImpactSummary.enrollmentsChangedCount} | Hóa đơn ảnh hưởng: ${saveImpactSummary.affectedInvoicesCount} | Thù lao GV (${actualTeacherObj?.name || 'GV'}): ${formatVND(liveTeacherTotalPayout)} | Bánh sữa: Tiêu thụ ${liveConsumed}/${totalRoyalCount} suất, Hoàn trả bếp ${liveReturned} suất!`,
       'success',
       { title: 'Lưu điểm danh & Chấm công GV thành công' }
     );
@@ -1025,7 +1189,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             <span className="text-xs font-semibold text-slate-400">Khóa học:</span>
             <select
               value={selectedTermId}
-              onChange={(e) => setSelectedTermId(e.target.value)}
+              onChange={(e) => {
+                const nextTermId = e.target.value;
+                requestChangeWithDirtyCheck(() => setSelectedTermId(nextTermId));
+              }}
               className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
             >
               {store.terms.map(term => (
@@ -1042,7 +1209,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             <span className="text-xs font-semibold text-slate-400">Cơ sở:</span>
             <select
               value={selectedCampusId}
-              onChange={(e) => setSelectedCampusId(e.target.value)}
+              onChange={(e) => {
+                const nextCampusId = e.target.value;
+                requestChangeWithDirtyCheck(() => setSelectedCampusId(nextCampusId));
+              }}
               className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
             >
               <option value="camp_pmh" className="bg-slate-900 text-white">Cơ sở Phú Mỹ Hưng (PMH)</option>
@@ -1075,11 +1245,18 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   value={currentClass?.id || ''}
                   disabled={availableClasses.length === 0}
                   onChange={(e) => {
-                    const c = availableClasses.find(cl => cl.id === e.target.value);
-                    if (c) {
-                      setSelectedClassId(c.id);
-                      onSelectClass(c);
-                    }
+                    const nextClassId = e.target.value;
+                    requestChangeWithDirtyCheck(() => {
+                      if (!nextClassId) {
+                        setSelectedClassId('');
+                        return;
+                      }
+                      const c = availableClasses.find(cl => cl.id === nextClassId);
+                      if (c) {
+                        setSelectedClassId(c.id);
+                        onSelectClass(c);
+                      }
+                    });
                   }}
                   className={`bg-slate-900 border text-base font-bold rounded-xl px-3 py-1.5 focus:outline-none transition-colors ${
                     availableClasses.length === 0
@@ -1090,9 +1267,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   {availableClasses.length === 0 ? (
                     <option value="">[ Không có lớp học nào trong khóa & cơ sở này ]</option>
                   ) : (
-                    availableClasses.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))
+                    <>
+                      {isTeacherRole && availableClasses.length > 1 && (
+                        <option value="">-- Chọn lớp để điểm danh ({availableClasses.length} lớp) --</option>
+                      )}
+                      {availableClasses.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </>
                   )}
                 </select>
                 {currentClass && (
@@ -1119,9 +1301,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   <span>&bull;</span>
                   <span>{store.facilities.find(f => f.id === currentClass.facility_id)?.name}</span>
                 </p>
+              ) : availableClasses.length > 0 ? (
+                <p className="text-xs text-amber-400/90 mt-1">
+                  Vui lòng chọn một lớp trong danh sách ({availableClasses.length} lớp được phân công) để bắt đầu điểm danh.
+                </p>
               ) : (
                 <p className="text-xs text-amber-400/90 mt-1">
-                  Chưa có lớp học nào thuộc {activeFilterTerm?.name} tại {selectedCampusId === 'camp_pl' ? 'Cơ sở Phú Lâm (PL)' : 'Cơ sở Phú Mỹ Hưng (PMH)'}.
+                  Liên hệ Học vụ để được phân lớp ({activeFilterTerm?.name} - {selectedCampusId === 'camp_pl' ? 'Cơ sở Phú Lâm (PL)' : 'Cơ sở Phú Mỹ Hưng (PMH)'}).
                 </p>
               )}
             </div>
@@ -1155,7 +1341,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               {!canSaveAttendance ? <Lock className="w-4 h-4 text-slate-500" /> : <Save className="w-4 h-4 text-slate-950" />}
               <span>
                 {!currentClass
-                  ? 'Đã Khóa (Chưa Có Lớp)'
+                  ? 'Chọn lớp để điểm danh'
                   : isFutureDate
                   ? 'Bị Khóa (Ngày Tương Lai)'
                   : 'Lưu Buổi Điểm Danh'}
@@ -1180,7 +1366,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   </span>
                   <div className="flex items-center gap-1.5 mt-0.5">
                     <button
-                      onClick={() => setSelectedWeekIndex(prev => Math.max(0, prev - 1))}
+                      onClick={() => requestChangeWithDirtyCheck(() => setSelectedWeekIndex(prev => Math.max(0, prev - 1)))}
                       disabled={selectedWeekIndex === 0}
                       className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
                       title="Tuần trước"
@@ -1190,7 +1376,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                     <select
                       value={selectedWeekIndex}
-                      onChange={(e) => setSelectedWeekIndex(parseInt(e.target.value, 10))}
+                      onChange={(e) => {
+                        const nextWeekIdx = parseInt(e.target.value, 10);
+                        requestChangeWithDirtyCheck(() => setSelectedWeekIndex(nextWeekIdx));
+                      }}
                       className="flex-1 bg-slate-950 text-white font-bold text-xs rounded-lg px-2.5 py-1 border border-slate-700/80 focus:outline-none focus:border-amber-500 cursor-pointer"
                     >
                       {termWeeks.map((w, idx) => (
@@ -1201,7 +1390,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     </select>
 
                     <button
-                      onClick={() => setSelectedWeekIndex(prev => Math.min(termWeeks.length - 1, prev + 1))}
+                      onClick={() => requestChangeWithDirtyCheck(() => setSelectedWeekIndex(prev => Math.min(termWeeks.length - 1, prev + 1)))}
                       disabled={selectedWeekIndex === termWeeks.length - 1}
                       className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors"
                       title="Tuần sau"
@@ -1231,7 +1420,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     return (
                       <button
                         key={sessionDay.dateStr}
-                        onClick={() => setSelectedDate(sessionDay.dateStr)}
+                        onClick={() => requestChangeWithDirtyCheck(() => setSelectedDate(sessionDay.dateStr))}
                         className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
                           isSelected
                             ? sessionDay.isFuture
@@ -1316,6 +1505,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       setSelectedTeacherId(currentClass.primary_teacher_id);
                       setIsSubstitute(false);
                       setTeacherPeriodsCount(assignedTeacherObj?.periods_per_session || 2);
+                      setIsDirty(true);
                     }}
                     className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
                       teacherMode === 'present'
@@ -1336,6 +1526,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       setIsSubstitute(false);
                       setTeacherCheckInTime('16:55');
                       setTeacherLateMinutes(10);
+                      setIsDirty(true);
                     }}
                     className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
                       teacherMode === 'late'
@@ -1357,6 +1548,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       if (fallbackSub && selectedTeacherId === currentClass.primary_teacher_id) {
                         setSelectedTeacherId(fallbackSub.id);
                       }
+                      setIsDirty(true);
                     }}
                     className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
                       teacherMode === 'substitute'
@@ -1375,6 +1567,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       setTeacherMode('absent');
                       setSelectedTeacherId(currentClass.primary_teacher_id);
                       setIsSubstitute(false);
+                      setIsDirty(true);
                     }}
                     className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
                       teacherMode === 'absent'
@@ -1394,7 +1587,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <select
                       value={teacherMode === 'absent' ? 0 : teacherPeriodsCount}
                       disabled={isFutureDate || teacherMode === 'absent'}
-                      onChange={(e) => setTeacherPeriodsCount(Number(e.target.value))}
+                      onChange={(e) => {
+                        setTeacherPeriodsCount(Number(e.target.value));
+                        setIsDirty(true);
+                      }}
                       className="bg-slate-950 text-amber-400 font-mono font-extrabold text-xs px-2 py-0.5 rounded border border-slate-700 focus:outline-none"
                     >
                       {teacherMode === 'absent' ? (
@@ -1417,7 +1613,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         type="time"
                         value={teacherCheckInTime}
                         disabled={isFutureDate}
-                        onChange={(e) => setTeacherCheckInTime(e.target.value)}
+                        onChange={(e) => {
+                          setTeacherCheckInTime(e.target.value);
+                          setIsDirty(true);
+                        }}
                         className="bg-slate-950 text-white font-mono text-xs px-2 py-0.5 rounded border border-slate-700 focus:outline-none"
                       />
                     </div>
@@ -1438,6 +1637,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       onChange={(e) => {
                         setSelectedTeacherId(e.target.value);
                         setIsSubstitute(e.target.value !== currentClass.primary_teacher_id);
+                        setIsDirty(true);
                       }}
                       className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none"
                     >
@@ -1465,7 +1665,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         min={1}
                         max={90}
                         value={teacherLateMinutes}
-                        onChange={(e) => setTeacherLateMinutes(Math.max(1, Number(e.target.value)))}
+                        onChange={(e) => {
+                          setTeacherLateMinutes(Math.max(1, Number(e.target.value)));
+                          setIsDirty(true);
+                        }}
                         className="w-20 px-2.5 py-1 rounded-lg bg-slate-950 border border-amber-500/50 text-amber-300 font-mono font-bold text-xs text-center"
                       />
                       <span className="text-slate-400 text-[11px]">phút</span>
@@ -1487,7 +1690,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     type="text"
                     value={teacherSessionNote}
                     disabled={isFutureDate}
-                    onChange={(e) => setTeacherSessionNote(e.target.value)}
+                    onChange={(e) => {
+                      setTeacherSessionNote(e.target.value);
+                      setIsDirty(true);
+                    }}
                     placeholder={
                       teacherMode === 'substitute'
                         ? `Ghi chú dạy thay (VD: Cô Hương nghỉ ốm có phép, ${actualTeacherObj?.name} dạy thay ${teacherPeriodsCount} tiết)...`
@@ -1521,41 +1727,86 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
       </div>
 
-      {/* EMPTY STATE: Khi Khóa học & Cơ sở đang chọn chưa có lớp học nào */}
+      {/* EMPTY STATE: Khi chưa chọn lớp hoặc Khóa học & Cơ sở đang chọn chưa có lớp học nào */}
       {!currentClass ? (
-        <div className="rounded-3xl bg-[#111827]/80 border border-amber-500/30 p-10 text-center backdrop-blur-md shadow-xl space-y-4">
-          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
-            <FolderOpen className="w-8 h-8" />
+        availableClasses.length > 0 ? (
+          <div className="rounded-3xl bg-[#111827]/80 border border-amber-500/30 p-8 backdrop-blur-md shadow-xl space-y-5">
+            <div className="text-center space-y-2 max-w-xl mx-auto">
+              <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+                <UserCheck className="w-7 h-7" />
+              </div>
+              <h3 className="text-base font-extrabold text-white">
+                Chọn lớp để điểm danh
+              </h3>
+              <p className="text-xs text-slate-300 font-medium">
+                Bạn được phân công <strong className="text-amber-400">{availableClasses.length} lớp</strong> trong khóa học này. Vui lòng chọn một lớp bên dưới để mở sổ điểm danh:
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-w-4xl mx-auto">
+              {availableClasses.map(cls => {
+                const slot = store.timeSlots.find(ts => ts.id === cls.time_slot_id);
+                const fac = store.facilities.find(f => f.id === cls.facility_id);
+                return (
+                  <button
+                    key={cls.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedClassId(cls.id);
+                      onSelectClass(cls);
+                    }}
+                    className="p-4 rounded-2xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/60 text-left transition-all group shadow-md"
+                  >
+                    <div className="font-extrabold text-sm text-white group-hover:text-amber-400 transition-colors">
+                      {cls.name}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mt-1 space-y-0.5">
+                      <div>Ca học: <strong className="text-slate-200">{slot?.name || 'Chưa gán'}</strong></div>
+                      <div>Phòng/Sân: <strong className="text-slate-200">{fac?.name || 'Chưa gán'}</strong></div>
+                    </div>
+                    <div className="mt-3 inline-flex items-center gap-1 text-[11px] font-bold text-amber-400">
+                      <span>Mở sổ điểm danh</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div className="space-y-1.5 max-w-xl mx-auto">
-            <h3 className="text-base font-extrabold text-white">
-              Không có lớp học nào trong khóa & cơ sở này
-            </h3>
-            <p className="text-sm text-slate-300 font-medium">
-              Vui lòng mở thêm lớp mới trong tab <strong className="text-amber-400">Lớp Học Ngoại Khóa</strong> hoặc chọn cơ sở khác.
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => setSelectedCampusId(selectedCampusId === 'camp_pmh' ? 'camp_pl' : 'camp_pmh')}
-              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors flex items-center gap-2"
-            >
-              <Building2 className="w-4 h-4 text-cyan-400" />
-              <span>Chuyển sang {selectedCampusId === 'camp_pmh' ? 'Cơ sở Phú Lâm (PL)' : 'Cơ sở Phú Mỹ Hưng (PMH)'}</span>
-            </button>
-            {onNavigateTab && (
+        ) : (
+          <div className="rounded-3xl bg-[#111827]/80 border border-amber-500/30 p-10 text-center backdrop-blur-md shadow-xl space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+              <FolderOpen className="w-8 h-8" />
+            </div>
+            <div className="space-y-1.5 max-w-xl mx-auto">
+              <h3 className="text-base font-extrabold text-white">
+                Liên hệ Học vụ để được phân lớp
+              </h3>
+              <p className="text-sm text-slate-300 font-medium">
+                Hiện chưa có lớp học nào được phân công trong khóa &amp; cơ sở này. Vui lòng liên hệ Ban Học vụ để được phân lớp hoặc chuyển sang cơ sở khác.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
               <button
                 type="button"
-                onClick={() => onNavigateTab('sub_classes')}
-                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                onClick={() => requestChangeWithDirtyCheck(() => setSelectedCampusId(selectedCampusId === 'camp_pmh' ? 'camp_pl' : 'camp_pmh'))}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors flex items-center gap-2"
               >
-                <PlusCircle className="w-4 h-4" />
-                <span>Mở thêm lớp trong Lớp Học Ngoại Khóa</span>
+                <Building2 className="w-4 h-4 text-cyan-400" />
+                <span>Chuyển sang {selectedCampusId === 'camp_pmh' ? 'Cơ sở Phú Lâm (PL)' : 'Cơ sở Phú Mỹ Hưng (PMH)'}</span>
               </button>
-            )}
+              {!isTeacherRole && onNavigateTab && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateTab('sub_classes')}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  <span>Mở thêm lớp trong Lớp Học Ngoại Khóa</span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )
       ) : (
         <>
           {/* Royal Snack Live Summary Bar */}
@@ -2464,6 +2715,183 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         </div>
       )}
 
+      {/* MODAL XÁC NHẬN GỠ MINH CHỨNG NGHỈ PHÉP (THAY CHO WINDOW.CONFIRM) */}
+      {removeProofStudentId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-rose-500/40 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-white">Xác nhận gỡ minh chứng nghỉ phép</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Học sinh: <strong className="text-slate-200">{enrolledStudents.find(s => s.id === removeProofStudentId)?.name || ''}</strong>
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Bạn có chắc chắn muốn gỡ bỏ tệp minh chứng đơn nghỉ phép của học sinh này? Bạn sẽ cần đính kèm lại minh chứng hợp lệ trước khi lưu Vắng có phép (Vắng CP).
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setRemoveProofStudentId(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={confirmRemoveProofNow}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold transition-colors"
+              >
+                Xác nhận gỡ minh chứng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CẢNH BÁO DỮ LIỆU CHƯA LƯU KHI ĐỔI LỚP / ĐỔI NGÀY */}
+      {pendingNavAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-white">Cảnh báo thay đổi chưa được lưu</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Sổ điểm danh hiện tại có thay đổi chưa lưu
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Bạn đang chỉnh sửa điểm danh cho lớp <strong className="text-amber-300">{currentClass?.name}</strong> (ngày <strong className="text-white">{selectedDate}</strong>) nhưng chưa nhấn lưu. Nếu chuyển lớp hoặc đổi ngày ngay bây giờ, các thay đổi vừa chọn sẽ bị hủy bỏ.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setPendingNavAction(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors"
+              >
+                Ở lại trang
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const act = pendingNavAction;
+                  setPendingNavAction(null);
+                  setIsDirty(false);
+                  act();
+                }}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-extrabold transition-colors"
+              >
+                Bỏ thay đổi &amp; Chuyển
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL XÁC NHẬN TRƯỚC KHI LƯU ĐIỂM DANH & TÓM TẮT TÁC ĐỘNG */}
+      {saveConfirmModalOpen && currentClass && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-amber-500/40 p-6 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <Save className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-white">Xác nhận lưu buổi điểm danh</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Lớp: <strong className="text-amber-300">{currentClass.name}</strong> &bull; Ngày: <strong className="text-white">{selectedDate}</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSaveConfirmModalOpen(false)}
+                className="p-1 rounded-xl bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {saveImpactSummary.hasExistingSession && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-200 flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-extrabold text-rose-300">
+                    Ngày này đã có điểm danh (lưu bởi {saveImpactSummary.savedBy}, lúc {saveImpactSummary.savedAtFormatted || 'trước đó'}). Ghi đè?
+                  </div>
+                  <div className="text-[11px] text-rose-300/80 mt-0.5">
+                    Dữ liệu điểm danh mới sẽ cập nhật ghi đè lên bản ghi buổi học ngày {selectedDate}.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2.5 text-xs">
+              <div className="font-bold text-slate-300 uppercase tracking-wider text-[11px]">
+                Tóm tắt tác động khi lưu điểm danh:
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+                  <div className="text-[10px] text-emerald-300 uppercase font-bold">Có mặt</div>
+                  <div className="text-base font-extrabold text-emerald-400 mt-0.5">{saveImpactSummary.presentCount} HS</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
+                  <div className="text-[10px] text-amber-300 uppercase font-bold">Vắng CP</div>
+                  <div className="text-base font-extrabold text-amber-400 mt-0.5">{saveImpactSummary.excusedCount} HS</div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center">
+                  <div className="text-[10px] text-rose-300 uppercase font-bold">Vắng KP</div>
+                  <div className="text-base font-extrabold text-rose-400 mt-0.5">{saveImpactSummary.unexcusedCount} HS</div>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-1.5 text-slate-300">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Số ghi danh đổi trạng thái (Học thử &rarr; Chính thức):</span>
+                  <strong className="text-amber-300 font-mono">{saveImpactSummary.enrollmentsChangedCount} ghi danh</strong>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Số hóa đơn bị ảnh hưởng (Kích hoạt thu phí):</span>
+                  <strong className="text-cyan-300 font-mono">{saveImpactSummary.affectedInvoicesCount} hóa đơn</strong>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Bản ghi chấm công GV ({actualTeacherObj?.name || 'GV'}):</span>
+                  <strong className="text-emerald-400 font-mono">{formatVND(liveTeacherTotalPayout)}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setSaveConfirmModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors"
+              >
+                Kiểm tra lại
+              </button>
+              <button
+                type="button"
+                onClick={executeSaveAttendance}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-extrabold shadow-lg shadow-amber-500/20 transition-all flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4 text-slate-950" />
+                <span>{saveImpactSummary.hasExistingSession ? 'Xác Nhận Ghi Đè & Lưu' : 'Xác Nhận Lưu Điểm Danh'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
+

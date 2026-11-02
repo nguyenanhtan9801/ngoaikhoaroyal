@@ -199,9 +199,13 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   // Header nhận diện client
   headers.set('x-client-info', 'royal-school-hub-ios');
 
-  // 5. GẮN BẮT BUỘC apikey VÀ Authorization: Bearer <ANON_KEY> VÀO MỌI REQUEST
-  headers.set('apikey', SUPABASE_ANON_KEY);
-  headers.set('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+  // 5. Đảm bảo luôn có apikey; chỉ gắn Authorization mặc định bằng ANON_KEY nếu request chưa có Bearer token của phiên đăng nhập
+  if (!headers.has('apikey')) {
+    headers.set('apikey', SUPABASE_ANON_KEY);
+  }
+  if (!headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+  }
 
   const mergedInit: RequestInit = {
     ...init,
@@ -220,6 +224,18 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
     ...init,
   });
 };
+
+/**
+ * Kiểm tra cờ môi trường VITE_LEGACY_LOGIN (mặc định 'true').
+ * Khi VITE_LEGACY_LOGIN='false', hệ thống tắt hoàn toàn nhánh đăng nhập cũ và chỉ chấp nhận phiên từ Supabase Auth + bảng profiles.
+ */
+export function isLegacyLoginEnabled(): boolean {
+  const raw = (import.meta as any).env?.VITE_LEGACY_LOGIN;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return true;
+  }
+  return String(raw).trim().toLowerCase() !== 'false';
+}
 
 /**
  * Kiểm tra xem khóa Anon Key có phải định dạng JWT hợp lệ (eyJ...) hỗ trợ Realtime WebSocket hay không.
@@ -311,12 +327,9 @@ let supabaseInstance: SupabaseClient | null = null;
 let currentInstanceSignature = '';
 
 /**
- * Khởi tạo hoặc trả về Singleton SupabaseClient an toàn với WebKit iOS & macOS.
- * - Đính kèm apikey trong global.headers để thư viện postgrest và realtime luôn có credentials hợp lệ.
- * - Sử dụng SafeStorage tránh SecurityError trên iOS Safari/Chrome Incognito & ITP.
- * - Tự động thêm 'cache: no-store' vào fetch để tránh WebKit cache REST API requests.
+ * Khởi tạo hoặc trả về Singleton SupabaseClient duy nhất cho cả Auth và Data.
+ * - persistSession: true, autoRefreshToken: true để token đăng nhập được tự động gửi kèm mọi request.
  * - Ngăn chặn triệt để cảnh báo "Multiple GoTrueClient instances detected in the same browser context".
- * - Đảm bảo Base URL luôn sạch (không bị lặp '/rest/v1/rest/v1/').
  */
 export const getSupabaseClient = (
   customUrl?: string,
@@ -349,7 +362,6 @@ export const getSupabaseClient = (
       global: {
         headers: {
           apikey: supabaseAnonKey,
-          Authorization: `Bearer ${supabaseAnonKey}`,
           'x-client-info': 'royal-school-hub-ios',
         },
         fetch: safeSupabaseFetch,

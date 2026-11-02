@@ -73,6 +73,7 @@ import {
   resolveSubjectCategoryCode
 } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
+import { isUserSuperAdmin } from '../../lib/permissions';
 import { AuditLogsTab } from './AuditLogsTab';
 import { UserManagementTab } from './UserManagementTab';
 import { HolidayManagementView } from '../settings/HolidayManagementView';
@@ -1823,8 +1824,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [cloudSaveMessage, setCloudSaveMessage] = useState<string | null>(null);
 
-  // Check if current user is Super Admin
-  const isSuperAdmin = currentRole === 'super_admin';
+  // Check if current user is Super Admin (derived strictly from currentUser)
+  const isSuperAdmin = isUserSuperAdmin(currentUser);
 
   // Instant 1-Click Clean All Sample Operational Data
   const handleCleanSampleDataNow = () => {

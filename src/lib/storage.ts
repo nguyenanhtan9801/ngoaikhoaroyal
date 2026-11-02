@@ -41,7 +41,11 @@ import {
   DEFAULT_SUPABASE_URL,
   DEFAULT_SUPABASE_ANON_KEY,
   isLikelyValidAnonKey,
+  isLegacyLoginEnabled,
 } from '../supabaseClient';
+import { showToast } from './toast';
+
+export { isLegacyLoginEnabled };
 
 export type { AppStore, PayrollRateConfig };
 
@@ -115,14 +119,182 @@ function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected:
   return { url, anonKey, isConnected: true };
 }
 
+const offlinePasswordMap = new Map<string, string>();
+for (const u of initialUsers) {
+  const pass = String(u.password_hash || u.password || '').trim();
+  if (pass) {
+    offlinePasswordMap.set(u.username.toLowerCase(), pass);
+    if (u.email) offlinePasswordMap.set(u.email.toLowerCase(), pass);
+  }
+}
+
+export function cacheOfflinePassword(username: string, email: string | undefined, passwordPlain: string): void {
+  const cleanPass = String(passwordPlain || '').trim();
+  if (!cleanPass) return;
+  if (username) offlinePasswordMap.set(username.trim().toLowerCase(), cleanPass);
+  if (email) offlinePasswordMap.set(email.trim().toLowerCase(), cleanPass);
+}
+
+export function getOfflineExpectedPassword(usernameOrEmail: string): string {
+  const key = String(usernameOrEmail || '').trim().toLowerCase();
+  return offlinePasswordMap.get(key) || '';
+}
+
+/**
+ * Loại bỏ hoàn toàn password và password_hash khỏi đối tượng người dùng ở phía client
+ */
+export function sanitizeUserForClient(u: AppUser): AppUser {
+  const clone: any = { ...u };
+  delete clone.password;
+  delete clone.password_hash;
+  return clone as AppUser;
+}
+
+const SESSION_KEYS = ['royal_current_user', 'royal_auth_user', 'royal_auth_session'] as const;
+
+export function getActiveSessionUser(): AppUser | null {
+  if (typeof window === 'undefined') return null;
+  // Khi VITE_LEGACY_LOGIN='false', không chấp nhận phiên nào chỉ dựa trên JSON trong localStorage / sessionStorage
+  if (!isLegacyLoginEnabled()) {
+    return null;
+  }
+  try {
+    if (
+      window.sessionStorage?.getItem('royal_logged_out') === 'true' ||
+      safeStorage.getItem('royal_logged_out') === 'true'
+    ) {
+      return null;
+    }
+    const rawSession =
+      window.sessionStorage?.getItem('royal_current_user') ||
+      window.sessionStorage?.getItem('royal_auth_user') ||
+      window.sessionStorage?.getItem('royal_auth_session');
+    if (rawSession) {
+      const parsed = JSON.parse(rawSession);
+      if (parsed && parsed.id) return sanitizeUserForClient(parsed);
+    }
+    const rawLocal =
+      safeStorage.getItem('royal_current_user') ||
+      safeStorage.getItem('royal_auth_user') ||
+      safeStorage.getItem('royal_auth_session');
+    if (rawLocal) {
+      const parsed = JSON.parse(rawLocal);
+      if (parsed && parsed.id) return sanitizeUserForClient(parsed);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function saveActiveSessionUser(user: AppUser, rememberMe: boolean = true): AppUser {
+  const cleanUser = sanitizeUserForClient(user);
+  const serialized = JSON.stringify(cleanUser);
+  try {
+    safeStorage.removeItem('royal_logged_out');
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.removeItem('royal_logged_out');
+    }
+    if (rememberMe) {
+      for (const k of SESSION_KEYS) {
+        safeStorage.setItem(k, serialized);
+        if (typeof window !== 'undefined' && window.sessionStorage) {
+          window.sessionStorage.removeItem(k);
+        }
+      }
+      safeStorage.setItem('royal_remember_me', 'true');
+    } else {
+      for (const k of SESSION_KEYS) {
+        if (typeof window !== 'undefined' && window.sessionStorage) {
+          window.sessionStorage.setItem(k, serialized);
+        }
+        safeStorage.removeItem(k);
+      }
+      safeStorage.setItem('royal_remember_me', 'false');
+    }
+  } catch {
+    // ignore
+  }
+  return cleanUser;
+}
+
+export function clearActiveSessionUser(): void {
+  try {
+    for (const k of SESSION_KEYS) {
+      safeStorage.removeItem(k);
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem(k);
+      }
+    }
+    safeStorage.removeItem('royal_school_supabase_auth');
+    safeStorage.setItem('royal_logged_out', 'true');
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.removeItem('royal_school_supabase_auth');
+      window.sessionStorage.setItem('royal_logged_out', 'true');
+    }
+  } catch {
+    // ignore
+  }
+}
+
+let cachedClientIp = 'unknown';
+let ipFetchPromise: Promise<string> | null = null;
+
+export function getClientIpAddress(): string {
+  return cachedClientIp || 'unknown';
+}
+
+export function fetchClientIpAddress(): Promise<string> {
+  if (typeof window === 'undefined') return Promise.resolve('unknown');
+  if (cachedClientIp !== 'unknown') return Promise.resolve(cachedClientIp);
+  if (ipFetchPromise) return ipFetchPromise;
+
+  ipFetchPromise = fetch('/api/whoami', { method: 'GET', headers: { Accept: 'application/json' } })
+    .then(async res => {
+      if (!res.ok) return 'unknown';
+      const data = await res.json();
+      const ip = typeof data?.ip === 'string' && data.ip.trim() ? data.ip.trim() : 'unknown';
+      cachedClientIp = ip;
+      return ip;
+    })
+    .catch(() => {
+      cachedClientIp = 'unknown';
+      return 'unknown';
+    })
+    .finally(() => {
+      ipFetchPromise = null;
+    });
+
+  return ipFetchPromise;
+}
+
+if (typeof window !== 'undefined') {
+  fetchClientIpAddress();
+}
+
+export type SupabaseSyncStatus = 'synced' | 'syncing' | 'error';
+
+export function emitSupabaseSyncStatus(status: SupabaseSyncStatus, detail?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('royal_sync_status', {
+        detail: { status, detail, timestamp: new Date().toISOString() },
+      })
+    );
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * CƠ SỞ DỮ LIỆU CHUẨN HÓA SẠCH (KHÔNG CHỨA DỮ LIỆU MẪU VẬN HÀNH)
  * Chỉ giữ danh mục cấu hình nền tảng (2 cơ sở PMH & PL, Khóa học, Danh mục môn, Khung giờ & Tài khoản Quản trị gốc)
  */
 export function getInitialStore(): AppStore {
-  const rootUsers = initialUsers.filter(u => u.username === 'admin');
+  const rootUsers = initialUsers.filter(u => u.username === 'admin').map(sanitizeUserForClient);
   return {
-    users: rootUsers.length > 0 ? rootUsers : [initialUsers[0]],
+    users: rootUsers.length > 0 ? rootUsers : [sanitizeUserForClient(initialUsers[0])],
     campuses: initialCampuses,
     terms: initialTerms,
     subjectCategories: initialSubjectCategories,
@@ -339,7 +511,7 @@ export function normalizeStudentRecord(student: Student): Student {
 export function getSampleDemoStore(): AppStore {
   return {
     ...getInitialStore(),
-    users: initialUsers,
+    users: initialUsers.map(sanitizeUserForClient),
     teachers: initialTeachers,
     classes: initialClasses,
     students: initialStudents.map(normalizeStudentRecord),
@@ -457,17 +629,21 @@ export function loadStore(): AppStore {
       discount_value: cp.discount_value || 0,
     }));
 
-    // Đảm bảo tài khoản Quản trị viên tối thiểu tồn tại để đăng nhập
+    // Đảm bảo tài khoản Quản trị viên tối thiểu tồn tại để đăng nhập (không lưu password/password_hash ở client)
     const rawUsers: AppUser[] =
       Array.isArray(parsed.users) && parsed.users.length > 0 ? [...parsed.users] : [...initial.users];
-    const users: AppUser[] = rawUsers.map(u => ({
-      ...u,
-      password_hash: u.password_hash || u.password || '123456',
-      permissions:
-        u.permissions && !Array.isArray(u.permissions)
-          ? { ...getDefaultPermissionsForRole(u.role), ...u.permissions }
-          : getDefaultPermissionsForRole(u.role),
-    }));
+    const users: AppUser[] = rawUsers.map(u => {
+      if (u.password_hash || u.password) {
+        cacheOfflinePassword(u.username, u.email, String(u.password_hash || u.password));
+      }
+      return sanitizeUserForClient({
+        ...u,
+        permissions:
+          u.permissions && !Array.isArray(u.permissions)
+            ? { ...getDefaultPermissionsForRole(u.role), ...u.permissions }
+            : getDefaultPermissionsForRole(u.role),
+      });
+    });
 
     const payrollRateConfig: PayrollRateConfig = {
       ...initialPayrollRateConfig,
@@ -642,8 +818,11 @@ function prepareStoreForStorage(store: AppStore, aggressiveLevel = 0): AppStore 
   const maxNotifs = aggressiveLevel === 0 ? 40 : 15;
   const sanitizedNotifications = (store.notifications || []).slice(-maxNotifs);
 
+  const sanitizedUsers = (store.users || []).map(sanitizeUserForClient);
+
   return {
     ...store,
+    users: sanitizedUsers,
     enrollments: deduplicateEnrollments(store.enrollments),
     auditLogs: sanitizedLogs,
     attendance: sanitizedAttendance,
@@ -654,13 +833,13 @@ function prepareStoreForStorage(store: AppStore, aggressiveLevel = 0): AppStore 
   };
 }
 
-export function saveStore(store: AppStore): void {
+export function saveStore(store: AppStore): boolean {
   // Level 0: Standard sanitized write
   try {
     const cleanStore = prepareStoreForStorage(store, 0);
     safeStorage.setItem(STORAGE_KEY, JSON.stringify(cleanStore));
     window.dispatchEvent(new Event('royal_store_updated'));
-    return;
+    return true;
   } catch (err: any) {
     console.warn('Standard saveStore hit quota limit, executing progressive compaction level 1...', err);
   }
@@ -670,7 +849,7 @@ export function saveStore(store: AppStore): void {
     const compactStoreL1 = prepareStoreForStorage(store, 1);
     safeStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL1));
     window.dispatchEvent(new Event('royal_store_updated'));
-    return;
+    return true;
   } catch (err2: any) {
     console.warn('Compaction level 1 hit quota, executing emergency compaction level 2...', err2);
   }
@@ -680,8 +859,14 @@ export function saveStore(store: AppStore): void {
     const compactStoreL2 = prepareStoreForStorage(store, 2);
     safeStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL2));
     window.dispatchEvent(new Event('royal_store_updated'));
+    return true;
   } catch (finalErr: any) {
     console.error('CRITICAL: Unable to save to localStorage after all progressive compactions', finalErr);
+    showToast('Không lưu được dữ liệu, dung lượng trình duyệt đã đầy', 'error', {
+      title: 'Lỗi lưu dữ liệu trình duyệt',
+    });
+    emitSupabaseSyncStatus('error', 'Dung lượng trình duyệt đã đầy');
+    return false;
   }
 }
 
@@ -1336,6 +1521,12 @@ export function createAuditRecord(
 
   const roleName = user?.role ? (roleLabels[user.role] || user.role) : 'Hệ thống';
 
+  const resolvedDetails = {
+    status: 'success' as const,
+    ...(options?.details || {}),
+    ip_address: options?.details?.ip_address || getClientIpAddress(),
+  };
+
   return {
     id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
     timestamp: ts,
@@ -1348,7 +1539,7 @@ export function createAuditRecord(
     target_entity,
     target_id: options?.target_id,
     description,
-    details: options?.details || { status: 'success' },
+    details: resolvedDetails,
   };
 }
 
@@ -1423,6 +1614,42 @@ export async function uploadFileToServer(
       ? 'attendance_proofs'
       : 'admissions';
   const info = buildGoogleDriveFileInfo(category, fileName);
+
+  try {
+    const supabase = getConfiguredSupabaseClient();
+    const sessionRes = supabase ? await supabase.auth.getSession() : null;
+    const accessToken = sessionRes?.data?.session?.access_token;
+
+    if (accessToken && (folder === 'students' || folder === 'proofs')) {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          fileData: base64Data,
+          fileName: info.sanitizedName,
+          folder,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.url) {
+          return {
+            success: true,
+            url: data.url,
+            driveUrl: GOOGLE_DRIVE_ROOT_URL,
+            storedAt: data.storedPath || info.storedAt,
+            fileName: data.fileName || info.sanitizedName,
+          };
+        }
+      }
+    }
+  } catch {
+    // fallback to local base64 if server or auth is unavailable
+  }
+
   return {
     success: true,
     url: base64Data || info.driveUrl,
@@ -2217,7 +2444,7 @@ export function getUserPermissions(user?: AppUser | null, fallbackRole: UserRole
   if (!user) {
     return getDefaultPermissionsForRole(fallbackRole);
   }
-  if (user.is_root || user.username === 'overadmin' || user.role === 'super_admin') {
+  if (user.role === 'super_admin') {
     if (user.permissions && !Array.isArray(user.permissions)) {
       return {
         ...getDefaultPermissionsForRole('super_admin'),
@@ -2237,7 +2464,6 @@ export function getUserPermissions(user?: AppUser | null, fallbackRole: UserRole
 }
 
 export function getRoleLabelVN(role: UserRole, user?: AppUser | null): string {
-  if (user?.is_root || user?.username === 'overadmin') return 'Quản Trị Tối Cao (OverAdmin)';
   switch (role) {
     case 'super_admin':
       return 'Quản Trị Cấp Cao';
@@ -2278,7 +2504,7 @@ export function normalizeCampusScope(campusId?: string): 'all' | 'camp_pmh' | 'c
 }
 
 export function getPermissionSummaryText(user: AppUser): string {
-  if (user.is_root || user.username === 'overadmin' || user.role === 'super_admin') {
+  if (user.role === 'super_admin') {
     const perms = getUserPermissions(user);
     const allTrue =
       perms.can_manage_classes &&
@@ -2316,30 +2542,141 @@ export function getPermissionSummaryText(user: AppUser): string {
   return parts.length > 0 ? parts.join(' • ') : 'Chỉ xem cơ bản';
 }
 
-function getConfiguredSupabaseClient() {
+export function getConfiguredSupabaseClient() {
   return getSupabaseClient();
 }
 
+/**
+ * Xây dựng đối tượng AppUser trực tiếp từ bản ghi bảng `profiles` trên Supabase (role, campus_id, permissions...),
+ * tuyệt đối không lấy từ localStorage. Lần đăng nhập gần nhất lấy từ phiên Supabase Auth (lastSignInAt).
+ */
+export function buildAppUserFromProfile(
+  profile: Record<string, any>,
+  fallbackEmail?: string,
+  lastSignInAt?: string
+): AppUser {
+  const role: UserRole = (profile.role as UserRole) || 'teacher';
+  const rawEmail = String(profile.email || fallbackEmail || '').trim().toLowerCase();
+  const rawUsername = String(
+    profile.username || (rawEmail ? rawEmail.split('@')[0] : profile.id)
+  )
+    .trim()
+    .toLowerCase();
+  const fullName = String(profile.full_name || profile.name || rawUsername).trim();
+  const rawPerms =
+    profile.permissions &&
+    typeof profile.permissions === 'object' &&
+    Object.keys(profile.permissions).length > 0
+      ? profile.permissions
+      : getDefaultPermissionsForRole(role);
+
+  return sanitizeUserForClient({
+    id: String(profile.id),
+    username: rawUsername,
+    email: rawEmail || `${rawUsername}@royal.edu.vn`,
+    full_name: fullName,
+    name: fullName,
+    phone: String(profile.phone || ''),
+    role,
+    department: String(profile.department || getRoleLabelVN(role)),
+    campus_id: String(profile.campus_id || 'all'),
+    status: profile.status === 'locked' ? 'locked' : 'active',
+    permissions: rawPerms,
+    linked_teacher_id: profile.linked_teacher_id ? String(profile.linked_teacher_id) : undefined,
+    created_at: String(profile.created_at || new Date().toISOString()),
+    last_login: lastSignInAt ? String(lastSignInAt) : undefined,
+    avatar_url: profile.avatar_url ? String(profile.avatar_url) : undefined,
+  });
+}
+
+/**
+ * Đọc bản ghi `profiles` của người dùng đang đăng nhập từ Supabase theo user.id.
+ * Chỉ trả về user hợp lệ nếu status === 'active'.
+ */
+export async function fetchActiveProfileFromSupabase(
+  userId: string,
+  fallbackEmail?: string,
+  lastSignInAt?: string
+): Promise<{ user: AppUser | null; status: string | null }> {
+  const supabase = getConfiguredSupabaseClient();
+  if (!supabase || !userId) {
+    return { user: null, status: null };
+  }
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error || !data) {
+      return { user: null, status: null };
+    }
+
+    const status = String(data.status || '').toLowerCase();
+    if (status !== 'active') {
+      return { user: null, status };
+    }
+
+    return {
+      user: buildAppUserFromProfile(data, fallbackEmail, lastSignInAt),
+      status: 'active',
+    };
+  } catch {
+    return { user: null, status: null };
+  }
+}
+
+/**
+ * Tải toàn bộ danh sách hồ sơ từ bảng `public.profiles` (dành cho super_admin).
+ */
+export async function fetchAllProfilesFromSupabase(): Promise<AppUser[]> {
+  const supabase = getConfiguredSupabaseClient();
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase.from('profiles').select('*');
+    if (error || !Array.isArray(data)) return [];
+    return data.map(row => buildAppUserFromProfile(row));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Đồng bộ bảng phụ `app_users` (legacy). Tuyệt đối KHÔNG ghi hoặc xóa trực tiếp bảng `profiles` từ trình duyệt;
+ * mọi thao tác thêm/sửa/khóa/xóa trên `profiles` phải đi qua các endpoint `/api/admin/*` ở phía server.
+ */
 export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'delete' = 'upsert'): Promise<void> {
   const supabase = getConfiguredSupabaseClient();
   if (!supabase) return;
   try {
+    const safeUsername = String(user.username || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[,()%*\\]/g, '');
     if (action === 'delete') {
-      await supabase.from('app_users').delete().or(`id.eq.${user.id},username.eq.${user.username}`);
+      if (safeUsername) {
+        await supabase.from('app_users').delete().eq('username', safeUsername);
+      }
     } else {
-      await supabase.from('app_users').upsert({
-        username: user.username.toLowerCase(),
-        email: user.email.toLowerCase(),
-        password_hash: user.password_hash || user.password || '123456',
+      const normalizedCampus =
+        user.campus_id === 'camp_pmh' ? 'pmh' : user.campus_id === 'camp_pl' ? 'pl' : user.campus_id;
+      const appUsersPayload: Record<string, any> = {
+        username: safeUsername,
         full_name: user.full_name,
-        phone: user.phone || '',
         role: user.role,
-        campus_id: user.campus_id === 'camp_pmh' ? 'pmh' : user.campus_id === 'camp_pl' ? 'pl' : user.campus_id,
+        campus_id: normalizedCampus,
         status: user.status,
         permissions: getUserPermissions(user),
+        email: user.email.toLowerCase(),
+        phone: user.phone || '',
+        department: user.department || getRoleLabelVN(user.role),
         linked_teacher_id: user.linked_teacher_id || null,
         last_login: user.last_login || null,
-      }, { onConflict: 'username' });
+      };
+      if (safeUsername) {
+        await supabase.from('app_users').update(appUsersPayload).eq('username', safeUsername);
+      }
     }
   } catch {
     // Fallback gracefully to local store when Supabase table is not yet provisioned
@@ -2349,78 +2686,118 @@ export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'd
 export async function handleLoginProcess(
   usernameOrEmail: string,
   passwordInput: string,
-  store: AppStore
+  store: AppStore,
+  rememberMe: boolean = true
 ): Promise<{
   success: boolean;
   user?: AppUser;
   errorToast?: string;
   successToast?: string;
-  reason?: 'not_found' | 'locked' | 'wrong_password';
+  reason?: 'not_found' | 'locked' | 'wrong_password' | 'no_password';
 }> {
   const cleanUser = usernameOrEmail.trim().toLowerCase();
   const cleanPass = passwordInput.trim();
+  const supabase = getConfiguredSupabaseClient();
 
-  // BƯỚC 1: KIỂM TRA TÀI KHOẢN KHẨN CẤP (OVER-SUPER ADMIN) TRƯỚC TIÊN
-  if (
-    (cleanUser === 'overadmin' || cleanUser === 'overadmin@royal.edu.vn') &&
-    cleanPass === 'overadmin123'
-  ) {
-    const overAdminSession: AppUser = {
-      id: 'root-overadmin',
-      code: 'OVER-ROOT-9999',
-      username: 'overadmin',
-      email: 'overadmin@royal.edu.vn',
-      password: '',
-      password_hash: '',
-      name: 'Quản Trị Tối Cao (OverAdmin)',
-      full_name: 'Quản Trị Tối Cao (OverAdmin)',
-      phone: '0900 999 999',
-      role: 'super_admin',
-      department: 'Ban Quản Trị Tối Cao (Root System)',
-      campus_id: 'all',
-      status: 'active',
-      permissions: getDefaultPermissionsForRole('super_admin'),
-      created_at: new Date().toISOString(),
-      last_login: new Date().toISOString(),
-      is_root: true,
-    };
-
+  // 1. ƯU TIÊN ĐĂNG NHẬP QUA SUPABASE AUTH + BẢNG PROFILES
+  if (supabase) {
     try {
-      safeStorage.setItem('royal_auth_session', JSON.stringify(overAdminSession));
-      safeStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        window.sessionStorage.setItem('royal_current_user', JSON.stringify(overAdminSession));
+      const { data: resolvedData, error: rpcErr } = await supabase.rpc('resolve_login_email', {
+        p_identifier: cleanUser,
+      });
+
+      let resolvedEmail = '';
+      if (!rpcErr && resolvedData) {
+        if (typeof resolvedData === 'string') {
+          resolvedEmail = resolvedData.trim().toLowerCase();
+        } else if (Array.isArray(resolvedData) && resolvedData[0]) {
+          resolvedEmail = String(resolvedData[0]?.email || resolvedData[0] || '')
+            .trim()
+            .toLowerCase();
+        } else if (typeof resolvedData === 'object' && (resolvedData as any).email) {
+          resolvedEmail = String((resolvedData as any).email).trim().toLowerCase();
+        }
+      }
+
+      if (resolvedEmail) {
+        const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+          email: resolvedEmail,
+          password: cleanPass,
+        });
+
+        if (!authErr && authData?.user) {
+          const sessionLastSignIn = authData.user.last_sign_in_at || new Date().toISOString();
+          const { user: profileUser, status } = await fetchActiveProfileFromSupabase(
+            authData.user.id,
+            authData.user.email,
+            sessionLastSignIn
+          );
+
+          if (!profileUser || status !== 'active') {
+            await supabase.auth.signOut();
+            return {
+              success: false,
+              reason: status === 'locked' ? 'locked' : 'not_found',
+              errorToast: 'Tên đăng nhập hoặc mật khẩu không đúng.',
+            };
+          }
+
+          const authenticatedUser: AppUser = sanitizeUserForClient({
+            ...profileUser,
+            last_login: sessionLastSignIn,
+          });
+
+          saveActiveSessionUser(authenticatedUser, rememberMe);
+          const roleLabel = getRoleLabelVN(authenticatedUser.role, authenticatedUser);
+          return {
+            success: true,
+            user: authenticatedUser,
+            successToast: `✓ Chào mừng ${authenticatedUser.full_name} (${roleLabel}) đã đăng nhập thành công!`,
+          };
+        }
       }
     } catch {
-      // ignore
+      // Nếu lỗi mạng hoặc chưa có RPC, kiểm tra cờ VITE_LEGACY_LOGIN bên dưới
     }
+  }
 
+  // Nếu tắt đăng nhập cũ (VITE_LEGACY_LOGIN='false'), từ chối ngay với thông báo chung
+  if (!isLegacyLoginEnabled()) {
     return {
-      success: true,
-      user: overAdminSession,
-      successToast: '⚡ Đăng nhập thành công với quyền Quản Trị Tối Cao (OverAdmin)!',
+      success: false,
+      reason: 'wrong_password',
+      errorToast: 'Tên đăng nhập hoặc mật khẩu không đúng.',
     };
   }
 
-  // BƯỚC 2: TRUY VẤN TÀI KHOẢN TỪ BẢNG `app_users` TRÊN SUPABASE (HOẶC STORE NẾU CHƯA KẾT NỐI)
-  let dbUser: AppUser | null = null;
-  const supabase = getConfiguredSupabaseClient();
+  // 2. PHƯƠNG ÁN LÙI (LEGACY LOGIN) KHI VITE_LEGACY_LOGIN='true'
+  // Loại bỏ hoặc từ chối các ký tự nguy hiểm , ( ) % * \ trước khi ghép vào .or(...)
+  if (/[,()%*\\]/.test(cleanUser)) {
+    return {
+      success: false,
+      reason: 'not_found',
+      errorToast: 'Tên đăng nhập hoặc mật khẩu không đúng.',
+    };
+  }
+  const safeCleanUser = cleanUser.replace(/[,()%*\\]/g, '');
 
-  if (supabase) {
+  let dbUser: AppUser | null = null;
+  let expectedPass = '';
+
+  if (supabase && safeCleanUser) {
     try {
       const { data, error } = await supabase
         .from('app_users')
         .select('*')
-        .or(`username.eq.${cleanUser},email.eq.${cleanUser}`)
+        .or(`username.eq.${safeCleanUser},email.eq.${safeCleanUser}`)
         .maybeSingle();
 
       if (!error && data) {
-        dbUser = {
+        expectedPass = String(data.password_hash || data.password || '').trim();
+        dbUser = sanitizeUserForClient({
           id: data.id,
           username: data.username,
           email: data.email,
-          password: data.password_hash,
-          password_hash: data.password_hash,
           full_name: data.full_name,
           name: data.full_name,
           phone: data.phone || '',
@@ -2432,7 +2809,7 @@ export async function handleLoginProcess(
           linked_teacher_id: data.linked_teacher_id || undefined,
           created_at: data.created_at || new Date().toISOString(),
           last_login: data.last_login || undefined,
-        };
+        });
       }
     } catch {
       // Fallback to local store.users
@@ -2444,49 +2821,36 @@ export async function handleLoginProcess(
       u => u.username.toLowerCase() === cleanUser || u.email.toLowerCase() === cleanUser
     );
     if (localFound) {
-      dbUser = {
+      expectedPass = getOfflineExpectedPassword(cleanUser);
+      dbUser = sanitizeUserForClient({
         ...localFound,
         permissions: getUserPermissions(localFound),
-      };
+      });
     }
   }
 
-  if (!dbUser) {
+  // Mọi lỗi (sai tài khoản, sai mật khẩu, bị khóa) đều dùng thông báo chung
+  if (!dbUser || dbUser.status !== 'active' || !expectedPass || expectedPass !== cleanPass) {
     return {
       success: false,
-      reason: 'not_found',
-      errorToast: '✕ Tài khoản hoặc email không tồn tại trong hệ thống.',
+      user: dbUser || undefined,
+      reason: !dbUser
+        ? 'not_found'
+        : dbUser.status !== 'active'
+        ? 'locked'
+        : !expectedPass
+        ? 'no_password'
+        : 'wrong_password',
+      errorToast: 'Tên đăng nhập hoặc mật khẩu không đúng.',
     };
   }
 
-  // BƯỚC 3: KIỂM TRA TRẠNG THÁI KHÓA TÀI KHOẢN (`status === 'locked'`) TRƯỚC KHI KIỂM TRA MẬT KHẨU
-  if (dbUser.status === 'locked') {
-    return {
-      success: false,
-      user: dbUser,
-      reason: 'locked',
-      errorToast: '🔒 Tài khoản của bạn đã bị khóa bởi Quản trị viên. Vui lòng liên hệ ban quản trị để được hỗ trợ.',
-    };
-  }
-
-  // BƯỚC 4: KIỂM TRA MẬT KHẨU
-  const expectedPass = dbUser.password_hash || dbUser.password || '';
-  if (expectedPass && expectedPass !== cleanPass) {
-    return {
-      success: false,
-      user: dbUser,
-      reason: 'wrong_password',
-      errorToast: '✕ Mật khẩu không chính xác. Vui lòng thử lại.',
-    };
-  }
-
-  // BƯỚC 5: CẬP NHẬT THỜI GIAN ĐĂNG NHẬP CUỐI CÙNG (`last_login`) LÊN SUPABASE & LƯU SESSION
   const nowIso = new Date().toISOString();
-  const authenticatedUser: AppUser = {
+  const authenticatedUser: AppUser = sanitizeUserForClient({
     ...dbUser,
     last_login: nowIso,
     permissions: getUserPermissions(dbUser),
-  };
+  });
 
   if (supabase) {
     try {
@@ -2499,17 +2863,8 @@ export async function handleLoginProcess(
     }
   }
 
-  try {
-    safeStorage.setItem('royal_auth_session', JSON.stringify(authenticatedUser));
-    safeStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
-    if (typeof window !== 'undefined' && window.sessionStorage) {
-      window.sessionStorage.setItem('royal_current_user', JSON.stringify(authenticatedUser));
-    }
-  } catch {
-    // ignore
-  }
+  saveActiveSessionUser(authenticatedUser, rememberMe);
 
-  // BƯỚC 6: TRẢ VỀ KẾT QUẢ & THÔNG BÁO CHÀO MỪNG
   const roleLabel = getRoleLabelVN(authenticatedUser.role, authenticatedUser);
   return {
     success: true,

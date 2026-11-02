@@ -49,9 +49,9 @@ export interface PricingRule {
 
 export interface AppUser {
   id: string;                                         // UUID
-  code?: string;                                      // Mã nhân sự (VD: OVER-ROOT-9999)
+  code?: string;                                      // Mã nhân sự (VD: NV-ADMIN-001)
   username: string;                                   // Tên đăng nhập duy nhất
-  password: string;                                   // Mật khẩu
+  password?: string;                                  // Mật khẩu (bị lược bỏ ở phía client/session)
   password_hash?: string;                             // Chuỗi mật khẩu mã hóa trên Supabase
   name?: string;                                      // Tên hiển thị ngắn gọn
   full_name: string;                                  // ThS. Nguyễn Hoàng Long, Cô Lê Thị Kim Cúc...
@@ -67,7 +67,6 @@ export interface AppUser {
   teacher_id?: string;                                // Tương thích ngược với linked_teacher_id
   created_at: string;
   last_login?: string;
-  is_root?: boolean;                                  // Đánh dấu tài khoản Quản trị tối cao (OverAdmin)
 }
 
 export interface Campus {

@@ -4,7 +4,7 @@
  * and direct file download without requiring teachers to authenticate with Google Drive.
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { getConfiguredSupabaseClient } from './storage';
 
 export interface CompressedFileResult {
   base64: string;
@@ -159,19 +159,18 @@ export function triggerFileDownload(fileName: string, dataUrlOrUrl: string) {
  * Upload to Supabase Storage Bucket if connected
  */
 export async function uploadToSupabaseBucket(
-  supabaseUrl: string,
-  anonKey: string,
+  _supabaseUrl: string,
+  _anonKey: string,
   bucketName: string,
   path: string,
   base64Data: string,
   contentType = 'image/jpeg'
 ): Promise<{ success: boolean; publicUrl?: string; error?: string }> {
   try {
-    if (!supabaseUrl || !anonKey) {
-      return { success: false, error: 'Chưa cấu hình Supabase URL hoặc Anon Key' };
+    const supabase = getConfiguredSupabaseClient();
+    if (!supabase) {
+      return { success: false, error: 'Chưa khởi tạo được kết nối Supabase Client' };
     }
-
-    const supabase = createClient(supabaseUrl, anonKey);
 
     // Convert Base64 data URI to Blob
     const base64Content = base64Data.split(',')[1] || base64Data;
@@ -207,6 +206,24 @@ export async function uploadToSupabaseBucket(
 }
 
 /**
+ * Lấy header Authorization: Bearer <access_token> từ phiên đăng nhập Supabase Auth hiện tại
+ */
+export async function getAuthBearerHeaders(): Promise<Record<string, string>> {
+  try {
+    const supabase = getConfiguredSupabaseClient();
+    if (!supabase) return {};
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+    if (accessToken) {
+      return { Authorization: `Bearer ${accessToken}` };
+    }
+  } catch {
+    // ignore session lookup error
+  }
+  return {};
+}
+
+/**
  * Upload a file directly to the backend server (/api/upload)
  */
 export async function uploadFileToServer(
@@ -222,10 +239,12 @@ export async function uploadFileToServer(
   error?: string;
 }> {
   try {
+    const authHeaders = await getAuthBearerHeaders();
     const res = await fetch('/api/upload', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders,
       },
       body: JSON.stringify({
         fileData: base64Data,
@@ -256,6 +275,89 @@ export async function uploadFileToServer(
       storedPath: 'Local: Browser Base64 Storage',
       fileName,
     };
+  }
+}
+
+/**
+ * Lấy danh sách file minh chứng trên server (/api/files/proofs) kèm Bearer token
+ */
+export async function fetchServerProofFiles(): Promise<{
+  files: { fileName: string; url: string; size: number; createdAt: string }[];
+  error?: string;
+}> {
+  try {
+    const authHeaders = await getAuthBearerHeaders();
+    const res = await fetch('/api/files/proofs', {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...authHeaders,
+      },
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    return { files: data.files || [] };
+  } catch (err: any) {
+    return { files: [], error: err?.message || 'Không thể tải danh sách tệp minh chứng' };
+  }
+}
+
+/**
+ * Gọi /api/chat kèm Bearer token
+ */
+export async function sendAuthenticatedChatMessage(payload: {
+  history?: { role: string; text: string }[];
+  message: string;
+  enableHighThinking?: boolean;
+  role?: string;
+}): Promise<{ reply?: string; error?: string }> {
+  try {
+    const authHeaders = await getAuthBearerHeaders();
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: data.error || `HTTP ${res.status}` };
+    }
+    return { reply: data.reply || '' };
+  } catch (err: any) {
+    return { error: err?.message || 'Không thể kết nối /api/chat' };
+  }
+}
+
+/**
+ * Gọi /api/ai-analyze kèm Bearer token
+ */
+export async function requestAuthenticatedAiAnalyze(payload: {
+  actionType: string;
+  payload: Record<string, any>;
+}): Promise<{ result?: string; error?: string }> {
+  try {
+    const authHeaders = await getAuthBearerHeaders();
+    const res = await fetch('/api/ai-analyze', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { error: data.error || `HTTP ${res.status}` };
+    }
+    return { result: data.result || '' };
+  } catch (err: any) {
+    return { error: err?.message || 'Không thể kết nối /api/ai-analyze' };
   }
 }
 

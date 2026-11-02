@@ -12,6 +12,7 @@ import {
   supabase,
   isSupabaseConfigured,
   getSupabaseRestUrl,
+  isLegacyLoginEnabled,
 } from '../supabaseClient';
 
 import {
@@ -30,7 +31,14 @@ import {
   AppUser,
   TermSubjectConfig,
 } from '../types';
-import { resolveStudentCampusId, resolveSubjectCategoryCode, checkIsRoyalStudent } from './storage';
+import {
+  resolveStudentCampusId,
+  resolveSubjectCategoryCode,
+  checkIsRoyalStudent,
+  cacheOfflinePassword,
+  getOfflineExpectedPassword,
+  emitSupabaseSyncStatus,
+} from './storage';
 
 export interface TableColumnSpec {
   dbCol: string;
@@ -907,6 +915,7 @@ export {
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
   getSupabaseRestUrl,
+  isLegacyLoginEnabled,
   supabase,
 };
 
@@ -1553,7 +1562,6 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         id: u.id,
         username: u.username,
         email: u.email || `${u.username}@royal.edu.vn`,
-        password_hash: u.password_hash || u.password || '123456',
         full_name: u.full_name,
         phone: u.phone || '',
         role: u.role || 'academic',
@@ -2077,13 +2085,15 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
   const cleanTable = sanitizeSupabaseTableName(tableName);
 
   switch (cleanTable) {
-    case 'app_users':
+    case 'app_users': {
+      const rawPass = String(r.password_hash || r.password || '').trim();
+      if (rawPass && r.username) {
+        cacheOfflinePassword(r.username, r.email, rawPass);
+      }
       return {
         id: r.id,
         username: r.username || '',
         email: r.email || '',
-        password: r.password || r.password_hash || '123456',
-        password_hash: r.password_hash || r.password || '123456',
         full_name: r.full_name || r.name || r.username || '',
         phone: r.phone || '',
         role: r.role || 'academic',
@@ -2095,6 +2105,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         last_login: r.last_login || undefined,
         created_at: r.created_at || new Date().toISOString().split('T')[0],
       };
+    }
 
     case 'extracurricular_classes':
       return {
@@ -2508,22 +2519,44 @@ export async function syncStoreDeltaToSupabase(
         const serializedAll = serializeTableRowsForSupabase(table, nextStore);
         const rowsToUpsert = serializedAll.filter(r => toUpsertIds.has(String(r.id)));
         if (rowsToUpsert.length > 0) {
+          emitSupabaseSyncStatus('syncing', `Đang đồng bộ bảng ${table}...`);
           const conflictTarget = table === 'enrollments' ? 'student_id,class_id' : 'id';
           Promise.resolve(
             client
               .from(table)
               .upsert(rowsToUpsert, { onConflict: conflictTarget })
-          ).catch(() => {});
+          )
+            .then(({ error }) => {
+              if (error) {
+                emitSupabaseSyncStatus('error', error.message);
+              } else {
+                emitSupabaseSyncStatus('synced', `Đã đồng bộ bảng ${table}`);
+              }
+            })
+            .catch((err) => {
+              emitSupabaseSyncStatus('error', err?.message || 'Lỗi đồng bộ');
+            });
         }
       }
 
       if (toDeleteIds.length > 0) {
+        emitSupabaseSyncStatus('syncing', `Đang xóa bản ghi trên ${table}...`);
         Promise.resolve(
           client
             .from(table)
             .delete()
             .in('id', toDeleteIds)
-        ).catch(() => {});
+        )
+          .then(({ error }) => {
+            if (error) {
+              emitSupabaseSyncStatus('error', error.message);
+            } else {
+              emitSupabaseSyncStatus('synced', `Đã cập nhật bảng ${table}`);
+            }
+          })
+          .catch((err) => {
+            emitSupabaseSyncStatus('error', err?.message || 'Lỗi đồng bộ');
+          });
       }
     }
   }

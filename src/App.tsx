@@ -21,11 +21,30 @@ import { ParentPortalModal } from './components/ParentPortalModal';
 import { LoginPortalModal } from './components/LoginPortalModal';
 import { ToastContainer } from './components/ToastContainer';
 import { showToast } from './lib/toast';
-import { loadStore, saveStore, AppStore, createAuditRecord, appendAuditLog, validateCreditNoteCreation, formatVND, normalizeCampusScope } from './lib/storage';
+import {
+  loadStore,
+  saveStore,
+  AppStore,
+  createAuditRecord,
+  appendAuditLog,
+  validateCreditNoteCreation,
+  formatVND,
+  normalizeCampusScope,
+  getActiveSessionUser,
+  saveActiveSessionUser,
+  clearActiveSessionUser,
+  fetchClientIpAddress,
+  getClientIpAddress,
+  fetchActiveProfileFromSupabase,
+  fetchAllProfilesFromSupabase,
+  isLegacyLoginEnabled,
+} from './lib/storage';
+import { isRouteAllowed, getDefaultRouteForUser } from './lib/permissions';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
-import { safeStorage, supabase } from './supabaseClient';
+import { supabase } from './supabaseClient';
+import { ShieldAlert, ArrowLeft, KeyRound, X, Loader2 } from 'lucide-react';
 
 const ROUTE_HASH_MAP: Record<string, string> = {
   sub_kpi: 'kpi',
@@ -84,93 +103,81 @@ const getInitialRouteFromUrl = (): string => {
 export default function App() {
   const [store, setStore] = useState<AppStore>(() => loadStore());
 
-  // User Authentication State: BẮT BUỘC PHẢI CÓ SESSION HỢP LỆ MỚI ĐƯỢC ĐĂNG NHẬP
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
-    try {
-      if (safeStorage.getItem('royal_logged_out') === 'true') {
-        return null;
-      }
-      const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && parsed.id) return parsed;
-      }
-    } catch {
-      // noop
-    }
-    // Mặc định là NULL, TUYỆT ĐỐI KHÔNG tự động lấy users[0]
-    return null;
-  });
+  // User Authentication State: Khi VITE_LEGACY_LOGIN='false', không chấp nhận phiên nào chỉ dựa trên JSON trong localStorage
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() =>
+    isLegacyLoginEnabled() ? getActiveSessionUser() : null
+  );
 
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    try {
-      if (safeStorage.getItem('royal_logged_out') === 'true') {
-        return false;
-      }
-      const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && parsed.id) return true;
-      }
-    } catch {
-      // noop
-    }
-    return false;
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() =>
+    isLegacyLoginEnabled() ? Boolean(getActiveSessionUser()) : false
+  );
 
-  // Set currentRole based on currentUser if logged in
-  const [currentRole, setCurrentRole] = useState<UserRole>(() => {
-    try {
-      const stored = safeStorage.getItem('royal_current_user') || safeStorage.getItem('royal_auth_user');
-      if (stored) {
-        const u = JSON.parse(stored);
-        if (u && u.role) return u.role;
-      }
-    } catch {
-      // noop
-    }
-    return 'super_admin';
-  });
+  // Nguyên tắc phân quyền: currentRole luôn lấy trực tiếp từ currentUser.role (bỏ mặc định 'super_admin' khi chưa đăng nhập)
+  const currentRole: UserRole = currentUser?.role || 'teacher';
 
-  const handleLoginSuccess = (user: AppUser) => {
-    setCurrentUser(user);
+  const syncProfilesListForSuperAdmin = async (activeUser: AppUser) => {
+    if (activeUser.role !== 'super_admin') return;
+    const profilesList = await fetchAllProfilesFromSupabase();
+    if (profilesList.length === 0) return;
+
+    setStore(prev => {
+      const mergedMap = new Map<string, AppUser>();
+      for (const existing of prev.users || []) {
+        mergedMap.set(existing.username.toLowerCase(), existing);
+      }
+      for (const prof of profilesList) {
+        const key = prof.username.toLowerCase();
+        const prevUser = mergedMap.get(key);
+        mergedMap.set(key, {
+          ...(prevUser || {}),
+          ...prof,
+          email: prof.email || prevUser?.email || `${prof.username}@royal.edu.vn`,
+          phone: prof.phone || prevUser?.phone || '',
+          department: prof.department || prevUser?.department || '',
+          linked_teacher_id: prof.linked_teacher_id || prevUser?.linked_teacher_id,
+        });
+      }
+      const next = {
+        ...prev,
+        users: Array.from(mergedMap.values()),
+      };
+      saveStore(next);
+      return next;
+    });
+  };
+
+  const handleLoginSuccess = (user: AppUser, rememberMe: boolean = true) => {
+    const cleanUser = isLegacyLoginEnabled() ? saveActiveSessionUser(user, rememberMe) : user;
+    setCurrentUser(cleanUser);
     setIsAuthenticated(true);
-    setCurrentRole(user.role);
-    try {
-      safeStorage.removeItem('royal_logged_out');
-      safeStorage.setItem('royal_current_user', JSON.stringify(user));
-      safeStorage.setItem('royal_auth_user', JSON.stringify(user));
-      safeStorage.setItem('royal_auth_session', JSON.stringify(user));
-    } catch {
-      // noop
-    }
     setIsLoginModalOpen(false);
+    syncProfilesListForSuperAdmin(cleanUser);
 
     // Enforce campus scope if user is restricted to PMH or Phú Lâm
-    const scopedCampus = normalizeCampusScope(user.campus_id);
+    const scopedCampus = normalizeCampusScope(cleanUser.campus_id);
     setSelectedCampusId(scopedCampus);
 
     // Điều hướng thông minh sau đăng nhập theo vai trò (Role-based Routing)
-    if (user.role === 'teacher') {
-      if (user.linked_teacher_id) {
-        const teacherClass = store.classes.find(c => c.primary_teacher_id === user.linked_teacher_id);
-        if (teacherClass) {
-          setFocusedClass(teacherClass);
-        }
+    if (cleanUser.role === 'teacher') {
+      const teacherClasses = store.classes.filter(
+        c =>
+          (cleanUser.linked_teacher_id && c.primary_teacher_id === cleanUser.linked_teacher_id) ||
+          (c as any).assistant_teacher_id === cleanUser.linked_teacher_id
+      );
+      if (teacherClasses.length === 1) {
+        setFocusedClass(teacherClasses[0]);
+      } else {
+        setFocusedClass(null);
       }
       setCurrentRoute('sub_attendance');
-    } else if (user.role === 'admissions') {
-      setCurrentRoute('sub_parents');
-    } else if (user.role === 'accountant') {
-      setCurrentRoute('sub_finance_invoices');
     } else {
-      setCurrentRoute('sub_kpi');
+      setCurrentRoute(getDefaultRouteForUser(cleanUser));
     }
   };
 
   const handleLogout = async () => {
     try {
-      // 1. Đăng xuất khỏi Supabase Auth (nếu có dùng)
+      // 1. Đăng xuất khỏi Supabase Auth trước
       if (supabase && supabase.auth) {
         await supabase.auth.signOut();
       }
@@ -179,13 +186,14 @@ export default function App() {
     }
 
     if (currentUser) {
+      const clientIp = await fetchClientIpAddress();
       const logoutRecord = createAuditRecord(
         'AUTH_LOGOUT',
         'AUTH',
         'Phiên Làm Việc',
         `Nhân sự ${currentUser.full_name} (@${currentUser.username}) đã đăng xuất an toàn khỏi hệ thống`,
         currentUser,
-        { details: { status: 'success', ip_address: '192.168.1.45' } }
+        { details: { status: 'success', ip_address: clientIp || getClientIpAddress() } }
       );
       updateStore(prev => appendAuditLog(prev, logoutRecord));
     }
@@ -194,19 +202,17 @@ export default function App() {
     setCurrentUser(null);
     setIsAuthenticated(false);
 
-    // 3. Xóa sạch mọi key lưu trữ phiên đăng nhập cục bộ
+    // 3. Xóa sạch dữ liệu phiên đăng nhập cục bộ sau khi signOut()
     try {
-      localStorage.removeItem('royal_auth_user');
       localStorage.removeItem('royal_token');
       localStorage.removeItem('sb-access-token');
       localStorage.removeItem('sb-refresh-token');
-      localStorage.removeItem('royal_current_user');
-      localStorage.removeItem('royal_auth_session');
-      localStorage.setItem('royal_logged_out', 'true');
+      localStorage.removeItem('royal_school_supabase_auth');
       sessionStorage.clear();
     } catch {
       // noop
     }
+    clearActiveSessionUser();
 
     // 4. Mở modal đăng nhập bắt buộc và khóa màn hình Dashboard
     setIsLoginModalOpen(true);
@@ -223,8 +229,14 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [studentSearchFilter, setStudentSearchFilter] = useState<string>('');
 
-  // Selected class for attendance focus
-  const [focusedClass, setFocusedClass] = useState<ExtracurricularClass | null>(store.classes[0] || null);
+  // Selected class for attendance focus (do not auto-open store.classes[0] for teachers with multiple classes)
+  const [focusedClass, setFocusedClass] = useState<ExtracurricularClass | null>(() => {
+    const initialUser = getActiveSessionUser();
+    if (initialUser?.role === 'teacher') {
+      return null;
+    }
+    return store.classes[0] || null;
+  });
 
   // Modals
   const [isTeacherAppOpen, setIsTeacherAppOpen] = useState<boolean>(false);
@@ -233,6 +245,152 @@ export default function App() {
   const [currentParentStudent, setCurrentParentStudent] = useState<Student | null>(null);
   const [isNotificationOpen, setIsNotificationOpen] = useState<boolean>(false);
   const [printableDoc, setPrintableDoc] = useState<PrintDocumentType | null>(null);
+
+  // Change Password Modal State (cho người đang đăng nhập)
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
+  const [newPasswordInput, setNewPasswordInput] = useState<string>('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState<string>('');
+  const [changePasswordError, setChangePasswordError] = useState<string | null>(null);
+  const [isChangingPassword, setIsChangingPassword] = useState<boolean>(false);
+
+  // Khởi động app: dùng supabase.auth.getSession() và onAuthStateChange để khôi phục phiên, sau đó nạp lại profiles
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncSessionWithProfiles = async (
+      sessionUser: { id: string; email?: string; last_sign_in_at?: string } | null
+    ) => {
+      if (!isMounted) return;
+
+      if (sessionUser?.id) {
+        const { user: profileUser, status } = await fetchActiveProfileFromSupabase(
+          sessionUser.id,
+          sessionUser.email,
+          sessionUser.last_sign_in_at
+        );
+
+        if (!isMounted) return;
+
+        if (profileUser && status === 'active') {
+          if (isLegacyLoginEnabled()) {
+            saveActiveSessionUser(profileUser, true);
+          }
+          setCurrentUser(profileUser);
+          setIsAuthenticated(true);
+          setSelectedCampusId(normalizeCampusScope(profileUser.campus_id));
+          syncProfilesListForSuperAdmin(profileUser);
+        } else {
+          // Nếu tài khoản bị khóa hoặc không có profile active
+          try {
+            await supabase?.auth.signOut();
+          } catch {
+            // noop
+          }
+          if (!isLegacyLoginEnabled() || status === 'locked') {
+            clearActiveSessionUser();
+            setCurrentUser(null);
+            setIsAuthenticated(false);
+          }
+        }
+      } else {
+        // Không có phiên Supabase Auth: nếu VITE_LEGACY_LOGIN='false', từ chối mọi phiên chỉ dựa trên JSON trong localStorage
+        if (!isLegacyLoginEnabled()) {
+          clearActiveSessionUser();
+          setCurrentUser(null);
+          setIsAuthenticated(false);
+        }
+      }
+    };
+
+    if (supabase?.auth) {
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          syncSessionWithProfiles(data?.session?.user || null);
+        })
+        .catch(() => {
+          if (!isLegacyLoginEnabled() && isMounted) {
+            clearActiveSessionUser();
+            setCurrentUser(null);
+            setIsAuthenticated(false);
+          }
+        });
+
+      const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'SIGNED_OUT') {
+          clearActiveSessionUser();
+          if (isMounted) {
+            setCurrentUser(null);
+            setIsAuthenticated(false);
+          }
+          return;
+        }
+        if (
+          event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'USER_UPDATED' ||
+          event === 'INITIAL_SESSION'
+        ) {
+          syncSessionWithProfiles(session?.user || null);
+        }
+      });
+
+      return () => {
+        isMounted = false;
+        authListener?.subscription.unsubscribe();
+      };
+    } else if (!isLegacyLoginEnabled()) {
+      clearActiveSessionUser();
+      setCurrentUser(null);
+      setIsAuthenticated(false);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePasswordError(null);
+
+    const cleanNew = newPasswordInput.trim();
+    const cleanConfirm = confirmPasswordInput.trim();
+
+    if (cleanNew.length < 10) {
+      setChangePasswordError('Mật khẩu mới bắt buộc phải có tối thiểu 10 ký tự.');
+      return;
+    }
+
+    if (cleanNew !== cleanConfirm) {
+      setChangePasswordError('Mật khẩu xác nhận không khớp.');
+      return;
+    }
+
+    if (!supabase?.auth) {
+      setChangePasswordError('Không thể kết nối dịch vụ xác thực Supabase Auth.');
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: cleanNew });
+      if (error) {
+        setChangePasswordError(error.message || 'Không thể đổi mật khẩu. Vui lòng đăng nhập lại qua Supabase Auth.');
+        setIsChangingPassword(false);
+        return;
+      }
+
+      showToast('✓ Đổi mật khẩu thành công!', 'success');
+      setNewPasswordInput('');
+      setConfirmPasswordInput('');
+      setIsChangePasswordOpen(false);
+    } catch (err: any) {
+      setChangePasswordError(err?.message || 'Lỗi khi cập nhật mật khẩu.');
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
 
   // Standalone Parent Portal Page (?portal=parent, ?page=parent_portal or #parent_portal)
   const checkIsStandalonePortal = (): boolean => {
@@ -345,7 +503,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!currentUser || currentUser.is_root || currentUser.username === 'overadmin') return;
+    if (!currentUser) return;
     const latestInStore = store.users.find(
       u => u.id === currentUser.id || u.username.toLowerCase() === currentUser.username.toLowerCase()
     );
@@ -601,7 +759,6 @@ export default function App() {
           isOpen={isLoginModalOpen}
           onClose={() => setIsLoginModalOpen(false)}
           currentRole={currentRole}
-          onChangeRole={setCurrentRole}
           store={store}
           currentUser={currentUser}
           setCurrentUser={setCurrentUser}
@@ -623,8 +780,6 @@ export default function App() {
   }
 
   // 2. RÀNG BUỘC BẢO VỆ ROUTE (PROTECTED ROUTE): Nếu chưa đăng nhập (!currentUser hoặc !isAuthenticated)
-  // Tuyệt đối không render nội dung Dashboard ("Tổng Quan Hiệu Suất & Thống Kê")
-  // Luôn hiển thị màn hình Khóa hoặc Modal Đăng Nhập toàn màn hình (không thể tắt bằng nút X khi chưa có phiên đăng nhập hợp lệ).
   if (!currentUser || !isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col items-center justify-center font-sans tracking-[-0.011em] antialiased relative overflow-hidden select-none p-4">
@@ -638,7 +793,6 @@ export default function App() {
           forceUnclosable={true}
           onClose={() => {}}
           currentRole={currentRole}
-          onChangeRole={setCurrentRole}
           store={store}
           currentUser={null}
           setCurrentUser={setCurrentUser}
@@ -660,6 +814,8 @@ export default function App() {
     );
   }
 
+  const routeAllowed = isRouteAllowed(currentRoute, currentUser);
+
   // 3. ADMIN DASHBOARD: User is authenticated as staff
   return (
     <div className="min-h-screen bg-[#07090E] text-slate-100 flex flex-col font-sans tracking-[-0.011em] antialiased">
@@ -669,7 +825,6 @@ export default function App() {
         currentRoute={currentRoute}
         onNavigate={setCurrentRoute}
         currentRole={currentRole}
-        onChangeRole={setCurrentRole}
         onOpenTeacherApp={() => setIsTeacherAppOpen(true)}
         onOpenParentPortal={() => setIsParentPortalOpen(true)}
         onOpenLoginModal={() => setIsLoginModalOpen(true)}
@@ -678,6 +833,12 @@ export default function App() {
         onOpenNotifications={() => setIsNotificationOpen(true)}
         currentUser={currentUser}
         onLogout={handleLogout}
+        onOpenChangePassword={() => {
+          setNewPasswordInput('');
+          setConfirmPasswordInput('');
+          setChangePasswordError(null);
+          setIsChangePasswordOpen(true);
+        }}
         realtimeStatus={realtime.connectionState}
         onReconnectRealtime={realtime.reconnectNow}
         pendingRegistrationsCount={pendingRegistrationsCount}
@@ -697,73 +858,99 @@ export default function App() {
 
         {/* Content Display pushed higher up for maximum vertical density */}
         <div className="pt-1 transition-all duration-200">
-          {/* Nhóm 1: TỔNG QUAN & BÁO CÁO */}
-          {currentRoute === 'sub_kpi' && (
-            <OverviewKpiTab
-              store={store}
-              selectedCampusId={selectedCampusId}
-              selectedTermId={selectedTermId}
-              onNavigateTab={setCurrentRoute}
-              onIssueCreditForStudent={handleIssueCreditForStudent}
-            />
-          )}
+          {!routeAllowed ? (
+            <div className="rounded-3xl bg-[#111827]/90 border border-rose-500/30 p-10 text-center max-w-xl mx-auto my-8 space-y-4 shadow-2xl">
+              <div className="w-16 h-16 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto">
+                <ShieldAlert className="w-8 h-8" />
+              </div>
+              <div className="space-y-1.5">
+                <h2 className="text-lg font-extrabold text-white">Bạn không có quyền truy cập mục này</h2>
+                <p className="text-xs text-slate-400">
+                  Tài khoản <strong>{currentUser.full_name}</strong> (@{currentUser.username}) hiện không được phân quyền truy cập phân hệ này.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentRoute(getDefaultRouteForUser(currentUser))}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition-all shadow-lg shadow-amber-500/20"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Quay về trang mặc định của vai trò</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Nhóm 1: TỔNG QUAN & BÁO CÁO */}
+              {currentRoute === 'sub_kpi' && (
+                <OverviewKpiTab
+                  store={store}
+                  selectedCampusId={selectedCampusId}
+                  selectedTermId={selectedTermId}
+                  onNavigateTab={setCurrentRoute}
+                  onIssueCreditForStudent={handleIssueCreditForStudent}
+                />
+              )}
 
-          {/* Nhóm 2: HỌC VIÊN & TUYỂN SINH */}
-          {(currentRoute === 'sub_students' || currentRoute === 'sub_students_health') && (
-            <StudentsTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              onPrintStudentCard={handlePrintStudentCard}
-              focusHealth={currentRoute === 'sub_students_health'}
-              initialSearch={studentSearchFilter}
-            />
-          )}
+              {/* Nhóm 2: HỌC VIÊN & TUYỂN SINH */}
+              {(currentRoute === 'sub_students' || currentRoute === 'sub_students_health') && (
+                <StudentsTab
+                  store={store}
+                  currentRole={currentRole}
+                  onUpdateStore={updateStore}
+                  onPrintStudentCard={handlePrintStudentCard}
+                  focusHealth={currentRoute === 'sub_students_health'}
+                  initialSearch={studentSearchFilter}
+                />
+              )}
 
-          {currentRoute === 'sub_parents' && (
-            <ParentPortalTab
-              store={store}
-              currentRole={currentRole}
-              currentUser={currentUser}
-              onUpdateStore={updateStore}
-              onOpenParentPortal={() => setIsParentPortalOpen(true)}
-              onNavigateToStudents={(studentCode) => {
-                setStudentSearchFilter(studentCode || '');
-                setCurrentRoute('sub_students');
-              }}
-            />
-          )}
+              {currentRoute === 'sub_parents' && (
+                <ParentPortalTab
+                  store={store}
+                  currentRole={currentRole}
+                  currentUser={currentUser}
+                  onUpdateStore={updateStore}
+                  onOpenParentPortal={() => setIsParentPortalOpen(true)}
+                  onNavigateToStudents={(studentCode) => {
+                    setStudentSearchFilter(studentCode || '');
+                    setCurrentRoute('sub_students');
+                  }}
+                />
+              )}
 
-          {currentRoute === 'sub_credits' && (
-            <MakeupCreditsTab
-              store={store}
-              currentRole={currentRole}
-              currentUser={currentUser}
-              onUpdateStore={updateStore}
-              onPrintCreditSlip={handlePrintCreditSlip}
-            />
-          )}
+              {currentRoute === 'sub_credits' && (
+                <MakeupCreditsTab
+                  store={store}
+                  currentRole={currentRole}
+                  currentUser={currentUser}
+                  onUpdateStore={updateStore}
+                  onPrintCreditSlip={handlePrintCreditSlip}
+                />
+              )}
 
-          {/* Nhóm 3: ĐÀO TẠO & VẬN HÀNH */}
-          {currentRoute === 'sub_term_subjects' && (
-            <SettingsDataTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              initialSection="pricing"
-              initialSubTab="subjects"
-            />
-          )}
+              {/* Nhóm 3: ĐÀO TẠO & VẬN HÀNH */}
+              {currentRoute === 'sub_term_subjects' && (
+                <SettingsDataTab
+                  store={store}
+                  currentRole={currentRole}
+                  currentUser={currentUser}
+                  onUpdateStore={updateStore}
+                  initialSection="pricing"
+                  initialSubTab="subjects"
+                />
+              )}
 
-          {currentRoute === 'sub_pricing' && (
-            <SettingsDataTab
-              store={store}
-              currentRole={currentRole}
-              onUpdateStore={updateStore}
-              initialSection="pricing"
-              initialSubTab="matrix"
-            />
-          )}
+              {currentRoute === 'sub_pricing' && (
+                <SettingsDataTab
+                  store={store}
+                  currentRole={currentRole}
+                  currentUser={currentUser}
+                  onUpdateStore={updateStore}
+                  initialSection="pricing"
+                  initialSubTab="matrix"
+                />
+              )}
 
           {currentRoute === 'sub_schedule' && (
             <ScheduleCalendarView
@@ -913,6 +1100,8 @@ export default function App() {
               initialSection="backup"
             />
           )}
+            </>
+          )}
         </div>
 
       </main>
@@ -983,7 +1172,6 @@ export default function App() {
         isOpen={isLoginModalOpen}
         onClose={() => setIsLoginModalOpen(false)}
         currentRole={currentRole}
-        onChangeRole={setCurrentRole}
         store={store}
         currentUser={currentUser}
         setCurrentUser={setCurrentUser}
@@ -999,6 +1187,102 @@ export default function App() {
           setIsParentPortalOpen(true);
         }}
       />
+
+      {/* Modal Đổi mật khẩu cho người đang đăng nhập */}
+      {isChangePasswordOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-md rounded-3xl bg-[#0B0F19] border border-slate-800 shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-white">Đổi Mật Khẩu Tài Khoản</h3>
+                  <p className="text-[11px] text-slate-400">
+                    Tài khoản: <strong className="text-amber-300 font-mono">@{currentUser?.username}</strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsChangePasswordOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleChangePasswordSubmit} className="p-6 space-y-4 text-xs">
+              {changePasswordError && (
+                <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 font-semibold">
+                  {changePasswordError}
+                </div>
+              )}
+
+              <div>
+                <label className="block font-bold text-slate-300 mb-1.5">
+                  Mật khẩu mới (tối thiểu 10 ký tự) *
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={10}
+                  value={newPasswordInput}
+                  onChange={e => {
+                    setNewPasswordInput(e.target.value);
+                    setChangePasswordError(null);
+                  }}
+                  placeholder="Nhập mật khẩu mới (>= 10 ký tự)"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-300 mb-1.5">
+                  Xác nhận mật khẩu mới *
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={10}
+                  value={confirmPasswordInput}
+                  onChange={e => {
+                    setConfirmPasswordInput(e.target.value);
+                    setChangePasswordError(null);
+                  }}
+                  placeholder="Nhập lại mật khẩu mới"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsChangePasswordOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
+                >
+                  Hủy bỏ
+                </button>
+                <button
+                  type="submit"
+                  disabled={isChangingPassword}
+                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold flex items-center gap-1.5"
+                >
+                  {isChangingPassword ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Đang cập nhật...</span>
+                    </>
+                  ) : (
+                    <span>Cập Nhật Mật Khẩu</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Global Bottom-Right Floating Toast Notifications */}
       <ToastContainer />
