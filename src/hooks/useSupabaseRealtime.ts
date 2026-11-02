@@ -5,6 +5,7 @@ import {
   getSupabaseClient,
   getResolvedSupabaseConfig,
   isValidSupabaseAnonJwt,
+  isLegacyLoginEnabled,
 } from '../supabaseClient';
 import {
   mapSupabaseRowToStoreEntity,
@@ -221,26 +222,31 @@ export function useSupabaseRealtime({
       }
 
       const { table, eventType, new: newRecordRaw, old: oldRecordRaw } = payload;
+      if (table === 'app_users' && !isLegacyLoginEnabled()) {
+        return;
+      }
+
       const storeKey = SUPABASE_TABLE_TO_STORE_KEY[table];
       if (!storeKey) return;
 
+      const mapperTable = table === 'app_users' ? 'profiles' : table;
       const mappedNew =
-        eventType !== 'DELETE' ? mapSupabaseRowToStoreEntity(table, newRecordRaw) : null;
+        eventType !== 'DELETE' ? mapSupabaseRowToStoreEntity(mapperTable, newRecordRaw) : null;
       const oldId = oldRecordRaw?.id ? String(oldRecordRaw.id) : null;
 
       setLastEventAt(new Date().toISOString());
       setEventCount(c => c + 1);
       setLastEventSummary(`${eventType} on ${table}`);
 
-      // Kiểm tra bảo mật tức thì nếu bảng app_users bị khóa hoặc xóa tài khoản đang đăng nhập
-      if (table === 'app_users' && currentUserRef.current) {
+      // Kiểm tra bảo mật tức thì nếu bảng profiles (hoặc app_users khi bật legacy) bị khóa hoặc xóa tài khoản đang đăng nhập
+      if ((table === 'profiles' || (isLegacyLoginEnabled() && table === 'app_users')) && currentUserRef.current) {
         const activeUid = currentUserRef.current.id;
         const activeUsername = currentUserRef.current.username;
         if (
           eventType === 'UPDATE' &&
           mappedNew &&
           (mappedNew.id === activeUid || mappedNew.username === activeUsername) &&
-          mappedNew.status === 'locked'
+          (mappedNew.status === 'locked' || mappedNew.status === 'inactive')
         ) {
           callbacksRef.current.onCurrentUserLocked?.(mappedNew as AppUser);
         } else if (eventType === 'DELETE' && oldId && oldId === activeUid) {
@@ -355,6 +361,7 @@ export function useSupabaseRealtime({
           } else if (res.loadedFromCloud && res.totalRecordsLoaded > 0) {
             setIsOffline(false);
             setIsSupabaseCloudActive(true);
+            isApplyingRemoteUpdateRef.current = true;
             const recomputed = recomputeDerivedRealtimeState(res.store);
             prevStoreRef.current = recomputed;
             setStore(recomputed);
@@ -379,6 +386,7 @@ export function useSupabaseRealtime({
     }
 
     if (isApplyingRemoteUpdateRef.current) {
+      isApplyingRemoteUpdateRef.current = false;
       prevStoreRef.current = store;
       return;
     }
@@ -491,22 +499,30 @@ export function useSupabaseRealtime({
 
     let isUnmounted = false;
 
-    const channel = supabase
-      .channel('royal_system_changes')
-      .on(
+    // Khi VITE_LEGACY_LOGIN='false', không subscribe realtime bảng app_users
+    const allowedRealtimeTables = Object.keys(SUPABASE_TABLE_TO_STORE_KEY).filter(
+      tbl => isLegacyLoginEnabled() || tbl !== 'app_users'
+    );
+
+    let channel = supabase.channel('royal_system_changes');
+    for (const table of allowedRealtimeTables) {
+      channel = channel.on(
         'postgres_changes',
-        { event: '*', schema: 'public' },
+        { event: '*', schema: 'public', table },
         (payload: any) => {
           if (isUnmounted) return;
+          if (payload.table === 'app_users' && !isLegacyLoginEnabled()) return;
           handleRealtimePayload({
-            table: payload.table,
+            table: payload.table || table,
             eventType: payload.eventType,
             new: payload.new,
             old: payload.old,
           });
         }
-      )
-      .subscribe((status: string) => {
+      );
+    }
+
+    channel.subscribe((status: string) => {
         if (isUnmounted) return;
 
         if (status === 'SUBSCRIBED') {

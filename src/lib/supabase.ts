@@ -1557,22 +1557,6 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         note: cr.note || '',
       }));
 
-    case 'app_users':
-      return (store.users || []).map(u => ({
-        id: u.id,
-        username: u.username,
-        email: u.email || `${u.username}@royal.edu.vn`,
-        full_name: u.full_name,
-        phone: u.phone || '',
-        role: u.role || 'academic',
-        department: u.department || '',
-        campus_id: u.campus_id || 'all',
-        status: u.status || 'active',
-        permissions: u.permissions || {},
-        linked_teacher_id: u.linked_teacher_id || u.teacher_id || null,
-        last_login: u.last_login || null,
-      }));
-
     case 'parent_registrations':
       return (store.parentRegistrations || []).map(r => ({
         id: r.id,
@@ -1650,6 +1634,98 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
   }
 }
 
+const SYNC_4XX_CACHE_KEY = 'royal_supabase_sync_4xx_halted_v1';
+const memory4xxHaltedMap = new Map<string, string>();
+const logged4xxConsoleSet = new Set<string>();
+
+function loadHalted4xxMap(): Record<string, string> {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SYNC_4XX_CACHE_KEY) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+export function getHalted4xxSignature(table: string): string | null {
+  if (memory4xxHaltedMap.has(table)) {
+    return memory4xxHaltedMap.get(table) || null;
+  }
+  const persisted = loadHalted4xxMap();
+  if (persisted[table]) {
+    memory4xxHaltedMap.set(table, persisted[table]);
+    return persisted[table];
+  }
+  return null;
+}
+
+export function setHalted4xxSignature(table: string, signature: string): void {
+  memory4xxHaltedMap.set(table, signature);
+  try {
+    const current = loadHalted4xxMap();
+    current[table] = signature;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SYNC_4XX_CACHE_KEY, JSON.stringify(current));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function clearHalted4xxSignature(table: string): void {
+  memory4xxHaltedMap.delete(table);
+  try {
+    const current = loadHalted4xxMap();
+    if (table in current) {
+      delete current[table];
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(SYNC_4XX_CACHE_KEY, JSON.stringify(current));
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function isSupabase4xxError(error: any, status?: number): boolean {
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    return true;
+  }
+  if (!error) return false;
+  const errStatus = Number(error.status || error.statusCode || 0);
+  if (errStatus >= 400 && errStatus < 500) {
+    return true;
+  }
+  const code = String(error.code || '').trim().toUpperCase();
+  if (
+    code.startsWith('PGRST') ||
+    code.startsWith('42') ||
+    code.startsWith('23') ||
+    code.startsWith('22') ||
+    code.startsWith('28') ||
+    code === '400' ||
+    code === '401' ||
+    code === '403' ||
+    code === '404' ||
+    code === '409' ||
+    code === '422'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function log4xxSyncStoppedOnce(table: string, signature: string, reason: string): void {
+  const key = `${table}:${signature}`;
+  if (logged4xxConsoleSet.has(key)) return;
+  logged4xxConsoleSet.add(key);
+  console.warn(`[SupabaseSync] Bảng ${table} gặp lỗi 4xx (${reason}) — dừng thử lại cho đến khi dữ liệu thay đổi.`);
+}
+
 /**
  * Đẩy (Push/Upsert) 1 bảng dữ liệu cụ thể từ Local Store lên Supabase
  */
@@ -1660,6 +1736,14 @@ export async function pushSingleTableToSupabase(
   anonKeyInput?: string
 ): Promise<{ success: boolean; count: number; message: string }> {
   const safeTableName = sanitizeSupabaseTableName(tableName);
+  if (safeTableName === 'app_users' || safeTableName === 'profiles') {
+    return {
+      success: true,
+      count: 0,
+      message: `Bảng ${safeTableName} không được ghi từ bộ đồng bộ chung.`,
+    };
+  }
+
   const client = createSupabaseClientInstance(urlInput, anonKeyInput);
   if (!client) {
     return { success: false, count: 0, message: 'Chưa kết nối Supabase.' };
@@ -1670,16 +1754,35 @@ export async function pushSingleTableToSupabase(
     return { success: true, count: 0, message: `Bảng ${safeTableName} hiện đang trống (0 bản ghi).` };
   }
 
+  const signature = JSON.stringify(rows);
+  const haltedSig = getHalted4xxSignature(safeTableName);
+  if (haltedSig && haltedSig === signature) {
+    log4xxSyncStoppedOnce(safeTableName, signature, 'đã ghi nhận lỗi 4xx trước đó');
+    return {
+      success: false,
+      count: 0,
+      message: `Bảng ${safeTableName} đang tạm dừng đồng bộ do lỗi 4xx (chờ dữ liệu thay đổi).`,
+    };
+  }
+  if (haltedSig && haltedSig !== signature) {
+    clearHalted4xxSignature(safeTableName);
+  }
+
   try {
     const conflictTarget = safeTableName === 'enrollments' ? 'student_id,class_id' : 'id';
-    const { error } = await client.from(safeTableName).upsert(rows, { onConflict: conflictTarget });
+    const { error, status } = await client.from(safeTableName).upsert(rows, { onConflict: conflictTarget });
     if (error) {
+      if (isSupabase4xxError(error, status)) {
+        setHalted4xxSignature(safeTableName, signature);
+        log4xxSyncStoppedOnce(safeTableName, signature, `${error.code || status || '4xx'}: ${error.message}`);
+      }
       return {
         success: false,
         count: 0,
         message: `Lỗi đẩy bảng ${safeTableName}: ${error.message}`,
       };
     }
+    clearHalted4xxSignature(safeTableName);
     return {
       success: true,
       count: rows.length,
@@ -1921,7 +2024,7 @@ export async function pullAllTablesFromSupabase(
     }
   }
 
-  // Pull credit_notes, app_users & parent_registrations if available
+  // Pull credit_notes, profiles (hoặc app_users khi bật legacy) & parent_registrations
   try {
     const { data: creditsData } = await client.from('credit_notes').select('*');
     if (Array.isArray(creditsData) && creditsData.length > 0) {
@@ -1952,11 +2055,15 @@ export async function pullAllTablesFromSupabase(
     // ignore
   }
 
+  // Khi VITE_LEGACY_LOGIN='false', bỏ việc kéo bảng phụ và chỉ lấy danh sách người dùng từ profiles
   try {
-    const { data: usersData } = await client.from('app_users').select('*');
+    const userSourceTable = isLegacyLoginEnabled() ? 'app_users' : 'profiles';
+    const { data: usersData } = await client.from(userSourceTable).select('*');
     if (Array.isArray(usersData) && usersData.length > 0) {
-      nextStore.users = usersData.map((r: any) => mapSupabaseRowToStoreEntity('app_users', r));
+      nextStore.users = usersData.map((r: any) => mapSupabaseRowToStoreEntity('profiles', r));
       totalPulled += usersData.length;
+    } else if (!isLegacyLoginEnabled()) {
+      nextStore.users = [];
     }
   } catch {
     // ignore
@@ -2032,8 +2139,8 @@ export async function pushAllTablesToSupabase(
     }
   }
 
-  // Push subject_categories, time_slots, credit_notes, app_users, parent_registrations as well
-  for (const extraTable of ['subject_categories', 'time_slots', 'credit_notes', 'app_users', 'parent_registrations']) {
+  // Push subject_categories, time_slots, credit_notes, parent_registrations as well
+  for (const extraTable of ['subject_categories', 'time_slots', 'credit_notes', 'parent_registrations']) {
     const extraRes = await pushSingleTableToSupabase(extraTable, store, urlInput, anonKeyInput);
     if (extraRes.success) totalSynced += extraRes.count;
   }
@@ -2059,7 +2166,8 @@ export async function pushAllTablesToSupabase(
  * Ánh xạ tên bảng Supabase sang khóa tương ứng trong AppStore
  */
 export const SUPABASE_TABLE_TO_STORE_KEY: Record<string, keyof AppStore> = {
-  app_users: 'users',
+  ...(isLegacyLoginEnabled() ? { app_users: 'users' as keyof AppStore } : {}),
+  profiles: 'users',
   campuses: 'campuses',
   academic_terms: 'terms',
   subject_categories: 'subjectCategories',
@@ -2085,21 +2193,17 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
   const cleanTable = sanitizeSupabaseTableName(tableName);
 
   switch (cleanTable) {
-    case 'app_users': {
-      const rawPass = String(r.password_hash || r.password || '').trim();
-      if (rawPass && r.username) {
-        cacheOfflinePassword(r.username, r.email, rawPass);
-      }
+    case 'profiles': {
       return {
         id: r.id,
         username: r.username || '',
-        email: r.email || '',
+        email: r.email || (r.username ? `${r.username}@royal.edu.vn` : ''),
         full_name: r.full_name || r.name || r.username || '',
         phone: r.phone || '',
         role: r.role || 'academic',
         department: r.department || '',
         campus_id: r.campus_id || 'all',
-        status: r.status === 'locked' ? 'locked' : 'active',
+        status: r.status === 'locked' || r.status === 'inactive' ? 'locked' : 'active',
         permissions: r.permissions || undefined,
         linked_teacher_id: r.linked_teacher_id || r.teacher_id || undefined,
         last_login: r.last_login || undefined,
@@ -2434,7 +2538,6 @@ export async function syncStoreDeltaToSupabase(
   const nowIso = new Date().toISOString();
 
   const tablesToWatch: Array<{ table: string; storeKey: keyof AppStore }> = [
-    { table: 'app_users', storeKey: 'users' },
     { table: 'campuses', storeKey: 'campuses' },
     { table: 'academic_terms', storeKey: 'terms' },
     { table: 'subject_categories', storeKey: 'subjectCategories' },
@@ -2458,9 +2561,20 @@ export async function syncStoreDeltaToSupabase(
   );
 
   for (const { table, storeKey } of tablesToWatch) {
+    if (table === 'app_users' || table === 'profiles') continue;
+
     const prevList = ((prevStore[storeKey] as any[]) || []);
     const nextList = ((nextStore[storeKey] as any[]) || []);
     if (prevList === nextList) continue;
+
+    // So sánh trên dữ liệu đã serialize chuẩn DB để tránh các trường tính toán tạm thời trên UI gây đồng bộ thừa
+    const prevSerialized = serializeTableRowsForSupabase(table, prevStore);
+    const nextSerialized = serializeTableRowsForSupabase(table, nextStore);
+
+    const prevSerializedMap = new Map<string, any>();
+    for (const row of prevSerialized) {
+      if (row && row.id) prevSerializedMap.set(String(row.id), row);
+    }
 
     const prevMap = new Map<string, any>();
     for (const item of prevList) {
@@ -2474,9 +2588,23 @@ export async function syncStoreDeltaToSupabase(
       if (!item || !item.id) continue;
       const id = String(item.id);
       nextMap.set(id, item);
+    }
 
-      const oldItem = prevMap.get(id);
-      if (!oldItem) {
+    for (const row of nextSerialized) {
+      if (!row || !row.id) continue;
+      const id = String(row.id);
+      const oldRow = prevSerializedMap.get(id);
+      const item = nextMap.get(id) || row;
+      const oldItem = prevMap.get(id) || oldRow;
+
+      const stripVolatile = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return obj;
+        const copy = { ...obj };
+        delete copy.updated_at;
+        return copy;
+      };
+
+      if (!oldRow) {
         toUpsertIds.add(id);
         events.push({
           table,
@@ -2486,7 +2614,7 @@ export async function syncStoreDeltaToSupabase(
           commit_timestamp: nowIso,
           originClientId,
         });
-      } else if (oldItem !== item && JSON.stringify(oldItem) !== JSON.stringify(item)) {
+      } else if (JSON.stringify(stripVolatile(oldRow)) !== JSON.stringify(stripVolatile(row))) {
         toUpsertIds.add(id);
         events.push({
           table,
@@ -2514,10 +2642,26 @@ export async function syncStoreDeltaToSupabase(
       }
     }
 
-    if (client) {
+    if (client && (toUpsertIds.size > 0 || toDeleteIds.length > 0)) {
+      const stripVolatile = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return obj;
+        const copy = { ...obj };
+        delete copy.updated_at;
+        return copy;
+      };
+      const tableSignature = JSON.stringify(nextSerialized.map(stripVolatile));
+      const haltedSig = getHalted4xxSignature(table);
+
+      if (haltedSig && haltedSig === tableSignature) {
+        log4xxSyncStoppedOnce(table, tableSignature, 'đã ghi nhận lỗi 4xx trước đó');
+        continue;
+      }
+      if (haltedSig && haltedSig !== tableSignature) {
+        clearHalted4xxSignature(table);
+      }
+
       if (toUpsertIds.size > 0) {
-        const serializedAll = serializeTableRowsForSupabase(table, nextStore);
-        const rowsToUpsert = serializedAll.filter(r => toUpsertIds.has(String(r.id)));
+        const rowsToUpsert = nextSerialized.filter(r => toUpsertIds.has(String(r.id)));
         if (rowsToUpsert.length > 0) {
           emitSupabaseSyncStatus('syncing', `Đang đồng bộ bảng ${table}...`);
           const conflictTarget = table === 'enrollments' ? 'student_id,class_id' : 'id';
@@ -2526,10 +2670,15 @@ export async function syncStoreDeltaToSupabase(
               .from(table)
               .upsert(rowsToUpsert, { onConflict: conflictTarget })
           )
-            .then(({ error }) => {
+            .then(({ error, status }) => {
               if (error) {
+                if (isSupabase4xxError(error, status)) {
+                  setHalted4xxSignature(table, tableSignature);
+                  log4xxSyncStoppedOnce(table, tableSignature, `${error.code || status || '4xx'}: ${error.message}`);
+                }
                 emitSupabaseSyncStatus('error', error.message);
               } else {
+                clearHalted4xxSignature(table);
                 emitSupabaseSyncStatus('synced', `Đã đồng bộ bảng ${table}`);
               }
             })
@@ -2547,10 +2696,15 @@ export async function syncStoreDeltaToSupabase(
             .delete()
             .in('id', toDeleteIds)
         )
-          .then(({ error }) => {
+          .then(({ error, status }) => {
             if (error) {
+              if (isSupabase4xxError(error, status)) {
+                setHalted4xxSignature(table, tableSignature);
+                log4xxSyncStoppedOnce(table, tableSignature, `${error.code || status || '4xx'}: ${error.message}`);
+              }
               emitSupabaseSyncStatus('error', error.message);
             } else {
+              clearHalted4xxSignature(table);
               emitSupabaseSyncStatus('synced', `Đã cập nhật bảng ${table}`);
             }
           })

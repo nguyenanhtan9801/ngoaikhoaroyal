@@ -629,11 +629,16 @@ export function loadStore(): AppStore {
       discount_value: cp.discount_value || 0,
     }));
 
-    // Đảm bảo tài khoản Quản trị viên tối thiểu tồn tại để đăng nhập (không lưu password/password_hash ở client)
-    const rawUsers: AppUser[] =
-      Array.isArray(parsed.users) && parsed.users.length > 0 ? [...parsed.users] : [...initial.users];
+    // Đảm bảo tài khoản Quản trị viên tối thiểu tồn tại khi bật legacy; khi VITE_LEGACY_LOGIN='false' chỉ dùng danh sách từ profiles
+    const rawUsers: AppUser[] = isLegacyLoginEnabled()
+      ? Array.isArray(parsed.users) && parsed.users.length > 0
+        ? [...parsed.users]
+        : [...initial.users]
+      : Array.isArray(parsed.users)
+      ? [...parsed.users]
+      : [];
     const users: AppUser[] = rawUsers.map(u => {
-      if (u.password_hash || u.password) {
+      if (isLegacyLoginEnabled() && (u.password_hash || u.password)) {
         cacheOfflinePassword(u.username, u.email, String(u.password_hash || u.password));
       }
       return sanitizeUserForClient({
@@ -2647,6 +2652,7 @@ export async function fetchAllProfilesFromSupabase(): Promise<AppUser[]> {
  * mọi thao tác thêm/sửa/khóa/xóa trên `profiles` phải đi qua các endpoint `/api/admin/*` ở phía server.
  */
 export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'delete' = 'upsert'): Promise<void> {
+  if (!isLegacyLoginEnabled()) return;
   const supabase = getConfiguredSupabaseClient();
   if (!supabase) return;
   try {

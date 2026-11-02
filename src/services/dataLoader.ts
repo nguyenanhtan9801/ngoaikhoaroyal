@@ -6,6 +6,7 @@ import {
   sanitizeSupabaseBaseUrl,
   sanitizeSupabaseTableName,
   supabase,
+  isLegacyLoginEnabled,
 } from '../supabaseClient';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
@@ -75,7 +76,7 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     fetchTable('enrollments'),
     fetchTable('attendance_records'),
     fetchTable('tuition_invoices'),
-    fetchTable('app_users'),
+    fetchTable(isLegacyLoginEnabled() ? 'app_users' : 'profiles'),
     fetchTable('parent_registrations'),
     fetchTable('subject_categories'),
     fetchTable('time_slots'),
@@ -190,14 +191,14 @@ export async function loadInitialDataSafely(
     const nextStore: AppStore = { ...fallbackStore };
     let totalRecordsLoaded = 0;
 
-    // Danh sách toàn bộ các bảng cần nạp từ Supabase
+    // Danh sách toàn bộ các bảng cần nạp từ Supabase (khi VITE_LEGACY_LOGIN='false', chỉ lấy người dùng từ profiles)
     const allTableDefinitions: Array<{ tableName: string; storeKey: keyof AppStore }> = [
       ...ROYAL_STANDARDIZED_10_TABLES.map(t => ({
         tableName: sanitizeSupabaseTableName(t.tableName),
         storeKey: t.storeKey,
       })),
       { tableName: 'credit_notes', storeKey: 'makeupCredits' },
-      { tableName: 'app_users', storeKey: 'users' },
+      { tableName: isLegacyLoginEnabled() ? 'app_users' : 'profiles', storeKey: 'users' },
       { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
       { tableName: 'subject_categories', storeKey: 'subjectCategories' },
       { tableName: 'time_slots', storeKey: 'timeSlots' },
@@ -229,13 +230,16 @@ export async function loadInitialDataSafely(
     settledResults.forEach(res => {
       if (res.status === 'fulfilled' && res.value && res.value.success) {
         const { tableName, storeKey, data } = res.value;
+        const mapperKey = tableName === 'app_users' ? 'profiles' : tableName;
         const mappedRows = data
-          .map(row => mapSupabaseRowToStoreEntity(tableName, row))
+          .map(row => mapSupabaseRowToStoreEntity(mapperKey, row))
           .filter(Boolean);
 
         if (mappedRows.length > 0) {
           (nextStore as any)[storeKey] = mappedRows;
           totalRecordsLoaded += mappedRows.length;
+        } else if (storeKey === 'users' && !isLegacyLoginEnabled()) {
+          nextStore.users = [];
         } else if (Array.isArray((fallbackStore as any)[storeKey]) && (fallbackStore as any)[storeKey].length > 0) {
           (nextStore as any)[storeKey] = (fallbackStore as any)[storeKey];
         }

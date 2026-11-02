@@ -121,6 +121,15 @@ export default function App() {
     if (profilesList.length === 0) return;
 
     setStore(prev => {
+      if (!isLegacyLoginEnabled()) {
+        const next = {
+          ...prev,
+          users: profilesList,
+        };
+        saveStore(next);
+        return next;
+      }
+
       const mergedMap = new Map<string, AppUser>();
       for (const existing of prev.users || []) {
         mergedMap.set(existing.username.toLowerCase(), existing);
