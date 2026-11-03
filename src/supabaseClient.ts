@@ -2,7 +2,7 @@ import { createClient, SupabaseClient, SupportedStorage } from '@supabase/supaba
 
 export const SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
 export const SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI0Nzg3MDQsImV4cCI6MjEwODA1NDcwNH0.fACSgo3mpzdBS-of_fFkMF14NYL3J3P_5WM2k6FtEcA';
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRldXV6cmpwZmNhYmZjbHdhcXBoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM2NDg3NzIsImV4cCI6MjEwOTIyNDc3Mn0.s6HjYT0Zd3mZueH-OP2UHQhp_sMy-X8qH3bgp8PuOT8';
 
 export const DEFAULT_SUPABASE_URL = SUPABASE_URL;
 export const DEFAULT_SUPABASE_ANON_KEY = SUPABASE_ANON_KEY;
