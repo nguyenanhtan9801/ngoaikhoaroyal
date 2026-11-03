@@ -78,16 +78,57 @@ interface WeekOption {
   isCurrent: boolean;
 }
 
+// 1. Quy ước độ lệch ngày tính từ Thứ Hai (Thứ 2 = +0 ngày, Thứ 3 = +1 ngày, ..., CN = +6 ngày)
+const DAY_OFFSETS: Record<string, number> = {
+  'T2': 0,
+  'T3': 1,
+  'T4': 2,
+  'T5': 3,
+  'T6': 4,
+  'T7': 5,
+  'CN': 6,
+};
+
+// 2. Hàm tính ngày chuẩn xác theo mã thứ trong tuần
+export function getDateStringForWeekday(
+  weekStartDateStr: string,
+  dayCode: string
+): { displayDate: string; isoDate: string } {
+  if (!weekStartDateStr) return { displayDate: '', isoDate: '' };
+
+  // Tách trực tiếp YYYY-MM-DD để tránh lỗi lệch timezone của new Date(isoString)
+  const cleanStr = weekStartDateStr.split('T')[0];
+  const [year, month, day] = cleanStr.split('-').map(Number);
+
+  // Khởi tạo ngày theo giờ địa phương (Local Time)
+  const baseMonday = new Date(year, month - 1, day, 12, 0, 0); // Đặt mốc 12h trưa để không bao giờ bị nhảy ngày do timezone
+  const offset = DAY_OFFSETS[dayCode] ?? 0;
+
+  const targetDate = new Date(baseMonday);
+  targetDate.setDate(baseMonday.getDate() + offset);
+
+  const y = targetDate.getFullYear();
+  const m = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const d = String(targetDate.getDate()).padStart(2, '0');
+
+  return {
+    displayDate: `${d}/${m}/${y}`,   // Định dạng DD/MM/YYYY hiển thị lên nút
+    isoDate: `${y}-${m}-${d}`,       // Định dạng YYYY-MM-DD dùng để lưu database / so khớp điểm danh
+  };
+}
+
 const buildTermWeeks = (termStartDateStr?: string, totalWeeks = 16): WeekOption[] => {
   const weeks: WeekOption[] = [];
-  const baseDateStr = termStartDateStr || '2026-08-31';
-  const baseMonday = new Date(`${baseDateStr}T00:00:00`);
+  const baseDateStr = (termStartDateStr || '2026-08-31').split('T')[0];
+  const [bYear, bMonth, bDay] = baseDateStr.split('-').map(Number);
+  const baseMonday = new Date(bYear || 2026, (bMonth || 8) - 1, bDay || 31, 12, 0, 0);
   // Align to Monday if start_date isn't Monday
   const dayOfWeek = baseMonday.getDay(); // 0=Sun, 1=Mon
   const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
   baseMonday.setDate(baseMonday.getDate() + diffToMonday);
 
-  const today = new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
   for (let i = 1; i <= totalWeeks; i++) {
     const monday = new Date(baseMonday);
@@ -95,11 +136,18 @@ const buildTermWeeks = (termStartDateStr?: string, totalWeeks = 16): WeekOption[
     const sunday = new Date(monday);
     sunday.setDate(sunday.getDate() + 6);
 
-    const startStr = monday.toISOString().split('T')[0];
-    const endStr = sunday.toISOString().split('T')[0];
+    const mY = monday.getFullYear();
+    const mM = String(monday.getMonth() + 1).padStart(2, '0');
+    const mD = String(monday.getDate()).padStart(2, '0');
+    const startStr = `${mY}-${mM}-${mD}`;
 
-    const startFormatted = `${String(monday.getDate()).padStart(2, '0')}/${String(monday.getMonth() + 1).padStart(2, '0')}`;
-    const endFormatted = `${String(sunday.getDate()).padStart(2, '0')}/${String(sunday.getMonth() + 1).padStart(2, '0')}/${sunday.getFullYear()}`;
+    const sY = sunday.getFullYear();
+    const sM = String(sunday.getMonth() + 1).padStart(2, '0');
+    const sD = String(sunday.getDate()).padStart(2, '0');
+    const endStr = `${sY}-${sM}-${sD}`;
+
+    const startFormatted = `${mD}/${mM}`;
+    const endFormatted = `${sD}/${sM}/${sY}`;
 
     const isCurrent = today >= startStr && today <= endStr;
 
@@ -277,8 +325,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       : (timeSlot?.days_of_week || ['T2', 'T4']);
   }, [currentClass, timeSlot]);
 
-  // Current real-world date
-  const today = useMemo(() => new Date().toISOString().split('T')[0], []);
+  // Current real-world date (Local Time YYYY-MM-DD)
+  const today = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }, []);
 
   // Selected week (Default: current week or week 8 for active term, week 1 for other terms)
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(() => {
@@ -301,21 +352,18 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Calculate actual valid dates for the selected week based on class scheduled days
   const scheduledSessionsForWeek = useMemo(() => {
-    const monday = new Date(`${currentWeek.startDate}T00:00:00`);
+    const weekStartDateStr = currentWeek?.startDate || '';
     return classDays.map(dayCode => {
       const config = DAY_OFFSET_MAP[dayCode] || { offset: 0, name: dayCode };
-      const dateObj = new Date(monday);
-      dateObj.setDate(dateObj.getDate() + config.offset);
-      const dateStr = dateObj.toISOString().split('T')[0];
-      const formatted = `${String(dateObj.getDate()).padStart(2, '0')}/${String(dateObj.getMonth() + 1).padStart(2, '0')}/${dateObj.getFullYear()}`;
-      const isFuture = dateStr > today;
-      const isToday = dateStr === today;
+      const { displayDate, isoDate } = getDateStringForWeekday(weekStartDateStr, dayCode);
+      const isFuture = isoDate > today;
+      const isToday = isoDate === today;
 
       return {
         dayCode,
         dayName: config.name,
-        dateStr,
-        formatted,
+        dateStr: isoDate,
+        formatted: displayDate,
         isFuture,
         isToday,
       };
