@@ -244,10 +244,14 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   // Tự động đồng bộ số buổi còn lại khi chuyển lớp hoặc đổi học sinh
   useEffect(() => {
     if (autoRemainingInfo.remaining > 0) {
-      setTransferState(prev => ({
-        ...prev,
-        remaining_sessions: autoRemainingInfo.remaining,
-      }));
+      setTransferState(prev =>
+        prev.remaining_sessions === autoRemainingInfo.remaining
+          ? prev
+          : {
+              ...prev,
+              remaining_sessions: autoRemainingInfo.remaining,
+            }
+      );
     }
   }, [autoRemainingInfo.remaining, transferState.from_class_id, transferState.student_id]);
 
@@ -257,19 +261,27 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       const isCurrentValid = currentStudentClasses.some(c => c.id === transferState.from_class_id);
       if (!isCurrentValid) {
         const defaultFrom = currentStudentClasses[0];
-        setTransferState(prev => ({
-          ...prev,
-          from_class_id: defaultFrom.id,
-        }));
+        setTransferState(prev =>
+          prev.from_class_id === defaultFrom.id
+            ? prev
+            : {
+                ...prev,
+                from_class_id: defaultFrom.id,
+              }
+        );
         if (defaultFrom.campus_id) {
           setTargetCampusId(defaultFrom.campus_id);
         }
       }
     } else {
-      setTransferState(prev => ({
-        ...prev,
-        from_class_id: ''
-      }));
+      setTransferState(prev =>
+        prev.from_class_id === ''
+          ? prev
+          : {
+              ...prev,
+              from_class_id: '',
+            }
+      );
     }
   }, [transferState.student_id, currentStudentClasses]);
 
@@ -295,16 +307,25 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     if (filteredTargetClasses.length > 0) {
       const isValid = filteredTargetClasses.some(c => c.id === transferState.to_class_id);
       if (!isValid) {
-        setTransferState(prev => ({
-          ...prev,
-          to_class_id: filteredTargetClasses[0].id
-        }));
+        const nextToId = filteredTargetClasses[0].id;
+        setTransferState(prev =>
+          prev.to_class_id === nextToId
+            ? prev
+            : {
+                ...prev,
+                to_class_id: nextToId,
+              }
+        );
       }
     } else {
-      setTransferState(prev => ({
-        ...prev,
-        to_class_id: ''
-      }));
+      setTransferState(prev =>
+        prev.to_class_id === ''
+          ? prev
+          : {
+              ...prev,
+              to_class_id: '',
+            }
+      );
     }
   }, [filteredTargetClasses, transferState.to_class_id]);
 

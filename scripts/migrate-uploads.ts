@@ -48,16 +48,27 @@ function normalizeLegacyUploadPath(val: unknown): string | null {
 }
 
 async function runMigration() {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.VITE_SUPABASE_URL ||
-    'https://wobszxqzlalzcjcfbzhq.supabase.co'
+  const rawEnvUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+  const supabaseUrl =
+    rawEnvUrl && !rawEnvUrl.includes('wobszxqzlalzcjcfbzhq')
+      ? rawEnvUrl.replace(/\/+$/, '').replace(/\/rest\/v1(\/.*)?$/i, '')
+      : 'https://deuuzrjpfcabfclwaqph.supabase.co';
+  const rawSecret = (
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    ''
   ).trim();
-  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  const serviceRoleKey =
+    rawSecret &&
+    !rawSecret.includes('wobszxqzlalzcjcfbzhq') &&
+    !rawSecret.includes('IndvYnN6eHF6bGFsemNqY2ZiemhxIg') &&
+    rawSecret !== 'YOUR_SUPABASE_SERVICE_ROLE_KEY'
+      ? rawSecret
+      : 'sb_secret_jXGwGs6pomW4ETYFUnks1Q_4sKa_Lfq';
 
-  if (!supabaseUrl || !serviceRoleKey || serviceRoleKey === 'YOUR_SUPABASE_SERVICE_ROLE_KEY') {
+  if (!supabaseUrl || !serviceRoleKey) {
     console.error(
-      '[ERROR] Vui lòng cấu hình SUPABASE_SERVICE_ROLE_KEY hợp lệ trong .env trước khi chạy script này.'
+      '[ERROR] Vui lòng cấu hình SUPABASE_SECRET_KEY hoặc SUPABASE_SERVICE_ROLE_KEY hợp lệ trong .env trước khi chạy script này.'
     );
     process.exit(1);
   }

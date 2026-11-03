@@ -190,12 +190,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   React.useEffect(() => {
     const cleaned = deduplicateEnrollments(store.enrollments);
     if (cleaned.length !== store.enrollments.length) {
-      onUpdateStore(prev => ({
-        ...prev,
-        enrollments: deduplicateEnrollments(prev.enrollments),
-      }));
+      onUpdateStore(prev => {
+        const deduped = deduplicateEnrollments(prev.enrollments);
+        if (deduped.length === prev.enrollments.length) return prev;
+        return {
+          ...prev,
+          enrollments: deduped,
+        };
+      });
     }
-  }, [store.enrollments, onUpdateStore]);
+  }, [store.enrollments]);
 
   // Debounce từ khóa tìm kiếm 350ms cho tìm kiếm phía server
   React.useEffect(() => {
@@ -440,18 +444,25 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     [currentPage, pageSize, debouncedSearch, selectedCampus, filterType, onlyHealth, applyRemoteStudentsToStore]
   );
 
+  const fetchStudentsRef = React.useRef(fetchStudents);
+  fetchStudentsRef.current = fetchStudents;
+
   // KHÔNG tự động truy vấn khi vừa mở tab Học sinh (dùng dữ liệu đã có trong store trung tâm).
-  // Chỉ gọi truy vấn phân trang/tìm kiếm phía server khi người dùng chuyển sang trang > 1 hoặc gõ tìm kiếm từ khóa.
-  const isInitialMountRef = React.useRef(true);
+  // Chỉ gọi truy vấn phân trang/tìm kiếm phía server khi người dùng thực sự đổi trang (> 1) hoặc gõ tìm kiếm từ khóa.
+  const prevQueryTriggerRef = React.useRef<{ page: number; search: string }>({
+    page: currentPage,
+    search: debouncedSearch,
+  });
   React.useEffect(() => {
-    if (isInitialMountRef.current) {
-      isInitialMountRef.current = false;
+    const prev = prevQueryTriggerRef.current;
+    if (prev.page === currentPage && prev.search === debouncedSearch) {
       return;
     }
+    prevQueryTriggerRef.current = { page: currentPage, search: debouncedSearch };
     if (currentPage > 1 || debouncedSearch.length > 0) {
-      void fetchStudents({ page: currentPage, searchQuery: debouncedSearch });
+      void fetchStudentsRef.current({ page: currentPage, searchQuery: debouncedSearch });
     }
-  }, [currentPage, debouncedSearch, fetchStudents]);
+  }, [currentPage, debouncedSearch]);
 
   // Helper lấy danh sách enrollments (kèm thông tin lớp) của 1 học sinh từ cả store.enrollments và nested student.enrollments
   const getStudentEnrollmentsList = (student: Student) => {

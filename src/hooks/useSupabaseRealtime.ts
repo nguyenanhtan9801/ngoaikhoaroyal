@@ -374,7 +374,7 @@ export function useSupabaseRealtime({
       if (hasAttemptedGuestCatalogLoadRef.current) return;
       hasAttemptedGuestCatalogLoadRef.current = true;
 
-      loadPublicCatalogSafely(store)
+      loadPublicCatalogSafely()
         .then(res => {
           isApplyingRemoteUpdateRef.current = true;
           prevStoreRef.current = res.store;
@@ -404,6 +404,7 @@ export function useSupabaseRealtime({
             isApplyingRemoteUpdateRef.current = true;
             const recomputed = recomputeDerivedRealtimeState(res.store);
             prevStoreRef.current = recomputed;
+            saveStore(recomputed);
             setStore(recomputed);
           }
         })
@@ -414,7 +415,7 @@ export function useSupabaseRealtime({
     } else {
       setIsOffline(true);
     }
-  }, [currentUser, store, setStore]);
+  }, [currentUser?.id, setStore]);
 
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
@@ -427,6 +428,7 @@ export function useSupabaseRealtime({
     const recomputed = recomputeDerivedRealtimeState(store);
     if (recomputed !== store) {
       prevStoreRef.current = recomputed;
+      saveStore(recomputed);
       setStore(recomputed);
       return;
     }

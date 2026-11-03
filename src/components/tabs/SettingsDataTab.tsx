@@ -1153,6 +1153,11 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // Đồng bộ cấu hình termSubjects từ store trung tâm khi chọn khóa học (không tự gọi Supabase mỗi lần mở subtab)
   useEffect(() => {
     if (!selectedConfigTermId || hierarchySubTab !== 'term_subjects') return;
+    if (!store.subjects || store.subjects.length === 0) return;
+    const currentForTerm = (store.termSubjects || []).filter(
+      (ts) => String(ts.term_id) === String(selectedConfigTermId)
+    );
+    if (currentForTerm.length >= store.subjects.length) return;
 
     onUpdateStore((prev) => {
       const existingForTerm = prev.termSubjects.filter(

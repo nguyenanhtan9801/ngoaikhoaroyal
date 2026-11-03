@@ -73,9 +73,27 @@ app.get('/api/whoami', (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// SUPABASE ADMIN & AUTH MIDDLEWARE (Server-Side with SUPABASE_SERVICE_ROLE_KEY)
+// SUPABASE ADMIN & AUTH MIDDLEWARE (Server-Side with SUPABASE_SECRET_KEY / SUPABASE_SERVICE_ROLE_KEY)
 // ============================================================================
-const DEFAULT_SERVER_SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
+const DEFAULT_SERVER_SUPABASE_URL = 'https://deuuzrjpfcabfclwaqph.supabase.co';
+const DEFAULT_SERVER_SUPABASE_SECRET_KEY = 'sb_secret_jXGwGs6pomW4ETYFUnks1Q_4sKa_Lfq';
+export const SUPABASE_JWKS_URL =
+  process.env.SUPABASE_JWKS_URL ||
+  'https://deuuzrjpfcabfclwaqph.supabase.co/auth/v1/.well-known/jwks.json';
+
+function isRetiredServerSupabaseValue(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  return val.includes('wobszxqzlalzcjcfbzhq') || val.includes('IndvYnN6eHF6bGFsemNqY2ZiemhxIg');
+}
+
+function sanitizeServerSupabaseUrl(raw?: string | null): string {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim().replace(/\/+$/, '').replace(/\/rest\/v1(\/.*)?$/i, '').replace(/\/+$/, '');
+  if (!trimmed || isRetiredServerSupabaseValue(trimmed) || !trimmed.startsWith('http')) {
+    return '';
+  }
+  return trimmed;
+}
 
 const VALID_USER_ROLES = new Set<string>([
   'super_admin',
@@ -199,12 +217,23 @@ async function recordAdminEndpointAudit(params: {
 }
 
 function getServerSupabaseAdmin(): SupabaseClient | null {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.VITE_SUPABASE_URL ||
-    DEFAULT_SERVER_SUPABASE_URL
+  const supabaseUrl =
+    sanitizeServerSupabaseUrl(process.env.SUPABASE_URL) ||
+    sanitizeServerSupabaseUrl(process.env.VITE_SUPABASE_URL) ||
+    DEFAULT_SERVER_SUPABASE_URL;
+
+  const rawEnvSecret = (
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    ''
   ).trim();
-  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+
+  const serviceRoleKey =
+    rawEnvSecret &&
+    !isRetiredServerSupabaseValue(rawEnvSecret) &&
+    rawEnvSecret !== 'YOUR_SUPABASE_SERVICE_ROLE_KEY'
+      ? rawEnvSecret
+      : DEFAULT_SERVER_SUPABASE_SECRET_KEY;
 
   if (!supabaseUrl || !serviceRoleKey) {
     return null;
