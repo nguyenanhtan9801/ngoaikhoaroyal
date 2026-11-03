@@ -69,6 +69,7 @@ const ROUTE_HASH_MAP: Record<string, string> = {
   sub_finance_invoices: 'invoices',
   sub_finance_payroll: 'payroll',
   sub_finance_transfer: 'transfer',
+  sub_finance_partnership: 'partnership-report',
   sub_users: 'users',
   sub_settings: 'settings',
   sub_holidays: 'holidays',
@@ -1188,6 +1189,21 @@ export default function App() {
               onPrintReceipt={handlePrintReceipt}
               onPrintTransferAgreement={handlePrintTransferAgreement}
               initialSection="transfer"
+            />
+          )}
+
+          {currentRoute === 'sub_finance_partnership' && (
+            <FinancePayrollTab
+              store={store}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              selectedCampusId={selectedCampusId}
+              selectedTermId={selectedTermId}
+              searchQuery={searchQuery}
+              onUpdateStore={updateStore}
+              onPrintReceipt={handlePrintReceipt}
+              onPrintTransferAgreement={handlePrintTransferAgreement}
+              initialSection="partnership"
             />
           )}
 

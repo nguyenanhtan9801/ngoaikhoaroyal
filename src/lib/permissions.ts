@@ -85,6 +85,7 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
     case 'sub_finance_invoices':
     case 'sub_finance_clearance':
     case 'sub_finance_transfer':
+    case 'sub_finance_partnership':
       return Boolean(perms.can_manage_finance);
     case 'sub_finance_payroll':
       return Boolean(perms.can_settle_payroll || perms.can_manage_finance);

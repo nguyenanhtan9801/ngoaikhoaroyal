@@ -54,6 +54,7 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     sub_finance_invoices: { parent: 'Tài Chính & Kế Toán', title: 'Thu Học Phí & Mã Chuyển Khoản', icon: Receipt, badge: 'Chuyển Khoản' },
     sub_finance_payroll: { parent: 'Tài Chính & Kế Toán', title: 'Quyết Toán Thù Lao Giáo Viên', icon: UserCheck, badge: 'Quyết Toán Giáo Viên' },
     sub_finance_transfer: { parent: 'Tài Chính & Kế Toán', title: 'Biến Động Chuyển Lớp & Phụ Thu', icon: ArrowRightLeft, badge: 'Bù Trừ Chênh Lệch' },
+    sub_finance_partnership: { parent: 'Tài Chính & Kế Toán', title: 'Báo Cáo Đối Soát Đối Tác (Excel)', icon: FileSpreadsheet, badge: 'Bảng Tính Trực Tuyến' },
     
     // Nhóm 5: Hệ Thống & Danh Mục
     sub_users: { parent: 'Hệ Thống & Danh Mục', title: 'Quản Lý Người Dùng & Phân Quyền', icon: UserCheck, badge: 'RBAC & Bảo Mật' },

@@ -227,6 +227,14 @@ export const Navbar: React.FC<NavbarProps> = ({
           icon: ArrowRightLeft, 
           desc: 'Tính bù trừ chênh lệch đơn giá ca học khi chuyển lớp' 
         },
+        { 
+          id: 'sub_finance_partnership', 
+          label: 'Báo Cáo Đối Soát Đối Tác (Excel)', 
+          icon: Receipt, 
+          desc: 'Bảng tính đối soát học phí môn ngoại khóa trực tuyến & xuất file Excel chuẩn mẫu đối tác',
+          badge: 'Excel',
+          badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+        },
       ],
     },
     {

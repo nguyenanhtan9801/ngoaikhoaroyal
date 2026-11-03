@@ -53,6 +53,7 @@ import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
+import { PartnershipReportTab } from './PartnershipReportTab';
 
 interface FinancePayrollTabProps {
   store: AppStore;
@@ -64,7 +65,7 @@ interface FinancePayrollTabProps {
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
   onPrintReceipt: (invoice: TuitionInvoice) => void;
   onPrintTransferAgreement?: (transfer: ClassTransfer) => void;
-  initialSection?: 'invoices' | 'payroll' | 'transfer';
+  initialSection?: 'invoices' | 'payroll' | 'transfer' | 'partnership';
 }
 
 export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
@@ -79,7 +80,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   onPrintTransferAgreement,
   initialSection = 'invoices',
 }) => {
-  const [activeSection, setActiveSection] = useState<'invoices' | 'payroll' | 'transfer'>(initialSection);
+  const [activeSection, setActiveSection] = useState<'invoices' | 'payroll' | 'transfer' | 'partnership'>(initialSection);
   const [invoiceViewMode, setInvoiceViewMode] = useState<ViewMode>('table');
   const [payrollViewMode, setPayrollViewMode] = useState<ViewMode>('table');
   const [transferViewMode, setTransferViewMode] = useState<ViewMode>('table');
@@ -885,10 +886,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     <div className="space-y-6">
       
       {/* Sub navigation pills */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-2">
         <button
           onClick={() => setActiveSection('invoices')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             activeSection === 'invoices'
               ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -898,7 +899,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         </button>
         <button
           onClick={() => setActiveSection('payroll')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             activeSection === 'payroll'
               ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -908,13 +909,24 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         </button>
         <button
           onClick={() => setActiveSection('transfer')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             activeSection === 'transfer'
               ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
               : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
           }`}
         >
           Biên Bản & Tính Phụ Thu Chuyển Lớp
+        </button>
+        <button
+          onClick={() => setActiveSection('partnership')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+            activeSection === 'partnership'
+              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+              : 'bg-slate-900 text-emerald-400 hover:text-white border border-emerald-500/30'
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4" />
+          <span>Báo Cáo Đối Soát Đối Tác (Excel &amp; Bảng Tính)</span>
         </button>
       </div>
 
@@ -989,7 +1001,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSection('partnership')}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Xuất Báo Cáo Đối Soát Đối Tác (Excel)</span>
+                  </button>
                   <ViewToggle viewMode={invoiceViewMode} onViewModeChange={setInvoiceViewMode} />
                 </div>
               </div>
@@ -3975,6 +3995,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           </div>
         );
       })()}
+
+      {/* SECTION 4: PARTNERSHIP FINANCIAL RECONCILIATION REPORT & INTERACTIVE SPREADSHEET */}
+      {activeSection === 'partnership' && (
+        <PartnershipReportTab
+          store={store}
+          selectedCampusId={selectedCampusId}
+          selectedTermId={selectedTermId}
+        />
+      )}
 
     </div>
   );
