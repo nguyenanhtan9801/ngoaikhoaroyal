@@ -32,7 +32,19 @@ import {
   RefreshCw,
   Search
 } from 'lucide-react';
-import { AppStore, formatVND, createAuditRecord, appendAuditLog, formatCapitalizeWords, formatDaysListLabel, getClassDaysOfWeek, getTeacherEffectivePeriodRate, formatDateVN } from '../../lib/storage';
+import {
+  AppStore,
+  formatVND,
+  createAuditRecord,
+  appendAuditLog,
+  formatCapitalizeWords,
+  formatDaysListLabel,
+  getClassDaysOfWeek,
+  getTeacherEffectivePeriodRate,
+  calculateTeacherSessionPayAtDate,
+  getTeacherContractAt,
+  formatDateVN,
+} from '../../lib/storage';
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
 import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
 import { TuitionInvoice, Teacher, TeacherAttendanceRecord, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord, ClassTransfer, CreditNote } from '../../types';
@@ -1578,7 +1590,30 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       {activeSection === 'payroll' && (() => {
         // Synthesize teacher attendance records from store.teacherAttendance + fallback from completed store.sessions
         const effectiveTeacherRecords: TeacherAttendanceRecord[] = (() => {
-          const baseList = [...(store.teacherAttendance || [])];
+          const baseList = (store.teacherAttendance || []).map(ta => {
+            const actualId = ta.actual_teacher_id || ta.assigned_teacher_id;
+            const actualTeacher = store.teachers.find(t => t.id === actualId);
+            const cls = store.classes.find(c => c.id === ta.class_id);
+            const isAbsent = ta.status === 'absent_excused' || ta.status === 'absent_unexcused';
+            if (isAbsent) {
+              return { ...ta, earned_amount: 0, total_payout: 0 };
+            }
+            const calc = calculateTeacherSessionPayAtDate({
+              teacher: actualTeacher,
+              cls,
+              sessionDate: ta.session_date,
+              periodsCount: ta.periods_count || 2,
+              store,
+            });
+            return {
+              ...ta,
+              rate_per_period: calc.ratePerPeriod,
+              rate_applied: calc.sessionRate,
+              earned_amount: calc.earnedAmount,
+              total_payout: calc.earnedAmount,
+            };
+          });
+
           store.sessions.forEach(ses => {
             if (ses.status !== 'completed') return;
             const alreadyRecorded = baseList.some(
@@ -1587,12 +1622,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             if (!alreadyRecorded) {
               const cls = store.classes.find(c => c.id === ses.class_id);
               if (!cls) return;
-              const actualTeacher = store.teachers.find(t => t.id === (ses.actual_teacher_id || cls.primary_teacher_id));
-              const isPerm = (actualTeacher?.type || actualTeacher?.teacher_type) === 'permanent';
-              const sessionRate = isPerm
-                ? (store.payrollRateConfig?.permanent_session_rate ?? 300000)
-                : (store.payrollRateConfig?.visiting_session_rate ?? 270000);
-              const periods = actualTeacher?.periods_per_session || store.payrollRateConfig?.periods_per_session || 2;
+              const actualTeacher = store.teachers.find(
+                t => t.id === (ses.actual_teacher_id || cls.primary_teacher_id)
+              );
+              const calc = calculateTeacherSessionPayAtDate({
+                teacher: actualTeacher,
+                cls,
+                sessionDate: ses.session_date,
+                periodsCount: actualTeacher?.periods_per_session || 2,
+                store,
+              });
               baseList.push({
                 id: `synth_${ses.id}`,
                 class_id: cls.id,
@@ -1600,16 +1639,19 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 campus_id: cls.campus_id,
                 session_date: ses.session_date,
                 session_number: ses.session_number,
-                periods_count: periods,
+                periods_count: calc.contract.periods_per_session || 2,
                 assigned_teacher_id: cls.primary_teacher_id,
                 actual_teacher_id: ses.actual_teacher_id || cls.primary_teacher_id,
-                is_substitute: Boolean(ses.is_substitute || (ses.actual_teacher_id && ses.actual_teacher_id !== cls.primary_teacher_id)),
+                is_substitute: Boolean(
+                  ses.is_substitute ||
+                    (ses.actual_teacher_id && ses.actual_teacher_id !== cls.primary_teacher_id)
+                ),
                 status: 'present',
                 check_in_time: '16:40',
-                rate_per_period: Math.round(sessionRate / periods),
-                rate_applied: sessionRate,
-                earned_amount: sessionRate,
-                total_payout: sessionRate,
+                rate_per_period: calc.ratePerPeriod,
+                rate_applied: calc.sessionRate,
+                earned_amount: calc.earnedAmount,
+                total_payout: calc.earnedAmount,
                 verified_by: 'Hệ thống đồng bộ Sổ điểm danh',
                 notes: 'Đồng bộ tự động từ ca học hoàn thành',
               });
@@ -1622,7 +1664,9 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           });
         })();
 
-        // Compute per-teacher workload & payroll summary rows (Per-Session Model: 300K Cơ hữu / 270K Thỉnh giảng)
+        const todayIso = new Date().toISOString().split('T')[0];
+
+        // Compute per-teacher workload & payroll summary rows by summing each session's contract payout at session_date
         const teacherPayrollRows = store.teachers
           .filter(teacher => {
             if (payrollCampusFilter === 'all') return true;
@@ -1636,12 +1680,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             return teacherPrimaryCampus === payrollCampusFilter || hasSessionInCampus || hasClassInCampus;
           })
           .map((teacher, idx) => {
-            const isPermanent = (teacher.type || teacher.teacher_type) === 'permanent';
-            const periodsPerSession = teacher.periods_per_session || store.payrollRateConfig?.periods_per_session || 2;
-            const defaultSessionRate = isPermanent
-              ? (store.payrollRateConfig?.permanent_session_rate ?? 300000)
-              : (store.payrollRateConfig?.visiting_session_rate ?? 270000);
-            const defaultRatePerPeriod = Math.round(defaultSessionRate / periodsPerSession);
+            const currentContract = getTeacherContractAt(teacher, todayIso, store);
+            const isPermanent = currentContract.teacher_type === 'permanent';
+            const periodsPerSession = currentContract.periods_per_session || 2;
+            const defaultSessionRate = currentContract.session_rate || teacher.fixed_rate_per_session || 300000;
+            const defaultRatePerPeriod =
+              currentContract.rate_per_period || Math.round(defaultSessionRate / periodsPerSession);
 
             // Sessions actually taught by this teacher (main + substitute) where status is present or late
             const taughtRecords = effectiveTeacherRecords.filter(
@@ -1676,8 +1720,52 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               (sum, r) => sum + (r.periods_count > 0 ? r.periods_count : periodsPerSession),
               0
             );
-            // Calculate total payout strictly per the required per-session formula: taughtSessionsCount * defaultSessionRate
-            const totalPayout = taughtSessionsCount * defaultSessionRate;
+
+            // Group taught sessions by contract milestone for clear breakdown (e.g., "Cơ hữu: 6 buổi × 300.000", "Thỉnh giảng 45%: 4 buổi")
+            const milestoneGroupMap = new Map<
+              string,
+              {
+                label: string;
+                sessions: number;
+                subtotal: number;
+              }
+            >();
+
+            let summedPayout = 0;
+            taughtRecords.forEach(rec => {
+              const cls = store.classes.find(c => c.id === rec.class_id);
+              const calc = calculateTeacherSessionPayAtDate({
+                teacher,
+                cls,
+                sessionDate: rec.session_date,
+                periodsCount: rec.periods_count || 2,
+                store,
+              });
+              const sessionEarned = calc.earnedAmount;
+              summedPayout += sessionEarned;
+
+              const typeText = calc.contract.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng';
+              const key = `${calc.contract.id}_${calc.contract.pay_model}_${calc.sessionRate}_${calc.contract.percentage_rate}`;
+              const existingGroup = milestoneGroupMap.get(key);
+              if (existingGroup) {
+                existingGroup.sessions += 1;
+                existingGroup.subtotal += sessionEarned;
+              } else {
+                const label =
+                  calc.contract.pay_model === 'revenue_share'
+                    ? `${typeText} ${calc.contract.percentage_rate}%`
+                    : `${typeText} (${formatVND(calc.sessionRate)}/b)`;
+                milestoneGroupMap.set(key, {
+                  label,
+                  sessions: 1,
+                  subtotal: sessionEarned,
+                });
+              }
+            });
+
+            const contractBreakdownSummary = Array.from(milestoneGroupMap.values()).map(
+              g => `${g.label}: ${g.sessions} buổi (${formatVND(g.subtotal)})`
+            );
 
             const settlementRecord = (store.payrollSettlements || []).find(
               ps =>
@@ -1685,6 +1773,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 (payrollTermFilter === 'all' || ps.term_id === payrollTermFilter) &&
                 ps.is_settled
             );
+
+            // Kỳ lương đã đánh dấu quyết toán (is_settled = true) giữ nguyên giá trị đã chốt, không bị tính lại
+            const totalPayout =
+              settlementRecord && Number(settlementRecord.total_payroll) > 0
+                ? Number(settlementRecord.total_payroll)
+                : summedPayout;
 
             const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
 
@@ -1705,6 +1799,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               substitutePeriodsAdded,
               absentPeriodsDeducted,
               totalPayout,
+              contractBreakdownSummary,
               isSettled: Boolean(settlementRecord),
               settlementRecord,
               taughtRecords,
@@ -2085,9 +2180,18 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             </span>
                           </td>
 
-                          {/* 4. Đơn giá / Buổi */}
+                          {/* 4. Đơn giá / Buổi & Tách theo mốc hợp đồng */}
                           <td className="py-3.5 px-3 font-mono">
                             <div className="font-bold text-amber-300">{formatVND(row.defaultSessionRate)}/buổi</div>
+                            {row.contractBreakdownSummary && row.contractBreakdownSummary.length > 0 && (
+                              <div className="mt-1 space-y-0.5 font-sans">
+                                {row.contractBreakdownSummary.map((line: string, i: number) => (
+                                  <div key={i} className="text-[10px] text-cyan-300">
+                                    • {line}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </td>
 
                           {/* 5. Số buổi đã dạy */}

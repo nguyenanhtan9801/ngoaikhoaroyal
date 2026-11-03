@@ -14,7 +14,7 @@ import {
   SUPABASE_TABLE_TO_STORE_KEY,
   SUPABASE_TABLE_SELECT_COLUMNS,
 } from '../lib/supabase';
-import { loadStore, saveStore } from '../lib/storage';
+import { loadStore, saveStore, syncTeachersCurrentFieldsFromContracts } from '../lib/storage';
 import { fetchOnce } from '../lib/fetchOnce';
 import { showToast } from '../lib/toast';
 
@@ -235,6 +235,7 @@ export function buildGuestCatalogStore(
     subjectCategories: [],
     termSubjects: [],
     teachers: [],
+    teacherContracts: [],
     students: [],
     classes: [],
     enrollments: [],
@@ -385,6 +386,7 @@ export async function loadInitialDataSafely(
       { tableName: 'subject_categories', storeKey: 'subjectCategories' },
       { tableName: 'time_slots', storeKey: 'timeSlots' },
       { tableName: 'term_subjects', storeKey: 'termSubjects' },
+      { tableName: 'teacher_contracts', storeKey: 'teacherContracts' },
     ];
 
     const allTableDefinitions = baseTableDefinitions.filter(item => {
@@ -519,9 +521,10 @@ export async function loadInitialDataSafely(
     }
 
     if (totalRecordsLoaded > 0) {
-      saveStore(nextStore);
+      const syncedStore = syncTeachersCurrentFieldsFromContracts(nextStore);
+      saveStore(syncedStore);
       return {
-        store: nextStore,
+        store: syncedStore,
         isOfflineFallback: false,
         loadedFromCloud: true,
         totalRecordsLoaded,
@@ -530,7 +533,7 @@ export async function loadInitialDataSafely(
 
     // Nếu toàn bộ bảng trên Cloud đều rỗng hoặc chưa nạp được bản ghi nào
     return {
-      store: fallbackStore,
+      store: syncTeachersCurrentFieldsFromContracts(fallbackStore),
       isOfflineFallback: false,
       loadedFromCloud: false,
       totalRecordsLoaded: 0,

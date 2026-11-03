@@ -27,6 +27,12 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
     return true;
   }
 
+  // Giáo viên (role === 'teacher') chỉ xem và thao tác trên Sổ điểm danh của lớp mình,
+  // KHÔNG thấy mục Giáo Viên (sub_teachers), học phí, lương người khác, hay quản trị hệ thống.
+  if (user.role === 'teacher') {
+    return routeId === 'sub_attendance' || routeId === 'sub_classes' || routeId === 'sub_schedule';
+  }
+
   const perms = getEffectivePermissions(user);
 
   switch (routeId) {
@@ -54,6 +60,23 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
         perms.can_manage_classes ||
           perms.can_view_classes ||
           perms.can_take_attendance
+      );
+    case 'sub_teachers':
+      // super_admin, campus_manager có quyền quản lý; academic & accountant được xem danh sách và lịch sử hợp đồng
+      if (
+        user.role === 'campus_manager' ||
+        user.role === 'academic' ||
+        user.role === 'accountant' ||
+        user.role === 'academic_accountant' ||
+        user.role === 'academic_admissions' ||
+        user.role === 'academic_staff'
+      ) {
+        return true;
+      }
+      return Boolean(
+        perms.can_manage_teachers ||
+          perms.can_manage_classes ||
+          perms.can_settle_payroll
       );
     case 'sub_attendance':
     case 'sub_snacks':

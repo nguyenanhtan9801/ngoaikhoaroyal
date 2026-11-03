@@ -52,6 +52,7 @@ import {
   formatDateVN,
   getTeacherEffectivePeriodRate,
   getTeacherEffectiveSessionRate,
+  calculateTeacherSessionPayAtDate,
 } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
@@ -571,24 +572,28 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   }, [currentClass?.id, selectedDate, store.teacherAttendance]);
 
-  // Live Teacher Rate & Payout Calculation for Current Session (Per-Session Model: 300K Cơ hữu / 270K Thỉnh giảng)
+  // Live Teacher Rate & Payout Calculation for Current Session based on teacher_contracts at session_date
   const assignedTeacherObj = currentClass
     ? store.teachers.find(t => t.id === currentClass.primary_teacher_id)
     : undefined;
   const actualTeacherObj = store.teachers.find(t => t.id === selectedTeacherId) || assignedTeacherObj;
   const isWeekendSlot = timeSlot?.slot_type === 'weekend' || selectedDayCode === 'T7' || selectedDayCode === 'CN';
-  const liveTeacherPeriodRate = getTeacherEffectivePeriodRate(
-    actualTeacherObj,
-    currentClass?.subject_id,
-    isWeekendSlot,
-    store.payrollRateConfig
+  const liveSessionContractCalc = useMemo(
+    () =>
+      calculateTeacherSessionPayAtDate({
+        teacher: actualTeacherObj,
+        cls: currentClass,
+        sessionDate: selectedDate,
+        periodsCount: teacherMode === 'absent' ? 0 : teacherPeriodsCount,
+        isWeekendOverride: isWeekendSlot,
+        store,
+      }),
+    [actualTeacherObj, currentClass, selectedDate, teacherMode, teacherPeriodsCount, isWeekendSlot, store]
   );
-  const liveTeacherSessionRate = getTeacherEffectiveSessionRate(
-    actualTeacherObj,
-    store.payrollRateConfig
-  );
+  const liveTeacherPeriodRate = liveSessionContractCalc.ratePerPeriod;
+  const liveTeacherSessionRate = liveSessionContractCalc.sessionRate;
   const liveTeacherEffectivePeriods = teacherMode === 'absent' ? 0 : teacherPeriodsCount;
-  const liveTeacherTotalPayout = teacherMode === 'absent' ? 0 : liveTeacherSessionRate;
+  const liveTeacherTotalPayout = teacherMode === 'absent' ? 0 : liveSessionContractCalc.earnedAmount;
 
   // Update attendance state when selectedDate or store.attendance changes (Guaranteed Persistence)
   useEffect(() => {
@@ -1116,25 +1121,37 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
       const finalTeacherAttendance = [...remainingTeacherAttendance, newTeacherAttendanceRecord];
 
+      const isTeacherAccountSaving = currentUser?.role === 'teacher';
+
       return {
         ...prev,
         sessions: updatedSessions,
         teacherAttendance: finalTeacherAttendance,
         attendance: finalAttendance,
-        enrollments: updatedEnrollments,
-        invoices: updatedInvoices,
-        notifications: newNotifications,
+        // Khi người lưu có role = 'teacher', chỉ ghi attendance_records & teacher_work_sessions,
+        // bỏ qua phần tự động sửa hóa đơn, ghi danh và thông báo để không bị RLS chặn.
+        enrollments: isTeacherAccountSaving ? prev.enrollments : updatedEnrollments,
+        invoices: isTeacherAccountSaving ? prev.invoices : updatedInvoices,
+        notifications: isTeacherAccountSaving ? prev.notifications : newNotifications,
         auditLogs: newAuditLogs,
       };
     });
 
     setIsDirty(false);
 
-    showToast(
-      `Đã lưu điểm danh ngày ${selectedDate}: Có mặt ${saveImpactSummary.presentCount} HS, Vắng CP ${saveImpactSummary.excusedCount} HS, Vắng KP ${saveImpactSummary.unexcusedCount} HS | Ghi danh đổi trạng thái: ${saveImpactSummary.enrollmentsChangedCount} | Hóa đơn ảnh hưởng: ${saveImpactSummary.affectedInvoicesCount} | Thù lao GV (${actualTeacherObj?.name || 'GV'}): ${formatVND(liveTeacherTotalPayout)} | Bánh sữa: Tiêu thụ ${liveConsumed}/${totalRoyalCount} suất, Hoàn trả bếp ${liveReturned} suất!`,
-      'success',
-      { title: 'Lưu điểm danh & Chấm công GV thành công' }
-    );
+    if (currentUser?.role === 'teacher') {
+      showToast(
+        `Đã lưu điểm danh ngày ${selectedDate} (${saveImpactSummary.presentCount} HS có mặt, ${saveImpactSummary.excusedCount} HS vắng CP). Phần hóa đơn và ghi danh do văn phòng cập nhật.`,
+        'success',
+        { title: 'Lưu điểm danh & Chấm công GV thành công' }
+      );
+    } else {
+      showToast(
+        `Đã lưu điểm danh ngày ${selectedDate}: Có mặt ${saveImpactSummary.presentCount} HS, Vắng CP ${saveImpactSummary.excusedCount} HS, Vắng KP ${saveImpactSummary.unexcusedCount} HS | Ghi danh đổi trạng thái: ${saveImpactSummary.enrollmentsChangedCount} | Hóa đơn ảnh hưởng: ${saveImpactSummary.affectedInvoicesCount} | Thù lao GV (${actualTeacherObj?.name || 'GV'}): ${formatVND(liveTeacherTotalPayout)} | Bánh sữa: Tiêu thụ ${liveConsumed}/${totalRoyalCount} suất, Hoàn trả bếp ${liveReturned} suất!`,
+        'success',
+        { title: 'Lưu điểm danh & Chấm công GV thành công' }
+      );
+    }
   };
 
   // Quick manual promote / drop trial student directly from Attendance Sheet
@@ -1509,6 +1526,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
             </div>
 
+            {currentUser?.role === 'teacher' && (
+              <div className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Phần hóa đơn và ghi danh do văn phòng cập nhật.</span>
+              </div>
+            )}
+
             {/* KHỐI CHẤM CÔNG GIÁO VIÊN BUỔI HỌC (TEACHER ATTENDANCE & PAYOUT BAR) */}
             <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-3 mt-1">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
@@ -1597,7 +1621,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     onClick={() => {
                       setTeacherMode('substitute');
                       setIsSubstitute(true);
-                      const fallbackSub = store.teachers.find(t => t.id !== currentClass.primary_teacher_id) || store.teachers[0];
+                      const activeTeachers = store.teachers.filter(t => t.status !== 'inactive');
+                      const fallbackSub =
+                        activeTeachers.find(t => t.id !== currentClass.primary_teacher_id) ||
+                        activeTeachers[0] ||
+                        store.teachers[0];
                       if (fallbackSub && selectedTeacherId === currentClass.primary_teacher_id) {
                         setSelectedTeacherId(fallbackSub.id);
                       }
@@ -1694,14 +1722,23 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       }}
                       className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none"
                     >
-                      {store.teachers.map(t => {
-                        const subRate = getTeacherEffectivePeriodRate(t, currentClass.subject_id, isWeekendSlot, store.payrollRateConfig);
-                        return (
-                          <option key={t.id} value={t.id} className="bg-slate-900">
-                            {t.name} ({t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — {formatVND(subRate)}/tiết
-                          </option>
-                        );
-                      })}
+                      {store.teachers
+                        .filter(t => t.status !== 'inactive' || t.id === selectedTeacherId)
+                        .map(t => {
+                          const subCalc = calculateTeacherSessionPayAtDate({
+                            teacher: t,
+                            cls: currentClass,
+                            sessionDate: selectedDate,
+                            periodsCount: teacherPeriodsCount,
+                            isWeekendOverride: isWeekendSlot,
+                            store,
+                          });
+                          return (
+                            <option key={t.id} value={t.id} className="bg-slate-900">
+                              {t.name} ({t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — {formatVND(subCalc.earnedAmount)}/buổi
+                            </option>
+                          );
+                        })}
                     </select>
                   </div>
                 )}

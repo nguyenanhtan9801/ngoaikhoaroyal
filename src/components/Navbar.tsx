@@ -179,6 +179,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           desc: 'Phòng học, sân bãi, khung giờ, giáo viên và kiểm tra trùng lịch' 
         },
         { 
+          id: 'sub_teachers', 
+          label: 'Giáo Viên', 
+          icon: UserCheck, 
+          desc: 'Hồ sơ giáo viên, tài khoản đăng nhập, chuyển ngạch và lịch sử mức lương' 
+        },
+        { 
           id: 'sub_schedule', 
           label: 'Quản Lý Khung Giờ Học', 
           icon: Clock, 

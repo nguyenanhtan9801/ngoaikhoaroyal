@@ -13,6 +13,7 @@ import { ParentPortalTab } from './components/tabs/ParentPortalTab';
 import { SettingsDataTab } from './components/tabs/SettingsDataTab';
 import { AuditLogsTab } from './components/tabs/AuditLogsTab';
 import { UserManagementTab } from './components/tabs/UserManagementTab';
+import { TeachersManagement } from './components/teachers/TeachersManagement';
 import { HolidayManagementView } from './components/settings/HolidayManagementView';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
@@ -38,6 +39,7 @@ import {
   fetchActiveProfileFromSupabase,
   fetchAllProfilesFromSupabase,
   isLegacyLoginEnabled,
+  syncTeachersCurrentFieldsFromContracts,
 } from './lib/storage';
 import { isRouteAllowed, getDefaultRouteForUser } from './lib/permissions';
 import { exportMasterWorkbook } from './lib/excel';
@@ -60,6 +62,7 @@ const ROUTE_HASH_MAP: Record<string, string> = {
   sub_term_subjects: 'term-subjects',
   sub_pricing: 'pricing',
   sub_classes: 'classes',
+  sub_teachers: 'teachers',
   sub_schedule: 'schedule',
   sub_attendance: 'attendance',
   sub_snacks: 'snacks',
@@ -118,7 +121,9 @@ export default function App() {
   // Store cho khách (chưa đăng nhập nhân sự) chỉ chứa dữ liệu danh mục từ GET /api/public/catalog
   const [store, setStore] = useState<AppStore>(() => {
     const initialUser = isLegacyLoginEnabled() ? getActiveSessionUser() : null;
-    return initialUser ? loadStore() : buildGuestCatalogStore();
+    return initialUser
+      ? syncTeachersCurrentFieldsFromContracts(loadStore())
+      : buildGuestCatalogStore();
   });
 
   // Nguyên tắc phân quyền: currentRole luôn lấy trực tiếp từ currentUser.role (bỏ mặc định 'super_admin' khi chưa đăng nhập)
@@ -1103,6 +1108,16 @@ export default function App() {
                 setFocusedClass(cls);
                 setCurrentRoute('sub_attendance');
               }}
+            />
+          )}
+
+          {currentRoute === 'sub_teachers' && (
+            <TeachersManagement
+              store={store}
+              currentRole={currentRole}
+              currentUser={currentUser}
+              selectedCampusId={selectedCampusId}
+              onUpdateStore={updateStore}
             />
           )}
 

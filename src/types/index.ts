@@ -26,6 +26,7 @@ export interface UserPermissionMatrix {
   can_view_registrations?: boolean;   // Xem danh sách đăng ký
   can_manage_trial?: boolean;         // Học thử 1 buổi
   can_config_payroll_rates?: boolean; // Cài đặt mức thù lao cơ hữu/thỉnh giảng
+  can_manage_teachers?: boolean;      // Quản lý hồ sơ giáo viên, chuyển ngạch & hợp đồng
 }
 
 export type AttendanceStatus = 'present' | 'absent_excused' | 'absent_unexcused';
@@ -238,6 +239,28 @@ export interface TimeSlot {
   slot_type?: 'after_school' | 'weekend' | string;
 }
 
+export type TeacherPayModel = 'per_session' | 'revenue_share';
+
+export interface TeacherContract {
+  id: string; // uuid
+  teacher_id: string;
+  teacher_type: 'permanent' | 'visiting';
+  pay_model: TeacherPayModel;
+  effective_from: string; // YYYY-MM-DD
+  rate_per_period?: number;
+  periods_per_session?: number;
+  session_rate?: number;
+  percentage_rate?: number;
+  weekend_multiplier?: number;
+  custom_subject_rates?: {
+    subject_id: string;
+    rate_per_period: number;
+  }[];
+  note?: string;
+  created_by?: string;
+  created_at?: string;
+}
+
 export interface Teacher {
   id: string;
   user_id?: string;
@@ -262,6 +285,9 @@ export interface Teacher {
   };
   fixed_rate_per_session: number; // for permanent (= default_rate_per_period * periods_per_session)
   percentage_rate: number; // for visiting (e.g. 60%)
+  hire_date?: string; // Ngày vào làm (YYYY-MM-DD)
+  notes?: string; // Ghi chú hồ sơ
+  updated_at?: string;
   status: 'active' | 'inactive';
   subjects?: string[];
 }
@@ -658,6 +684,12 @@ export type LogActionType =
   | 'STORAGE_CONFIG_UPDATE'   // Cập nhật cấu hình lưu trữ Cloud
   | 'TEACHER_RATE_UPDATE'     // Cập nhật định mức thù lao tiết dạy giáo viên
   | 'TEACHER_PAYROLL_SETTLE'  // Xác nhận quyết toán chi trả thù lao giáo viên
+  | 'TEACHER_CREATE'          // Thêm mới hồ sơ giáo viên
+  | 'TEACHER_UPDATE'          // Cập nhật hồ sơ giáo viên
+  | 'TEACHER_LOCK'            // Khóa hồ sơ & tài khoản giáo viên
+  | 'TEACHER_UNLOCK'          // Mở khóa hồ sơ & tài khoản giáo viên
+  | 'TEACHER_DELETE'          // Xóa hồ sơ giáo viên
+  | 'TEACHER_CONTRACT_CHANGE' // Chuyển ngạch / Đổi mức lương giáo viên
   | 'TIME_SLOT_CREATE'        // Thêm khung giờ học
   | 'TIME_SLOT_UPDATE'        // Cập nhật khung giờ học
   | 'TIME_SLOT_DELETE';       // Xóa khung giờ học
@@ -720,6 +752,7 @@ export interface AppStore {
   holidays?: Holiday[];
   timeSlots: TimeSlot[];
   teachers: Teacher[];
+  teacherContracts?: TeacherContract[];
   classes: ExtracurricularClass[];
   students: Student[];
   enrollments: Enrollment[];

@@ -13,7 +13,13 @@ import {
   syncStoreDeltaToSupabase,
   RealtimeMutationEvent,
 } from '../lib/supabase';
-import { loadStore, saveStore } from '../lib/storage';
+import {
+  loadStore,
+  saveStore,
+  syncTeachersCurrentFieldsFromContracts,
+  calculateTeacherSessionPayAtDate,
+  isSessionSettledForTeacher,
+} from '../lib/storage';
 import { loadInitialDataSafely, loadPublicCatalogSafely } from '../services/dataLoader';
 
 export type RealtimeConnectionState = 'connected' | 'reconnecting' | 'disconnected';
@@ -62,21 +68,41 @@ export function recomputeDerivedRealtimeState(store: AppStore): AppStore {
     return cls;
   });
 
-  // Cập nhật định mức thù lao chuẩn trên teacher_work_sessions (Cơ hữu 300k / Thỉnh giảng 270k)
-  const permanentRate = store.payrollRateConfig?.permanent_session_rate || 300000;
-  const visitingRate = store.payrollRateConfig?.visiting_session_rate || 270000;
-  const teacherMap = new Map((store.teachers || []).map(t => [t.id, t]));
+  const syncedStore = syncTeachersCurrentFieldsFromContracts(store);
+  const teachersChanged = syncedStore.teachers !== store.teachers;
+  const teacherMap = new Map((syncedStore.teachers || []).map(t => [t.id, t]));
+  const classMap = new Map(updatedClasses.map(c => [c.id, c]));
 
   let teacherSessionsChanged = false;
   const updatedTeacherAttendance = (store.teacherAttendance || []).map(ta => {
     const actualId = ta.actual_teacher_id || ta.assigned_teacher_id;
-    const teacher = teacherMap.get(actualId);
-    const isVisiting =
-      teacher?.type === 'visiting' || teacher?.teacher_type === 'visiting';
-    const expectedRate = isVisiting ? visitingRate : permanentRate;
+    if (isSessionSettledForTeacher(actualId, ta.session_date, ta.term_id, ta.class_id, syncedStore)) {
+      return ta;
+    }
     const isAbsent =
       ta.status === 'absent_excused' || ta.status === 'absent_unexcused';
-    const expectedEarned = isAbsent && !ta.actual_teacher_id ? 0 : expectedRate;
+    if (isAbsent && !ta.actual_teacher_id) {
+      if (ta.earned_amount !== 0 || ta.total_payout !== 0) {
+        teacherSessionsChanged = true;
+        return { ...ta, earned_amount: 0, total_payout: 0 };
+      }
+      return ta;
+    }
+    if ((Number(ta.earned_amount) > 0 || Number(ta.total_payout) > 0) && Number(ta.rate_applied) > 0) {
+      return ta;
+    }
+    const teacher = teacherMap.get(actualId);
+    if (!teacher) return ta;
+    const cls = classMap.get(ta.class_id);
+    const calc = calculateTeacherSessionPayAtDate({
+      teacher,
+      cls,
+      sessionDate: ta.session_date,
+      periodsCount: ta.periods_count || 2,
+      store: syncedStore,
+    });
+    const expectedRate = calc.sessionRate;
+    const expectedEarned = isAbsent ? 0 : calc.earnedAmount;
 
     if (
       ta.rate_applied !== expectedRate ||
@@ -86,6 +112,7 @@ export function recomputeDerivedRealtimeState(store: AppStore): AppStore {
       teacherSessionsChanged = true;
       return {
         ...ta,
+        rate_per_period: calc.ratePerPeriod,
         rate_applied: expectedRate,
         earned_amount: expectedEarned,
         total_payout: expectedEarned,
@@ -138,12 +165,13 @@ export function recomputeDerivedRealtimeState(store: AppStore): AppStore {
     return sess;
   });
 
-  if (!classesChanged && !teacherSessionsChanged && !sessionsChanged) {
+  if (!classesChanged && !teacherSessionsChanged && !sessionsChanged && !teachersChanged) {
     return store;
   }
 
   return {
     ...store,
+    teachers: teachersChanged ? syncedStore.teachers : store.teachers,
     classes: classesChanged ? updatedClasses : store.classes,
     teacherAttendance: teacherSessionsChanged
       ? updatedTeacherAttendance
@@ -577,8 +605,8 @@ export function useSupabaseRealtime({
       ];
       const staffExtraTables =
         currentUser.role !== 'teacher'
-          ? ['students', 'tuition_invoices', 'credit_notes', 'parent_registrations']
-          : [];
+          ? ['students', 'teachers', 'teacher_contracts', 'tuition_invoices', 'credit_notes', 'parent_registrations']
+          : ['teachers', 'teacher_contracts'];
       const allowedRealtimeTables = [...baseRealtimeTables, ...staffExtraTables].filter(
         tbl => tbl in SUPABASE_TABLE_TO_STORE_KEY
       );

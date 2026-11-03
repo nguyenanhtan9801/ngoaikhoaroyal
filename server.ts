@@ -429,16 +429,26 @@ async function requireAuth(
   next();
 }
 
+function normalizeCampusCodeForServer(raw?: string): string {
+  const clean = String(raw || 'all').trim().toLowerCase();
+  if (clean === 'camp_pmh' || clean === 'pmh') return 'pmh';
+  if (clean === 'camp_pl' || clean === 'pl') return 'pl';
+  return clean || 'all';
+}
+
 async function verifySuperAdminRequest(
   req: Request,
   res: Response,
   endpointName: string,
-  actionCode: string
+  actionCode: string,
+  options?: { allowCampusManager?: boolean }
 ): Promise<{
   supabaseAdmin: SupabaseClient;
   callerId: string;
   callerUsername: string;
   callerFullName: string;
+  callerRole: string;
+  callerCampusId: string;
   clientIp: string;
 } | null> {
   const clientIp = getClientIpFromReq(req);
@@ -466,7 +476,12 @@ async function verifySuperAdminRequest(
   });
   if (!caller) return null;
 
-  if (caller.callerRole !== 'super_admin') {
+  const isSuperAdmin = caller.callerRole === 'super_admin';
+  const isAllowedCampusManager = Boolean(
+    options?.allowCampusManager && caller.callerRole === 'campus_manager'
+  );
+
+  if (!isSuperAdmin && !isAllowedCampusManager) {
     await recordAdminEndpointAudit({
       supabaseAdmin: caller.supabaseAdmin,
       endpoint: endpointName,
@@ -476,10 +491,10 @@ async function verifySuperAdminRequest(
       callerUsername: caller.callerUsername,
       callerFullName: caller.callerFullName,
       status: 'failed',
-      description: `Từ chối phân quyền tại ${endpointName}: Người gọi không phải super_admin đang active`,
+      description: `Từ chối phân quyền tại ${endpointName}: Người gọi (${caller.callerRole}) không đủ quyền`,
     });
     res.status(403).json({
-      error: 'Từ chối truy cập: Chỉ tài khoản Super Admin đang hoạt động mới có quyền thực hiện thao tác này.',
+      error: 'Từ chối truy cập: Chỉ tài khoản Super Admin hoặc Quản lý cơ sở (trong phạm vi giáo viên cơ sở mình) mới có quyền thực hiện thao tác này.',
     });
     return null;
   }
@@ -489,6 +504,8 @@ async function verifySuperAdminRequest(
     callerId: caller.callerId,
     callerUsername: caller.callerUsername,
     callerFullName: caller.callerFullName,
+    callerRole: caller.callerRole,
+    callerCampusId: caller.callerCampusId,
     clientIp: caller.clientIp,
   };
 }
@@ -569,16 +586,80 @@ async function isTargetLastActiveSuperAdminOnServer(
   };
 }
 
+async function validateLinkedTeacherIdOnServer(
+  supabaseAdmin: SupabaseClient,
+  linkedTeacherId: string,
+  excludeUserId?: string
+): Promise<{ ok: boolean; error?: string; statusCode?: number; teacherCampus?: string }> {
+  const cleanTeacherId = String(linkedTeacherId || '').trim();
+  if (!cleanTeacherId) {
+    return { ok: false, error: 'Thiếu mã hồ sơ giáo viên (linked_teacher_id).', statusCode: 400 };
+  }
+
+  const { data: teacherRow, error: teacherErr } = await supabaseAdmin
+    .from('teachers')
+    .select('id,campus_id,name')
+    .eq('id', cleanTeacherId)
+    .maybeSingle();
+
+  if (teacherErr) {
+    return {
+      ok: false,
+      error: `Không thể kiểm tra hồ sơ giáo viên (${cleanTeacherId}): ${teacherErr.message}`,
+      statusCode: 400,
+    };
+  }
+
+  if (!teacherRow?.id) {
+    return {
+      ok: false,
+      error: `Không tìm thấy hồ sơ giáo viên tương ứng với mã "${cleanTeacherId}" trên bảng teachers.`,
+      statusCode: 400,
+    };
+  }
+
+  const { data: existingProfiles } = await supabaseAdmin
+    .from('profiles')
+    .select('id,username,full_name,linked_teacher_id')
+    .eq('linked_teacher_id', cleanTeacherId);
+
+  const conflictProfile = (existingProfiles || []).find(
+    p => !excludeUserId || String(p.id) !== String(excludeUserId)
+  );
+
+  if (conflictProfile) {
+    return {
+      ok: false,
+      error: `Giáo viên này đã có tài khoản đăng nhập (@${conflictProfile.username || conflictProfile.id}). Mỗi giáo viên chỉ được phép liên kết tối đa 1 tài khoản.`,
+      statusCode: 409,
+    };
+  }
+
+  return {
+    ok: true,
+    teacherCampus: normalizeCampusCodeForServer(teacherRow.campus_id),
+  };
+}
+
 app.post('/api/admin/create-user', async (req: Request, res: Response) => {
   try {
     const verified = await verifySuperAdminRequest(
       req,
       res,
       '/api/admin/create-user',
-      'ADMIN_API_CREATE_USER'
+      'ADMIN_API_CREATE_USER',
+      { allowCampusManager: true }
     );
     if (!verified) return;
-    const { supabaseAdmin, callerId, callerUsername, callerFullName, clientIp } = verified;
+    const {
+      supabaseAdmin,
+      callerId,
+      callerUsername,
+      callerFullName,
+      callerRole,
+      callerCampusId,
+      clientIp,
+    } = verified;
 
     const {
       username,
@@ -660,6 +741,49 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
       rawCampus === 'camp_pmh' ? 'pmh' : rawCampus === 'camp_pl' ? 'pl' : rawCampus;
     const cleanRole = rawRole;
     const cleanStatus = rawStatus;
+    const cleanLinkedTeacherId = linked_teacher_id ? String(linked_teacher_id).trim() : null;
+
+    if (callerRole === 'campus_manager') {
+      const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
+      if (cleanRole !== 'teacher') {
+        res.status(403).json({
+          error: 'Quản lý cơ sở chỉ được phép tạo tài khoản đăng nhập cho Giáo viên thuộc cơ sở của mình.',
+        });
+        return;
+      }
+      if (callerNormCampus !== 'all' && normalizedCampus !== callerNormCampus) {
+        res.status(403).json({
+          error: 'Quản lý cơ sở chỉ được phép tạo tài khoản cho giáo viên thuộc cơ sở của mình.',
+        });
+        return;
+      }
+    }
+
+    if (cleanRole === 'teacher' && !cleanLinkedTeacherId) {
+      res.status(400).json({
+        error: 'Tài khoản có vai trò Giáo viên (teacher) bắt buộc phải gắn với hồ sơ giáo viên (linked_teacher_id).',
+      });
+      return;
+    }
+
+    if (cleanLinkedTeacherId) {
+      const linkCheck = await validateLinkedTeacherIdOnServer(supabaseAdmin, cleanLinkedTeacherId);
+      if (!linkCheck.ok) {
+        res.status(linkCheck.statusCode || 400).json({ error: linkCheck.error });
+        return;
+      }
+      if (
+        callerRole === 'campus_manager' &&
+        normalizeCampusCodeForServer(callerCampusId) !== 'all' &&
+        linkCheck.teacherCampus &&
+        linkCheck.teacherCampus !== normalizeCampusCodeForServer(callerCampusId)
+      ) {
+        res.status(403).json({
+          error: 'Không thể tạo tài khoản cho giáo viên thuộc cơ sở khác.',
+        });
+        return;
+      }
+    }
 
     const { data: createdAuth, error: createAuthError } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
@@ -670,6 +794,7 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
         full_name: cleanFullName,
         role: cleanRole,
         campus_id: normalizedCampus,
+        linked_teacher_id: cleanLinkedTeacherId,
       },
     });
 
@@ -692,7 +817,7 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
       return;
     }
 
-    const profileRow = {
+    const profileRow: Record<string, any> = {
       id: createdAuth.user.id,
       username: cleanUsername,
       full_name: cleanFullName,
@@ -700,6 +825,7 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
       campus_id: normalizedCampus,
       status: cleanStatus,
       permissions: permissions && typeof permissions === 'object' ? permissions : {},
+      linked_teacher_id: cleanLinkedTeacherId,
     };
 
     const { error: profileUpsertError } = await supabaseAdmin
@@ -741,7 +867,7 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
       callerFullName,
       targetId: createdAuth.user.id,
       status: 'success',
-      description: `Super Admin ${callerFullName} (@${callerUsername}) đã tạo tài khoản mới ${cleanUsername} (${cleanFullName}, vai trò: ${cleanRole})`,
+      description: `${callerFullName} (@${callerUsername}) đã tạo tài khoản mới ${cleanUsername} (${cleanFullName}, vai trò: ${cleanRole})`,
       details: {
         created_user_id: createdAuth.user.id,
         username: cleanUsername,
@@ -749,6 +875,7 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
         role: cleanRole,
         campus_id: normalizedCampus,
         status: cleanStatus,
+        linked_teacher_id: cleanLinkedTeacherId,
       },
     });
 
@@ -759,7 +886,7 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
         email: cleanEmail,
         phone: String(phone || '').trim(),
         department: String(department || '').trim(),
-        linked_teacher_id: linked_teacher_id ? String(linked_teacher_id) : null,
+        linked_teacher_id: cleanLinkedTeacherId,
       },
     });
   } catch (err: any) {
@@ -774,10 +901,19 @@ app.post('/api/admin/reset-password', async (req: Request, res: Response) => {
       req,
       res,
       '/api/admin/reset-password',
-      'ADMIN_API_RESET_PASSWORD'
+      'ADMIN_API_RESET_PASSWORD',
+      { allowCampusManager: true }
     );
     if (!verified) return;
-    const { supabaseAdmin, callerId, callerUsername, callerFullName, clientIp } = verified;
+    const {
+      supabaseAdmin,
+      callerId,
+      callerUsername,
+      callerFullName,
+      callerRole,
+      callerCampusId,
+      clientIp,
+    } = verified;
 
     const { id, userId, username, email, newPassword, password } = req.body || {};
     const cleanPassword = String(newPassword || password || '').trim();
@@ -823,6 +959,26 @@ app.post('/api/admin/reset-password', async (req: Request, res: Response) => {
       return;
     }
 
+    if (callerRole === 'campus_manager') {
+      const { data: targetProfile } = await supabaseAdmin
+        .from('profiles')
+        .select('role,campus_id')
+        .eq('id', targetUserId)
+        .maybeSingle();
+      const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
+      const targetNormCampus = normalizeCampusCodeForServer(targetProfile?.campus_id);
+      if (
+        !targetProfile ||
+        targetProfile.role !== 'teacher' ||
+        (callerNormCampus !== 'all' && targetNormCampus !== callerNormCampus)
+      ) {
+        res.status(403).json({
+          error: 'Quản lý cơ sở chỉ được đặt lại mật khẩu cho tài khoản Giáo viên thuộc cơ sở của mình.',
+        });
+        return;
+      }
+    }
+
     const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(targetUserId, {
       password: cleanPassword,
     });
@@ -856,7 +1012,7 @@ app.post('/api/admin/reset-password', async (req: Request, res: Response) => {
       callerFullName,
       targetId: targetUserId,
       status: 'success',
-      description: `Super Admin ${callerFullName} (@${callerUsername}) đã đặt lại mật khẩu cho user ID ${targetUserId}${username ? ` (@${username})` : ''}`,
+      description: `${callerFullName} (@${callerUsername}) đã đặt lại mật khẩu cho user ID ${targetUserId}${username ? ` (@${username})` : ''}`,
     });
 
     res.json({ success: true });
@@ -872,13 +1028,32 @@ app.post('/api/admin/update-user', async (req: Request, res: Response) => {
       req,
       res,
       '/api/admin/update-user',
-      'ADMIN_API_UPDATE_USER'
+      'ADMIN_API_UPDATE_USER',
+      { allowCampusManager: true }
     );
     if (!verified) return;
-    const { supabaseAdmin, callerId, callerUsername, callerFullName, clientIp } = verified;
+    const {
+      supabaseAdmin,
+      callerId,
+      callerUsername,
+      callerFullName,
+      callerRole,
+      callerCampusId,
+      clientIp,
+    } = verified;
 
-    const { id, userId, username, email, full_name, role, campus_id, status, permissions } =
-      req.body || {};
+    const {
+      id,
+      userId,
+      username,
+      email,
+      full_name,
+      role,
+      campus_id,
+      status,
+      linked_teacher_id,
+      permissions,
+    } = req.body || {};
 
     if (role !== undefined && !VALID_USER_ROLES.has(String(role).trim())) {
       res.status(400).json({ error: `Vai trò (role) không hợp lệ: "${String(role)}".` });
@@ -946,8 +1121,49 @@ app.post('/api/admin/update-user', async (req: Request, res: Response) => {
     const nextRole = role !== undefined ? String(role).trim() : String(targetProfile.role || '');
     const nextStatus =
       status !== undefined
-      ? String(status).trim().toLowerCase()
-      : String(targetProfile.status || 'active').toLowerCase();
+        ? String(status).trim().toLowerCase()
+        : String(targetProfile.status || 'active').toLowerCase();
+
+    if (callerRole === 'campus_manager') {
+      const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
+      const targetNormCampus = normalizeCampusCodeForServer(targetProfile.campus_id);
+      if (
+        targetProfile.role !== 'teacher' ||
+        nextRole !== 'teacher' ||
+        (callerNormCampus !== 'all' && targetNormCampus !== callerNormCampus)
+      ) {
+        res.status(403).json({
+          error: 'Quản lý cơ sở chỉ được phép cập nhật tài khoản Giáo viên thuộc cơ sở của mình.',
+        });
+        return;
+      }
+    }
+
+    const nextLinkedTeacherId =
+      linked_teacher_id !== undefined
+        ? linked_teacher_id
+          ? String(linked_teacher_id).trim()
+          : null
+        : targetProfile.linked_teacher_id || null;
+
+    if (nextRole === 'teacher' && !nextLinkedTeacherId) {
+      res.status(400).json({
+        error: 'Tài khoản có vai trò Giáo viên (teacher) bắt buộc phải gắn với hồ sơ giáo viên (linked_teacher_id).',
+      });
+      return;
+    }
+
+    if (nextLinkedTeacherId) {
+      const linkCheck = await validateLinkedTeacherIdOnServer(
+        supabaseAdmin,
+        nextLinkedTeacherId,
+        targetUserId
+      );
+      if (!linkCheck.ok) {
+        res.status(linkCheck.statusCode || 400).json({ error: linkCheck.error });
+        return;
+      }
+    }
 
     // Không cho tự khóa tài khoản đang đăng nhập của chính mình
     if (
@@ -1014,6 +1230,9 @@ app.post('/api/admin/update-user', async (req: Request, res: Response) => {
     }
     if (status !== undefined) {
       updatePayload.status = nextStatus;
+    }
+    if (linked_teacher_id !== undefined) {
+      updatePayload.linked_teacher_id = nextLinkedTeacherId;
     }
     if (permissions !== undefined && permissions && typeof permissions === 'object') {
       updatePayload.permissions = permissions;
@@ -1089,13 +1308,14 @@ app.post('/api/admin/update-user', async (req: Request, res: Response) => {
       callerFullName,
       targetId: targetUserId,
       status: 'success',
-      description: `Super Admin ${callerFullName} (@${callerUsername}) đã cập nhật hồ sơ người dùng ${updatedProfile.username || targetUserId}`,
+      description: `${callerFullName} (@${callerUsername}) đã cập nhật hồ sơ người dùng ${updatedProfile.username || targetUserId}`,
       details: {
         before: {
           full_name: targetProfile.full_name,
           role: targetProfile.role,
           campus_id: targetProfile.campus_id,
           status: targetProfile.status,
+          linked_teacher_id: targetProfile.linked_teacher_id,
         },
         after: updatePayload,
       },
@@ -1117,10 +1337,19 @@ app.post('/api/admin/delete-user', async (req: Request, res: Response) => {
       req,
       res,
       '/api/admin/delete-user',
-      'ADMIN_API_DELETE_USER'
+      'ADMIN_API_DELETE_USER',
+      { allowCampusManager: true }
     );
     if (!verified) return;
-    const { supabaseAdmin, callerId, callerUsername, callerFullName, clientIp } = verified;
+    const {
+      supabaseAdmin,
+      callerId,
+      callerUsername,
+      callerFullName,
+      callerRole,
+      callerCampusId,
+      clientIp,
+    } = verified;
 
     const { id, userId, username, email } = req.body || {};
 
@@ -1172,6 +1401,21 @@ app.post('/api/admin/delete-user', async (req: Request, res: Response) => {
       targetUserId
     );
 
+    if (callerRole === 'campus_manager') {
+      const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
+      const targetNormCampus = normalizeCampusCodeForServer(targetProfile?.campus_id);
+      if (
+        !targetProfile ||
+        targetProfile.role !== 'teacher' ||
+        (callerNormCampus !== 'all' && targetNormCampus !== callerNormCampus)
+      ) {
+        res.status(403).json({
+          error: 'Quản lý cơ sở chỉ được phép xóa tài khoản Giáo viên thuộc cơ sở của mình.',
+        });
+        return;
+      }
+    }
+
     if (isLastActiveSuperAdmin) {
       await recordAdminEndpointAudit({
         supabaseAdmin,
@@ -1222,7 +1466,7 @@ app.post('/api/admin/delete-user', async (req: Request, res: Response) => {
       callerFullName,
       targetId: targetUserId,
       status: 'success',
-      description: `Super Admin ${callerFullName} (@${callerUsername}) đã xóa vĩnh viễn người dùng ${targetProfile?.username || username || targetUserId}`,
+      description: `${callerFullName} (@${callerUsername}) đã xóa vĩnh viễn người dùng ${targetProfile?.username || username || targetUserId}`,
       details: {
         deleted_user_id: targetUserId,
         deleted_username: targetProfile?.username || username || '',

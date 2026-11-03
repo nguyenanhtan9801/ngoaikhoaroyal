@@ -52,7 +52,9 @@ export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
   time_slots:
     'id,code,name,start_time,end_time,duration_minutes,days_of_week,campus_id,status,notes,slot_type',
   teachers:
-    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,status',
+    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,status,updated_at,percentage_rate,weekend_multiplier,custom_subject_rates,hire_date,notes',
+  teacher_contracts:
+    'id,teacher_id,teacher_type,pay_model,effective_from,rate_per_period,periods_per_session,session_rate,percentage_rate,weekend_multiplier,custom_subject_rates,note,created_by,created_at',
   extracurricular_classes:
     'id,code,name,term_id,spanning_term_id,is_cross_term,term_distribution,campus_id,subject_id,facility_id,time_slot_id,days_of_week,start_date,end_date,primary_teacher_id,max_students,total_sessions,full_course_fee,price_per_session,status,allow_over_quota',
   students:
@@ -1429,12 +1431,36 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         campus_id: t.campus_id && t.campus_id !== 'all' ? t.campus_id : (store.campuses[0]?.id || 'camp_pmh'),
         type: t.type || t.teacher_type || 'permanent',
         teacher_type: t.teacher_type || t.type || 'permanent',
-        fixed_rate_per_session: t.fixed_rate_per_session || 300000,
-        default_rate_per_period: t.default_rate_per_period || 150000,
-        periods_per_session: t.periods_per_session || 2,
+        fixed_rate_per_session: Number(t.fixed_rate_per_session) || 300000,
+        default_rate_per_period: Number(t.default_rate_per_period) || 150000,
+        periods_per_session: Number(t.periods_per_session) || 2,
         bank_account: t.bank_account || {},
-        subjects: t.subjects || [],
+        subjects: Array.isArray(t.subjects) ? t.subjects : [],
         status: t.status || 'active',
+        updated_at: t.updated_at || new Date().toISOString(),
+        percentage_rate: Number(t.percentage_rate) || 60,
+        weekend_multiplier: Number(t.weekend_multiplier) > 0 ? Number(t.weekend_multiplier) : 1,
+        custom_subject_rates: t.custom_subject_rates && typeof t.custom_subject_rates === 'object' ? t.custom_subject_rates : {},
+        hire_date: t.hire_date || null,
+        notes: t.notes || '',
+      }));
+
+    case 'teacher_contracts':
+      return (store.teacherContracts || []).map(c => ({
+        id: c.id,
+        teacher_id: c.teacher_id,
+        teacher_type: c.teacher_type === 'visiting' ? 'visiting' : 'permanent',
+        pay_model: c.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session',
+        effective_from: c.effective_from,
+        rate_per_period: Number(c.rate_per_period) || 150000,
+        periods_per_session: Number(c.periods_per_session) || 2,
+        session_rate: Number(c.session_rate) || (Number(c.rate_per_period || 150000) * Number(c.periods_per_session || 2)),
+        percentage_rate: Number(c.percentage_rate) || 0,
+        weekend_multiplier: Number(c.weekend_multiplier) > 0 ? Number(c.weekend_multiplier) : 1,
+        custom_subject_rates: c.custom_subject_rates && typeof c.custom_subject_rates === 'object' ? c.custom_subject_rates : {},
+        note: c.note || '',
+        created_by: c.created_by || null,
+        created_at: c.created_at || new Date().toISOString(),
       }));
 
     case 'extracurricular_classes':
@@ -1910,23 +1936,7 @@ export async function pullAllTablesFromSupabase(
           });
           break;
         case 'teachers':
-          nextStore.teachers = data.map((r: any): Teacher => ({
-            id: r.id,
-            code: r.code,
-            name: r.name,
-            phone: r.phone || '',
-            email: r.email || '',
-            campus_id: r.campus_id || 'camp_pmh',
-            type: r.type || r.teacher_type || 'permanent',
-            teacher_type: r.teacher_type || r.type || 'permanent',
-            fixed_rate_per_session: Number(r.fixed_rate_per_session) || 300000,
-            default_rate_per_period: Number(r.default_rate_per_period) || 150000,
-            periods_per_session: Number(r.periods_per_session) || 2,
-            bank_account: r.bank_account || undefined,
-            subjects: Array.isArray(r.subjects) ? r.subjects : [],
-            percentage_rate: 60,
-            status: r.status || 'active',
-          }));
+          nextStore.teachers = data.map((r: any): Teacher => mapSupabaseRowToStoreEntity('teachers', r));
           break;
         case 'extracurricular_classes':
           nextStore.classes = data.map((r: any): ExtracurricularClass => ({
@@ -2150,6 +2160,19 @@ export async function pullAllTablesFromSupabase(
     // ignore
   }
 
+  try {
+    const { data: contractData } = await client
+      .from('teacher_contracts')
+      .select<string, any>(SUPABASE_TABLE_SELECT_COLUMNS.teacher_contracts)
+      .order('effective_from', { ascending: true });
+    if (Array.isArray(contractData) && contractData.length > 0) {
+      nextStore.teacherContracts = contractData.map((r: any) => mapSupabaseRowToStoreEntity('teacher_contracts', r));
+      totalPulled += contractData.length;
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     success: true,
     updatedStore: nextStore,
@@ -2198,8 +2221,8 @@ export async function pushAllTablesToSupabase(
     }
   }
 
-  // Push subject_categories, time_slots, credit_notes, parent_registrations as well
-  for (const extraTable of ['subject_categories', 'time_slots', 'credit_notes', 'parent_registrations']) {
+  // Push subject_categories, time_slots, credit_notes, parent_registrations, teacher_contracts as well
+  for (const extraTable of ['subject_categories', 'time_slots', 'credit_notes', 'parent_registrations', 'teacher_contracts']) {
     const extraRes = await pushSingleTableToSupabase(extraTable, store, urlInput, anonKeyInput);
     if (extraRes.success) totalSynced += extraRes.count;
   }
@@ -2233,6 +2256,7 @@ export const SUPABASE_TABLE_TO_STORE_KEY: Record<string, keyof AppStore> = {
   subjects: 'subjects',
   time_slots: 'timeSlots',
   teachers: 'teachers',
+  teacher_contracts: 'teacherContracts',
   extracurricular_classes: 'classes',
   students: 'students',
   enrollments: 'enrollments',
@@ -2584,6 +2608,57 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
       };
     }
 
+    case 'teachers':
+      return {
+        id: r.id,
+        code: r.code || r.id,
+        name: r.name || '',
+        phone: r.phone || '',
+        email: r.email || '',
+        campus_id: r.campus_id || 'camp_pmh',
+        type: r.type || r.teacher_type || 'permanent',
+        teacher_type: r.teacher_type || r.type || 'permanent',
+        fixed_rate_per_session: Number(r.fixed_rate_per_session) || 300000,
+        default_rate_per_period: Number(r.default_rate_per_period) || 150000,
+        periods_per_session: Number(r.periods_per_session) || 2,
+        bank_account: r.bank_account && typeof r.bank_account === 'object' ? r.bank_account : undefined,
+        subjects: Array.isArray(r.subjects) ? r.subjects : [],
+        percentage_rate: Number(r.percentage_rate) > 0 ? Number(r.percentage_rate) : 60,
+        weekend_multiplier: Number(r.weekend_multiplier) > 0 ? Number(r.weekend_multiplier) : 1,
+        custom_subject_rates:
+          r.custom_subject_rates && typeof r.custom_subject_rates === 'object'
+            ? r.custom_subject_rates
+            : {},
+        hire_date: r.hire_date || undefined,
+        notes: r.notes || '',
+        status: r.status === 'inactive' ? 'inactive' : 'active',
+        updated_at: r.updated_at || undefined,
+      };
+
+    case 'teacher_contracts':
+      return {
+        id: r.id,
+        teacher_id: r.teacher_id,
+        teacher_type: r.teacher_type === 'visiting' ? 'visiting' : 'permanent',
+        pay_model: r.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session',
+        effective_from: r.effective_from,
+        rate_per_period: Number(r.rate_per_period) || 150000,
+        periods_per_session: Number(r.periods_per_session) || 2,
+        session_rate:
+          Number(r.session_rate) > 0
+            ? Number(r.session_rate)
+            : Number(r.rate_per_period || 150000) * Number(r.periods_per_session || 2),
+        percentage_rate: Number(r.percentage_rate) || 0,
+        weekend_multiplier: Number(r.weekend_multiplier) > 0 ? Number(r.weekend_multiplier) : 1,
+        custom_subject_rates:
+          r.custom_subject_rates && typeof r.custom_subject_rates === 'object'
+            ? r.custom_subject_rates
+            : {},
+        note: r.note || '',
+        created_by: r.created_by || undefined,
+        created_at: r.created_at || undefined,
+      };
+
     default:
       return r;
   }
@@ -2616,6 +2691,7 @@ export async function syncStoreDeltaToSupabase(
     { table: 'subjects', storeKey: 'subjects' },
     { table: 'time_slots', storeKey: 'timeSlots' },
     { table: 'teachers', storeKey: 'teachers' },
+    { table: 'teacher_contracts', storeKey: 'teacherContracts' },
     { table: 'extracurricular_classes', storeKey: 'classes' },
     { table: 'students', storeKey: 'students' },
     { table: 'enrollments', storeKey: 'enrollments' },

@@ -241,7 +241,11 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     time_slot_id: editingClass?.time_slot_id || store.timeSlots[0]?.id || '',
     days_of_week: initialDays,
     start_date: editingClass?.start_date || store.terms.find(t => t.id === defaultTermId)?.start_date || '2026-09-01',
-    primary_teacher_id: editingClass?.primary_teacher_id || store.teachers[0]?.id || '',
+    primary_teacher_id:
+      editingClass?.primary_teacher_id ||
+      store.teachers.find(t => t.status !== 'inactive')?.id ||
+      store.teachers[0]?.id ||
+      '',
     max_students: editingClass?.max_students || 15,
     allow_over_quota: editingClass?.allow_over_quota || false,
   });
@@ -290,7 +294,10 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
         time_slot_id: store.timeSlots[0]?.id || '',
         days_of_week: initDays,
         start_date: termTarget?.start_date || '2026-09-01',
-        primary_teacher_id: store.teachers[0]?.id || '',
+        primary_teacher_id:
+          store.teachers.find(t => t.status !== 'inactive')?.id ||
+          store.teachers[0]?.id ||
+          '',
         max_students: 15,
         allow_over_quota: false,
       });
@@ -1364,11 +1371,14 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, primary_teacher_id: e.target.value })}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
               >
-                {store.teachers.map(t => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({(t.type || t.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
-                  </option>
-                ))}
+                {store.teachers
+                  .filter(t => t.status !== 'inactive' || t.id === editingClass?.primary_teacher_id)
+                  .map(t => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({(t.type || t.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'}
+                      {t.status === 'inactive' ? ' - Đã khóa' : ''})
+                    </option>
+                  ))}
               </select>
             </div>
 

@@ -12,6 +12,8 @@ import {
   Facility,
   TimeSlot,
   Teacher,
+  TeacherContract,
+  TeacherPayModel,
   TeacherAttendanceRecord,
   ExtracurricularClass,
   Student,
@@ -2194,15 +2196,433 @@ export function canModifyRedeemedCredit(
 }
 
 /**
- * Tính toán đơn giá buổi thực tế (rate_applied) của giáo viên theo chuẩn thù lao toàn trường:
- * - Giáo viên Cơ Hữu (Permanent): 300.000 VNĐ / buổi
- * - Giáo viên Thỉnh Giảng (Visiting): 270.000 VNĐ / buổi
+ * Tự động tạo mã định danh Giáo viên theo cơ sở (GV-PMH-001, GV-PL-001...)
+ */
+export function generateTeacherCode(
+  campusId: string,
+  existingTeachers: Teacher[],
+  campuses?: Campus[]
+): string {
+  const campusObj = campuses?.find(c => c.id === campusId);
+  const rawCode = (campusObj?.code || campusId || 'PMH').toUpperCase();
+  const campusPrefix = rawCode.includes('PL') ? 'PL' : 'PMH';
+  const prefix = `GV-${campusPrefix}-`;
+  let maxNum = 0;
+  for (const t of existingTeachers || []) {
+    const code = String(t.code || '').toUpperCase().trim();
+    if (code.startsWith(prefix)) {
+      const numPart = parseInt(code.slice(prefix.length).replace(/\D/g, ''), 10);
+      if (!isNaN(numPart) && numPart > maxNum) {
+        maxNum = numPart;
+      }
+    }
+  }
+  return `${prefix}${String(maxNum + 1).padStart(3, '0')}`;
+}
+
+/**
+ * Truy vấn mốc hợp đồng (teacher_contracts) có hiệu lực của giáo viên tại ngày `date` (YYYY-MM-DD):
+ * - Lấy mốc có effective_from <= date lớn nhất.
+ * - Nếu giáo viên chưa có mốc <= date (hoặc chưa có dòng nào trong teacher_contracts),
+ *   lấy mốc sớm nhất của giáo viên đó hoặc suy ra từ thông tin hiện tại trên bảng teachers.
+ */
+export function getTeacherContractAt(
+  teacher: Teacher | undefined,
+  date: string,
+  store?: Partial<AppStore> | null
+): TeacherContract {
+  const cleanDate = (date || new Date().toISOString().split('T')[0]).slice(0, 10);
+  const defaultPermRate = store?.payrollRateConfig?.permanent_session_rate ?? 300000;
+  const defaultVisRate = store?.payrollRateConfig?.visiting_session_rate ?? 270000;
+  const defaultPeriods = store?.payrollRateConfig?.periods_per_session ?? 2;
+
+  if (!teacher) {
+    return {
+      id: 'fallback_contract_default',
+      teacher_id: '',
+      teacher_type: 'permanent',
+      pay_model: 'per_session',
+      effective_from: '2020-01-01',
+      rate_per_period: Math.round(defaultPermRate / defaultPeriods),
+      periods_per_session: defaultPeriods,
+      session_rate: defaultPermRate,
+      percentage_rate: 0,
+      weekend_multiplier: 1,
+      custom_subject_rates: [],
+    };
+  }
+
+  const allContracts = (store?.teacherContracts || [])
+    .filter(c => c && c.teacher_id === teacher.id && c.effective_from)
+    .sort((a, b) => a.effective_from.localeCompare(b.effective_from));
+
+  // Tìm mốc có effective_from <= cleanDate lớn nhất
+  let matched: TeacherContract | undefined;
+  for (const c of allContracts) {
+    if (c.effective_from.slice(0, 10) <= cleanDate) {
+      matched = c;
+    } else {
+      break;
+    }
+  }
+
+  // Nếu mọi mốc đều có effective_from > cleanDate nhưng giáo viên đã có mốc đầu tiên, dùng mốc sớm nhất làm nền
+  if (!matched && allContracts.length > 0) {
+    matched = allContracts[0];
+  }
+
+  if (matched) {
+    const tType = matched.teacher_type === 'visiting' ? 'visiting' : 'permanent';
+    const periods = Number(matched.periods_per_session) || Number(teacher.periods_per_session) || defaultPeriods;
+    const fallbackSession = tType === 'visiting' ? defaultVisRate : defaultPermRate;
+    const sessionRate =
+      Number(matched.session_rate) > 0
+        ? Number(matched.session_rate)
+        : Number(matched.rate_per_period) > 0
+        ? Number(matched.rate_per_period) * periods
+        : Number(teacher.fixed_rate_per_session) || fallbackSession;
+    const ratePerPeriod =
+      Number(matched.rate_per_period) > 0
+        ? Number(matched.rate_per_period)
+        : Math.round(sessionRate / Math.max(1, periods));
+    return {
+      ...matched,
+      teacher_type: tType,
+      pay_model: matched.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session',
+      periods_per_session: periods,
+      session_rate: sessionRate,
+      rate_per_period: ratePerPeriod,
+      percentage_rate: Number(matched.percentage_rate ?? teacher.percentage_rate ?? 0),
+      weekend_multiplier: Number(matched.weekend_multiplier ?? teacher.weekend_multiplier ?? 1) || 1,
+      custom_subject_rates: Array.isArray(matched.custom_subject_rates)
+        ? matched.custom_subject_rates
+        : Array.isArray(teacher.custom_subject_rates)
+        ? teacher.custom_subject_rates
+        : [],
+    };
+  }
+
+  // Suy ra từ thông tin hiện tại của giáo viên nếu chưa có bản ghi trong teacher_contracts
+  const isVisiting = (teacher.teacher_type || teacher.type) === 'visiting';
+  const periods = Number(teacher.periods_per_session) || defaultPeriods;
+  const fallbackSession = isVisiting ? defaultVisRate : defaultPermRate;
+  const sessionRate =
+    Number(teacher.fixed_rate_per_session) > 0
+      ? Number(teacher.fixed_rate_per_session)
+      : Number(teacher.default_rate_per_period) > 0
+      ? Number(teacher.default_rate_per_period) * periods
+      : fallbackSession;
+  const ratePerPeriod =
+    Number(teacher.default_rate_per_period) > 0
+      ? Number(teacher.default_rate_per_period)
+      : Math.round(sessionRate / Math.max(1, periods));
+
+  // Nếu là thỉnh giảng có percentage_rate > 0 và fixed_rate_per_session == 0 thì coi là revenue_share
+  const inferredPayModel: TeacherPayModel =
+    isVisiting && Number(teacher.percentage_rate) > 0 && !(Number(teacher.fixed_rate_per_session) > 0)
+      ? 'revenue_share'
+      : 'per_session';
+
+  return {
+    id: `derived_${teacher.id}`,
+    teacher_id: teacher.id,
+    teacher_type: isVisiting ? 'visiting' : 'permanent',
+    pay_model: inferredPayModel,
+    effective_from: teacher.hire_date || '2026-01-01',
+    rate_per_period: ratePerPeriod,
+    periods_per_session: periods,
+    session_rate: sessionRate,
+    percentage_rate: Number(teacher.percentage_rate) || 0,
+    weekend_multiplier: Number(teacher.weekend_multiplier) || 1,
+    custom_subject_rates: Array.isArray(teacher.custom_subject_rates) ? teacher.custom_subject_rates : [],
+    note: 'Mốc khởi tạo mặc định từ hồ sơ giáo viên',
+  };
+}
+
+export interface SessionPayCalculationResult {
+  contract: TeacherContract;
+  teacherType: 'permanent' | 'visiting';
+  payModel: TeacherPayModel;
+  periodsCount: number;
+  ratePerPeriod: number;
+  rateApplied: number;
+  sessionRate: number;
+  earnedAmount: number;
+  classRevenue: number;
+  activeStudentsCount: number;
+  totalClassSessions: number;
+  percentageRate: number;
+  milestoneKey: string;
+  milestoneLabel: string;
+}
+
+/**
+ * Tính thù lao 1 buổi dạy tại ngày `sessionDate` theo đúng hợp đồng có hiệu lực tại `sessionDate`.
+ * - Nếu dạy thay: truyền `teacher = actualTeacher` (giáo viên thực tế đứng lớp).
+ * - Hỗ trợ cả 2 mô hình:
+ *   1. `per_session`: `earned = Math.round(sessionRate * (isWeekend ? weekend_multiplier : 1))`
+ *      (có xét `custom_subject_rates` nếu môn học có đơn giá riêng).
+ *   2. `revenue_share`: `earned = Math.round(((classRevenue / totalClassSessions) * percentage_rate) / 100)`
+ *      trong đó `classRevenue = activeStudentsCount * cls.full_course_fee`.
+ */
+export function calculateTeacherSessionPayAtDate(params: {
+  teacher: Teacher | undefined;
+  cls?: ExtracurricularClass | null | undefined;
+  sessionDate: string;
+  periodsCount?: number;
+  isWeekend?: boolean;
+  isWeekendOverride?: boolean;
+  isAbsent?: boolean;
+  store?: Partial<AppStore> | null;
+}): SessionPayCalculationResult {
+  const { teacher, cls, sessionDate, isAbsent = false, store } = params;
+  const isWeekend = Boolean(params.isWeekend || params.isWeekendOverride);
+  const contract = getTeacherContractAt(teacher, sessionDate, store);
+  const periods =
+    params.periodsCount !== undefined
+      ? Number(params.periodsCount)
+      : Number(contract.periods_per_session) || 2;
+
+  const activeStudentsCount = cls
+    ? (store?.enrollments || []).filter(
+        e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial')
+      ).length
+    : 0;
+  const totalClassSessions = Math.max(1, Number(cls?.total_sessions) || 24);
+  const classRevenue = activeStudentsCount * (Number(cls?.full_course_fee) || 0);
+
+  if (contract.pay_model === 'revenue_share') {
+    const pct = Number(contract.percentage_rate ?? teacher?.percentage_rate ?? 45);
+    const rawSessionShare = ((classRevenue / totalClassSessions) * pct) / 100;
+    const unitEarned = Math.round(rawSessionShare);
+    const earnedAmount = isAbsent || periods <= 0 ? 0 : unitEarned;
+    const ratePerPeriod = Math.round(unitEarned / Math.max(1, periods || 2));
+    const typeText = contract.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng';
+
+    return {
+      contract,
+      teacherType: contract.teacher_type,
+      payModel: 'revenue_share',
+      periodsCount: isAbsent ? 0 : periods,
+      ratePerPeriod,
+      rateApplied: unitEarned,
+      sessionRate: unitEarned,
+      earnedAmount,
+      classRevenue,
+      activeStudentsCount,
+      totalClassSessions,
+      percentageRate: pct,
+      milestoneKey: `${contract.id}_rev_${pct}`,
+      milestoneLabel: `${typeText} ${pct}%`,
+    };
+  }
+
+  // Mô hình per_session
+  const defaultPeriods = Number(contract.periods_per_session) || 2;
+  let baseSessionRate = Number(contract.session_rate) || 300000;
+  let basePeriodRate = Number(contract.rate_per_period) || Math.round(baseSessionRate / defaultPeriods);
+
+  if (cls?.subject_id && Array.isArray(contract.custom_subject_rates)) {
+    const customSubj = contract.custom_subject_rates.find(csr => csr.subject_id === cls.subject_id);
+    if (customSubj && Number(customSubj.rate_per_period) > 0) {
+      basePeriodRate = Number(customSubj.rate_per_period);
+      baseSessionRate = basePeriodRate * defaultPeriods;
+    }
+  }
+
+  const weekendMult = isWeekend ? Number(contract.weekend_multiplier || 1) || 1 : 1;
+  const rateApplied = Math.round(baseSessionRate * weekendMult);
+  const ratePerPeriod = Math.round(rateApplied / Math.max(1, periods || defaultPeriods));
+  const earnedAmount = isAbsent || periods <= 0 ? 0 : rateApplied;
+  const typeText = contract.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng';
+
+  return {
+    contract,
+    teacherType: contract.teacher_type,
+    payModel: 'per_session',
+    periodsCount: isAbsent ? 0 : periods,
+    ratePerPeriod,
+    rateApplied,
+    sessionRate: rateApplied,
+    earnedAmount,
+    classRevenue,
+    activeStudentsCount,
+    totalClassSessions,
+    percentageRate: Number(contract.percentage_rate) || 0,
+    milestoneKey: `${contract.id}_ses_${rateApplied}`,
+    milestoneLabel: `${typeText}: ${formatVND(rateApplied)}/buổi`,
+  };
+}
+
+/**
+ * Kiểm tra một buổi dạy của giáo viên có thuộc kỳ quyết toán đã tất toán (is_settled = true) hay không
+ */
+export function isSessionSettledForTeacher(
+  teacherId: string,
+  sessionDate: string,
+  termId: string | undefined,
+  classId: string | undefined,
+  store?: Partial<AppStore> | null
+): boolean {
+  if (!teacherId || !store?.payrollSettlements) return false;
+  return store.payrollSettlements.some(ps => {
+    if (!ps.is_settled || ps.teacher_id !== teacherId) return false;
+    const matchTerm = ps.term_id === 'all' || !termId || ps.term_id === termId;
+    const matchClass = !ps.class_id || ps.class_id === 'all' || !classId || ps.class_id === classId;
+    if (!matchTerm || !matchClass) return false;
+    if (ps.settled_date && sessionDate > ps.settled_date) {
+      // Nếu khóa học đã quyết toán trọn kỳ (termId khớp), coi toàn bộ buổi trong kỳ đó đã quyết toán
+      if (termId && ps.term_id === termId) return true;
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Tìm ngày buổi dạy muộn nhất đã được quyết toán (is_settled = true) của giáo viên
+ */
+export function getLatestSettledSessionDateForTeacher(
+  teacherId: string,
+  store?: Partial<AppStore> | null
+): string | null {
+  if (!teacherId || !store) return null;
+  const settledPayrolls = (store.payrollSettlements || []).filter(
+    ps => ps.is_settled && ps.teacher_id === teacherId
+  );
+  if (settledPayrolls.length === 0) return null;
+
+  let maxDate: string | null = null;
+  const checkDate = (d?: string) => {
+    if (!d) return;
+    const clean = d.slice(0, 10);
+    if (!maxDate || clean > maxDate) maxDate = clean;
+  };
+
+  for (const ps of settledPayrolls) {
+    // Kiểm tra các buổi dạy thực tế thuộc kỳ quyết toán này
+    for (const ta of store.teacherAttendance || []) {
+      if (ta.actual_teacher_id !== teacherId) continue;
+      const matchTerm = ps.term_id === 'all' || ta.term_id === ps.term_id;
+      const matchClass = !ps.class_id || ps.class_id === 'all' || ta.class_id === ps.class_id;
+      if (matchTerm && matchClass) {
+        checkDate(ta.session_date);
+      }
+    }
+    for (const ses of store.sessions || []) {
+      if (ses.status !== 'completed') continue;
+      const cls = (store.classes || []).find(c => c.id === ses.class_id);
+      const actualId = ses.actual_teacher_id || cls?.primary_teacher_id;
+      if (actualId !== teacherId) continue;
+      const sesTermId = ses.term_id || cls?.term_id;
+      const matchTerm = ps.term_id === 'all' || sesTermId === ps.term_id;
+      const matchClass = !ps.class_id || ps.class_id === 'all' || ses.class_id === ps.class_id;
+      if (matchTerm && matchClass) {
+        checkDate(ses.session_date);
+      }
+    }
+    if (!maxDate && ps.settled_date) {
+      checkDate(ps.settled_date);
+    }
+  }
+
+  return maxDate;
+}
+
+/**
+ * Đồng bộ các trường "hiện tại" trên bảng `teachers` theo mốc hợp đồng có hiệu lực tại ngày hôm nay (`referenceDate`).
+ * Chạy tự động khi khởi động app và ngay sau khi thêm/cập nhật `teacher_contracts`.
+ */
+export function syncTeachersCurrentFieldsFromContracts(
+  store: AppStore,
+  referenceDate?: string
+): AppStore {
+  const today = (referenceDate || new Date().toISOString().split('T')[0]).slice(0, 10);
+  const contracts = store.teacherContracts || [];
+  if (contracts.length === 0) return store;
+
+  let changed = false;
+  const updatedTeachers: Teacher[] = (store.teachers || []).map((teacher): Teacher => {
+    const teacherMilestones = contracts.filter(c => c.teacher_id === teacher.id);
+    if (teacherMilestones.length === 0) return teacher;
+
+    const activeContract = getTeacherContractAt(teacher, today, store);
+    const nextType: 'permanent' | 'visiting' =
+      activeContract.teacher_type === 'visiting' ? 'visiting' : 'permanent';
+    const nextPeriods = Number(activeContract.periods_per_session) || teacher.periods_per_session || 2;
+    const nextSessionRate =
+      activeContract.pay_model === 'per_session'
+        ? Number(activeContract.session_rate) || teacher.fixed_rate_per_session || (nextType === 'visiting' ? 270000 : 300000)
+        : teacher.fixed_rate_per_session || (nextType === 'visiting' ? 270000 : 300000);
+    const nextPeriodRate =
+      activeContract.pay_model === 'per_session'
+        ? Number(activeContract.rate_per_period) || Math.round(nextSessionRate / Math.max(1, nextPeriods))
+        : teacher.default_rate_per_period || Math.round(nextSessionRate / Math.max(1, nextPeriods));
+    const nextPct =
+      activeContract.pay_model === 'revenue_share'
+        ? Number(activeContract.percentage_rate ?? teacher.percentage_rate ?? 45)
+        : Number(activeContract.percentage_rate ?? teacher.percentage_rate ?? 0);
+    const nextWeekend = Number(activeContract.weekend_multiplier ?? teacher.weekend_multiplier ?? 1) || 1;
+    const nextCustomRates = Array.isArray(activeContract.custom_subject_rates)
+      ? activeContract.custom_subject_rates
+      : teacher.custom_subject_rates || [];
+
+    if (
+      teacher.type !== nextType ||
+      teacher.teacher_type !== nextType ||
+      teacher.fixed_rate_per_session !== nextSessionRate ||
+      teacher.default_rate_per_period !== nextPeriodRate ||
+      teacher.periods_per_session !== nextPeriods ||
+      teacher.percentage_rate !== nextPct ||
+      teacher.weekend_multiplier !== nextWeekend ||
+      JSON.stringify(teacher.custom_subject_rates || []) !== JSON.stringify(nextCustomRates)
+    ) {
+      changed = true;
+      return {
+        ...teacher,
+        type: nextType,
+        teacher_type: nextType,
+        fixed_rate_per_session: nextSessionRate,
+        default_rate_per_period: nextPeriodRate,
+        periods_per_session: nextPeriods,
+        percentage_rate: nextPct,
+        weekend_multiplier: nextWeekend,
+        custom_subject_rates: nextCustomRates,
+      };
+    }
+    return teacher;
+  });
+
+  if (!changed) return store;
+  return {
+    ...store,
+    teachers: updatedTeachers,
+  };
+}
+
+/**
+ * Tính toán đơn giá buổi thực tế (rate_applied) của giáo viên theo mốc hợp đồng tại `sessionDate` (hoặc hôm nay)
  */
 export function getTeacherEffectiveSessionRate(
   teacher: Teacher | undefined,
-  payrollConfig?: PayrollRateConfig
+  payrollConfig?: PayrollRateConfig,
+  sessionDate?: string,
+  store?: Partial<AppStore> | null,
+  cls?: ExtracurricularClass
 ): number {
   if (!teacher) return payrollConfig?.permanent_session_rate ?? 300000;
+  if (store || sessionDate || cls) {
+    const calc = calculateTeacherSessionPayAtDate({
+      teacher,
+      cls,
+      sessionDate: sessionDate || new Date().toISOString().split('T')[0],
+      store: store || { payrollRateConfig: payrollConfig },
+    });
+    return calc.rateApplied;
+  }
+  if (Number(teacher.fixed_rate_per_session) > 0) {
+    return Number(teacher.fixed_rate_per_session);
+  }
   const isVisiting = teacher.type === 'visiting' || teacher.teacher_type === 'visiting';
   if (isVisiting) {
     return (
@@ -2217,23 +2637,43 @@ export function getTeacherEffectiveSessionRate(
 }
 
 /**
- * Tính toán đơn giá tiết thực tế (rate_per_period) của giáo viên theo chuẩn thù lao toàn trường
+ * Tính toán đơn giá tiết thực tế (rate_per_period) của giáo viên
  */
 export function getTeacherEffectivePeriodRate(
   teacher: Teacher | undefined,
-  _subjectId?: string,
-  _isWeekend: boolean = false,
-  payrollConfig?: PayrollRateConfig
+  subjectId?: string,
+  isWeekend: boolean = false,
+  payrollConfig?: PayrollRateConfig,
+  sessionDate?: string,
+  store?: Partial<AppStore> | null,
+  cls?: ExtracurricularClass
 ): number {
+  if (teacher && (store || sessionDate || cls)) {
+    const calc = calculateTeacherSessionPayAtDate({
+      teacher,
+      cls: cls || (subjectId ? ({ subject_id: subjectId } as ExtracurricularClass) : undefined),
+      sessionDate: sessionDate || new Date().toISOString().split('T')[0],
+      isWeekend,
+      store: store || { payrollRateConfig: payrollConfig },
+    });
+    return calc.ratePerPeriod;
+  }
+  if (teacher && subjectId && Array.isArray(teacher.custom_subject_rates)) {
+    const custom = teacher.custom_subject_rates.find(c => c.subject_id === subjectId);
+    if (custom && Number(custom.rate_per_period) > 0) {
+      return Math.round(Number(custom.rate_per_period) * (isWeekend ? Number(teacher.weekend_multiplier || 1) : 1));
+    }
+  }
   const sessionRate = getTeacherEffectiveSessionRate(teacher, payrollConfig);
   const periods = teacher?.periods_per_session || payrollConfig?.periods_per_session || 2;
-  return Math.round(sessionRate / periods);
+  const mult = isWeekend ? Number(teacher?.weekend_multiplier || 1) || 1 : 1;
+  return Math.round((sessionRate * mult) / periods);
 }
 
 /**
  * HỒI TỐ (RETROACTIVE RECALCULATION) ĐỒNG BỘ THÙ LAO THEO BUỔI CHO CÁC CA ĐÃ ĐIỂM DANH
- * Áp dụng định mức thù lao theo buổi mới (Cơ hữu: 300.000 đ/buổi, Thỉnh giảng: 270.000 đ/buổi)
- * cho toàn bộ các ca dạy đã phát sinh trong lịch sử và đồng bộ lại trạng thái quyết toán.
+ * - Tôn trọng các mốc hợp đồng trong `teacher_contracts` theo `session_date`.
+ * - TUYỆT ĐỐI KHÔNG tính lại hoặc ghi đè các buổi dạy thuộc bảng lương đã quyết toán (`is_settled = true`).
  */
 export function recalculatePastSessions(
   store: AppStore,
@@ -2245,7 +2685,18 @@ export function recalculatePastSessions(
   const permPeriodRate = Math.round(permanentSessionRate / periods);
   const visPeriodRate = Math.round(visitingSessionRate / periods);
 
+  const nextRateConfig: PayrollRateConfig = {
+    ...(store.payrollRateConfig || initialPayrollRateConfig),
+    permanent_session_rate: permanentSessionRate,
+    visiting_session_rate: visitingSessionRate,
+    permanent_rate_per_period: permPeriodRate,
+    visiting_rate_per_period: visPeriodRate,
+    periods_per_session: periods,
+  };
+
   const updatedTeachers: Teacher[] = (store.teachers || []).map(t => {
+    const hasContracts = (store.teacherContracts || []).some(c => c.teacher_id === t.id);
+    if (hasContracts) return t;
     const isVisiting = (t.type || t.teacher_type) === 'visiting';
     const sessionRate = isVisiting ? visitingSessionRate : permanentSessionRate;
     const periodRate = isVisiting ? visPeriodRate : permPeriodRate;
@@ -2256,51 +2707,62 @@ export function recalculatePastSessions(
       default_rate_per_period: periodRate,
       periods_per_session: periods,
       fixed_rate_per_session: sessionRate,
-      custom_subject_rates: [],
     };
   });
 
+  const tempStore: AppStore = {
+    ...store,
+    teachers: updatedTeachers,
+    payrollRateConfig: nextRateConfig,
+  };
+
   const updatedTeacherAttendance: TeacherAttendanceRecord[] = (store.teacherAttendance || []).map(rec => {
+    // Không bao giờ tính lại các buổi thuộc kỳ lương đã quyết toán (is_settled = true)
+    if (
+      isSessionSettledForTeacher(
+        rec.actual_teacher_id,
+        rec.session_date,
+        rec.term_id,
+        rec.class_id,
+        tempStore
+      )
+    ) {
+      return rec;
+    }
+
     const actualTeacher = updatedTeachers.find(t => t.id === rec.actual_teacher_id);
-    const isVisiting = (actualTeacher?.type || actualTeacher?.teacher_type) === 'visiting';
-    const rateApplied = isVisiting ? visitingSessionRate : permanentSessionRate;
+    const cls = (store.classes || []).find(c => c.id === rec.class_id);
     const isAbsent =
       rec.status === 'absent_excused' ||
       rec.status === 'absent_unexcused' ||
       rec.periods_count === 0;
-    const earnedAmount = isAbsent ? 0 : 1 * rateApplied;
-    const periodRate = Math.round(rateApplied / (rec.periods_count || 2));
+
+    const calc = calculateTeacherSessionPayAtDate({
+      teacher: actualTeacher,
+      cls,
+      sessionDate: rec.session_date,
+      periodsCount: rec.periods_count || 2,
+      isAbsent,
+      store: tempStore,
+    });
 
     return {
       ...rec,
-      rate_applied: rateApplied,
-      earned_amount: earnedAmount,
-      rate_per_period: periodRate,
-      total_payout: earnedAmount,
+      rate_applied: calc.rateApplied,
+      earned_amount: calc.earnedAmount,
+      rate_per_period: calc.ratePerPeriod,
+      total_payout: calc.earnedAmount,
       recalculated_at: nowIso,
     };
   });
 
-  // Reset settlement status to pending ("Chờ kế toán duyệt chi") when rates are retroactively recalculated
-  const updatedPayrollSettlements = (store.payrollSettlements || []).map(ps => ({
-    ...ps,
-    is_settled: false,
-  }));
-
-  return {
-    ...store,
-    teachers: updatedTeachers,
+  // Giữ nguyên các bảng lương đã quyết toán (is_settled = true), không reset về false
+  const syncedStore = syncTeachersCurrentFieldsFromContracts({
+    ...tempStore,
     teacherAttendance: updatedTeacherAttendance,
-    payrollSettlements: updatedPayrollSettlements,
-    payrollRateConfig: {
-      ...(store.payrollRateConfig || initialPayrollRateConfig),
-      permanent_session_rate: permanentSessionRate,
-      visiting_session_rate: visitingSessionRate,
-      permanent_rate_per_period: permPeriodRate,
-      visiting_rate_per_period: visPeriodRate,
-      periods_per_session: periods,
-    },
-  };
+  });
+
+  return syncedStore;
 }
 
 // ============================================================================
@@ -2343,6 +2805,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: true,
         can_manage_trial: true,
         can_config_payroll_rates: true,
+        can_manage_teachers: true,
       };
     case 'campus_manager':
       return {
@@ -2358,6 +2821,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: true,
         can_manage_trial: true,
         can_config_payroll_rates: false,
+        can_manage_teachers: true,
       };
     case 'academic_accountant':
       return {
@@ -2373,6 +2837,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: true,
         can_manage_trial: true,
         can_config_payroll_rates: false,
+        can_manage_teachers: false,
       };
     case 'academic_admissions':
     case 'academic':
@@ -2389,6 +2854,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: true,
         can_manage_trial: true,
         can_config_payroll_rates: false,
+        can_manage_teachers: false,
       };
     case 'admissions':
       return {
@@ -2404,6 +2870,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: true,
         can_manage_trial: true,
         can_config_payroll_rates: false,
+        can_manage_teachers: false,
       };
     case 'accountant':
       return {
@@ -2419,6 +2886,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: false,
         can_manage_trial: false,
         can_config_payroll_rates: true,
+        can_manage_teachers: false,
       };
     case 'teacher':
     default:
@@ -2435,6 +2903,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_view_registrations: false,
         can_manage_trial: false,
         can_config_payroll_rates: false,
+        can_manage_teachers: false,
       };
   }
 }
@@ -2461,6 +2930,8 @@ export function getUserPermissions(user?: AppUser | null, fallbackRole: UserRole
   }
   return getDefaultPermissionsForRole(user.role);
 }
+
+export const getEffectivePermissions = getUserPermissions;
 
 export function getRoleLabelVN(role: UserRole, user?: AppUser | null): string {
   switch (role) {
