@@ -41,7 +41,6 @@ import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
-import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 
 interface FinancePayrollTabProps {
   store: AppStore;
@@ -95,45 +94,43 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       .toLowerCase();
   };
 
-  // Chỉ tải lại danh sách hóa đơn từ Supabase khi người dùng bấm "Làm mới" hoặc sau khi vừa ghi dữ liệu (không tự gọi khi mở tab)
-  const fetchInvoicesFromSupabase = async (forceOrEvent?: boolean | React.MouseEvent<HTMLButtonElement>) => {
+  // Fetch invoices directly from Supabase to guarantee real-time sync
+  const fetchInvoicesFromSupabase = async () => {
     const client = getSupabaseClient() || supabase;
     if (!client) return;
-    const force = typeof forceOrEvent === 'boolean' ? forceOrEvent : true;
     try {
       setIsRefreshingInvoices(true);
-      if (force) {
-        invalidateFetchOnce('tuition_invoices:');
-      }
-      const data = await fetchOnce(
-        'tuition_invoices:list',
-        async () => {
-          const { data: rows, error } = await client
-            .from('tuition_invoices')
-            .select(`
-              *,
-              students (
-                id,
-                code,
-                name,
-                parent_phone
-              ),
-              extracurricular_classes (
-                id,
-                name,
-                code
-              )
-            `)
-            .order('created_at', { ascending: false });
+      let { data, error } = await client
+        .from('tuition_invoices')
+        .select(`
+          *,
+          students (
+            id,
+            code,
+            name,
+            parent_phone
+          ),
+          extracurricular_classes (
+            id,
+            name,
+            code
+          )
+        `)
+        .order('created_at', { ascending: false });
 
-          if (error) {
-            throw error;
-          }
-          return Array.isArray(rows) ? rows : [];
-        },
-        60000,
-        { force }
-      );
+      if (error) {
+        const fallbackRes = await client
+          .from('tuition_invoices')
+          .select('*')
+          .order('created_at', { ascending: false });
+        data = fallbackRes.data as any;
+        error = fallbackRes.error;
+      }
+
+      if (error) {
+        console.warn('Lỗi fetch tuition_invoices từ Supabase:', error);
+        return;
+      }
 
       if (Array.isArray(data)) {
         const mappedInvoices = data.map((r: any) => mapSupabaseRowToStoreEntity('tuition_invoices', r));
@@ -148,6 +145,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       setIsRefreshingInvoices(false);
     }
   };
+
+  useEffect(() => {
+    fetchInvoicesFromSupabase();
+  }, []);
 
   React.useEffect(() => {
     if (initialSection) {
@@ -244,14 +245,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   // Tự động đồng bộ số buổi còn lại khi chuyển lớp hoặc đổi học sinh
   useEffect(() => {
     if (autoRemainingInfo.remaining > 0) {
-      setTransferState(prev =>
-        prev.remaining_sessions === autoRemainingInfo.remaining
-          ? prev
-          : {
-              ...prev,
-              remaining_sessions: autoRemainingInfo.remaining,
-            }
-      );
+      setTransferState(prev => ({
+        ...prev,
+        remaining_sessions: autoRemainingInfo.remaining,
+      }));
     }
   }, [autoRemainingInfo.remaining, transferState.from_class_id, transferState.student_id]);
 
@@ -261,27 +258,19 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       const isCurrentValid = currentStudentClasses.some(c => c.id === transferState.from_class_id);
       if (!isCurrentValid) {
         const defaultFrom = currentStudentClasses[0];
-        setTransferState(prev =>
-          prev.from_class_id === defaultFrom.id
-            ? prev
-            : {
-                ...prev,
-                from_class_id: defaultFrom.id,
-              }
-        );
+        setTransferState(prev => ({
+          ...prev,
+          from_class_id: defaultFrom.id,
+        }));
         if (defaultFrom.campus_id) {
           setTargetCampusId(defaultFrom.campus_id);
         }
       }
     } else {
-      setTransferState(prev =>
-        prev.from_class_id === ''
-          ? prev
-          : {
-              ...prev,
-              from_class_id: '',
-            }
-      );
+      setTransferState(prev => ({
+        ...prev,
+        from_class_id: ''
+      }));
     }
   }, [transferState.student_id, currentStudentClasses]);
 
@@ -307,25 +296,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     if (filteredTargetClasses.length > 0) {
       const isValid = filteredTargetClasses.some(c => c.id === transferState.to_class_id);
       if (!isValid) {
-        const nextToId = filteredTargetClasses[0].id;
-        setTransferState(prev =>
-          prev.to_class_id === nextToId
-            ? prev
-            : {
-                ...prev,
-                to_class_id: nextToId,
-              }
-        );
+        setTransferState(prev => ({
+          ...prev,
+          to_class_id: filteredTargetClasses[0].id
+        }));
       }
     } else {
-      setTransferState(prev =>
-        prev.to_class_id === ''
-          ? prev
-          : {
-              ...prev,
-              to_class_id: '',
-            }
-      );
+      setTransferState(prev => ({
+        ...prev,
+        to_class_id: ''
+      }));
     }
   }, [filteredTargetClasses, transferState.to_class_id]);
 

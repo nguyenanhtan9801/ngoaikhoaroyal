@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { CompactHeaderToolbar } from './components/CompactHeaderToolbar';
 import { OverviewKpiTab } from './components/tabs/OverviewKpiTab';
@@ -42,7 +42,7 @@ import {
 import { isRouteAllowed, getDefaultRouteForUser } from './lib/permissions';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
-import { useSupabaseRealtime, recomputeDerivedRealtimeState } from './hooks/useSupabaseRealtime';
+import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
 import { buildGuestCatalogStore, loadPublicCatalogSafely } from './services/dataLoader';
 import { supabase } from './supabaseClient';
 import { ShieldAlert, ArrowLeft, KeyRound, X, Loader2 } from 'lucide-react';
@@ -488,16 +488,15 @@ export default function App() {
     };
   }, []);
 
-  // Synchronize cross-tab localStorage updates via native StorageEvent (chỉ khi đã có nhân sự đăng nhập)
+  // Synchronize localStorage with event listener (chỉ khi đã có nhân sự đăng nhập)
   useEffect(() => {
     if (!currentUser) return;
-    const handleStorageUpdate = (e: StorageEvent) => {
-      if (e.key && e.key !== 'royal_extracurricular_store_v4_clean') return;
-      setStore(recomputeDerivedRealtimeState(loadStore()));
+    const handleStorageUpdate = () => {
+      setStore(loadStore());
     };
-    window.addEventListener('storage', handleStorageUpdate);
-    return () => window.removeEventListener('storage', handleStorageUpdate);
-  }, [currentUser?.id]);
+    window.addEventListener('royal_store_updated', handleStorageUpdate);
+    return () => window.removeEventListener('royal_store_updated', handleStorageUpdate);
+  }, [currentUser]);
 
   // Cơ chế thu hồi phiên tức thì (Instant Session Invalidation) nếu tài khoản bị khóa & đồng bộ quyền hạn
   const forceLockoutCurrentUser = () => {
@@ -557,15 +556,13 @@ export default function App() {
     r => r.status === 'pending'
   ).length;
 
-  const updateStore = useCallback((updater: (prev: AppStore) => AppStore) => {
+  const updateStore = (updater: (prev: AppStore) => AppStore) => {
     setStore(prev => {
       const next = updater(prev);
-      if (next === prev) return prev;
-      const recomputed = recomputeDerivedRealtimeState(next);
-      saveStore(recomputed);
-      return recomputed;
+      saveStore(next);
+      return next;
     });
-  }, []);
+  };
 
   // Quick Issue Credit from Alert Card
   const handleIssueCreditForStudent = (student: Student, cls: ExtracurricularClass, dates: string[]) => {

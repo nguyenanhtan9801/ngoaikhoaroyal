@@ -1150,50 +1150,134 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     }
   };
 
-  // Đồng bộ cấu hình termSubjects từ store trung tâm khi chọn khóa học (không tự gọi Supabase mỗi lần mở subtab)
+  // Nạp danh sách term_subjects từ Supabase khi chọn khóa hoặc khi vào subtab
   useEffect(() => {
-    if (!selectedConfigTermId || hierarchySubTab !== 'term_subjects') return;
-    if (!store.subjects || store.subjects.length === 0) return;
-    const currentForTerm = (store.termSubjects || []).filter(
-      (ts) => String(ts.term_id) === String(selectedConfigTermId)
-    );
-    if (currentForTerm.length >= store.subjects.length) return;
+    let cancelled = false;
+    const fetchTermSubjectsFromCloud = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client || !selectedConfigTermId) return;
 
-    onUpdateStore((prev) => {
-      const existingForTerm = prev.termSubjects.filter(
-        (ts) => String(ts.term_id) === String(selectedConfigTermId)
-      );
-      if (existingForTerm.length >= prev.subjects.length) {
-        return prev;
+      try {
+        const query = hierarchySubTab === 'terms'
+          ? client.from('term_subjects').select('*')
+          : client.from('term_subjects').select('*').eq('term_id', String(selectedConfigTermId));
+
+        const { data: termConfigs, error } = await query;
+
+        if (!error && Array.isArray(termConfigs) && !cancelled) {
+          onUpdateStore((prev) => {
+            const mappedRows: TermSubjectConfig[] = termConfigs.map((r: any) => ({
+              id: r.id || `ts_${r.term_id}_${r.subject_id}`,
+              term_id: String(r.term_id),
+              subject_id: String(r.subject_id),
+              standard_sessions: Number(r.standard_sessions) || 24,
+              standard_course_fee: Number(r.total_fee ?? r.standard_course_fee ?? 3600000),
+              standard_session_rate: Math.ceil(Number(r.total_fee ?? r.standard_course_fee ?? 3600000) / Math.max(1, Number(r.standard_sessions || 24))),
+              is_active: Boolean(r.is_active === true || r.is_active === 1 || r.is_active === 'true'),
+              notes: r.term_note || r.notes || '',
+            }));
+
+            if (hierarchySubTab === 'terms') {
+              const map = new Map<string, TermSubjectConfig>();
+              prev.termSubjects.forEach(ts => map.set(`${ts.term_id}_${ts.subject_id}`, ts));
+              mappedRows.forEach(ts => map.set(`${ts.term_id}_${ts.subject_id}`, ts));
+              return {
+                ...prev,
+                termSubjects: Array.from(map.values()),
+              };
+            }
+
+            const remoteMap = new Map<string, TermSubjectConfig>();
+            mappedRows.forEach((r) => {
+              remoteMap.set(r.subject_id, r);
+            });
+
+            const otherTermSubjects = prev.termSubjects.filter(
+              (ts) => String(ts.term_id) !== String(selectedConfigTermId)
+            );
+
+            const currentTermSubjects: TermSubjectConfig[] = prev.subjects.map((s) => {
+              const remote = remoteMap.get(String(s.id));
+              if (remote) return remote;
+              const localExisting = prev.termSubjects.find(
+                (ts) => String(ts.term_id) === String(selectedConfigTermId) && String(ts.subject_id) === String(s.id)
+              );
+              if (localExisting) return localExisting;
+              return {
+                id: `ts_${selectedConfigTermId}_${s.id}`,
+                term_id: String(selectedConfigTermId),
+                subject_id: String(s.id),
+                standard_sessions: Number(s.standard_sessions || 24),
+                standard_course_fee: Number(s.standard_course_fee || 3600000),
+                standard_session_rate: Math.ceil(Number(s.standard_course_fee || 3600000) / Math.max(1, Number(s.standard_sessions || 24))),
+                is_active: false,
+                notes: '',
+              };
+            });
+
+            return {
+              ...prev,
+              termSubjects: [...otherTermSubjects, ...currentTermSubjects],
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Lỗi tải term_subjects từ Cloud:', err);
       }
+    };
 
-      const otherTermSubjects = prev.termSubjects.filter(
-        (ts) => String(ts.term_id) !== String(selectedConfigTermId)
-      );
+    if (hierarchySubTab === 'term_subjects' || hierarchySubTab === 'terms') {
+      fetchTermSubjectsFromCloud();
+    }
 
-      const currentTermSubjects: TermSubjectConfig[] = prev.subjects.map((s) => {
-        const localExisting = prev.termSubjects.find(
-          (ts) => String(ts.term_id) === String(selectedConfigTermId) && String(ts.subject_id) === String(s.id)
-        );
-        if (localExisting) return localExisting;
-        return {
-          id: `ts_${selectedConfigTermId}_${s.id}`,
-          term_id: String(selectedConfigTermId),
-          subject_id: String(s.id),
-          standard_sessions: Number(s.standard_sessions || 24),
-          standard_course_fee: Number(s.standard_course_fee || 3600000),
-          standard_session_rate: Math.ceil(Number(s.standard_course_fee || 3600000) / Math.max(1, Number(s.standard_sessions || 24))),
-          is_active: false,
-          notes: '',
-        };
-      });
-
-      return {
-        ...prev,
-        termSubjects: [...otherTermSubjects, ...currentTermSubjects],
-      };
-    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedConfigTermId, hierarchySubTab]);
+
+  // Nạp danh sách subjects từ bảng public.subjects trên Supabase để đồng bộ standard_course_fee và standard_session_rate
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSubjectsFromCloud = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data: remoteSubjects, error } = await client.from('subjects').select('*');
+        if (!error && Array.isArray(remoteSubjects) && remoteSubjects.length > 0 && !cancelled) {
+          onUpdateStore((prev) => {
+            const mappedSubjects: Subject[] = remoteSubjects.map((r: any): Subject => {
+              const courseFee = Number(r.standard_course_fee || 0);
+              const sessions = Number(r.standard_sessions || 16);
+              const sessionRate = Number(r.standard_session_rate) || (sessions > 0 && courseFee > 0 ? Math.round(courseFee / sessions) : 0);
+              return {
+                id: String(r.id),
+                code: String(r.code || r.id).toUpperCase(),
+                name: String(r.name || ''),
+                category: (r.category || 'Thể thao') as Subject['category'],
+                category_code: r.category_code || resolveSubjectCategoryCode(r.category, r.name),
+                standard_duration: r.standard_duration || '90 phút',
+                standard_sessions: sessions,
+                standard_course_fee: courseFee,
+                standard_session_rate: sessionRate,
+                description: r.description || '',
+              };
+            });
+            return {
+              ...prev,
+              subjects: mappedSubjects,
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Lỗi tải subjects từ Supabase:', err);
+      }
+    };
+
+    fetchSubjectsFromCloud();
+    return () => {
+      cancelled = true;
+    };
+  }, [hierarchySubTab]);
 
   const handleOpenAddSubject = (presetCategory?: string | React.MouseEvent) => {
     let defaultCatObj = categoriesList[0];

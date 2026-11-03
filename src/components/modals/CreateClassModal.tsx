@@ -354,30 +354,69 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
     setFormData(prev => ({ ...prev, facility_id: id }));
   };
 
-  // Sử dụng danh sách ngày nghỉ lễ và phòng học từ store trung tâm (không gọi truy vấn khi mở modal)
   useEffect(() => {
-    setHolidaysList((store.holidays || []).filter(h => h.status !== 'inactive'));
-  }, [store.holidays]);
+    const fetchActiveHolidays = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data, error } = await client
+          .from('holidays')
+          .select('*')
+          .eq('status', 'active')
+          .order('start_date', { ascending: true });
+        if (!error && Array.isArray(data)) {
+          setHolidaysList(data as Holiday[]);
+        }
+      } catch (err) {
+        console.warn('Lỗi tải holidays khi tạo lớp:', err);
+      }
+    };
+    fetchActiveHolidays();
+  }, []);
 
   useEffect(() => {
-    if (!selectedCampusId) return;
-    const campusTarget = selectedCampusId.startsWith('camp_')
-      ? selectedCampusId
-      : `camp_${selectedCampusId}`;
-    const campusShort = selectedCampusId.replace('camp_', '');
+    const fetchFacilitiesByCampus = async () => {
+      if (!selectedCampusId) return;
 
-    const data = (store.facilities || []).filter(
-      (f: any) =>
-        (f.campus_id === campusTarget || f.campus_id === campusShort) &&
-        !f.is_locked
-    );
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
 
-    setFacilityList(data);
-    const hasSelectedInCampus = data.some((f: any) => f.id === selectedFacilityId);
-    if (data.length > 0 && (!selectedFacilityId || !hasSelectedInCampus)) {
-      setSelectedFacilityId(data[0].id);
-    }
-  }, [selectedCampusId, store.facilities]);
+      // Chuẩn hóa campusId (nếu nhận 'pmh' hoặc 'camp_pmh')
+      const campusTarget = selectedCampusId.startsWith('camp_')
+        ? selectedCampusId
+        : `camp_${selectedCampusId}`;
+
+      const { data, error } = await client
+        .from('facilities')
+        .select('*')
+        .eq('campus_id', campusTarget)
+        .eq('is_locked', false) // Chỉ lấy các phòng đang mở, không bị khóa bảo trì
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Lỗi tải danh mục phòng học:', error);
+        return;
+      }
+
+      if (data) {
+        setFacilityList(data);
+        onUpdateStore(prev => {
+          const otherFacilities = (prev.facilities || []).filter(f => f.campus_id !== campusTarget);
+          return {
+            ...prev,
+            facilities: [...otherFacilities, ...data],
+          };
+        });
+        // Mặc định chọn phòng đầu tiên nếu chưa chọn hoặc phòng cũ không thuộc cơ sở mới
+        const hasSelectedInCampus = data.some((f: any) => f.id === selectedFacilityId);
+        if (data.length > 0 && (!selectedFacilityId || !hasSelectedInCampus)) {
+          setSelectedFacilityId(data[0].id);
+        }
+      }
+    };
+
+    fetchFacilitiesByCampus();
+  }, [selectedCampusId]);
 
   // Handle Cascading Changes
   const handleCascadingChange = (newTermId: string, newCampusId: string, newSubjId: string) => {

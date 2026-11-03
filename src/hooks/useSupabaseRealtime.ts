@@ -15,7 +15,6 @@ import {
 } from '../lib/supabase';
 import { loadStore, saveStore } from '../lib/storage';
 import { loadInitialDataSafely, loadPublicCatalogSafely } from '../services/dataLoader';
-import { createDebouncedReload, invalidateFetchOnce } from '../lib/fetchOnce';
 
 export type RealtimeConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 
@@ -270,8 +269,8 @@ export function useSupabaseRealtime({
         let didMutate = false;
 
         if (eventType === 'INSERT' && mappedNew && mappedNew.id) {
-          const idx = currentList.findIndex(item => String(item.id) === String(mappedNew.id));
-          if (idx === -1) {
+          const exists = currentList.some(item => String(item.id) === String(mappedNew.id));
+          if (!exists) {
             updatedList = [mappedNew, ...currentList];
             didMutate = true;
 
@@ -280,31 +279,11 @@ export function useSupabaseRealtime({
                 mappedNew as ParentRegistration
               );
             }
-          } else {
-            // Đã có bản ghi trùng ID -> gộp trực tiếp payload vào bản ghi hiện có, không tải lại bảng
-            const mergedItem = {
-              ...currentList[idx],
-              ...mappedNew,
-              ...(table === 'students' && (currentList[idx] as any)?.enrollments && !(mappedNew as any)?.enrollments
-                ? { enrollments: (currentList[idx] as any).enrollments }
-                : {}),
-            };
-            if (JSON.stringify(currentList[idx]) !== JSON.stringify(mergedItem)) {
-              updatedList = [...currentList];
-              updatedList[idx] = mergedItem;
-              didMutate = true;
-            }
           }
         } else if (eventType === 'UPDATE' && mappedNew && mappedNew.id) {
           const idx = currentList.findIndex(item => String(item.id) === String(mappedNew.id));
           if (idx !== -1) {
-            const mergedItem = {
-              ...currentList[idx],
-              ...mappedNew,
-              ...(table === 'students' && (currentList[idx] as any)?.enrollments && !(mappedNew as any)?.enrollments
-                ? { enrollments: (currentList[idx] as any).enrollments }
-                : {}),
-            };
+            const mergedItem = { ...currentList[idx], ...mappedNew };
             if (JSON.stringify(currentList[idx]) !== JSON.stringify(mergedItem)) {
               updatedList = [...currentList];
               updatedList[idx] = mergedItem;
@@ -374,7 +353,7 @@ export function useSupabaseRealtime({
       if (hasAttemptedGuestCatalogLoadRef.current) return;
       hasAttemptedGuestCatalogLoadRef.current = true;
 
-      loadPublicCatalogSafely()
+      loadPublicCatalogSafely(store)
         .then(res => {
           isApplyingRemoteUpdateRef.current = true;
           prevStoreRef.current = res.store;
@@ -404,7 +383,6 @@ export function useSupabaseRealtime({
             isApplyingRemoteUpdateRef.current = true;
             const recomputed = recomputeDerivedRealtimeState(res.store);
             prevStoreRef.current = recomputed;
-            saveStore(recomputed);
             setStore(recomputed);
           }
         })
@@ -415,7 +393,7 @@ export function useSupabaseRealtime({
     } else {
       setIsOffline(true);
     }
-  }, [currentUser?.id, setStore]);
+  }, [currentUser, store, setStore]);
 
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
@@ -428,7 +406,6 @@ export function useSupabaseRealtime({
     const recomputed = recomputeDerivedRealtimeState(store);
     if (recomputed !== store) {
       prevStoreRef.current = recomputed;
-      saveStore(recomputed);
       setStore(recomputed);
       return;
     }
@@ -634,25 +611,17 @@ export function useSupabaseRealtime({
     handleRealtimePayload,
   ]);
 
-  // Mọi thao tác tải lại / kết nối lại đều phải debounce 2 giây (2000ms) và chỉ áp dụng payload sự kiện Realtime
-  const debouncedReloadRef = useRef<() => void>(
-    createDebouncedReload(() => {
-      invalidateFetchOnce('init:');
-      setReconnectAttempt(0);
-      setConnectionState('reconnecting');
-      setReconnectTrigger(t => t + 1);
-
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-      }
-      reconnectTimerRef.current = setTimeout(() => {
-        setConnectionState('connected');
-      }, 2000);
-    }, 2000)
-  );
-
   const reconnectNow = useCallback(() => {
-    debouncedReloadRef.current();
+    setReconnectAttempt(0);
+    setConnectionState('reconnecting');
+    setReconnectTrigger(t => t + 1);
+
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+    }
+    reconnectTimerRef.current = setTimeout(() => {
+      setConnectionState('connected');
+    }, 2500);
   }, []);
 
   return {

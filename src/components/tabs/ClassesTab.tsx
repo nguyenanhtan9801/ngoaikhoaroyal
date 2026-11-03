@@ -33,7 +33,6 @@ import { CreateClassModal, calculateExactSchedule, DAY_INDEX } from '../modals/C
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
 import { FacilityManagementView } from '../classes/FacilityManagementView';
 import { ScheduleCalendarView } from './ScheduleCalendarView';
-import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 
 export { calculateExactSchedule, DAY_INDEX };
 
@@ -169,89 +168,72 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     }
   }, [searchQuery]);
 
-  const [isRefreshingClasses, setIsRefreshingClasses] = useState<boolean>(false);
-
-  // Chỉ tải lại danh sách lớp và phòng học khi người dùng bấm "Làm mới" hoặc sau khi vừa ghi dữ liệu (không tự gọi khi mở tab)
-  const fetchClassesFromCloud = React.useCallback(
-    async (options?: { force?: boolean; showNotice?: boolean }) => {
+  // Auto-fetch latest classes and facilities from Supabase
+  useEffect(() => {
+    let cancelled = false;
+    const fetchClassesFromCloud = async () => {
       const client = getSupabaseClient() || supabase;
       if (!client) return;
-      const force = Boolean(options?.force);
-      if (force) {
-        invalidateFetchOnce('classes:');
-        invalidateFetchOnce('facilities:');
-      }
-      setIsRefreshingClasses(true);
       try {
-        const { classesData, facilitiesData } = await fetchOnce(
-          'classes:list_and_facilities',
-          async () => {
-            const [classesRes, facilitiesRes] = await Promise.all([
-              client.from('extracurricular_classes').select('*'),
-              client.from('facilities').select('*').order('name', { ascending: true }),
-            ]);
+        const [classesRes, facilitiesRes] = await Promise.all([
+          client.from('extracurricular_classes').select('*'),
+          client.from('facilities').select('*').order('name', { ascending: true }),
+        ]);
+
+        if (!cancelled) {
+          onUpdateStore(prev => {
+            let nextClasses = prev.classes;
+            if (!classesRes.error && Array.isArray(classesRes.data) && classesRes.data.length > 0) {
+              const mappedClasses: ExtracurricularClass[] = classesRes.data.map((r: any): ExtracurricularClass => ({
+                id: r.id,
+                code: r.code || r.id,
+                name: r.name,
+                term_id: r.term_id,
+                spanning_term_id: r.spanning_term_id || undefined,
+                is_cross_term: Boolean(r.is_cross_term),
+                term_distribution: r.term_distribution || undefined,
+                campus_id: r.campus_id,
+                subject_id: r.subject_id,
+                facility_id: r.facility_id || '',
+                time_slot_id: r.time_slot_id || '',
+                days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+                start_date: r.start_date || undefined,
+                end_date: r.end_date || undefined,
+                primary_teacher_id: r.primary_teacher_id || '',
+                max_students: Number(r.max_students) || 25,
+                total_sessions: Number(r.total_sessions) || 24,
+                full_course_fee: Number(r.full_course_fee) || 0,
+                price_per_session: Number(r.price_per_session) || 0,
+                status: r.status || 'active',
+                allow_over_quota: Boolean(r.allow_over_quota),
+              }));
+
+              const map = new Map<string, ExtracurricularClass>();
+              prev.classes.forEach(c => map.set(c.id, c));
+              mappedClasses.forEach(c => map.set(c.id, c));
+              nextClasses = Array.from(map.values());
+            }
+
+            const nextFacilities = (!facilitiesRes.error && Array.isArray(facilitiesRes.data) && facilitiesRes.data.length > 0)
+              ? facilitiesRes.data
+              : prev.facilities;
+
             return {
-              classesData: !classesRes.error && Array.isArray(classesRes.data) ? classesRes.data : [],
-              facilitiesData: !facilitiesRes.error && Array.isArray(facilitiesRes.data) ? facilitiesRes.data : [],
+              ...prev,
+              classes: nextClasses,
+              facilities: nextFacilities,
             };
-          },
-          60000,
-          { force }
-        );
-
-        onUpdateStore(prev => {
-          let nextClasses = prev.classes;
-          if (classesData.length > 0) {
-            const mappedClasses: ExtracurricularClass[] = classesData.map((r: any): ExtracurricularClass => ({
-              id: r.id,
-              code: r.code || r.id,
-              name: r.name,
-              term_id: r.term_id,
-              spanning_term_id: r.spanning_term_id || undefined,
-              is_cross_term: Boolean(r.is_cross_term),
-              term_distribution: r.term_distribution || undefined,
-              campus_id: r.campus_id,
-              subject_id: r.subject_id,
-              facility_id: r.facility_id || '',
-              time_slot_id: r.time_slot_id || '',
-              days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
-              start_date: r.start_date || undefined,
-              end_date: r.end_date || undefined,
-              primary_teacher_id: r.primary_teacher_id || '',
-              max_students: Number(r.max_students) || 25,
-              total_sessions: Number(r.total_sessions) || 24,
-              full_course_fee: Number(r.full_course_fee) || 0,
-              price_per_session: Number(r.price_per_session) || 0,
-              status: r.status || 'active',
-              allow_over_quota: Boolean(r.allow_over_quota),
-            }));
-
-            const map = new Map<string, ExtracurricularClass>();
-            prev.classes.forEach(c => map.set(c.id, c));
-            mappedClasses.forEach(c => map.set(c.id, c));
-            nextClasses = Array.from(map.values());
-          }
-
-          const nextFacilities = facilitiesData.length > 0 ? facilitiesData : prev.facilities;
-
-          return {
-            ...prev,
-            classes: nextClasses,
-            facilities: nextFacilities,
-          };
-        });
-
-        if (options?.showNotice) {
-          showToast('Đã làm mới danh sách lớp học và phòng chức năng!', 'success');
+          });
         }
       } catch (err) {
-        console.warn('Lỗi tải classes & facilities:', err);
-      } finally {
-        setIsRefreshingClasses(false);
+        console.warn('Lỗi auto-fetch classes & facilities:', err);
       }
-    },
-    [onUpdateStore]
-  );
+    };
+    fetchClassesFromCloud();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleCampusChange = (newCampusId: string) => {
     setLocalCampusId(newCampusId);
@@ -959,17 +941,6 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
             <div className="flex items-center gap-2.5">
               <ViewToggle viewMode={viewMode} onViewModeChange={setViewMode} />
-
-              <button
-                type="button"
-                onClick={() => void fetchClassesFromCloud({ force: true, showNotice: true })}
-                disabled={isRefreshingClasses}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 cursor-pointer disabled:opacity-50"
-                title="Làm mới danh sách lớp học từ máy chủ"
-              >
-                <RotateCcw className={`w-3.5 h-3.5 text-amber-400 ${isRefreshingClasses ? 'animate-spin' : ''}`} />
-                <span>Làm mới</span>
-              </button>
 
               <button
                 type="button"

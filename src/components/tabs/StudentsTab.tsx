@@ -25,8 +25,7 @@ import {
   Save,
   ExternalLink,
   Calendar,
-  BookOpen,
-  RefreshCw
+  BookOpen
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -60,8 +59,6 @@ import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { EnrollmentModal } from '../modals/EnrollmentModal';
 import { DatePickerVN } from '../common/DatePickerVN';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
-import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
-import { STUDENTS_DISPLAY_SELECT } from '../../services/dataLoader';
 
 const SignedAvatarImg: React.FC<{ src?: string; alt: string; className?: string }> = ({
   src,
@@ -130,14 +127,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [search, setSearch] = useState(initialSearch || '');
-  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch || '');
   const [selectedCampus, setSelectedCampus] = useState<'all' | 'pmh' | 'pl'>('all');
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
   const [onlyHealth, setOnlyHealth] = useState(focusHealth);
   const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageSize, setPageSize] = useState<number>(100); // Chuẩn phân trang 100 dòng mỗi trang
-  const [serverTotalCount, setServerTotalCount] = useState<number | null>(null);
-  const [isRefreshingStudents, setIsRefreshingStudents] = useState<boolean>(false);
+  const [pageSize, setPageSize] = useState<number | 'all'>(50); // Mặc định 50 học sinh/trang
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -190,34 +184,121 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   React.useEffect(() => {
     const cleaned = deduplicateEnrollments(store.enrollments);
     if (cleaned.length !== store.enrollments.length) {
-      onUpdateStore(prev => {
-        const deduped = deduplicateEnrollments(prev.enrollments);
-        if (deduped.length === prev.enrollments.length) return prev;
-        return {
-          ...prev,
-          enrollments: deduped,
-        };
-      });
+      onUpdateStore(prev => ({
+        ...prev,
+        enrollments: deduplicateEnrollments(prev.enrollments),
+      }));
     }
-  }, [store.enrollments]);
+  }, [store.enrollments, onUpdateStore]);
 
-  // Debounce từ khóa tìm kiếm 350ms cho tìm kiếm phía server
-  React.useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(search.trim());
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [search]);
+  // Đồng bộ trực tiếp danh sách học sinh kèm ghi danh (enrollments) & lớp học (extracurricular_classes) từ Supabase
+  const fetchStudents = React.useCallback(async () => {
+    const client = getSupabaseClient() || supabase;
+    if (!client) return;
 
-  // Hàm ánh xạ dữ liệu học sinh kèm enrollments lồng nhau vào store trung tâm
-  const applyRemoteStudentsToStore = React.useCallback(
-    (studentsData: any[], replacePage: boolean = false) => {
-      if (!Array.isArray(studentsData)) return;
+    try {
+      let { data: studentsData, error: studentsErr } = await client
+        .from('students')
+        .select(`
+          *,
+          enrollments (
+            id,
+            class_id,
+            enrollment_type,
+            status,
+            extracurricular_classes (
+              id,
+              name,
+              schedule_days,
+              days_of_week
+            )
+          )
+        `)
+        .order('code', { ascending: true })
+        .range(0, 4999); // Ép tải toàn bộ học sinh, không bị chặn ở 20 dòng
+
+      if (studentsErr) {
+        const fallbackJoin = await client
+          .from('students')
+          .select(`
+            *,
+            enrollments (
+              *,
+              extracurricular_classes (
+                *
+              )
+            )
+          `)
+          .order('code', { ascending: true })
+          .range(0, 4999);
+        if (!fallbackJoin.error && fallbackJoin.data) {
+          studentsData = fallbackJoin.data;
+        } else {
+          const plainStudents = await client
+            .from('students')
+            .select('*')
+            .order('code', { ascending: true })
+            .range(0, 4999);
+          if (!plainStudents.error && plainStudents.data) {
+            studentsData = plainStudents.data;
+          }
+        }
+      }
+
+      const [enrRes, clsRes] = await Promise.all([
+        client.from('enrollments').select('*, extracurricular_classes(*)').range(0, 9999),
+        client.from('extracurricular_classes').select('*').range(0, 999),
+      ]);
+
+      let remoteEnrollmentsRaw: any[] = [];
+      if (!enrRes.error && Array.isArray(enrRes.data)) {
+        remoteEnrollmentsRaw = enrRes.data;
+      } else {
+        const plainEnr = await client.from('enrollments').select('*').range(0, 9999);
+        if (!plainEnr.error && Array.isArray(plainEnr.data)) {
+          remoteEnrollmentsRaw = plainEnr.data;
+        }
+      }
+
+      const remoteClassesRaw: any[] = !clsRes.error && Array.isArray(clsRes.data) ? clsRes.data : [];
 
       onUpdateStore(prev => {
+        // 1. Merge classes
         const classMap = new Map<string, ExtracurricularClass>();
         prev.classes.forEach(c => classMap.set(c.id, c));
+        remoteClassesRaw.forEach(r => {
+          if (!r || !r.id) return;
+          const existing = classMap.get(r.id);
+          const parsedDays = Array.isArray(r.days_of_week)
+            ? r.days_of_week
+            : typeof r.days_of_week === 'string' && r.days_of_week.startsWith('[')
+            ? JSON.parse(r.days_of_week)
+            : Array.isArray(r.schedule_days)
+            ? r.schedule_days
+            : existing?.days_of_week || ['T2', 'T4'];
+          classMap.set(r.id, {
+            ...(existing || {}),
+            id: r.id,
+            name: r.name || existing?.name || r.id,
+            code: r.code || existing?.code || r.id,
+            term_id: r.term_id || existing?.term_id || 'term_fall_2026',
+            campus_id: r.campus_id || existing?.campus_id || 'camp_pmh',
+            subject_id: r.subject_id || existing?.subject_id || 'sub_01',
+            facility_id: r.facility_id || existing?.facility_id || 'fac_01',
+            time_slot_id: r.time_slot_id || existing?.time_slot_id || 'slot_after_01',
+            days_of_week: parsedDays,
+            start_date: r.start_date || existing?.start_date,
+            end_date: r.end_date || existing?.end_date,
+            primary_teacher_id: r.primary_teacher_id || r.teacher_id || existing?.primary_teacher_id || '',
+            max_students: Number(r.max_students || existing?.max_students || 25),
+            total_sessions: Number(r.total_sessions || existing?.total_sessions || 24),
+            full_course_fee: Number(r.full_course_fee || existing?.full_course_fee || 3990000),
+            price_per_session: Number(r.price_per_session || existing?.price_per_session || 166250),
+            status: r.status || existing?.status || 'active',
+          });
+        });
 
+        // 2. Collect nested enrollments from studentsData + remoteEnrollmentsRaw
         const enrMap = new Map<string, Enrollment>();
         prev.enrollments.forEach(e => {
           enrMap.set(`${e.student_id}__${e.class_id}`, e);
@@ -238,6 +319,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           if (nestedCls && nestedCls.id && !classMap.has(nestedCls.id)) {
             const parsedDays = Array.isArray(nestedCls.days_of_week)
               ? nestedCls.days_of_week
+              : Array.isArray(nestedCls.schedule_days)
+              ? nestedCls.schedule_days
+              : typeof nestedCls.schedule_days === 'string'
+              ? nestedCls.schedule_days.split(',').map((s: string) => s.trim()).filter(Boolean)
               : ['T2', 'T4'];
             classMap.set(nestedCls.id, {
               id: nestedCls.id,
@@ -269,13 +354,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             id: raw.id || existing?.id || `enr_${sid}_${raw.class_id}`,
             student_id: sid,
             class_id: raw.class_id,
-            registered_sessions: Number(raw.registered_sessions || existing?.registered_sessions || 24),
-            joined_date: raw.joined_date || existing?.joined_date || new Date().toISOString().split('T')[0],
+            registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || raw.total_sessions || existing?.registered_sessions || 24),
+            joined_date: raw.joined_date || raw.start_date || existing?.joined_date || new Date().toISOString().split('T')[0],
             enrolled_days_of_week: enrolledDays,
             is_partial_schedule: Boolean(raw.is_partial_schedule ?? existing?.is_partial_schedule),
             status: isTrial ? 'trial' : (raw.status === 'dropped' || raw.status === 'trial_dropped' ? raw.status : 'active'),
             is_trial: isTrial,
-            trial_session_date: raw.trial_session_date || existing?.trial_session_date,
+            trial_session_date: raw.trial_session_date || raw.start_date || existing?.trial_session_date,
             trial_attended: Boolean(raw.trial_attended ?? existing?.trial_attended),
             ...( {
               enrollment_type: isTrial ? 'trial' : (raw.enrollment_type || 'official'),
@@ -284,6 +369,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           });
         };
 
+        remoteEnrollmentsRaw.forEach(raw => processRawEnrollment(raw));
+
+        // 3. Merge students
         const existingByIdOrCode = new Map<string, Student>();
         prev.students.forEach(s => {
           if (s.id) existingByIdOrCode.set(String(s.id), s);
@@ -291,57 +379,69 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         });
 
         const studentMap = new Map<string, Student>();
-        if (!replacePage) {
+        if (!Array.isArray(studentsData)) {
           prev.students.forEach(s => {
             if (!deletedStudentIdsRef.current.has(String(s.id)) && !deletedStudentIdsRef.current.has(String(s.code))) {
-              studentMap.set(String(s.id), s);
+              studentMap.set(s.id, s);
             }
           });
         }
 
-        studentsData.forEach((r: any) => {
-          if (!r) return;
-          const sid = String(r.id || r.code || '');
-          const scode = String(r.code || r.id || '');
-          if (!sid) return;
-          if (deletedStudentIdsRef.current.has(sid) || deletedStudentIdsRef.current.has(scode)) {
-            return;
+        if (Array.isArray(studentsData)) {
+          studentsData.forEach((r: any) => {
+            if (!r) return;
+            const sid = String(r.id || r.code || r.student_code || '');
+            const scode = String(r.code || r.student_code || r.id || '');
+            if (!sid) return;
+            if (deletedStudentIdsRef.current.has(sid) || deletedStudentIdsRef.current.has(scode)) {
+              return;
+            }
+
+            if (Array.isArray(r.enrollments)) {
+              r.enrollments.forEach((ne: any) => processRawEnrollment(ne, sid));
+            }
+
+            const existing = existingByIdOrCode.get(sid) || existingByIdOrCode.get(scode);
+            const isRoyal = checkIsRoyalStudent({ ...existing, ...r, code: scode, id: sid });
+            const dob = r.dob || r.birth_date || r.date_of_birth || existing?.dob || '2016-01-01';
+            const regularClass = r.regular_class || r.class_name || r.grade_level || existing?.regular_class || '';
+            const campusId = resolveStudentCampusId({ ...existing, ...r });
+
+            const targetKey = sid;
+            studentMap.set(targetKey, {
+              ...(existing || {}),
+              id: targetKey,
+              code: scode,
+              previous_student_code: r.previous_student_code || existing?.previous_student_code,
+              name: r.name || r.full_name || existing?.name || '',
+              dob,
+              birth_date: dob,
+              gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
+              is_royal_student: isRoyal,
+              student_type: isRoyal ? 'royal' : 'external',
+              has_snack: isRoyal,
+              campus_id: campusId,
+              school_name: getDisplaySchoolName({ ...r, campus_id: campusId, is_royal_student: isRoyal, student_type: isRoyal ? 'royal' : 'external', code: scode, school_name: r.school_name || existing?.school_name }),
+              regular_class: regularClass,
+              class_name: regularClass,
+              parent_name: r.parent_name || existing?.parent_name || '',
+              parent_phone: r.parent_phone || existing?.parent_phone || '',
+              medical_notes: r.medical_notes ?? existing?.medical_notes ?? '',
+              avatar_url: r.avatar_url || existing?.avatar_url,
+              status: r.status || existing?.status || 'active',
+              created_at: r.created_at ? String(r.created_at).split('T')[0] : (existing?.created_at || new Date().toISOString().split('T')[0]),
+              ...(Array.isArray(r.enrollments) ? { enrollments: r.enrollments } : {}),
+            } as Student);
+          });
+        }
+
+        // Bảo lưu các học sinh vừa tạo hợp lệ trong prev.students để tránh hiện tượng flicker loop
+        prev.students.forEach(s => {
+          if (!studentMap.has(String(s.id)) && !studentMap.has(String(s.code))) {
+            if (!deletedStudentIdsRef.current.has(String(s.id)) && !deletedStudentIdsRef.current.has(String(s.code))) {
+              studentMap.set(String(s.id), s);
+            }
           }
-
-          if (Array.isArray(r.enrollments)) {
-            r.enrollments.forEach((ne: any) => processRawEnrollment(ne, sid));
-          }
-
-          const existing = existingByIdOrCode.get(sid) || existingByIdOrCode.get(scode);
-          const isRoyal = checkIsRoyalStudent({ ...existing, ...r, code: scode, id: sid });
-          const dob = r.dob || existing?.dob || '2016-01-01';
-          const regularClass = r.regular_class || existing?.regular_class || '';
-          const campusId = resolveStudentCampusId({ ...existing, ...r });
-
-          studentMap.set(sid, {
-            ...(existing || {}),
-            id: sid,
-            code: scode,
-            previous_student_code: r.previous_student_code || existing?.previous_student_code,
-            name: r.name || existing?.name || '',
-            dob,
-            birth_date: dob,
-            gender: r.gender === 'Nữ' ? 'Nữ' : 'Nam',
-            is_royal_student: isRoyal,
-            student_type: isRoyal ? 'royal' : 'external',
-            has_snack: isRoyal,
-            campus_id: campusId,
-            school_name: getDisplaySchoolName({ ...r, campus_id: campusId, is_royal_student: isRoyal, student_type: isRoyal ? 'royal' : 'external', code: scode, school_name: r.school_name || existing?.school_name }),
-            regular_class: regularClass,
-            class_name: regularClass,
-            parent_name: r.parent_name || existing?.parent_name || '',
-            parent_phone: r.parent_phone || existing?.parent_phone || '',
-            medical_notes: r.medical_notes ?? existing?.medical_notes ?? '',
-            avatar_url: r.avatar_url || existing?.avatar_url,
-            status: r.status || existing?.status || 'active',
-            created_at: r.created_at ? String(r.created_at).split('T')[0] : (existing?.created_at || new Date().toISOString().split('T')[0]),
-            ...(Array.isArray(r.enrollments) ? { enrollments: r.enrollments } : {}),
-          } as Student);
         });
 
         return {
@@ -355,114 +455,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           ),
         };
       });
-    },
-    [onUpdateStore]
-  );
+    } catch (err) {
+      console.warn('Lỗi đồng bộ danh sách học sinh & ghi danh từ Supabase:', err);
+    }
+  }, [onUpdateStore]);
 
-  // Truy vấn phân trang 100 dòng mỗi trang kèm tìm kiếm phía server, gói trong fetchOnce (không gọi khi mở tab)
-  const fetchStudents = React.useCallback(
-    async (options?: { force?: boolean; page?: number; searchQuery?: string }) => {
-      const client = getSupabaseClient() || supabase;
-      if (!client) return;
-
-      const targetPage = options?.page ?? currentPage;
-      const effectivePageSize = Math.min(100, Number(pageSize) || 100);
-      const from = (targetPage - 1) * effectivePageSize;
-      const to = from + effectivePageSize - 1;
-      const q = (options?.searchQuery ?? debouncedSearch).trim();
-      const force = Boolean(options?.force);
-
-      if (force) {
-        invalidateFetchOnce('students:');
-      }
-
-      const cacheKey = `students:p=${targetPage}:s=${effectivePageSize}:c=${selectedCampus}:t=${filterType}:h=${onlyHealth ? 1 : 0}:q=${q.toLowerCase()}`;
-
-      setIsRefreshingStudents(true);
-      try {
-        const result = await fetchOnce(
-          cacheKey,
-          async () => {
-            let query = client
-              .from('students')
-              .select(STUDENTS_DISPLAY_SELECT, { count: 'exact' });
-
-            if (selectedCampus === 'pmh') {
-              query = query.in('campus_id', ['pmh', 'camp_pmh']);
-            } else if (selectedCampus === 'pl') {
-              query = query.in('campus_id', ['pl', 'camp_pl']);
-            }
-
-            if (filterType === 'royal') {
-              query = query.eq('is_royal_student', true);
-            } else if (filterType === 'outside') {
-              query = query.eq('is_royal_student', false);
-            }
-
-            if (onlyHealth) {
-              query = query
-                .not('medical_notes', 'is', null)
-                .neq('medical_notes', '')
-                .neq('medical_notes', 'Bình thường');
-            }
-
-            if (q) {
-              const safeQ = q.replace(/[,%()]/g, ' ').trim();
-              if (safeQ) {
-                query = query.or(
-                  `name.ilike.%${safeQ}%,code.ilike.%${safeQ}%,parent_phone.ilike.%${safeQ}%,medical_notes.ilike.%${safeQ}%`
-                );
-              }
-            }
-
-            const { data, error, count } = await query
-              .order('code', { ascending: true })
-              .range(from, to);
-
-            if (error) {
-              throw error;
-            }
-            return {
-              rows: Array.isArray(data) ? data : [],
-              count: typeof count === 'number' ? count : null,
-            };
-          },
-          60000,
-          { force }
-        );
-
-        if (result.count !== null) {
-          setServerTotalCount(result.count);
-        }
-        applyRemoteStudentsToStore(result.rows, false);
-      } catch (err) {
-        console.warn('Lỗi đồng bộ danh sách học sinh từ Supabase:', err);
-      } finally {
-        setIsRefreshingStudents(false);
-      }
-    },
-    [currentPage, pageSize, debouncedSearch, selectedCampus, filterType, onlyHealth, applyRemoteStudentsToStore]
-  );
-
-  const fetchStudentsRef = React.useRef(fetchStudents);
-  fetchStudentsRef.current = fetchStudents;
-
-  // KHÔNG tự động truy vấn khi vừa mở tab Học sinh (dùng dữ liệu đã có trong store trung tâm).
-  // Chỉ gọi truy vấn phân trang/tìm kiếm phía server khi người dùng thực sự đổi trang (> 1) hoặc gõ tìm kiếm từ khóa.
-  const prevQueryTriggerRef = React.useRef<{ page: number; search: string }>({
-    page: currentPage,
-    search: debouncedSearch,
-  });
   React.useEffect(() => {
-    const prev = prevQueryTriggerRef.current;
-    if (prev.page === currentPage && prev.search === debouncedSearch) {
-      return;
-    }
-    prevQueryTriggerRef.current = { page: currentPage, search: debouncedSearch };
-    if (currentPage > 1 || debouncedSearch.length > 0) {
-      void fetchStudentsRef.current({ page: currentPage, searchQuery: debouncedSearch });
-    }
-  }, [currentPage, debouncedSearch]);
+    fetchStudents();
+  }, [fetchStudents]);
 
   // Helper lấy danh sách enrollments (kèm thông tin lớp) của 1 học sinh từ cả store.enrollments và nested student.enrollments
   const getStudentEnrollmentsList = (student: Student) => {
@@ -638,18 +638,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     });
   }, [store.students, selectedCampus, filterType, onlyHealth, search]);
 
-  const effectivePageSize = Math.min(100, Number(pageSize) || 100);
-  const totalMatchingCount =
-    serverTotalCount !== null && (currentPage > 1 || debouncedSearch.length > 0)
-      ? Math.max(filteredStudents.length, serverTotalCount)
-      : filteredStudents.length;
-
   const paginatedStudents = useMemo(() => {
-    const startIdx = (currentPage - 1) * effectivePageSize;
-    return filteredStudents.slice(startIdx, startIdx + effectivePageSize);
-  }, [filteredStudents, currentPage, effectivePageSize]);
+    if (pageSize === 'all') return filteredStudents;
+    const startIdx = (currentPage - 1) * pageSize;
+    return filteredStudents.slice(startIdx, startIdx + pageSize);
+  }, [filteredStudents, currentPage, pageSize]);
 
-  const totalPages = Math.max(1, Math.ceil(totalMatchingCount / effectivePageSize));
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filteredStudents.length / pageSize);
 
   // Tự động reset về trang 1 khi đổi bộ lọc tìm kiếm hoặc cơ sở
   useEffect(() => {
@@ -795,8 +790,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       setShowAddModal(false);
       setEditingStudent(null);
 
-      // 4. Tải lại dữ liệu từ Supabase sau khi vừa ghi dữ liệu mới
-      await fetchStudents({ force: true });
+      // 4. Fetch lại dữ liệu nền từ Supabase để đảm bảo khớp 100%
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
     } catch (err: any) {
       console.error('Lỗi khi lưu học sinh:', err);
       alert('Không thể lưu học sinh vào CSDL: ' + (err.message || err.toString()));
@@ -950,8 +947,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       setShowAddModal(false);
       setEditingStudent(null);
 
-      // 3. Tải lại danh sách học sinh từ Supabase sau khi vừa cập nhật
-      await fetchStudents({ force: true });
+      // 3. Tải lại danh sách học sinh từ Supabase
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
     } catch (err: any) {
       console.error('Lỗi cập nhật học sinh:', err);
       alert('Không thể cập nhật hồ sơ học sinh: ' + (err.message || String(err)));
@@ -1103,8 +1102,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         // ignore if blocked in iframe
       }
 
-      // 4. Tải lại dữ liệu ngầm từ Supabase sau khi vừa xóa
-      await fetchStudents({ force: true });
+      // 4. Fetch lại dữ liệu ngầm từ Supabase
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
     } catch (err: any) {
       console.error('Lỗi khi xóa học sinh:', err);
       showToast({
@@ -1120,18 +1121,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     }
   };
 
-  // Open Class Enrollment Modal (dùng trực tiếp store.classes, chỉ tải qua fetchOnce nếu store.classes đang rỗng)
+  // Open Class Enrollment Modal
   const handleOpenEnrollModal = async (student: Student) => {
+    // Safety check: If store.classes is empty, try loading fresh classes from Supabase
     if (store.classes.length === 0) {
       const client = getSupabaseClient() || supabase;
       if (client) {
         try {
-          const clsData = await fetchOnce('classes:all', async () => {
-            const { data } = await client.from('extracurricular_classes').select('*');
-            return Array.isArray(data) ? data : [];
-          });
-          if (clsData.length > 0) {
-            const mappedClasses = clsData.map((r: any) => ({
+          const { data: clsData } = await client.from('extracurricular_classes').select('*');
+          if (Array.isArray(clsData) && clsData.length > 0) {
+            const mappedClasses = clsData.map(r => ({
               id: r.id,
               name: r.name,
               code: r.code || r.id,
@@ -1313,7 +1312,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         title: 'Chuyển lên học chính thức',
       });
 
-      await fetchStudents({ force: true });
+      await fetchStudents();
     } catch (err: any) {
       console.error('Lỗi khi chuyển lên chính thức:', err);
       alert('Lỗi cập nhật: ' + (err.message || String(err)));
@@ -1387,7 +1386,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         type: 'success'
       });
 
-      await fetchStudents({ force: true });
+      if (typeof fetchStudents === 'function') {
+        await fetchStudents();
+      }
     } catch (err: any) {
       console.error('Lỗi khi hủy xếp lớp:', err);
       alert('Không thể hủy xếp lớp: ' + (err.message || String(err)));
@@ -1571,17 +1572,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               className="pl-9 pr-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 w-56"
             />
           </div>
-
-          <button
-            type="button"
-            onClick={() => void fetchStudents({ force: true })}
-            disabled={isRefreshingStudents}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-semibold text-xs transition-colors shrink-0 cursor-pointer disabled:opacity-50"
-            title="Làm mới danh sách học sinh từ máy chủ"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isRefreshingStudents ? 'animate-spin' : ''}`} />
-            <span>Làm mới</span>
-          </button>
 
           <a
             href={GOOGLE_DRIVE_ROOT_URL}
@@ -1779,7 +1769,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                               const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
                                 ? enr.enrolled_days_of_week
                                 : clsDays;
-                              const scheduleLabelText = formatDaysListLabel(studentDays);
+                              const scheduleLabelText =
+                                typeof (c as any).schedule_days === 'string' && (c as any).schedule_days.trim()
+                                  ? (c as any).schedule_days
+                                  : formatDaysListLabel(studentDays);
                               const isPartial = enr.is_partial_schedule || studentDays.length < clsDays.length;
                               const regSess = enr.registered_sessions || c.total_sessions || 24;
                               const attendedCount = store.attendance.filter(
@@ -1916,9 +1909,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             <div className="flex items-center gap-2">
               <span>Hiển thị:</span>
               <select
-                value={effectivePageSize}
+                value={pageSize}
                 onChange={(e) => {
-                  setPageSize(Math.min(100, Number(e.target.value) || 100));
+                  setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value));
                   setCurrentPage(1);
                 }}
                 className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
@@ -1926,13 +1919,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 <option value={20}>20 học sinh/trang</option>
                 <option value={50}>50 học sinh/trang</option>
                 <option value={100}>100 học sinh/trang</option>
+                <option value="all">Xem tất cả ({filteredStudents.length})</option>
               </select>
               <span className="text-slate-400">
-                (Đang xem {totalMatchingCount === 0 ? 0 : (currentPage - 1) * effectivePageSize + 1} - {Math.min(currentPage * effectivePageSize, totalMatchingCount)} trên tổng {totalMatchingCount} học sinh)
+                (Đang xem {filteredStudents.length === 0 ? 0 : (currentPage - 1) * (pageSize === 'all' ? filteredStudents.length : pageSize) + 1} - {Math.min(currentPage * (pageSize === 'all' ? filteredStudents.length : pageSize), filteredStudents.length)} trên tổng {filteredStudents.length} học sinh)
               </span>
             </div>
 
-            {totalPages > 1 && (
+            {pageSize !== 'all' && totalPages > 1 && (
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -2106,7 +2100,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           const studentDays = enr.enrolled_days_of_week && enr.enrolled_days_of_week.length > 0
                             ? enr.enrolled_days_of_week
                             : clsDays;
-                          const scheduleLabelText = formatDaysListLabel(studentDays);
+                          const scheduleLabelText =
+                            typeof (c as any).schedule_days === 'string' && (c as any).schedule_days.trim()
+                              ? (c as any).schedule_days
+                              : formatDaysListLabel(studentDays);
                           const isPartial = enr.is_partial_schedule || studentDays.length < clsDays.length;
                           const regSess = enr.registered_sessions || c.total_sessions || 24;
                           const attendedCount = store.attendance.filter(
@@ -2250,9 +2247,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           <div className="flex items-center gap-2">
             <span>Hiển thị:</span>
             <select
-              value={effectivePageSize}
+              value={pageSize}
               onChange={(e) => {
-                setPageSize(Math.min(100, Number(e.target.value) || 100));
+                setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value));
                 setCurrentPage(1);
               }}
               className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
@@ -2260,13 +2257,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               <option value={20}>20 học sinh/trang</option>
               <option value={50}>50 học sinh/trang</option>
               <option value={100}>100 học sinh/trang</option>
+              <option value="all">Xem tất cả ({filteredStudents.length})</option>
             </select>
             <span className="text-slate-400">
-              (Đang xem {totalMatchingCount === 0 ? 0 : (currentPage - 1) * effectivePageSize + 1} - {Math.min(currentPage * effectivePageSize, totalMatchingCount)} trên tổng {totalMatchingCount} học sinh)
+              (Đang xem {filteredStudents.length === 0 ? 0 : (currentPage - 1) * (pageSize === 'all' ? filteredStudents.length : pageSize) + 1} - {Math.min(currentPage * (pageSize === 'all' ? filteredStudents.length : pageSize), filteredStudents.length)} trên tổng {filteredStudents.length} học sinh)
             </span>
           </div>
 
-          {totalPages > 1 && (
+          {pageSize !== 'all' && totalPages > 1 && (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -2641,7 +2639,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         store={store}
         onUpdateStore={onUpdateStore}
         onSuccess={() => {
-          void fetchStudents({ force: true });
+          fetchStudents();
         }}
       />
 
