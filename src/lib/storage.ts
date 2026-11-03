@@ -36,6 +36,7 @@ import {
 } from '../types';
 import {
   getSupabaseClient,
+  getResolvedSupabaseConfig,
   sanitizeSupabaseBaseUrl,
   safeStorage,
   DEFAULT_SUPABASE_URL,
@@ -91,32 +92,12 @@ export const GOOGLE_DRIVE_FOLDER_ID = '1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k';
 export const GOOGLE_DRIVE_ROOT_URL = 'https://drive.google.com/drive/folders/1KVkKVyz9sQVu_22La7RTaTX7-c-_Lf1k?usp=sharing';
 
 function getStoredSupabaseConfig(): { url: string; anonKey: string; isConnected: boolean } {
-  try {
-    const raw = safeStorage.getItem('royal_supabase_config');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed.url && parsed.anonKey) {
-        const cleanUrl = sanitizeSupabaseBaseUrl(String(parsed.url));
-        return {
-          url: cleanUrl || DEFAULT_SUPABASE_URL,
-          anonKey:
-            (isLikelyValidAnonKey(parsed.anonKey) ? String(parsed.anonKey).trim() : null) ||
-            DEFAULT_SUPABASE_ANON_KEY,
-          isConnected: Boolean(parsed.isConnected ?? true),
-        };
-      }
-    }
-  } catch {
-    // ignore
-  }
-  const envUrl = sanitizeSupabaseBaseUrl((import.meta as any).env?.VITE_SUPABASE_URL || '');
-  const envKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
-  const url =
-    envUrl && envUrl.startsWith('http') && !envUrl.includes('your-project-id')
-      ? envUrl
-      : DEFAULT_SUPABASE_URL;
-  const anonKey = isLikelyValidAnonKey(envKey) ? envKey : DEFAULT_SUPABASE_ANON_KEY;
-  return { url, anonKey, isConnected: true };
+  const resolved = getResolvedSupabaseConfig();
+  return {
+    url: resolved.url || DEFAULT_SUPABASE_URL,
+    anonKey: resolved.anonKey || DEFAULT_SUPABASE_ANON_KEY,
+    isConnected: true,
+  };
 }
 
 const offlinePasswordMap = new Map<string, string>();
@@ -659,12 +640,13 @@ export function loadStore(): AppStore {
       visiting_rate_per_period: parsed.payrollRateConfig?.visiting_rate_per_period ?? 135000,
     };
 
-    const storedSbConfig = getStoredSupabaseConfig();
-    const rawSbKey = parsed.supabaseConfig?.anonKey;
-    const validSbKey = isLikelyValidAnonKey(rawSbKey) ? String(rawSbKey).trim() : null;
+    const resolvedSbConfig = getResolvedSupabaseConfig(
+      parsed.supabaseConfig?.url,
+      parsed.supabaseConfig?.anonKey
+    );
     const supabaseConfig = {
-      url: sanitizeSupabaseBaseUrl(parsed.supabaseConfig?.url || storedSbConfig.url || DEFAULT_SUPABASE_URL),
-      anonKey: validSbKey || storedSbConfig.anonKey || DEFAULT_SUPABASE_ANON_KEY,
+      url: resolvedSbConfig.url,
+      anonKey: resolvedSbConfig.anonKey,
       isConnected: Boolean(parsed.supabaseConfig?.isConnected ?? true),
     };
 

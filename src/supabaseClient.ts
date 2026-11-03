@@ -1,13 +1,69 @@
 import { createClient, SupabaseClient, SupportedStorage } from '@supabase/supabase-js';
 
-export const DEFAULT_SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
-export const DEFAULT_SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI0Nzg3MDQsImV4cCI6MjEwODA1NDcwNH0.fACSgo3mpzdBS-of_fFkMF14NYL3J3P_5WM2k6FtEcA';
+export const DEFAULT_SUPABASE_URL = 'https://deuuzrjpfcabfclwaqph.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_SHwnK37LokxsP9zVNFSf9Q_qCMxjlat';
+
+// Dự án cũ đã hết hạn mức băng thông (HTTP 402 exceed_egress_quota) — tự động loại bỏ nếu còn lưu trong localStorage
+const DEPRECATED_PROJECT_REF = 'wobszxqzlalzcjcfbzhq';
 
 export interface SafeSyncStorage extends SupportedStorage {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
   removeItem: (key: string) => void;
+}
+
+/**
+ * Trích xuất mã dự án (project ref) từ Supabase URL (VD: https://deuuzrjpfcabfclwaqph.supabase.co -> deuuzrjpfcabfclwaqph)
+ */
+export function extractSupabaseProjectRef(url?: string | null): string {
+  if (!url || typeof url !== 'string') return '';
+  const match = url.trim().match(/https?:\/\/([a-z0-9-]+)\.supabase\.co/i);
+  return match && match[1] ? match[1].toLowerCase() : '';
+}
+
+/**
+ * Trích xuất mã dự án (ref) bên trong payload của khóa JWT (eyJ...) nếu có
+ */
+export function extractJwtProjectRef(key?: string | null): string {
+  if (!key || typeof key !== 'string') return '';
+  const clean = key.trim();
+  if (!clean.startsWith('eyJ')) return '';
+  try {
+    const parts = clean.split('.');
+    if (parts.length < 2) return '';
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const jsonStr =
+      typeof atob === 'function'
+        ? atob(padded)
+        : typeof Buffer !== 'undefined'
+        ? Buffer.from(padded, 'base64').toString('utf8')
+        : '';
+    if (!jsonStr) return '';
+    const payload = JSON.parse(jsonStr);
+    return typeof payload?.ref === 'string' ? payload.ref.toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Kiểm tra xem URL có phải của dự án cũ đã ngưng hoạt động hay không
+ */
+export function isDeprecatedSupabaseUrl(url?: string | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  return url.toLowerCase().includes(DEPRECATED_PROJECT_REF);
+}
+
+/**
+ * Kiểm tra xem Key có phải của dự án cũ đã ngưng hoạt động hay không
+ */
+export function isDeprecatedSupabaseKey(key?: string | null): boolean {
+  if (!key || typeof key !== 'string') return false;
+  const clean = key.trim();
+  if (clean.includes(DEPRECATED_PROJECT_REF)) return true;
+  const jwtRef = extractJwtProjectRef(clean);
+  return jwtRef === DEPRECATED_PROJECT_REF;
 }
 
 /**
@@ -18,9 +74,10 @@ export const isLikelyValidSupabaseKey = (key: string): boolean => {
   const clean = key.trim();
   if (
     !clean ||
-    clean === 'wobszxqzlalzcjcfbzhq' ||
+    clean === DEPRECATED_PROJECT_REF ||
     clean.includes('your-anon-public-key') ||
-    clean.includes('DÁN_CHUỖI')
+    clean.includes('DÁN_CHUỖI') ||
+    isDeprecatedSupabaseKey(clean)
   ) {
     return false;
   }
@@ -31,6 +88,36 @@ export const isLikelyValidSupabaseKey = (key: string): boolean => {
     clean.startsWith('sb_secret_')
   );
 };
+
+/**
+ * Kiểm tra xem cặp URL và Key có khớp cùng một dự án Supabase hay không (ngăn chặn lỗi 401 "Invalid API key... owned by another Supabase project")
+ */
+export function areUrlAndKeyCompatible(url?: string | null, key?: string | null): boolean {
+  const cleanUrl = sanitizeSupabaseBaseUrl(url);
+  const cleanKey = String(key || '').trim();
+  if (!cleanUrl || !cleanUrl.startsWith('http') || cleanUrl.includes('your-project-id')) {
+    return false;
+  }
+  if (isDeprecatedSupabaseUrl(cleanUrl) || !isLikelyValidSupabaseKey(cleanKey)) {
+    return false;
+  }
+
+  const urlRef = extractSupabaseProjectRef(cleanUrl);
+  const defaultRef = extractSupabaseProjectRef(DEFAULT_SUPABASE_URL);
+  const jwtRef = extractJwtProjectRef(cleanKey);
+
+  // Nếu key là JWT có chứa claim `ref`, `ref` bắt buộc phải trùng với project ref trên URL
+  if (jwtRef && urlRef && jwtRef !== urlRef) {
+    return false;
+  }
+
+  // Nếu đang dùng key mặc định của dự án chính nhưng URL lại trỏ sang dự án khác -> không tương thích
+  if (cleanKey === DEFAULT_SUPABASE_ANON_KEY && urlRef && defaultRef && urlRef !== defaultRef) {
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Kiểm tra xem một chuỗi có phải là API Key hợp lệ không (tương thích ngược với các module gọi isLikelyValidAnonKey)
@@ -133,23 +220,26 @@ export function sanitizeSupabaseBaseUrl(rawInput?: string | null): string {
 }
 
 // 1. Trích xuất URL và Key từ biến môi trường với thứ tự ưu tiên (fallback) chuẩn:
-// - Supabase URL: import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://wobszxqzlalzcjcfbzhq.supabase.co'
-// - Public / Publishable Key: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
-const rawEnvSupabaseUrl =
+// - Supabase URL: import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL
+// - Public / Publishable Key: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY
+const rawEnvSupabaseUrl = sanitizeSupabaseBaseUrl(
   import.meta.env.VITE_SUPABASE_URL ||
-  (typeof process !== 'undefined' ? process.env?.SUPABASE_URL : '') ||
-  DEFAULT_SUPABASE_URL;
+    (typeof process !== 'undefined' ? process.env?.SUPABASE_URL : '') ||
+    DEFAULT_SUPABASE_URL
+);
 
-const rawEnvSupabaseKey =
+const rawEnvSupabaseKey = String(
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  (typeof process !== 'undefined' ? process.env?.SUPABASE_ANON_KEY : '') ||
-  DEFAULT_SUPABASE_ANON_KEY;
+    import.meta.env.VITE_SUPABASE_ANON_KEY ||
+    (typeof process !== 'undefined' ? process.env?.SUPABASE_PUBLISHABLE_KEY : '') ||
+    (typeof process !== 'undefined' ? process.env?.SUPABASE_ANON_KEY : '') ||
+    DEFAULT_SUPABASE_ANON_KEY
+).trim();
 
-export const SUPABASE_URL = sanitizeSupabaseBaseUrl(rawEnvSupabaseUrl) || DEFAULT_SUPABASE_URL;
-export const SUPABASE_ANON_KEY = isLikelyValidSupabaseKey(String(rawEnvSupabaseKey || ''))
-  ? String(rawEnvSupabaseKey).trim()
-  : DEFAULT_SUPABASE_ANON_KEY;
+const initialValidPair = areUrlAndKeyCompatible(rawEnvSupabaseUrl, rawEnvSupabaseKey);
+
+export const SUPABASE_URL = initialValidPair ? rawEnvSupabaseUrl : DEFAULT_SUPABASE_URL;
+export const SUPABASE_ANON_KEY = initialValidPair ? rawEnvSupabaseKey : DEFAULT_SUPABASE_ANON_KEY;
 
 /**
  * Chuẩn hóa tên bảng Supabase PostgreSQL:
@@ -188,6 +278,9 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
     const cleanPath = targetUrl.replace(/^\/+/, '').replace(/^rest\/v1\/?/, '');
     targetUrl = `${baseUrl}/rest/v1/${cleanPath}`;
+  } else if (isDeprecatedSupabaseUrl(targetUrl)) {
+    // Nếu URL request vẫn trỏ vào dự án cũ đã ngưng hoạt động, tự động chuyển hướng sang baseUrl hiện hành
+    targetUrl = targetUrl.replace(/https?:\/\/[^/]+/i, baseUrl);
   }
 
   // 2. Khử trùng lặp '/rest/v1/rest/v1' (kể cả lặp nhiều lần)
@@ -227,12 +320,28 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   // Header nhận diện client
   headers.set('x-client-info', 'royal-school-hub-ios');
 
-  // 5. Đảm bảo luôn có apikey; chỉ gắn Authorization mặc định nếu request chưa có Bearer token của phiên đăng nhập
-  if (!headers.has('apikey') && activeKey) {
-    headers.set('apikey', activeKey);
+  // 5. Đảm bảo apikey và Authorization tương thích với targetUrl
+  const currentApiKey = headers.get('apikey');
+  if (!currentApiKey || !areUrlAndKeyCompatible(targetUrl, currentApiKey)) {
+    if (activeKey) {
+      headers.set('apikey', activeKey);
+    }
   }
-  if (!headers.has('Authorization') && activeKey) {
-    headers.set('Authorization', `Bearer ${activeKey}`);
+
+  const currentAuth = headers.get('Authorization');
+  if (!currentAuth) {
+    if (activeKey) {
+      headers.set('Authorization', `Bearer ${activeKey}`);
+    }
+  } else if (currentAuth.toLowerCase().startsWith('bearer ')) {
+    const bearerToken = currentAuth.slice(7).trim();
+    // Nếu Bearer token là một API key cũ/không khớp dự án (không phải user access token hợp lệ của dự án hiện tại)
+    if (
+      isDeprecatedSupabaseKey(bearerToken) ||
+      (bearerToken.startsWith('sb_publishable_') && !areUrlAndKeyCompatible(targetUrl, bearerToken))
+    ) {
+      headers.set('Authorization', `Bearer ${activeKey}`);
+    }
   }
 
   const mergedInit: RequestInit = {
@@ -275,9 +384,7 @@ export function isValidSupabaseAnonJwt(key?: string | null): boolean {
 
 /**
  * Đọc thông tin kết nối Supabase từ tham số truyền vào, cấu hình đã lưu trong safeStorage hoặc biến môi trường (.env)
- * Thứ tự ưu tiên:
- * - URL: customUrl -> safeStorage -> import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://wobszxqzlalzcjcfbzhq.supabase.co'
- * - Key: customAnonKey -> safeStorage -> import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+ * Tự động loại bỏ và đồng bộ lại nếu phát hiện cấu hình cũ (wobszxqzlalzcjcfbzhq) hoặc cặp URL/Key lệch dự án.
  */
 export function getResolvedSupabaseConfig(
   customUrl?: string,
@@ -286,11 +393,7 @@ export function getResolvedSupabaseConfig(
   const cleanCustomUrl = sanitizeSupabaseBaseUrl(customUrl);
   const cleanCustomKey = (customAnonKey || '').trim();
 
-  if (
-    cleanCustomUrl &&
-    isLikelyValidSupabaseKey(cleanCustomKey) &&
-    cleanCustomUrl.startsWith('http')
-  ) {
+  if (areUrlAndKeyCompatible(cleanCustomUrl, cleanCustomKey)) {
     return { url: cleanCustomUrl, anonKey: cleanCustomKey };
   }
 
@@ -298,44 +401,31 @@ export function getResolvedSupabaseConfig(
     const savedRaw = safeStorage.getItem('royal_supabase_config');
     if (savedRaw) {
       const parsed = JSON.parse(savedRaw);
-      const rawSavedUrl = String(parsed?.url || '').trim();
-      const savedUrl = sanitizeSupabaseBaseUrl(rawSavedUrl);
+      const savedUrl = sanitizeSupabaseBaseUrl(String(parsed?.url || '').trim());
       const savedKey = String(parsed?.anonKey || '').trim();
 
-      if (savedUrl && isLikelyValidSupabaseKey(savedKey) && savedUrl.startsWith('http')) {
+      if (areUrlAndKeyCompatible(savedUrl, savedKey)) {
         return { url: savedUrl, anonKey: savedKey };
+      } else {
+        // Tự động làm sạch cấu hình cũ/lệch dự án trong localStorage để tránh lỗi 401 Invalid API key
+        safeStorage.setItem(
+          'royal_supabase_config',
+          JSON.stringify({
+            url: SUPABASE_URL,
+            anonKey: SUPABASE_ANON_KEY,
+            isConnected: true,
+            updatedAt: new Date().toISOString(),
+          })
+        );
       }
     }
   } catch {
     // Bỏ qua lỗi đọc safeStorage
   }
 
-  const envUrl = sanitizeSupabaseBaseUrl(
-    import.meta.env.VITE_SUPABASE_URL ||
-      (typeof process !== 'undefined' ? process.env?.SUPABASE_URL : '') ||
-      DEFAULT_SUPABASE_URL
-  );
-  const envKey = String(
-    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-      import.meta.env.VITE_SUPABASE_ANON_KEY ||
-      (typeof process !== 'undefined' ? process.env?.SUPABASE_ANON_KEY : '') ||
-      ''
-  ).trim();
-
-  const resolvedUrl =
-    cleanCustomUrl ||
-    (envUrl && envUrl.startsWith('http') && !envUrl.includes('your-project-id')
-      ? envUrl
-      : DEFAULT_SUPABASE_URL);
-
-  const resolvedKey =
-    (isLikelyValidSupabaseKey(cleanCustomKey) ? cleanCustomKey : null) ||
-    (isLikelyValidSupabaseKey(envKey) ? envKey : null) ||
-    DEFAULT_SUPABASE_ANON_KEY;
-
   return {
-    url: resolvedUrl,
-    anonKey: resolvedKey,
+    url: SUPABASE_URL,
+    anonKey: SUPABASE_ANON_KEY,
   };
 }
 
@@ -344,13 +434,7 @@ export function getResolvedSupabaseConfig(
  */
 export function isSupabaseConfigured(url?: string, anonKey?: string): boolean {
   const resolved = getResolvedSupabaseConfig(url, anonKey);
-  return Boolean(
-    resolved.url &&
-      resolved.anonKey &&
-      resolved.url.startsWith('http') &&
-      !resolved.url.includes('your-project-id') &&
-      isLikelyValidSupabaseKey(resolved.anonKey)
-  );
+  return areUrlAndKeyCompatible(resolved.url, resolved.anonKey);
 }
 
 // Biến singleton giữ instance duy nhất trong toàn bộ vòng đời trình duyệt
@@ -371,7 +455,7 @@ export const getSupabaseClient = (
   );
   const supabaseUrl = sanitizeSupabaseBaseUrl(rawResolvedUrl);
 
-  if (!supabaseUrl || !isLikelyValidSupabaseKey(supabaseKey) || !supabaseUrl.startsWith('http')) {
+  if (!areUrlAndKeyCompatible(supabaseUrl, supabaseKey)) {
     return null;
   }
 
@@ -410,6 +494,5 @@ export const getSupabaseClient = (
   }
 };
 
-export const supabase = (SUPABASE_URL && isLikelyValidSupabaseKey(SUPABASE_ANON_KEY))
-  ? getSupabaseClient()
-  : null;
+export const supabase =
+  SUPABASE_URL && isLikelyValidSupabaseKey(SUPABASE_ANON_KEY) ? getSupabaseClient() : null;

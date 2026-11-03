@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { supabase, getSupabaseClient } from '@/supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
+import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 import { 
   AppStore, 
   generateStudentCode, 
@@ -126,19 +127,27 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
   const fetchLeadsFromSupabase = async (showSuccessToast = false) => {
     try {
       setIsRefreshingFromSupabase(true);
-      const client = supabase || getSupabaseClient();
+      const client = getSupabaseClient() || supabase;
       if (!client) {
         setIsRefreshingFromSupabase(false);
         return;
       }
 
-      const { data, error } = await client
-        .from('parent_registrations')
-        .select('*')
-        .order('submitted_at', { ascending: false });
+      if (showSuccessToast) {
+        invalidateFetchOnce('parent_registrations:list');
+      }
+
+      const { data, error } = await fetchOnce(
+        'parent_registrations:list',
+        async () =>
+          await client
+            .from('parent_registrations')
+            .select('*')
+            .order('submitted_at', { ascending: false })
+      );
 
       if (error) {
-        console.error('Lỗi Supabase khi tải parent_registrations:', error);
+        console.warn('Cảnh báo Supabase khi tải parent_registrations:', error.message || error);
         if (showSuccessToast) {
           showToast('Không thể tải từ Supabase: ' + error.message, 'error');
         }
@@ -160,15 +169,11 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
         }
       }
     } catch (err: any) {
-      console.error('Lỗi khi tải parent_registrations:', err);
+      console.warn('Cảnh báo khi tải parent_registrations:', err);
     } finally {
       setIsRefreshingFromSupabase(false);
     }
   };
-
-  useEffect(() => {
-    fetchLeadsFromSupabase(false);
-  }, []);
 
   const handleCopyShareLink = () => {
     try {

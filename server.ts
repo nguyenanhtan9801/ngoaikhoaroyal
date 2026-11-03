@@ -75,7 +75,8 @@ app.get('/api/whoami', (req: Request, res: Response) => {
 // ============================================================================
 // SUPABASE ADMIN & AUTH MIDDLEWARE (Server-Side with SUPABASE_SERVICE_ROLE_KEY)
 // ============================================================================
-const DEFAULT_SERVER_SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
+const DEFAULT_SERVER_SUPABASE_URL = 'https://deuuzrjpfcabfclwaqph.supabase.co';
+const DEFAULT_SERVER_SUPABASE_KEY = 'sb_publishable_SHwnK37LokxsP9zVNFSf9Q_qCMxjlat';
 
 const VALID_USER_ROLES = new Set<string>([
   'super_admin',
@@ -223,6 +224,7 @@ function sanitizeServerSupabaseUrl(rawInput?: string | null): string {
 export const isLikelyValidSupabaseKey = (key: string): boolean => {
   if (!key || typeof key !== 'string') return false;
   const clean = key.trim();
+  if (!clean || clean.includes('wobszxqzlalzcjcfbzhq')) return false;
   return (
     clean.startsWith('eyJ') ||
     clean.startsWith('sb_publishable_') ||
@@ -231,15 +233,23 @@ export const isLikelyValidSupabaseKey = (key: string): boolean => {
 };
 
 function getServerSupabaseAdmin(): SupabaseClient | null {
-  const supabaseUrl =
+  const rawUrl =
     sanitizeServerSupabaseUrl(process.env.VITE_SUPABASE_URL) ||
     sanitizeServerSupabaseUrl(process.env.SUPABASE_URL) ||
     DEFAULT_SERVER_SUPABASE_URL;
 
+  const supabaseUrl = rawUrl.toLowerCase().includes('wobszxqzlalzcjcfbzhq')
+    ? DEFAULT_SERVER_SUPABASE_URL
+    : rawUrl;
+
   const serviceRoleKey = (
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SECRET_KEY ||
-    ''
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    DEFAULT_SERVER_SUPABASE_KEY
   ).trim();
 
   if (!supabaseUrl || !isLikelyValidSupabaseKey(serviceRoleKey)) {
