@@ -1,11 +1,8 @@
 import { createClient, SupabaseClient, SupportedStorage } from '@supabase/supabase-js';
 
-export const SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
-export const SUPABASE_ANON_KEY =
+export const DEFAULT_SUPABASE_URL = 'https://wobszxqzlalzcjcfbzhq.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndvYnN6eHF6bGFsemNqY2ZiemhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI0Nzg3MDQsImV4cCI6MjEwODA1NDcwNH0.fACSgo3mpzdBS-of_fFkMF14NYL3J3P_5WM2k6FtEcA';
-
-export const DEFAULT_SUPABASE_URL = SUPABASE_URL;
-export const DEFAULT_SUPABASE_ANON_KEY = SUPABASE_ANON_KEY;
 
 export interface SafeSyncStorage extends SupportedStorage {
   getItem: (key: string) => string | null;
@@ -14,21 +11,33 @@ export interface SafeSyncStorage extends SupportedStorage {
 }
 
 /**
- * Kiểm tra xem một chuỗi có phải là API Key hợp lệ không (loại bỏ trường hợp chuỗi chỉ là project ref 'wobszxqzlalzcjcfbzhq')
+ * Kiểm tra tính hợp lệ của Key (hỗ trợ cả dạng JWT cũ eyJ... và chuẩn mới sb_publishable_... / sb_secret_...)
  */
-export function isLikelyValidAnonKey(key?: string | null): boolean {
+export const isLikelyValidSupabaseKey = (key: string): boolean => {
   if (!key || typeof key !== 'string') return false;
-  const trimmed = key.trim();
+  const clean = key.trim();
   if (
-    !trimmed ||
-    trimmed === 'wobszxqzlalzcjcfbzhq' ||
-    trimmed.includes('your-anon-public-key') ||
-    trimmed.includes('DÁN_CHUỖI') ||
-    trimmed.length < 30
+    !clean ||
+    clean === 'wobszxqzlalzcjcfbzhq' ||
+    clean.includes('your-anon-public-key') ||
+    clean.includes('DÁN_CHUỖI')
   ) {
     return false;
   }
-  return (trimmed.startsWith('eyJ') && trimmed.split('.').length === 3) || trimmed.startsWith('sb_');
+  // Chấp nhận key JWT cũ (bắt đầu bằng eyJ) hoặc key định dạng mới của Supabase (sb_publishable_ hoặc sb_secret_)
+  return (
+    clean.startsWith('eyJ') ||
+    clean.startsWith('sb_publishable_') ||
+    clean.startsWith('sb_secret_')
+  );
+};
+
+/**
+ * Kiểm tra xem một chuỗi có phải là API Key hợp lệ không (tương thích ngược với các module gọi isLikelyValidAnonKey)
+ */
+export function isLikelyValidAnonKey(key?: string | null): boolean {
+  if (!key || typeof key !== 'string') return false;
+  return isLikelyValidSupabaseKey(key);
 }
 
 /**
@@ -99,7 +108,8 @@ export function sanitizeSupabaseBaseUrl(rawInput?: string | null): string {
   let cleaned = rawInput.trim();
 
   // Nếu chuỗi có dạng markdown [https://...](https://...) thì trích xuất URL thực
-  const markdownMatch = cleaned.match(/\((https?:\/\/[^)]+)\)/) || cleaned.match(/\[(https?:\/\/[^\]]+)\]/);
+  const markdownMatch =
+    cleaned.match(/\((https?:\/\/[^)]+)\)/) || cleaned.match(/\[(https?:\/\/[^\]]+)\]/);
   if (markdownMatch && markdownMatch[1]) {
     cleaned = markdownMatch[1].trim();
   }
@@ -122,6 +132,25 @@ export function sanitizeSupabaseBaseUrl(rawInput?: string | null): string {
   return cleaned;
 }
 
+// 1. Trích xuất URL và Key từ biến môi trường với thứ tự ưu tiên (fallback) chuẩn:
+// - Supabase URL: import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://wobszxqzlalzcjcfbzhq.supabase.co'
+// - Public / Publishable Key: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+const rawEnvSupabaseUrl =
+  import.meta.env.VITE_SUPABASE_URL ||
+  (typeof process !== 'undefined' ? process.env?.SUPABASE_URL : '') ||
+  DEFAULT_SUPABASE_URL;
+
+const rawEnvSupabaseKey =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  (typeof process !== 'undefined' ? process.env?.SUPABASE_ANON_KEY : '') ||
+  DEFAULT_SUPABASE_ANON_KEY;
+
+export const SUPABASE_URL = sanitizeSupabaseBaseUrl(rawEnvSupabaseUrl) || DEFAULT_SUPABASE_URL;
+export const SUPABASE_ANON_KEY = isLikelyValidSupabaseKey(String(rawEnvSupabaseKey || ''))
+  ? String(rawEnvSupabaseKey).trim()
+  : DEFAULT_SUPABASE_ANON_KEY;
+
 /**
  * Chuẩn hóa tên bảng Supabase PostgreSQL:
  * - Chuyển khoảng trắng hoặc '%20' thành dấu gạch dưới '_' (VD: 'academic terms' -> 'academic_terms')
@@ -140,26 +169,25 @@ export function sanitizeSupabaseTableName(tableName?: string | null): string {
  */
 export function getSupabaseRestUrl(tableName: string): string {
   const cleanTable = sanitizeSupabaseTableName(tableName);
-  return `${SUPABASE_URL}/rest/v1/${cleanTable}`;
+  const { url } = getResolvedSupabaseConfig();
+  return `${url || SUPABASE_URL}/rest/v1/${cleanTable}`;
 }
 
 /**
- * Custom Fetch Interceptor cho Supabase Client & WebKit iOS/macOS:
- * - Xử lý dứt điểm lỗi 401 Unauthorized:
- *   + Tự động ghép ${SUPABASE_URL}/rest/v1/${tableName} nếu đường dẫn tương đối.
- *   + Khử trùng lặp '/rest/v1/rest/v1/' thành '/rest/v1/'.
- *   + Sao chép toàn bộ headers gốc từ Request/Headers instance mà không bị mất.
- *   + Gắn BẮT BUỘC header 'apikey' và 'Authorization: Bearer <ANON_KEY>' vào MỌI request.
- * - Tự động thêm 'cache: no-store' để WebKit/Safari luôn nạp dữ liệu mới nhất (chống cache cứng).
- * - Gửi header nhận diện 'x-client-info': 'royal-school-hub-ios'.
+ * Custom Fetch Interceptor cho Supabase Client & WebKit iOS/macOS
  */
 export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
-  let targetUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  let targetUrl =
+    typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+  const activeConfig = getResolvedSupabaseConfig();
+  const baseUrl = activeConfig.url || SUPABASE_URL;
+  const activeKey = activeConfig.anonKey || SUPABASE_ANON_KEY;
 
   // 1. Tự động chuẩn hóa REST API URL: nếu gọi relative table path (VD: 'campuses' hoặc '/rest/v1/campuses')
   if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
     const cleanPath = targetUrl.replace(/^\/+/, '').replace(/^rest\/v1\/?/, '');
-    targetUrl = `${SUPABASE_URL}/rest/v1/${cleanPath}`;
+    targetUrl = `${baseUrl}/rest/v1/${cleanPath}`;
   }
 
   // 2. Khử trùng lặp '/rest/v1/rest/v1' (kể cả lặp nhiều lần)
@@ -199,12 +227,12 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
   // Header nhận diện client
   headers.set('x-client-info', 'royal-school-hub-ios');
 
-  // 5. Đảm bảo luôn có apikey; chỉ gắn Authorization mặc định bằng ANON_KEY nếu request chưa có Bearer token của phiên đăng nhập
-  if (!headers.has('apikey')) {
-    headers.set('apikey', SUPABASE_ANON_KEY);
+  // 5. Đảm bảo luôn có apikey; chỉ gắn Authorization mặc định nếu request chưa có Bearer token của phiên đăng nhập
+  if (!headers.has('apikey') && activeKey) {
+    headers.set('apikey', activeKey);
   }
-  if (!headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+  if (!headers.has('Authorization') && activeKey) {
+    headers.set('Authorization', `Bearer ${activeKey}`);
   }
 
   const mergedInit: RequestInit = {
@@ -230,7 +258,7 @@ export const safeSupabaseFetch: typeof fetch = async (input, init = {}) => {
  * Khi VITE_LEGACY_LOGIN='false', hệ thống tắt hoàn toàn nhánh đăng nhập cũ và chỉ chấp nhận phiên từ Supabase Auth + bảng profiles.
  */
 export function isLegacyLoginEnabled(): boolean {
-  const raw = (import.meta as any).env?.VITE_LEGACY_LOGIN;
+  const raw = import.meta.env?.VITE_LEGACY_LOGIN;
   if (raw === undefined || raw === null || String(raw).trim() === '') {
     return false;
   }
@@ -238,28 +266,18 @@ export function isLegacyLoginEnabled(): boolean {
 }
 
 /**
- * Kiểm tra xem khóa Anon Key có phải định dạng JWT hợp lệ (eyJ...) hỗ trợ Realtime WebSocket hay không.
- * Nếu khóa rỗng hoặc là chuỗi project ref 'wobszxqzlalzcjcfbzhq' hoặc 'sb_publishable_...', từ chối mở WebSocket.
+ * Kiểm tra xem khóa Supabase Key có hợp lệ để kết nối (hỗ trợ cả chuẩn JWT eyJ... và chuẩn mới sb_publishable_... / sb_secret_...)
  */
 export function isValidSupabaseAnonJwt(key?: string | null): boolean {
   if (!key || typeof key !== 'string') return false;
-  const trimmed = key.trim();
-  if (
-    !trimmed ||
-    trimmed === 'wobszxqzlalzcjcfbzhq' ||
-    trimmed.startsWith('sb_publishable_') ||
-    trimmed.includes('your-anon-public-key') ||
-    trimmed.includes('DÁN_CHUỖI')
-  ) {
-    return false;
-  }
-  const parts = trimmed.split('.');
-  return parts.length === 3 && trimmed.startsWith('eyJ');
+  return isLikelyValidSupabaseKey(key);
 }
 
 /**
  * Đọc thông tin kết nối Supabase từ tham số truyền vào, cấu hình đã lưu trong safeStorage hoặc biến môi trường (.env)
- * Luôn fallback an toàn về DEFAULT_SUPABASE_URL và DEFAULT_SUPABASE_ANON_KEY nếu env chỉ chứa project ID đơn thuần.
+ * Thứ tự ưu tiên:
+ * - URL: customUrl -> safeStorage -> import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://wobszxqzlalzcjcfbzhq.supabase.co'
+ * - Key: customAnonKey -> safeStorage -> import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
  */
 export function getResolvedSupabaseConfig(
   customUrl?: string,
@@ -268,7 +286,11 @@ export function getResolvedSupabaseConfig(
   const cleanCustomUrl = sanitizeSupabaseBaseUrl(customUrl);
   const cleanCustomKey = (customAnonKey || '').trim();
 
-  if (cleanCustomUrl && isLikelyValidAnonKey(cleanCustomKey) && cleanCustomUrl.startsWith('http')) {
+  if (
+    cleanCustomUrl &&
+    isLikelyValidSupabaseKey(cleanCustomKey) &&
+    cleanCustomUrl.startsWith('http')
+  ) {
     return { url: cleanCustomUrl, anonKey: cleanCustomKey };
   }
 
@@ -280,7 +302,7 @@ export function getResolvedSupabaseConfig(
       const savedUrl = sanitizeSupabaseBaseUrl(rawSavedUrl);
       const savedKey = String(parsed?.anonKey || '').trim();
 
-      if (savedUrl && isLikelyValidAnonKey(savedKey) && savedUrl.startsWith('http')) {
+      if (savedUrl && isLikelyValidSupabaseKey(savedKey) && savedUrl.startsWith('http')) {
         return { url: savedUrl, anonKey: savedKey };
       }
     }
@@ -288,8 +310,17 @@ export function getResolvedSupabaseConfig(
     // Bỏ qua lỗi đọc safeStorage
   }
 
-  const envUrl = sanitizeSupabaseBaseUrl((import.meta as any).env?.VITE_SUPABASE_URL);
-  const envKey = String((import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '').trim();
+  const envUrl = sanitizeSupabaseBaseUrl(
+    import.meta.env.VITE_SUPABASE_URL ||
+      (typeof process !== 'undefined' ? process.env?.SUPABASE_URL : '') ||
+      DEFAULT_SUPABASE_URL
+  );
+  const envKey = String(
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      import.meta.env.VITE_SUPABASE_ANON_KEY ||
+      (typeof process !== 'undefined' ? process.env?.SUPABASE_ANON_KEY : '') ||
+      ''
+  ).trim();
 
   const resolvedUrl =
     cleanCustomUrl ||
@@ -298,8 +329,8 @@ export function getResolvedSupabaseConfig(
       : DEFAULT_SUPABASE_URL);
 
   const resolvedKey =
-    (isLikelyValidAnonKey(cleanCustomKey) ? cleanCustomKey : null) ||
-    (isLikelyValidAnonKey(envKey) ? envKey : null) ||
+    (isLikelyValidSupabaseKey(cleanCustomKey) ? cleanCustomKey : null) ||
+    (isLikelyValidSupabaseKey(envKey) ? envKey : null) ||
     DEFAULT_SUPABASE_ANON_KEY;
 
   return {
@@ -309,16 +340,16 @@ export function getResolvedSupabaseConfig(
 }
 
 /**
- * Kiểm tra xem Supabase đã được cấu hình với URL và Anon Key hợp lệ chưa
+ * Kiểm tra xem Supabase đã được cấu hình với URL và Key hợp lệ chưa
  */
 export function isSupabaseConfigured(url?: string, anonKey?: string): boolean {
   const resolved = getResolvedSupabaseConfig(url, anonKey);
   return Boolean(
     resolved.url &&
-    resolved.anonKey &&
-    resolved.url.startsWith('http') &&
-    !resolved.url.includes('your-project-id') &&
-    isLikelyValidAnonKey(resolved.anonKey)
+      resolved.anonKey &&
+      resolved.url.startsWith('http') &&
+      !resolved.url.includes('your-project-id') &&
+      isLikelyValidSupabaseKey(resolved.anonKey)
   );
 }
 
@@ -328,47 +359,46 @@ let currentInstanceSignature = '';
 
 /**
  * Khởi tạo hoặc trả về Singleton SupabaseClient duy nhất cho cả Auth và Data.
- * - persistSession: true, autoRefreshToken: true để token đăng nhập được tự động gửi kèm mọi request.
- * - Ngăn chặn triệt để cảnh báo "Multiple GoTrueClient instances detected in the same browser context".
+ * Hỗ trợ cả key dạng JWT cũ (eyJ...) và key chuẩn mới (sb_publishable_... / sb_secret_...).
  */
 export const getSupabaseClient = (
   customUrl?: string,
   customAnonKey?: string
 ): SupabaseClient | null => {
-  const { url: rawResolvedUrl, anonKey: supabaseAnonKey } = getResolvedSupabaseConfig(
+  const { url: rawResolvedUrl, anonKey: supabaseKey } = getResolvedSupabaseConfig(
     customUrl,
     customAnonKey
   );
   const supabaseUrl = sanitizeSupabaseBaseUrl(rawResolvedUrl);
 
-  if (!supabaseUrl || !supabaseAnonKey || !supabaseUrl.startsWith('http')) {
+  if (!supabaseUrl || !isLikelyValidSupabaseKey(supabaseKey) || !supabaseUrl.startsWith('http')) {
     return null;
   }
 
-  const signature = `${supabaseUrl}::${supabaseAnonKey}`;
+  const signature = `${supabaseUrl}::${supabaseKey}`;
   if (supabaseInstance && currentInstanceSignature === signature) {
     return supabaseInstance;
   }
 
   try {
-    supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
+    supabaseInstance = createClient(supabaseUrl, supabaseKey, {
       auth: {
         storage: safeStorage,
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: false,
+        detectSessionInUrl: true,
         storageKey: 'royal_school_supabase_auth',
       },
       global: {
         headers: {
-          apikey: supabaseAnonKey,
+          apikey: supabaseKey,
           'x-client-info': 'royal-school-hub-ios',
         },
         fetch: safeSupabaseFetch,
       },
       realtime: {
         params: {
-          eventsPerSecond: 5,
+          eventsPerSecond: 10,
         },
       },
     });
@@ -380,4 +410,6 @@ export const getSupabaseClient = (
   }
 };
 
-export const supabase = getSupabaseClient();
+export const supabase = (SUPABASE_URL && isLikelyValidSupabaseKey(SUPABASE_ANON_KEY))
+  ? getSupabaseClient()
+  : null;

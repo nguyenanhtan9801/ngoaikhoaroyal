@@ -2,6 +2,8 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import {
   getSupabaseClient,
   getResolvedSupabaseConfig,
+  isLikelyValidSupabaseKey,
+  isLikelyValidAnonKey,
   isValidSupabaseAnonJwt,
   sanitizeSupabaseBaseUrl,
   sanitizeSupabaseTableName,
@@ -907,6 +909,8 @@ export function createSupabaseClientInstance(urlInput?: string, anonKeyInput?: s
 export {
   getSupabaseClient,
   isSupabaseConfigured,
+  isLikelyValidSupabaseKey,
+  isLikelyValidAnonKey,
   isValidSupabaseAnonJwt,
   sanitizeSupabaseBaseUrl,
   sanitizeSupabaseTableName,

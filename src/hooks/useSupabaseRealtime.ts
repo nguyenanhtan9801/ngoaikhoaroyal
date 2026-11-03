@@ -4,7 +4,7 @@ import { AppStore, AppUser, ParentRegistration } from '../types';
 import {
   getSupabaseClient,
   getResolvedSupabaseConfig,
-  isValidSupabaseAnonJwt,
+  isLikelyValidSupabaseKey,
   isLegacyLoginEnabled,
 } from '../supabaseClient';
 import {
@@ -393,7 +393,8 @@ export function useSupabaseRealtime({
     } else {
       setIsOffline(true);
     }
-  }, [currentUser, store, setStore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, setStore]);
 
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
@@ -503,15 +504,14 @@ export function useSupabaseRealtime({
       store.supabaseConfig?.anonKey
     );
 
-    // 1. Kiểm tra tính hợp lệ của supabaseUrl và supabaseAnonKey trước khi mở kênh WebSocket
+    // 1. Kiểm tra tính hợp lệ của supabaseUrl và supabaseAnonKey (hỗ trợ cả eyJ... và sb_publishable_...)
     if (
       !supabaseUrl ||
       !supabaseAnonKey ||
-      supabaseAnonKey.startsWith('sb_publishable_') ||
-      !isValidSupabaseAnonJwt(supabaseAnonKey)
+      !isLikelyValidSupabaseKey(supabaseAnonKey)
     ) {
       if (!hasLoggedRealtimeKeyWarning) {
-        console.warn('Realtime tạm dừng: Cần cấu hình khóa Legacy Anon JWT để bật WebSocket.');
+        console.warn('Realtime tạm dừng: Khóa Supabase API Key chưa hợp lệ.');
         hasLoggedRealtimeKeyWarning = true;
       }
       setIsOffline(true);

@@ -843,7 +843,6 @@ export function saveStore(store: AppStore): boolean {
   try {
     const cleanStore = prepareStoreForStorage(store, 0);
     safeStorage.setItem(STORAGE_KEY, JSON.stringify(cleanStore));
-    window.dispatchEvent(new Event('royal_store_updated'));
     return true;
   } catch (err: any) {
     console.warn('Standard saveStore hit quota limit, executing progressive compaction level 1...', err);
@@ -853,7 +852,6 @@ export function saveStore(store: AppStore): boolean {
   try {
     const compactStoreL1 = prepareStoreForStorage(store, 1);
     safeStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL1));
-    window.dispatchEvent(new Event('royal_store_updated'));
     return true;
   } catch (err2: any) {
     console.warn('Compaction level 1 hit quota, executing emergency compaction level 2...', err2);
@@ -863,7 +861,6 @@ export function saveStore(store: AppStore): boolean {
   try {
     const compactStoreL2 = prepareStoreForStorage(store, 2);
     safeStorage.setItem(STORAGE_KEY, JSON.stringify(compactStoreL2));
-    window.dispatchEvent(new Event('royal_store_updated'));
     return true;
   } catch (finalErr: any) {
     console.error('CRITICAL: Unable to save to localStorage after all progressive compactions', finalErr);

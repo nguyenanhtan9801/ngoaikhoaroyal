@@ -198,15 +198,51 @@ async function recordAdminEndpointAudit(params: {
   }
 }
 
-function getServerSupabaseAdmin(): SupabaseClient | null {
-  const supabaseUrl = (
-    process.env.SUPABASE_URL ||
-    process.env.VITE_SUPABASE_URL ||
-    DEFAULT_SERVER_SUPABASE_URL
-  ).trim();
-  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+function sanitizeServerSupabaseUrl(rawInput?: string | null): string {
+  if (!rawInput || typeof rawInput !== 'string') return '';
+  let cleaned = rawInput.trim();
+  const markdownMatch =
+    cleaned.match(/\((https?:\/\/[^)]+)\)/) || cleaned.match(/\[(https?:\/\/[^\]]+)\]/);
+  if (markdownMatch && markdownMatch[1]) {
+    cleaned = markdownMatch[1].trim();
+  }
+  cleaned = cleaned.replace(/^['"`]+|['"`]+$/g, '').trim();
+  let prev = '';
+  while (cleaned !== prev) {
+    prev = cleaned;
+    cleaned = cleaned
+      .replace(/\/+$/, '')
+      .replace(/\/rest\/v1(\/.*)?$/i, '')
+      .replace(/\/realtime\/v1(\/.*)?$/i, '')
+      .replace(/\/auth\/v1(\/.*)?$/i, '')
+      .replace(/\/+$/, '');
+  }
+  return cleaned;
+}
 
-  if (!supabaseUrl || !serviceRoleKey) {
+export const isLikelyValidSupabaseKey = (key: string): boolean => {
+  if (!key || typeof key !== 'string') return false;
+  const clean = key.trim();
+  return (
+    clean.startsWith('eyJ') ||
+    clean.startsWith('sb_publishable_') ||
+    clean.startsWith('sb_secret_')
+  );
+};
+
+function getServerSupabaseAdmin(): SupabaseClient | null {
+  const supabaseUrl =
+    sanitizeServerSupabaseUrl(process.env.VITE_SUPABASE_URL) ||
+    sanitizeServerSupabaseUrl(process.env.SUPABASE_URL) ||
+    DEFAULT_SERVER_SUPABASE_URL;
+
+  const serviceRoleKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    ''
+  ).trim();
+
+  if (!supabaseUrl || !isLikelyValidSupabaseKey(serviceRoleKey)) {
     return null;
   }
 

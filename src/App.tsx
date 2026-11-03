@@ -556,13 +556,13 @@ export default function App() {
     r => r.status === 'pending'
   ).length;
 
-  const updateStore = (updater: (prev: AppStore) => AppStore) => {
+  const updateStore = React.useCallback((updater: (prev: AppStore) => AppStore) => {
     setStore(prev => {
       const next = updater(prev);
       saveStore(next);
       return next;
     });
-  };
+  }, []);
 
   // Quick Issue Credit from Alert Card
   const handleIssueCreditForStudent = (student: Student, cls: ExtracurricularClass, dates: string[]) => {
