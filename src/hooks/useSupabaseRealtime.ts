@@ -349,11 +349,23 @@ export function useSupabaseRealtime({
     if (!currentUser) {
       loadedAuthenticatedUserIdRef.current = null;
       setIsSupabaseCloudActive(false);
+      // Nếu trong localStorage đã có phiên đăng nhập Supabase Auth đang chờ khôi phục thì không ghi đè bằng guest catalog (HK2-2526)
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          window.localStorage.getItem('royal_school_supabase_auth')
+        ) {
+          return;
+        }
+      } catch {
+        // ignore
+      }
       if (hasAttemptedGuestCatalogLoadRef.current) return;
       hasAttemptedGuestCatalogLoadRef.current = true;
 
       loadPublicCatalogSafely(store)
         .then(res => {
+          if (currentUserRef.current) return;
           isApplyingRemoteUpdateRef.current = true;
           prevStoreRef.current = res.store;
           setStore(res.store);

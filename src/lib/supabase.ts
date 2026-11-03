@@ -45,19 +45,18 @@ import { fetchOnce } from './fetchOnce';
 
 export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
   campuses: 'id,code,name,address,phone,bank_name,bank_account,bank_owner,status',
-  academic_terms:
-    'id,code,name,academic_year,start_date,end_date,registration_deadline,total_weeks,status,is_active',
+  academic_terms: '*',
   subject_categories: 'id,code,name,icon,color,description,status,order',
   subjects:
     'id,code,name,category,category_code,standard_duration,standard_sessions,standard_course_fee,standard_session_rate,description,is_active',
   time_slots:
     'id,code,name,start_time,end_time,duration_minutes,days_of_week,campus_id,status,notes,slot_type',
   teachers:
-    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,percentage_rate,status',
+    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,status',
   extracurricular_classes:
     'id,code,name,term_id,spanning_term_id,is_cross_term,term_distribution,campus_id,subject_id,facility_id,time_slot_id,days_of_week,start_date,end_date,primary_teacher_id,max_students,total_sessions,full_course_fee,price_per_session,status,allow_over_quota',
   students:
-    'id,code,previous_student_code,name,dob,birth_date,gender,is_royal_student,student_type,has_snack,campus_id,school_name,regular_class,class_name,parent_name,parent_phone,medical_notes,avatar_url,status,created_at',
+    'id,code,previous_student_code,name,dob,gender,is_royal_student,campus_id,school_name,regular_class,parent_name,parent_phone,medical_notes,avatar_url,status,created_at',
   enrollments:
     'id,student_id,class_id,registered_sessions,joined_date,enrolled_days_of_week,is_partial_schedule,is_trial,trial_session_date,trial_attended,status,enrollment_type',
   attendance_records:
@@ -67,9 +66,8 @@ export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
   tuition_invoices:
     'id,invoice_code,student_id,class_id,registered_sessions,total_class_sessions,session_rate,gross_amount,credit_deducted,discount_amount,net_payable,paid_amount,outstanding_amount,payment_status,due_date,payment_reference,verified_by,verified_at,payment_history,created_at',
   credit_notes:
-    'id,student_id,source_class_id,source_enrollment_id,absent_dates,sessions_preserved,session_rate,credit_amount,status,applied_to_invoice_id,created_at,notes',
-  term_subjects:
-    'id,term_id,subject_id,is_active,standard_sessions,standard_course_fee,standard_session_rate,total_fee,term_note,notes',
+    'id,credit_code,student_id,source_class_id,subject_id,term_id,consecutive_absent_count,consecutive_dates,source_rate,credit_rule,total_credit_amount,transferred_sessions,issue_date,expiry_date,status,redeemed_info,note',
+  term_subjects: '*',
   profiles: '*',
   parent_registrations: '*',
 };
@@ -1865,7 +1863,11 @@ export async function pullAllTablesFromSupabase(
 
     try {
       const cols = SUPABASE_TABLE_SELECT_COLUMNS[safeTableName] || '*';
-      const { data, error } = await client.from(safeTableName).select<string, any>(cols);
+      let query = client.from(safeTableName).select<string, any>(cols);
+      if (safeTableName === 'academic_terms') {
+        query = query.order('start_date', { ascending: true });
+      }
+      const { data, error } = await query;
       if (error || !Array.isArray(data) || data.length === 0) continue;
 
       totalPulled += data.length;
@@ -1875,7 +1877,17 @@ export async function pullAllTablesFromSupabase(
           nextStore.campuses = data as Campus[];
           break;
         case 'academic_terms':
-          nextStore.terms = data as AcademicTerm[];
+          nextStore.terms = data.map((t: any): AcademicTerm => ({
+            id: t.id,
+            code: t.code,
+            name: t.name,
+            academic_year: t.academic_year || '2026-2027',
+            start_date: t.start_date,
+            end_date: t.end_date,
+            is_active: t.is_active ?? (t.status === 'open_enrollment' || t.status === 'in_progress'),
+            status: t.status || 'open_enrollment',
+            description: t.description || '',
+          }));
           break;
         case 'subjects':
           nextStore.subjects = data.map((r: any): Subject => {
@@ -2240,6 +2252,19 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
   const cleanTable = sanitizeSupabaseTableName(tableName);
 
   switch (cleanTable) {
+    case 'academic_terms':
+      return {
+        id: r.id,
+        code: r.code,
+        name: r.name,
+        academic_year: r.academic_year || '2026-2027',
+        start_date: r.start_date,
+        end_date: r.end_date,
+        is_active: r.is_active ?? (r.status === 'open_enrollment' || r.status === 'in_progress'),
+        status: r.status || 'open_enrollment',
+        description: r.description || '',
+      };
+
     case 'profiles': {
       return {
         id: r.id,

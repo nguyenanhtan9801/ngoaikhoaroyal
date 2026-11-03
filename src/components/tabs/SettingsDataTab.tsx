@@ -1807,6 +1807,52 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     sbConnected,
   ]);
 
+  // Đảm bảo nạp đầy đủ danh sách khóa học từ bảng public.academic_terms trên Supabase
+  useEffect(() => {
+    let isMounted = true;
+    const syncTerms = async () => {
+      const client = getSupabaseClient() || supabase;
+      if (!client) return;
+      try {
+        const { data: termsData, error: termsErr } = await client
+          .from('academic_terms')
+          .select('*')
+          .order('start_date', { ascending: true });
+
+        if (!isMounted) return;
+        if (!termsErr && Array.isArray(termsData) && termsData.length > 0) {
+          const mappedTerms = termsData.map((t: any) => ({
+            id: t.id,
+            code: t.code,
+            name: t.name,
+            academic_year: t.academic_year || '2026-2027',
+            start_date: t.start_date,
+            end_date: t.end_date,
+            is_active: t.is_active ?? (t.status === 'open_enrollment' || t.status === 'in_progress'),
+            status: t.status || 'open_enrollment',
+            description: t.description || '',
+          }));
+
+          onUpdateStore(prev => {
+            if (JSON.stringify(prev.terms) === JSON.stringify(mappedTerms)) {
+              return prev;
+            }
+            return {
+              ...prev,
+              terms: mappedTerms,
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Lỗi đồng bộ academic_terms từ Supabase:', err);
+      }
+    };
+    syncTerms();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeSection]);
+
   // Cloud Storage Config State
   const initialCloudConfig = store.cloudStorageConfig || {
     provider: 'google_drive',

@@ -1476,7 +1476,7 @@ async function getPublicCatalogData(supabaseAdmin: SupabaseClient | null) {
     try {
       const [campusesRes, termsRes, subjectsRes, timeSlotsRes] = await Promise.all([
         supabaseAdmin.from('campuses').select('*'),
-        supabaseAdmin.from('academic_terms').select('*'),
+        supabaseAdmin.from('academic_terms').select('*').order('start_date', { ascending: true }),
         supabaseAdmin.from('campus_subject_fees').select('*'),
         supabaseAdmin.from('time_slots').select('*'),
       ]);
@@ -1499,21 +1499,18 @@ async function getPublicCatalogData(supabaseAdmin: SupabaseClient | null) {
         }
       }
       if (rawTerms.length > 0) {
-        const openTerms = rawTerms.filter((t: any) => {
-          const st = String(t.status || 'open').toLowerCase();
-          return t.is_active !== false && st !== 'closed' && st !== 'archived' && st !== 'inactive';
-        });
-        if (openTerms.length > 0) {
-          terms = openTerms.map((t: any) => ({
-            id: String(t.id || ''),
-            code: String(t.code || t.id || ''),
-            name: String(t.name || ''),
-            start_date: String(t.start_date || ''),
-            end_date: String(t.end_date || ''),
-            total_weeks: Number(t.total_weeks) || 12,
-            status: 'open',
-          }));
-        }
+        terms = rawTerms.map((t: any) => ({
+          id: String(t.id || ''),
+          code: String(t.code || t.id || ''),
+          name: String(t.name || ''),
+          academic_year: String(t.academic_year || '2026-2027'),
+          start_date: String(t.start_date || ''),
+          end_date: String(t.end_date || ''),
+          total_weeks: Number(t.total_weeks) || 12,
+          status: String(t.status || 'open_enrollment'),
+          is_active: t.is_active ?? (t.status === 'open_enrollment' || t.status === 'in_progress'),
+          description: String(t.description || ''),
+        }));
       }
 
       let rawSubjects = !subjectsRes.error && Array.isArray(subjectsRes.data) ? subjectsRes.data : [];

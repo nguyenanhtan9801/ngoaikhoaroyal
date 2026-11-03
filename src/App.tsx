@@ -43,7 +43,11 @@ import { isRouteAllowed, getDefaultRouteForUser } from './lib/permissions';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
-import { buildGuestCatalogStore, loadPublicCatalogSafely } from './services/dataLoader';
+import {
+  buildGuestCatalogStore,
+  loadPublicCatalogSafely,
+  syncAcademicTermsFromSupabase,
+} from './services/dataLoader';
 import { supabase } from './supabaseClient';
 import { ShieldAlert, ArrowLeft, KeyRound, X, Loader2 } from 'lucide-react';
 
@@ -156,7 +160,9 @@ export default function App() {
             ...prev,
             users: profilesList,
           };
-          saveStore(next);
+          if (next.terms.length > 0 && !next.terms.some(t => t.code === 'HK2-2526')) {
+            saveStore(next);
+          }
           return next;
         }
 
@@ -184,7 +190,9 @@ export default function App() {
           ...prev,
           users: nextUsers,
         };
-        saveStore(next);
+        if (next.terms.length > 0 && !next.terms.some(t => t.code === 'HK2-2526')) {
+          saveStore(next);
+        }
         return next;
       });
     } finally {
@@ -197,6 +205,7 @@ export default function App() {
     setCurrentUser(cleanUser);
     setIsAuthenticated(true);
     setIsLoginModalOpen(false);
+    syncAcademicTermsFromSupabase(setStore);
     syncProfilesListForSuperAdmin(cleanUser);
 
     // Enforce campus scope if user is restricted to PMH or Phú Lâm
@@ -356,6 +365,7 @@ export default function App() {
             });
             setIsAuthenticated(true);
             setSelectedCampusId(normalizeCampusScope(profileUser.campus_id));
+            syncAcademicTermsFromSupabase(setStore);
             if (profileUser.role === 'super_admin') {
               syncProfilesListForSuperAdmin(profileUser);
             }

@@ -58,7 +58,9 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     try {
       const cols = SUPABASE_TABLE_SELECT_COLUMNS[tableName] || '*';
       let query = client.from(tableName).select(cols);
-      if (tableName === 'students') {
+      if (tableName === 'academic_terms') {
+        query = query.order('start_date', { ascending: true });
+      } else if (tableName === 'students') {
         query = query.limit(200);
       }
       const { data, error } = await query;
@@ -175,13 +177,14 @@ export function buildGuestCatalogStore(
         id: String(t.id || ''),
         code: String(t.code || t.id || ''),
         name: String(t.name || ''),
-        academic_year: '2025-2026',
+        academic_year: String(t.academic_year || '2026-2027'),
         start_date: String(t.start_date || ''),
         end_date: String(t.end_date || ''),
         registration_deadline: String(t.end_date || ''),
         total_weeks: Number(t.total_weeks) || 12,
-        status: 'open_enrollment' as const,
-        is_active: true,
+        status: (t.status && t.status !== 'open' ? t.status : 'open_enrollment') as any,
+        is_active: t.is_active ?? (t.status === 'open' || t.status === 'open_enrollment' || t.status === 'in_progress'),
+        description: String(t.description || ''),
       }))
     : [];
 
@@ -402,6 +405,10 @@ export async function loadInitialDataSafely(
           async () => {
             let query = client.from(item.tableName).select(cols);
 
+            if (item.tableName === 'academic_terms') {
+              query = query.order('start_date', { ascending: true });
+            }
+
             // Lọc theo cơ sở (campus_id) cho các bảng có campus_id khi nhân sự chỉ phụ trách 1 cơ sở
             if (scopedCampusCode !== 'all') {
               const campusVariants =
@@ -449,6 +456,24 @@ export async function loadInitialDataSafely(
     settledResults.forEach(res => {
       if (res.status === 'fulfilled' && res.value && res.value.success) {
         const { tableName, storeKey, data } = res.value;
+        if (tableName === 'academic_terms' && Array.isArray(data) && data.length > 0) {
+          // Chuẩn hóa và nạp toàn bộ khóa học từ bảng academic_terms vào store.terms
+          const mappedTerms = data.map((t: any) => ({
+            id: t.id,
+            code: t.code,
+            name: t.name,
+            academic_year: t.academic_year || '2026-2027',
+            start_date: t.start_date,
+            end_date: t.end_date,
+            is_active: t.is_active ?? (t.status === 'open_enrollment' || t.status === 'in_progress'),
+            status: t.status || 'open_enrollment',
+            description: t.description || '',
+          }));
+          nextStore.terms = mappedTerms;
+          totalRecordsLoaded += mappedTerms.length;
+          return;
+        }
+
         const mapperKey = tableName === 'app_users' ? 'profiles' : tableName;
         const mappedRows = data
           .map(row => mapSupabaseRowToStoreEntity(mapperKey, row))
@@ -464,6 +489,34 @@ export async function loadInitialDataSafely(
         }
       }
     });
+
+    // Đảm bảo chắc chắn store.terms được ghi đè từ bảng academic_terms trên Supabase
+    if (
+      !Array.isArray(nextStore.terms) ||
+      nextStore.terms.length <= 1 ||
+      nextStore.terms.some(t => t.code === 'HK2-2526' || t.id === 'term_hk2_2025_2026')
+    ) {
+      const { data: termsData, error: termsErr } = await client
+        .from('academic_terms')
+        .select('*')
+        .order('start_date', { ascending: true });
+
+      if (!termsErr && Array.isArray(termsData) && termsData.length > 0) {
+        const mappedTerms = termsData.map((t: any) => ({
+          id: t.id,
+          code: t.code,
+          name: t.name,
+          academic_year: t.academic_year || '2026-2027',
+          start_date: t.start_date,
+          end_date: t.end_date,
+          is_active: t.is_active ?? (t.status === 'open_enrollment' || t.status === 'in_progress'),
+          status: t.status || 'open_enrollment',
+          description: t.description || '',
+        }));
+        nextStore.terms = mappedTerms;
+        totalRecordsLoaded += mappedTerms.length;
+      }
+    }
 
     if (totalRecordsLoaded > 0) {
       saveStore(nextStore);
@@ -498,5 +551,57 @@ export async function loadInitialDataSafely(
       totalRecordsLoaded: 0,
       errorMessage: err?.message || 'Offline fallback',
     };
+  }
+}
+
+/**
+ * Truy vấn trực tiếp bảng academic_terms từ Supabase (sắp xếp theo start_date tăng dần)
+ * và ghi đè vào store.terms.
+ */
+export async function syncAcademicTermsFromSupabase(
+  onUpdateStore: (updater: (prev: AppStore) => AppStore) => void
+): Promise<void> {
+  const client = getSupabaseClient() || supabase;
+  if (!client) return;
+
+  try {
+    const { data: termsData, error: termsErr } = await fetchOnce(
+      'academic_terms:ordered',
+      async () =>
+        await client
+          .from('academic_terms')
+          .select('*')
+          .order('start_date', { ascending: true }),
+      60_000
+    );
+
+    if (!termsErr && Array.isArray(termsData) && termsData.length > 0) {
+      // Chuẩn hóa và nạp 7 khóa học vào store
+      const mappedTerms = termsData.map((t: any) => ({
+        id: t.id,
+        code: t.code,
+        name: t.name,
+        academic_year: t.academic_year || '2026-2027',
+        start_date: t.start_date,
+        end_date: t.end_date,
+        is_active: t.is_active ?? (t.status === 'open_enrollment' || t.status === 'in_progress'),
+        status: t.status || 'open_enrollment',
+        description: t.description || '',
+      }));
+
+      onUpdateStore(prev => {
+        if (JSON.stringify(prev.terms) === JSON.stringify(mappedTerms)) {
+          return prev;
+        }
+        const next = {
+          ...prev,
+          terms: mappedTerms,
+        };
+        saveStore(next);
+        return next;
+      });
+    }
+  } catch (err) {
+    console.warn('[syncAcademicTermsFromSupabase] Lỗi nạp academic_terms:', err);
   }
 }

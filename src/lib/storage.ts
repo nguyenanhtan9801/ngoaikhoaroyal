@@ -585,7 +585,14 @@ export function loadStore(): AppStore {
     const parsed = JSON.parse(raw);
     const initial = getInitialStore();
 
-    const terms: AcademicTerm[] = (Array.isArray(parsed.terms) ? parsed.terms : initial.terms).map((t: AcademicTerm) => ({
+    const rawParsedTerms: AcademicTerm[] = Array.isArray(parsed.terms)
+      ? parsed.terms.filter(
+          (t: AcademicTerm) => t && t.id !== 'term_hk2_2025_2026' && t.code !== 'HK2-2526'
+        )
+      : [];
+    const terms: AcademicTerm[] = (
+      rawParsedTerms.length > 0 ? rawParsedTerms : initial.terms
+    ).map((t: AcademicTerm) => ({
       ...t,
       status: t.status || (t.is_active ? 'open_enrollment' : 'draft'),
     }));
