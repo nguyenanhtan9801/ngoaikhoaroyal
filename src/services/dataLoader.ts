@@ -1,5 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js';
-import { AppStore } from '../types';
+import { AppStore, AppUser } from '../types';
 import {
   getSupabaseClient,
   getResolvedSupabaseConfig,
@@ -12,8 +12,10 @@ import {
   ROYAL_STANDARDIZED_10_TABLES,
   mapSupabaseRowToStoreEntity,
   SUPABASE_TABLE_TO_STORE_KEY,
+  SUPABASE_TABLE_SELECT_COLUMNS,
 } from '../lib/supabase';
 import { loadStore, saveStore } from '../lib/storage';
+import { fetchOnce } from '../lib/fetchOnce';
 import { showToast } from '../lib/toast';
 
 export interface SafeDataLoadResult {
@@ -54,7 +56,12 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
   const fetchTable = async (tableName: string): Promise<any[]> => {
     if (!client) return [];
     try {
-      const { data, error } = await client.from(tableName).select('*');
+      const cols = SUPABASE_TABLE_SELECT_COLUMNS[tableName] || '*';
+      let query = client.from(tableName).select(cols);
+      if (tableName === 'students') {
+        query = query.limit(200);
+      }
+      const { data, error } = await query;
       if (error) {
         console.warn(`Lỗi khi đọc bảng ${tableName}:`, error.message);
         return [];
@@ -282,7 +289,8 @@ export async function loadPublicCatalogSafely(
  * Cơ chế Khởi Động & Tải Dữ Liệu An Toàn (Safe Data Loader) cho AppStore (CHỈ dành cho nhân sự đã đăng nhập)
  */
 export async function loadInitialDataSafely(
-  currentStore?: AppStore
+  currentStore?: AppStore,
+  activeUser?: AppUser | null
 ): Promise<SafeDataLoadResult> {
   const fallbackStore: AppStore = currentStore || loadStore();
   const { url: rawUrl, anonKey } = getResolvedSupabaseConfig(
@@ -331,12 +339,14 @@ export async function loadInitialDataSafely(
       const hasSavedToken =
         typeof window !== 'undefined' &&
         Boolean(window.localStorage.getItem('royal_school_supabase_auth'));
-      if (!hasSavedToken) {
+      if (!hasSavedToken && !activeUser?.id) {
         return loadPublicCatalogSafely(currentStore);
       }
-      const { data: sessionData } = await client.auth.getSession();
-      if (!sessionData?.session?.user) {
-        return loadPublicCatalogSafely(currentStore);
+      if (!activeUser?.id) {
+        const { data: sessionData } = await client.auth.getSession();
+        if (!sessionData?.session?.user) {
+          return loadPublicCatalogSafely(currentStore);
+        }
       }
     } catch {
       return loadPublicCatalogSafely(currentStore);
@@ -347,24 +357,77 @@ export async function loadInitialDataSafely(
     const nextStore: AppStore = { ...fallbackStore };
     let totalRecordsLoaded = 0;
 
-    // Danh sách toàn bộ các bảng cần nạp từ Supabase (khi VITE_LEGACY_LOGIN='false', chỉ lấy người dùng từ profiles)
-    const allTableDefinitions: Array<{ tableName: string; storeKey: keyof AppStore }> = [
+    const userRole = activeUser?.role || 'super_admin';
+    const rawCampus = String(activeUser?.campus_id || 'all').toLowerCase().trim();
+    const scopedCampusCode =
+      rawCampus === 'pmh' || rawCampus === 'camp_pmh'
+        ? 'pmh'
+        : rawCampus === 'pl' || rawCampus === 'camp_pl'
+        ? 'pl'
+        : 'all';
+
+    // Danh sách các bảng cần nạp từ Supabase được lọc theo vai trò người dùng
+    // - Chỉ nạp bảng profiles toàn cục nếu user là super_admin (đã có syncProfilesListForSuperAdmin dùng fetchOnce)
+    // - Nếu là teacher: bỏ qua các bảng tài chính/tuyển sinh không cần thiết (tuition_invoices, credit_notes, parent_registrations)
+    const baseTableDefinitions: Array<{ tableName: string; storeKey: keyof AppStore }> = [
       ...ROYAL_STANDARDIZED_10_TABLES.map(t => ({
         tableName: sanitizeSupabaseTableName(t.tableName),
         storeKey: t.storeKey,
       })),
       { tableName: 'credit_notes', storeKey: 'makeupCredits' },
-      { tableName: isLegacyLoginEnabled() ? 'app_users' : 'profiles', storeKey: 'users' },
+      ...(userRole === 'super_admin'
+        ? [{ tableName: isLegacyLoginEnabled() ? 'app_users' : 'profiles', storeKey: 'users' as keyof AppStore }]
+        : []),
       { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
       { tableName: 'subject_categories', storeKey: 'subjectCategories' },
       { tableName: 'time_slots', storeKey: 'timeSlots' },
       { tableName: 'term_subjects', storeKey: 'termSubjects' },
     ];
 
-    // Nạp song song độc lập từng bảng với Promise.allSettled
+    const allTableDefinitions = baseTableDefinitions.filter(item => {
+      if (userRole === 'teacher') {
+        return !['tuition_invoices', 'credit_notes', 'parent_registrations'].includes(item.tableName);
+      }
+      return true;
+    });
+
+    // Nạp song song độc lập từng bảng với Promise.allSettled + fetchOnce (TTL 60s)
     const fetchPromises = allTableDefinitions.map(async item => {
       try {
-        const { data, error } = await client.from(item.tableName).select('*');
+        const cols = SUPABASE_TABLE_SELECT_COLUMNS[item.tableName] || '*';
+        const cacheKey = `init_load:${item.tableName}:${scopedCampusCode}:${userRole}`;
+
+        const { data, error } = await fetchOnce(
+          cacheKey,
+          async () => {
+            let query = client.from(item.tableName).select(cols);
+
+            // Lọc theo cơ sở (campus_id) cho các bảng có campus_id khi nhân sự chỉ phụ trách 1 cơ sở
+            if (scopedCampusCode !== 'all') {
+              const campusVariants =
+                scopedCampusCode === 'pmh'
+                  ? ['pmh', 'camp_pmh', 'PMH']
+                  : ['pl', 'camp_pl', 'PL'];
+              if (
+                item.tableName === 'extracurricular_classes' ||
+                item.tableName === 'teachers' ||
+                item.tableName === 'teacher_work_sessions' ||
+                item.tableName === 'students'
+              ) {
+                query = query.in('campus_id', campusVariants);
+              }
+            }
+
+            // Giới hạn tải danh sách học sinh ban đầu (StudentsTab đã phân trang server-side 100 dòng/trang)
+            if (item.tableName === 'students') {
+              query = query.limit(200);
+            }
+
+            return await query;
+          },
+          60_000
+        );
+
         if (error) {
           console.warn(`[SafeLoader] Bảng ${item.tableName} không nạp được (${error.message}), giữ dữ liệu cục bộ.`);
           return { tableName: item.tableName, storeKey: item.storeKey, data: [], success: false };

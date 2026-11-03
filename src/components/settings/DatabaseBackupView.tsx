@@ -15,6 +15,7 @@ import * as XLSX from 'xlsx';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { AppStore } from '../../types';
 import { showToast } from '../../lib/toast';
+import { fetchOnce } from '../../lib/fetchOnce';
 
 interface DatabaseBackupViewProps {
   store?: AppStore;
@@ -72,7 +73,11 @@ export const DatabaseBackupView: React.FC<DatabaseBackupViewProps> = () => {
     const counts: Record<string, number> = {};
     for (const tbl of ROYAL_DATABASE_TABLES) {
       try {
-        const { count, error } = await client.from(tbl.name).select('*', { count: 'exact', head: true });
+        const { count, error } = await fetchOnce(
+          `backup_count:${tbl.name}`,
+          async () => await client.from(tbl.name).select('*', { count: 'exact', head: true }),
+          60_000
+        );
         counts[tbl.name] = (!error && typeof count === 'number') ? count : 0;
       } catch {
         counts[tbl.name] = 0;

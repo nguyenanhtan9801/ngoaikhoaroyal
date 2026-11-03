@@ -18,6 +18,7 @@ import { AppStore, formatVND } from '../../lib/storage';
 import { Student, ExtracurricularClass } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { supabase } from '../../supabaseClient';
+import { fetchOnce } from '../../lib/fetchOnce';
 
 interface OverviewKpiTabProps {
   store: AppStore;
@@ -252,16 +253,20 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   React.useEffect(() => {
     let isMounted = true;
     const fetchLiveKPIs = async () => {
-      if (!supabase) return;
+      const sbClient = supabase;
+      if (!sbClient) return;
       try {
-        const { count: sCount, error: sErr } = await supabase
-          .from('students')
-          .select('*', { count: 'exact', head: true });
-        
-        const { data: enrData, error: eErr } = await supabase
-          .from('enrollments')
-          .select('student_id')
-          .eq('status', 'active');
+        const [{ count: sCount, error: sErr }, { data: enrData }] = await fetchOnce(
+          'overview_kpi:live_counts',
+          async () => {
+            const [resStudents, resEnrollments] = await Promise.all([
+              sbClient.from('students').select('*', { count: 'exact', head: true }),
+              sbClient.from('enrollments').select('student_id').eq('status', 'active'),
+            ]);
+            return [resStudents, resEnrollments] as const;
+          },
+          60_000
+        );
 
         if (!isMounted) return;
 

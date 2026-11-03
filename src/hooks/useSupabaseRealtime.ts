@@ -336,7 +336,6 @@ export function useSupabaseRealtime({
         const recomputed = recomputeDerivedRealtimeState(nextStore);
         prevStoreRef.current = recomputed;
         saveStore(recomputed);
-        isApplyingRemoteUpdateRef.current = false;
         return recomputed;
       });
     },
@@ -372,7 +371,7 @@ export function useSupabaseRealtime({
     );
 
     if (url && anonKey) {
-      loadInitialDataSafely(loadStore())
+      loadInitialDataSafely(loadStore(), currentUser)
         .then(res => {
           if (res.isOfflineFallback) {
             setIsOffline(true);
@@ -394,7 +393,7 @@ export function useSupabaseRealtime({
       setIsOffline(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser, setStore]);
+  }, [currentUser?.id, setStore]);
 
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
@@ -404,16 +403,21 @@ export function useSupabaseRealtime({
       return;
     }
 
+    // Nếu thay đổi trên store đến từ Realtime hoặc tải dữ liệu ban đầu, KHÔNG đẩy ngược lại lên Supabase
+    if (isApplyingRemoteUpdateRef.current) {
+      isApplyingRemoteUpdateRef.current = false;
+      const recomputed = recomputeDerivedRealtimeState(store);
+      prevStoreRef.current = recomputed;
+      if (recomputed !== store) {
+        setStore(recomputed);
+      }
+      return;
+    }
+
     const recomputed = recomputeDerivedRealtimeState(store);
     if (recomputed !== store) {
       prevStoreRef.current = recomputed;
       setStore(recomputed);
-      return;
-    }
-
-    if (isApplyingRemoteUpdateRef.current) {
-      isApplyingRemoteUpdateRef.current = false;
-      prevStoreRef.current = store;
       return;
     }
 
@@ -439,7 +443,8 @@ export function useSupabaseRealtime({
         }
       })
       .catch(() => {});
-  }, [currentUser, store, setStore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, store, setStore]);
 
   // Thiết lập kênh BroadcastChannel đồng bộ đa tab/cửa sổ và lắng nghe sự kiện mạng Online/Offline
   useEffect(() => {
@@ -493,7 +498,7 @@ export function useSupabaseRealtime({
     }
 
     // Khi chưa có nhân sự đăng nhập: tuyệt đối KHÔNG mở kênh Realtime tới *.supabase.co
-    if (!currentUser) {
+    if (!currentUser?.id) {
       setIsSupabaseCloudActive(false);
       setConnectionState('disconnected');
       return;
@@ -531,30 +536,60 @@ export function useSupabaseRealtime({
 
     let isUnmounted = false;
 
-    // Khi VITE_LEGACY_LOGIN='false', không subscribe realtime bảng app_users
-    const allowedRealtimeTables = Object.keys(SUPABASE_TABLE_TO_STORE_KEY).filter(
-      tbl => isLegacyLoginEnabled() || tbl !== 'app_users'
-    );
-
-    let channel = supabase.channel('royal_system_changes');
-    for (const table of allowedRealtimeTables) {
-      channel = channel.on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table },
-        (payload: any) => {
-          if (isUnmounted) return;
-          if (payload.table === 'app_users' && !isLegacyLoginEnabled()) return;
-          handleRealtimePayload({
-            table: payload.table || table,
-            eventType: payload.eventType,
-            new: payload.new,
-            old: payload.old,
-          });
+    const setupRealtimeChannel = async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (isUnmounted) return;
+        const accessToken = sessionData?.session?.access_token;
+        if (accessToken) {
+          supabase.realtime.setAuth(accessToken);
+        } else if (!isLegacyLoginEnabled()) {
+          // Không có access_token hợp lệ khi tắt legacy login -> không mở WebSocket để tránh lỗi 401
+          setIsSupabaseCloudActive(false);
+          setConnectionState('disconnected');
+          return;
         }
-      );
-    }
+      } catch {
+        if (!isLegacyLoginEnabled()) return;
+      }
 
-    channel.subscribe((status: string) => {
+      if (isUnmounted) return;
+
+      // Chỉ đăng ký các bảng vận hành thực sự cần cập nhật trực tiếp theo vai trò
+      const baseRealtimeTables = [
+        'extracurricular_classes',
+        'enrollments',
+        'attendance_records',
+        'teacher_work_sessions',
+        'profiles',
+      ];
+      const staffExtraTables =
+        currentUser.role !== 'teacher'
+          ? ['students', 'tuition_invoices', 'credit_notes', 'parent_registrations']
+          : [];
+      const allowedRealtimeTables = [...baseRealtimeTables, ...staffExtraTables].filter(
+        tbl => tbl in SUPABASE_TABLE_TO_STORE_KEY
+      );
+
+      let channel = supabase.channel('royal_system_changes');
+      for (const table of allowedRealtimeTables) {
+        channel = channel.on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table },
+          (payload: any) => {
+            if (isUnmounted) return;
+            if (payload.table === 'app_users' && !isLegacyLoginEnabled()) return;
+            handleRealtimePayload({
+              table: payload.table || table,
+              eventType: payload.eventType,
+              new: payload.new,
+              old: payload.old,
+            });
+          }
+        );
+      }
+
+      channel.subscribe((status: string) => {
         if (isUnmounted) return;
 
         if (status === 'SUBSCRIBED') {
@@ -566,23 +601,29 @@ export function useSupabaseRealtime({
           setIsSupabaseCloudActive(true);
           setConnectionState('connected');
           setReconnectAttempt(0);
-        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          // Dừng tự động thử lại liên tục khi gặp lỗi 401/CHANNEL_ERROR trên WebSocket
           setIsOffline(true);
           setIsSupabaseCloudActive(false);
-          setConnectionState('reconnecting');
-
-          if (reconnectTimerRef.current) {
-            clearTimeout(reconnectTimerRef.current);
+          setConnectionState('disconnected');
+          try {
+            supabase.removeChannel(channel);
+          } catch {
+            // ignore
           }
-          reconnectTimerRef.current = setTimeout(() => {
-            if (!isUnmounted) {
-              setConnectionState('connected');
-            }
-          }, 3000);
+          if (channelRef.current === channel) {
+            channelRef.current = null;
+          }
+        } else if (status === 'CLOSED') {
+          setIsSupabaseCloudActive(false);
+          setConnectionState('disconnected');
         }
       });
 
-    channelRef.current = channel;
+      channelRef.current = channel;
+    };
+
+    setupRealtimeChannel();
 
     return () => {
       isUnmounted = true;
@@ -605,6 +646,7 @@ export function useSupabaseRealtime({
     };
   }, [
     currentUser?.id,
+    currentUser?.role,
     store.supabaseConfig?.url,
     store.supabaseConfig?.anonKey,
     reconnectTrigger,

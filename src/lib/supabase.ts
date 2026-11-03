@@ -41,6 +41,38 @@ import {
   getOfflineExpectedPassword,
   emitSupabaseSyncStatus,
 } from './storage';
+import { fetchOnce } from './fetchOnce';
+
+export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
+  campuses: 'id,code,name,address,phone,bank_name,bank_account,bank_owner,status',
+  academic_terms:
+    'id,code,name,academic_year,start_date,end_date,registration_deadline,total_weeks,status,is_active',
+  subject_categories: 'id,code,name,icon,color,description,status,order',
+  subjects:
+    'id,code,name,category,category_code,standard_duration,standard_sessions,standard_course_fee,standard_session_rate,description,is_active',
+  time_slots:
+    'id,code,name,start_time,end_time,duration_minutes,days_of_week,campus_id,status,notes,slot_type',
+  teachers:
+    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,percentage_rate,status',
+  extracurricular_classes:
+    'id,code,name,term_id,spanning_term_id,is_cross_term,term_distribution,campus_id,subject_id,facility_id,time_slot_id,days_of_week,start_date,end_date,primary_teacher_id,max_students,total_sessions,full_course_fee,price_per_session,status,allow_over_quota',
+  students:
+    'id,code,previous_student_code,name,dob,birth_date,gender,is_royal_student,student_type,has_snack,campus_id,school_name,regular_class,class_name,parent_name,parent_phone,medical_notes,avatar_url,status,created_at',
+  enrollments:
+    'id,student_id,class_id,registered_sessions,joined_date,enrolled_days_of_week,is_partial_schedule,is_trial,trial_session_date,trial_attended,status,enrollment_type',
+  attendance_records:
+    'id,session_id,class_id,student_id,session_date,status,note,proof_file_name,proof_url,uploaded_by,uploaded_at',
+  teacher_work_sessions:
+    'id,class_id,term_id,campus_id,session_date,session_number,periods_count,assigned_teacher_id,actual_teacher_id,is_substitute,substitute_reason,status,late_minutes,check_in_time,rate_per_period,rate_applied,earned_amount,total_payout,verified_by,notes,recalculated_at',
+  tuition_invoices:
+    'id,invoice_code,student_id,class_id,registered_sessions,total_class_sessions,session_rate,gross_amount,credit_deducted,discount_amount,net_payable,paid_amount,outstanding_amount,payment_status,due_date,payment_reference,verified_by,verified_at,payment_history,created_at',
+  credit_notes:
+    'id,student_id,source_class_id,source_enrollment_id,absent_dates,sessions_preserved,session_rate,credit_amount,status,applied_to_invoice_id,created_at,notes',
+  term_subjects:
+    'id,term_id,subject_id,is_active,standard_sessions,standard_course_fee,standard_session_rate,total_fee,term_note,notes',
+  profiles: '*',
+  parent_registrations: '*',
+};
 
 export interface TableColumnSpec {
   dbCol: string;
@@ -1206,9 +1238,11 @@ export async function inspectAllDatabaseTables(
       const start = Date.now();
       const safeTableName = sanitizeSupabaseTableName(tblDef.tableName);
       try {
-        const { count, error } = await client
-          .from(safeTableName)
-          .select('*', { count: 'exact', head: true });
+        const { count, error } = await fetchOnce(
+          `table_count:${safeTableName}`,
+          async () => await client.from(safeTableName).select('*', { count: 'exact', head: true }),
+          60_000
+        );
         const latencyMs = Date.now() - start;
 
         if (error) {
@@ -1830,7 +1864,8 @@ export async function pullAllTablesFromSupabase(
     onProgress?.(safeTableName, Math.round(((i + 1) / totalTables) * 100));
 
     try {
-      const { data, error } = await client.from(safeTableName).select('*');
+      const cols = SUPABASE_TABLE_SELECT_COLUMNS[safeTableName] || '*';
+      const { data, error } = await client.from(safeTableName).select<string, any>(cols);
       if (error || !Array.isArray(data) || data.length === 0) continue;
 
       totalPulled += data.length;
@@ -2030,7 +2065,9 @@ export async function pullAllTablesFromSupabase(
 
   // Pull credit_notes, profiles (hoặc app_users khi bật legacy) & parent_registrations
   try {
-    const { data: creditsData } = await client.from('credit_notes').select('*');
+    const { data: creditsData } = await client
+      .from('credit_notes')
+      .select<string, any>(SUPABASE_TABLE_SELECT_COLUMNS.credit_notes);
     if (Array.isArray(creditsData) && creditsData.length > 0) {
       nextStore.makeupCredits = creditsData as MakeupCredit[];
       totalPulled += creditsData.length;
@@ -2040,7 +2077,9 @@ export async function pullAllTablesFromSupabase(
   }
 
   try {
-    const { data: catData } = await client.from('subject_categories').select('*');
+    const { data: catData } = await client
+      .from('subject_categories')
+      .select(SUPABASE_TABLE_SELECT_COLUMNS.subject_categories);
     if (Array.isArray(catData) && catData.length > 0) {
       nextStore.subjectCategories = catData.map((r: any) => mapSupabaseRowToStoreEntity('subject_categories', r));
       totalPulled += catData.length;
@@ -2050,7 +2089,9 @@ export async function pullAllTablesFromSupabase(
   }
 
   try {
-    const { data: slotData } = await client.from('time_slots').select('*');
+    const { data: slotData } = await client
+      .from('time_slots')
+      .select(SUPABASE_TABLE_SELECT_COLUMNS.time_slots);
     if (Array.isArray(slotData) && slotData.length > 0) {
       nextStore.timeSlots = slotData.map((r: any) => mapSupabaseRowToStoreEntity('time_slots', r));
       totalPulled += slotData.length;
@@ -2074,7 +2115,9 @@ export async function pullAllTablesFromSupabase(
   }
 
   try {
-    const { data: termSubData } = await client.from('term_subjects').select('*');
+    const { data: termSubData } = await client
+      .from('term_subjects')
+      .select(SUPABASE_TABLE_SELECT_COLUMNS.term_subjects);
     if (Array.isArray(termSubData) && termSubData.length > 0) {
       nextStore.termSubjects = termSubData.map((r: any): TermSubjectConfig => ({
         id: r.id || `ts_${r.term_id}_${r.subject_id}`,

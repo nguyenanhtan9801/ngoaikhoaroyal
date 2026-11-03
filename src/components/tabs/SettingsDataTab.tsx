@@ -1776,11 +1776,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   // Refresh local table health whenever store changes or when entering supabase/excel_master section
   useEffect(() => {
     let cancelled = false;
+    const isRemoteCountSectionOpen =
+      activeSection === 'supabase' || activeSection === 'excel_master';
     const runCheck = async () => {
       const results = await inspectAllDatabaseTables(
         store,
-        sbConnected ? sbUrl : '',
-        sbConnected ? sbKey : ''
+        sbConnected && isRemoteCountSectionOpen ? sbUrl : '',
+        sbConnected && isRemoteCountSectionOpen ? sbKey : ''
       );
       if (!cancelled) {
         setTableHealthList(results);
@@ -1791,6 +1793,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       cancelled = true;
     };
   }, [
+    activeSection,
     store.campuses.length,
     store.terms.length,
     store.subjects.length,

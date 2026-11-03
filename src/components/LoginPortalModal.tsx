@@ -266,12 +266,15 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
             });
 
             if (!signInError && authData?.user) {
+              if (authData.session?.access_token) {
+                supabase.realtime?.setAuth(authData.session.access_token);
+              }
               // Đọc hồ sơ của chính mình từ bảng `profiles` (id = user.id)
               const { data: profileData, error: profileError } = await supabase
                 .from('profiles')
                 .select('*')
                 .eq('id', authData.user.id)
-                .single();
+                .maybeSingle();
 
               // Chỉ cho vào nếu có hồ sơ và status = 'active'; ngược lại gọi signOut() và báo lỗi chung
               if (

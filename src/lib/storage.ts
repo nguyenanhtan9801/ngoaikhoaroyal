@@ -45,6 +45,7 @@ import {
   isLegacyLoginEnabled,
 } from '../supabaseClient';
 import { showToast } from './toast';
+import { fetchOnce } from './fetchOnce';
 
 export { isLegacyLoginEnabled };
 
@@ -2583,6 +2584,7 @@ export function buildAppUserFromProfile(
 /**
  * Đọc bản ghi `profiles` của người dùng đang đăng nhập từ Supabase theo user.id.
  * Chỉ trả về user hợp lệ nếu status === 'active'.
+ * Dùng .maybeSingle() và gộp/cache tối thiểu 60 giây để tránh vòng lặp gọi liên tục khi lỗi 401/406 hoặc không có dòng.
  */
 export async function fetchActiveProfileFromSupabase(
   userId: string,
@@ -2593,44 +2595,57 @@ export async function fetchActiveProfileFromSupabase(
   if (!supabase || !userId) {
     return { user: null, status: null };
   }
-  try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+  return fetchOnce(
+    `profile:active:${userId}`,
+    async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .maybeSingle();
 
-    if (error || !data) {
-      return { user: null, status: null };
-    }
+        if (error || !data) {
+          return { user: null, status: null };
+        }
 
-    const status = String(data.status || '').toLowerCase();
-    if (status !== 'active') {
-      return { user: null, status };
-    }
+        const status = String(data.status || '').toLowerCase();
+        if (status !== 'active') {
+          return { user: null, status };
+        }
 
-    return {
-      user: buildAppUserFromProfile(data, fallbackEmail, lastSignInAt),
-      status: 'active',
-    };
-  } catch {
-    return { user: null, status: null };
-  }
+        return {
+          user: buildAppUserFromProfile(data, fallbackEmail, lastSignInAt),
+          status: 'active',
+        };
+      } catch {
+        return { user: null, status: null };
+      }
+    },
+    60_000
+  );
 }
 
 /**
  * Tải toàn bộ danh sách hồ sơ từ bảng `public.profiles` (dành cho super_admin).
+ * Được gộp và cache tối thiểu 60 giây qua fetchOnce.
  */
 export async function fetchAllProfilesFromSupabase(): Promise<AppUser[]> {
   const supabase = getConfiguredSupabaseClient();
   if (!supabase) return [];
-  try {
-    const { data, error } = await supabase.from('profiles').select('*');
-    if (error || !Array.isArray(data)) return [];
-    return data.map(row => buildAppUserFromProfile(row));
-  } catch {
-    return [];
-  }
+  return fetchOnce(
+    'profiles:all',
+    async () => {
+      try {
+        const { data, error } = await supabase.from('profiles').select('*');
+        if (error || !Array.isArray(data)) return [];
+        return data.map(row => buildAppUserFromProfile(row));
+      } catch {
+        return [];
+      }
+    },
+    60_000
+  );
 }
 
 /**

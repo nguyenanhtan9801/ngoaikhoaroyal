@@ -120,44 +120,76 @@ export default function App() {
   // Nguyên tắc phân quyền: currentRole luôn lấy trực tiếp từ currentUser.role (bỏ mặc định 'super_admin' khi chưa đăng nhập)
   const currentRole: UserRole = currentUser?.role || 'teacher';
 
+  const isSyncingProfileRef = React.useRef<boolean>(false);
+  const lastSyncedProfileUserIdRef = React.useRef<string | null>(null);
+  const lastSyncedProfileAtRef = React.useRef<number>(0);
+  const isSyncingSuperAdminProfilesRef = React.useRef<boolean>(false);
+  const lastSuperAdminProfilesSyncRef = React.useRef<{ userId: string; timestamp: number }>({
+    userId: '',
+    timestamp: 0,
+  });
+
   const syncProfilesListForSuperAdmin = async (activeUser: AppUser) => {
     if (activeUser.role !== 'super_admin') return;
-    const profilesList = await fetchAllProfilesFromSupabase();
-    if (profilesList.length === 0) return;
+    if (isSyncingSuperAdminProfilesRef.current) return;
+    const now = Date.now();
+    if (
+      lastSuperAdminProfilesSyncRef.current.userId === activeUser.id &&
+      now - lastSuperAdminProfilesSyncRef.current.timestamp < 60_000
+    ) {
+      return;
+    }
 
-    setStore(prev => {
-      if (!isLegacyLoginEnabled()) {
+    isSyncingSuperAdminProfilesRef.current = true;
+    lastSuperAdminProfilesSyncRef.current = { userId: activeUser.id, timestamp: now };
+
+    try {
+      const profilesList = await fetchAllProfilesFromSupabase();
+      if (profilesList.length === 0) return;
+
+      setStore(prev => {
+        if (!isLegacyLoginEnabled()) {
+          if (JSON.stringify(prev.users) === JSON.stringify(profilesList)) {
+            return prev;
+          }
+          const next = {
+            ...prev,
+            users: profilesList,
+          };
+          saveStore(next);
+          return next;
+        }
+
+        const mergedMap = new Map<string, AppUser>();
+        for (const existing of prev.users || []) {
+          mergedMap.set(existing.username.toLowerCase(), existing);
+        }
+        for (const prof of profilesList) {
+          const key = prof.username.toLowerCase();
+          const prevUser = mergedMap.get(key);
+          mergedMap.set(key, {
+            ...(prevUser || {}),
+            ...prof,
+            email: prof.email || prevUser?.email || `${prof.username}@royal.edu.vn`,
+            phone: prof.phone || prevUser?.phone || '',
+            department: prof.department || prevUser?.department || '',
+            linked_teacher_id: prof.linked_teacher_id || prevUser?.linked_teacher_id,
+          });
+        }
+        const nextUsers = Array.from(mergedMap.values());
+        if (JSON.stringify(prev.users) === JSON.stringify(nextUsers)) {
+          return prev;
+        }
         const next = {
           ...prev,
-          users: profilesList,
+          users: nextUsers,
         };
         saveStore(next);
         return next;
-      }
-
-      const mergedMap = new Map<string, AppUser>();
-      for (const existing of prev.users || []) {
-        mergedMap.set(existing.username.toLowerCase(), existing);
-      }
-      for (const prof of profilesList) {
-        const key = prof.username.toLowerCase();
-        const prevUser = mergedMap.get(key);
-        mergedMap.set(key, {
-          ...(prevUser || {}),
-          ...prof,
-          email: prof.email || prevUser?.email || `${prof.username}@royal.edu.vn`,
-          phone: prof.phone || prevUser?.phone || '',
-          department: prof.department || prevUser?.department || '',
-          linked_teacher_id: prof.linked_teacher_id || prevUser?.linked_teacher_id,
-        });
-      }
-      const next = {
-        ...prev,
-        users: Array.from(mergedMap.values()),
-      };
-      saveStore(next);
-      return next;
-    });
+      });
+    } finally {
+      isSyncingSuperAdminProfilesRef.current = false;
+    }
   };
 
   const handleLoginSuccess = (user: AppUser, rememberMe: boolean = true) => {
@@ -213,6 +245,9 @@ export default function App() {
     }
 
     // 2. Reset toàn bộ state người dùng & đưa store về chế độ danh mục công khai dành cho khách
+    lastSyncedProfileUserIdRef.current = null;
+    lastSyncedProfileAtRef.current = 0;
+    lastSuperAdminProfilesSyncRef.current = { userId: '', timestamp: 0 };
     setCurrentUser(null);
     setIsAuthenticated(false);
     loadPublicCatalogSafely().then(res => setStore(res.store)).catch(() => {
@@ -280,37 +315,68 @@ export default function App() {
       if (!isMounted) return;
 
       if (sessionUser?.id) {
-        const { user: profileUser, status } = await fetchActiveProfileFromSupabase(
-          sessionUser.id,
-          sessionUser.email,
-          sessionUser.last_sign_in_at
-        );
+        if (isSyncingProfileRef.current) return;
+        const now = Date.now();
+        if (
+          lastSyncedProfileUserIdRef.current === sessionUser.id &&
+          now - lastSyncedProfileAtRef.current < 60_000
+        ) {
+          return;
+        }
 
-        if (!isMounted) return;
+        isSyncingProfileRef.current = true;
+        lastSyncedProfileUserIdRef.current = sessionUser.id;
+        lastSyncedProfileAtRef.current = now;
 
-        if (profileUser && status === 'active') {
-          if (isLegacyLoginEnabled()) {
-            saveActiveSessionUser(profileUser, true);
+        try {
+          const { user: profileUser, status } = await fetchActiveProfileFromSupabase(
+            sessionUser.id,
+            sessionUser.email,
+            sessionUser.last_sign_in_at
+          );
+
+          if (!isMounted) return;
+
+          if (profileUser && status === 'active') {
+            if (isLegacyLoginEnabled()) {
+              saveActiveSessionUser(profileUser, true);
+            }
+            setCurrentUser(prev => {
+              if (
+                prev &&
+                prev.id === profileUser.id &&
+                prev.role === profileUser.role &&
+                prev.campus_id === profileUser.campus_id &&
+                prev.status === profileUser.status &&
+                prev.full_name === profileUser.full_name
+              ) {
+                return prev;
+              }
+              return profileUser;
+            });
+            setIsAuthenticated(true);
+            setSelectedCampusId(normalizeCampusScope(profileUser.campus_id));
+            if (profileUser.role === 'super_admin') {
+              syncProfilesListForSuperAdmin(profileUser);
+            }
+          } else {
+            // Khi đọc profile thất bại (401/406 hoặc 0 dòng), KHÔNG tự thử lại trong vòng lặp.
+            if (status === 'locked') {
+              supabase?.auth.signOut({ scope: 'local' }).catch(() => {});
+            }
+            if (!isLegacyLoginEnabled() || status === 'locked') {
+              clearActiveSessionUser();
+              setCurrentUser(null);
+              setIsAuthenticated(false);
+            }
           }
-          setCurrentUser(profileUser);
-          setIsAuthenticated(true);
-          setSelectedCampusId(normalizeCampusScope(profileUser.campus_id));
-          syncProfilesListForSuperAdmin(profileUser);
-        } else {
-          // Nếu tài khoản bị khóa hoặc không có profile active
-          try {
-            await supabase?.auth.signOut();
-          } catch {
-            // noop
-          }
-          if (!isLegacyLoginEnabled() || status === 'locked') {
-            clearActiveSessionUser();
-            setCurrentUser(null);
-            setIsAuthenticated(false);
-          }
+        } finally {
+          isSyncingProfileRef.current = false;
         }
       } else {
         // Không có phiên Supabase Auth: nếu VITE_LEGACY_LOGIN='false', từ chối mọi phiên chỉ dựa trên JSON trong localStorage
+        lastSyncedProfileUserIdRef.current = null;
+        lastSyncedProfileAtRef.current = 0;
         if (!isLegacyLoginEnabled()) {
           clearActiveSessionUser();
           setCurrentUser(null);
@@ -331,6 +397,9 @@ export default function App() {
         supabase.auth
           .getSession()
           .then(({ data }) => {
+            if (data?.session?.access_token) {
+              supabase?.realtime?.setAuth(data.session.access_token);
+            }
             syncSessionWithProfiles(data?.session?.user || null);
           })
           .catch(() => {
@@ -347,22 +416,33 @@ export default function App() {
       }
 
       const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_OUT') {
-          clearActiveSessionUser();
-          if (isMounted) {
+        // Hoãn bằng setTimeout(() => ..., 0), không gọi await/REST trực tiếp bên trong callback.
+        // BỎ event TOKEN_REFRESHED khỏi danh sách kích hoạt đọc profile.
+        setTimeout(() => {
+          if (!isMounted) return;
+
+          if (session?.access_token) {
+            supabase?.realtime?.setAuth(session.access_token);
+          }
+
+          if (event === 'SIGNED_OUT') {
+            lastSyncedProfileUserIdRef.current = null;
+            lastSyncedProfileAtRef.current = 0;
+            lastSuperAdminProfilesSyncRef.current = { userId: '', timestamp: 0 };
+            clearActiveSessionUser();
             setCurrentUser(null);
             setIsAuthenticated(false);
+            return;
           }
-          return;
-        }
-        if (
-          event === 'SIGNED_IN' ||
-          event === 'TOKEN_REFRESHED' ||
-          event === 'USER_UPDATED' ||
-          (event === 'INITIAL_SESSION' && session?.user)
-        ) {
-          syncSessionWithProfiles(session?.user || null);
-        }
+
+          if (
+            event === 'SIGNED_IN' ||
+            event === 'USER_UPDATED' ||
+            (event === 'INITIAL_SESSION' && session?.user)
+          ) {
+            syncSessionWithProfiles(session?.user || null);
+          }
+        }, 0);
       });
 
       return () => {
@@ -490,13 +570,13 @@ export default function App() {
 
   // Synchronize localStorage with event listener (chỉ khi đã có nhân sự đăng nhập)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser?.id) return;
     const handleStorageUpdate = () => {
       setStore(loadStore());
     };
     window.addEventListener('royal_store_updated', handleStorageUpdate);
     return () => window.removeEventListener('royal_store_updated', handleStorageUpdate);
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   // Cơ chế thu hồi phiên tức thì (Instant Session Invalidation) nếu tài khoản bị khóa & đồng bộ quyền hạn
   const forceLockoutCurrentUser = () => {
@@ -534,7 +614,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser?.id) return;
     const latestInStore = store.users.find(
       u => u.id === currentUser.id || u.username.toLowerCase() === currentUser.username.toLowerCase()
     );
@@ -550,7 +630,7 @@ export default function App() {
     if (scoped !== 'all' && selectedCampusId !== scoped) {
       setSelectedCampusId(scoped);
     }
-  }, [store.users, currentUser, selectedCampusId]);
+  }, [store.users, currentUser?.id, currentUser?.username, selectedCampusId]);
 
   const pendingRegistrationsCount = (store.parentRegistrations || []).filter(
     r => r.status === 'pending'
