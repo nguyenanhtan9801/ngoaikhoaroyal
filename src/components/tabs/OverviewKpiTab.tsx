@@ -301,6 +301,60 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const pmhRatio = totalCampusActive > 0 ? Math.round((finalActivePMH / totalCampusActive) * 100) : 0;
   const plRatio = totalCampusActive > 0 ? 100 - pmhRatio : 0;
 
+  // 4. SỐ LƯỢNG ĐĂNG KÝ HỌC (Tổng lượt ghi danh của từng lớp cộng lại, 1 học sinh học 2 lớp = tính là 2)
+  const enrollmentStats = React.useMemo(() => {
+    // Lấy danh sách ghi danh đang hoạt động (active)
+    const activeEnrs = (store.enrollments || []).filter(e => e.status === 'active' || !e.status);
+
+    // Tạo map tra cứu cơ sở của từng lớp
+    const classCampusMap = new Map<string, string>();
+    (store.classes || []).forEach(cls => {
+      const rawCampus = String(cls.campus_id || '').toLowerCase();
+      const campusCode = (rawCampus.includes('pl') || cls.name.toUpperCase().includes('PL')) ? 'pl' : 'pmh';
+      classCampusMap.set(String(cls.id), campusCode);
+    });
+
+    // Đếm theo từng lớp và từng cơ sở (1 học sinh học 2 lớp = tính là 2)
+    let pmhCount = 0;
+    let plCount = 0;
+
+    activeEnrs.forEach(enr => {
+      const campus = classCampusMap.get(String(enr.class_id)) || 'pmh';
+      if (campus === 'pl') {
+        plCount++;
+      } else {
+        pmhCount++;
+      }
+    });
+
+    if (activeEnrs.length === 0) {
+      (store.classes || []).forEach(cls => {
+        const count = Number((cls as any).enrolled_count ?? cls.current_students) || 0;
+        const campus = classCampusMap.get(String(cls.id)) || 'pmh';
+        if (campus === 'pl') {
+          plCount += count;
+        } else {
+          pmhCount += count;
+        }
+      });
+    }
+
+    const totalEnrollments = activeEnrs.length > 0
+      ? (pmhCount + plCount)
+      : (store.classes || []).reduce((acc, c) => acc + (Number((c as any).enrolled_count ?? c.current_students) || 0), 0);
+
+    const pmhPercent = totalEnrollments > 0 ? ((pmhCount / totalEnrollments) * 100).toFixed(1) : '0.0';
+    const plPercent = totalEnrollments > 0 ? ((plCount / totalEnrollments) * 100).toFixed(1) : '0.0';
+
+    return {
+      totalEnrollments,
+      pmhCount,
+      plCount,
+      pmhPercent,
+      plPercent,
+    };
+  }, [store.enrollments, store.classes]);
+
   return (
     <div className="space-y-4">
       
@@ -409,27 +463,52 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
           </div>
         </div>
 
-        {/* Thẻ 4: TỶ LỆ CHUYÊN CẦN */}
+        {/* Thẻ 4: SỐ LƯỢNG ĐĂNG KÝ HỌC */}
         <div className="rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-4.5 backdrop-blur-md relative overflow-hidden shadow-xl hover:border-cyan-500/30 transition-colors">
           <div className="flex items-center justify-between">
             <span className="text-[11px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
-              Tỷ Lệ Chuyên Cần
+              Số Lượng Đăng Ký Học
             </span>
             <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-              <CheckCircle2 className="w-4 h-4" />
+              <FileText className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-2.5 flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-extrabold text-cyan-400">{attendanceRate}%</span>
-            <span className="text-xs text-slate-400">{presentCount} / {totalAttendance} có mặt</span>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl sm:text-3xl font-extrabold text-cyan-400 tracking-tight">
+              {enrollmentStats.totalEnrollments}
+            </span>
+            <span className="text-xs text-slate-400 font-medium">lượt đăng ký lớp</span>
           </div>
-          <div className="mt-1 text-[11px] sm:text-xs text-slate-400 truncate">
-            Vắng phép: <span className="text-amber-400 font-semibold">{excusedCount}</span> • Không phép: <span className="text-rose-400 font-semibold">{unexcusedCount}</span>
+          <div className="mt-1.5 space-y-0.5 text-[11px] sm:text-xs">
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                PMH:
+              </span>
+              <span className="font-semibold text-white">
+                {enrollmentStats.pmhCount} lượt <span className="text-amber-400">({enrollmentStats.pmhPercent}%)</span>
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                Phú Lâm:
+              </span>
+              <span className="font-semibold text-white">
+                {enrollmentStats.plCount} lượt <span className="text-cyan-400">({enrollmentStats.plPercent}%)</span>
+              </span>
+            </div>
           </div>
-          <div className="mt-2.5 w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-            <div 
-              className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full rounded-full transition-all duration-500"
-              style={{ width: `${Math.min(100, attendanceRate)}%` }}
+          <div className="mt-2 w-full bg-slate-800 rounded-full h-1.5 overflow-hidden flex">
+            <div
+              className="bg-amber-500 h-full transition-all duration-500"
+              style={{ width: `${Number(enrollmentStats.pmhPercent)}%` }}
+              title={`Phú Mỹ Hưng: ${enrollmentStats.pmhCount} lượt (${enrollmentStats.pmhPercent}%)`}
+            />
+            <div
+              className="bg-cyan-500 h-full transition-all duration-500"
+              style={{ width: `${Number(enrollmentStats.plPercent)}%` }}
+              title={`Phú Lâm: ${enrollmentStats.plCount} lượt (${enrollmentStats.plPercent}%)`}
             />
           </div>
         </div>
