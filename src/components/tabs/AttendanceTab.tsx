@@ -53,6 +53,7 @@ import {
   getTeacherEffectivePeriodRate,
   getTeacherEffectiveSessionRate,
   calculateTeacherSessionPayAtDate,
+  getCurrentTerm,
 } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
@@ -196,7 +197,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 }) => {
   // 1. Khởi tạo state cho Bộ lọc 2 cấp: Khóa Học & Cơ Sở
   const defaultActiveTerm = useMemo(
-    () => store.terms.find(t => t.is_active) || store.terms[0],
+    () => getCurrentTerm(store.terms) || store.terms[0],
     [store.terms]
   );
 

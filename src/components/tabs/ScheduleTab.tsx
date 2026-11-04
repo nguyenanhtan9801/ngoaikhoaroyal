@@ -23,7 +23,7 @@ import {
   Layers,
   ArrowRight
 } from 'lucide-react';
-import { AppStore, formatVND } from '../../lib/storage';
+import { AppStore, formatVND, getCurrentTerm } from '../../lib/storage';
 import { ExtracurricularClass, UserRole, Campus, Subject, AcademicTerm, TimeSlot, Facility, Teacher, Student, Enrollment, ClassSession } from '../../types';
 
 interface ScheduleTabProps {
@@ -89,7 +89,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   // Filter States: Hệ thống / Cơ sở, Môn học, Khóa học
   const [filterCampus, setFilterCampus] = useState<string>(selectedCampusId || 'all');
   const [filterSubject, setFilterSubject] = useState<string>('all');
-  const [filterTerm, setFilterTerm] = useState<string>(store.terms.find(t => t.is_active)?.id || 'all');
+  const [filterTerm, setFilterTerm] = useState<string>(getCurrentTerm(store.terms)?.id || 'all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   
   // Month navigation helpers

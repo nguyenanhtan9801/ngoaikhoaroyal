@@ -44,6 +44,7 @@ import {
   calculateTeacherSessionPayAtDate,
   getTeacherContractAt,
   formatDateVN,
+  getCurrentTerm,
 } from '../../lib/storage';
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
 import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
@@ -175,7 +176,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   // Teacher Payroll & Workload BI Dashboard Filter & Modal States
   const [payrollTermFilter, setPayrollTermFilter] = useState<string>(() => {
     if (selectedTermId && selectedTermId !== 'all') return selectedTermId;
-    return store.terms.find(t => t.is_active)?.id || store.terms[0]?.id || 'term_fall_2026';
+    return getCurrentTerm(store.terms)?.id || store.terms[0]?.id || 'term_fall_2026';
   });
   const [payrollCampusFilter, setPayrollCampusFilter] = useState<string>(selectedCampusId || 'all');
   const [detailLogTeacher, setDetailLogTeacher] = useState<Teacher | null>(null);

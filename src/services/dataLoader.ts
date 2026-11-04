@@ -173,19 +173,21 @@ export function buildGuestCatalogStore(
     : [];
 
   const mappedTerms = Array.isArray(catalog?.terms)
-    ? catalog!.terms.map((t: any) => ({
-        id: String(t.id || ''),
-        code: String(t.code || t.id || ''),
-        name: String(t.name || ''),
-        academic_year: String(t.academic_year || '2026-2027'),
-        start_date: String(t.start_date || ''),
-        end_date: String(t.end_date || ''),
-        registration_deadline: String(t.end_date || ''),
-        total_weeks: Number(t.total_weeks) || 12,
-        status: (t.status && t.status !== 'open' ? t.status : 'open_enrollment') as any,
-        is_active: t.is_active ?? (t.status === 'open' || t.status === 'open_enrollment' || t.status === 'in_progress'),
-        description: String(t.description || ''),
-      }))
+    ? catalog!.terms
+        .map((t: any) => ({
+          id: String(t.id || ''),
+          code: String(t.code || t.id || ''),
+          name: String(t.name || ''),
+          academic_year: String(t.academic_year || '2026-2027'),
+          start_date: String(t.start_date || ''),
+          end_date: String(t.end_date || ''),
+          registration_deadline: String(t.end_date || ''),
+          total_weeks: Number(t.total_weeks) || 12,
+          status: (t.status && t.status !== 'open' ? t.status : 'open_enrollment') as any,
+          is_active: t.is_active ?? (t.status === 'open' || t.status === 'open_enrollment' || t.status === 'in_progress'),
+          description: String(t.description || ''),
+        }))
+        .sort((a, b) => a.start_date.localeCompare(b.start_date))
     : [];
 
   const mappedSubjects = Array.isArray(catalog?.subjects)

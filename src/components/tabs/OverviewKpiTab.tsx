@@ -17,7 +17,7 @@ import {
   BookOpen,
   School
 } from 'lucide-react';
-import { AppStore, formatVND } from '../../lib/storage';
+import { AppStore, formatVND, getCurrentTerm, formatDateVN } from '../../lib/storage';
 import { Student, ExtracurricularClass } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { supabase } from '../../supabaseClient';
@@ -42,7 +42,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   // Filter classes by campus & term
   const filteredClasses = store.classes.filter(c => {
     const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
-    const matchTerm = c.term_id === selectedTermId;
+    const matchTerm = selectedTermId === 'all' || c.term_id === selectedTermId;
     return matchCampus && matchTerm;
   });
 
@@ -72,13 +72,37 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const snacksConsumed = filteredSessions.reduce((acc, s) => acc + (s.snacks_consumed || 0), 0);
   const snacksReturned = filteredSessions.reduce((acc, s) => acc + (s.snacks_returned || 0), 0);
 
-  // Filter official invoices (exclude trial_pending and cancelled from official debt/billed KPIs)
-  const filteredInvoices = store.invoices.filter(
-    i => filteredClassIds.has(i.class_id) && i.payment_status !== 'cancelled' && !i.is_trial_pending
+  // 3. DOANH THU KHÓA HIỆN TẠI & TÀI CHÍNH THU HỌC PHÍ (Khi selectedTermId = 'all', vẫn tính theo khóa hiện tại)
+  const currentTerm =
+    (selectedTermId && selectedTermId !== 'all'
+      ? store.terms.find(t => t.id === selectedTermId)
+      : undefined) ||
+    getCurrentTerm(store.terms) ||
+    store.terms[0];
+
+  const currentTermClasses = store.classes.filter(c => {
+    const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
+    return matchCampus && c.term_id === currentTerm?.id;
+  });
+  const currentTermClassIds = new Set(currentTermClasses.map(c => c.id));
+
+  // Filter official invoices for current/selected term (exclude trial_pending and cancelled from official debt/billed KPIs)
+  const currentTermInvoices = store.invoices.filter(
+    i => currentTermClassIds.has(i.class_id) && i.payment_status !== 'cancelled' && !i.is_trial_pending
   );
-  const totalBilled = filteredInvoices.reduce((acc, i) => acc + i.net_payable, 0);
-  const totalPaid = filteredInvoices.reduce((acc, i) => acc + i.paid_amount, 0);
-  const totalDebt = filteredInvoices.reduce((acc, i) => acc + i.outstanding_amount, 0);
+  const termTotalRevenue = currentTermInvoices.reduce((acc, i) => acc + (i.net_payable || 0), 0);
+  const termCollectedRevenue = currentTermInvoices.reduce((acc, i) => acc + (i.paid_amount || 0), 0);
+  const termOutstandingRevenue = Math.max(0, termTotalRevenue - termCollectedRevenue);
+  const termRecoveryRate = termTotalRevenue > 0
+    ? Number(((termCollectedRevenue / termTotalRevenue) * 100).toFixed(1))
+    : 0;
+  const termRecoveryRateLabel = termTotalRevenue > 0
+    ? ((termCollectedRevenue / termTotalRevenue) * 100).toFixed(1).replace('.', ',')
+    : '0,0';
+
+  const totalBilled = termTotalRevenue;
+  const totalPaid = termCollectedRevenue;
+  const totalDebt = termOutstandingRevenue;
 
   // Consecutive absence >= 3 detection
   // Group attendance by class and student, sorted by date
@@ -228,24 +252,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     return { activePMH: pmh, activePL: pl };
   }, [uniqueActiveStudentIds, studentMap, classMap, activeEnrollments]);
 
-  // 3. DOANH THU KHÓA HIỆN TẠI
-  const currentTerm = store.terms.find(t => t.id === selectedTermId) ||
-    store.terms.find(t => t.is_active) ||
-    store.terms.find(t => t.status === 'in_progress' || t.status === 'open_enrollment') ||
-    store.terms[0];
-
-  const currentTermClasses = store.classes.filter(c => c.term_id === currentTerm?.id);
-  const currentTermClassIds = new Set(currentTermClasses.map(c => c.id));
-  const currentTermInvoices = store.invoices.filter(
-    i => currentTermClassIds.has(i.class_id) && i.payment_status !== 'cancelled' && !i.is_trial_pending
-  );
-
-  const termTotalRevenue = currentTermInvoices.reduce((acc, i) => acc + (i.net_payable || 0), 0);
-  const termCollectedRevenue = currentTermInvoices.reduce((acc, i) => acc + (i.paid_amount || 0), 0);
-  const termOutstandingRevenue = Math.max(0, termTotalRevenue - termCollectedRevenue);
-  const termRecoveryRate = termTotalRevenue > 0 
-    ? Math.round((termCollectedRevenue / termTotalRevenue) * 100) 
-    : 0;
+  // Khóa học hiện tại đã được xác định phía trên (currentTerm)
 
   // Real-time Supabase sync fallback state
   const [liveDb, setLiveDb] = React.useState<{
@@ -618,7 +625,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
           <div className="mt-1 text-[11px] sm:text-xs text-slate-400 truncate">
             Đã thu: <span className="text-emerald-400 font-semibold">{formatVND(termCollectedRevenue)}</span> • Còn nợ: <span className="text-rose-400 font-semibold">{formatVND(termOutstandingRevenue)}</span>
           </div>
-          <div className="mt-2.5 flex items-center justify-between text-[11px]">
+          <div className="mt-2 flex items-center justify-between text-[11px]">
             <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mr-2">
               <div
                 className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full rounded-full transition-all duration-500"
@@ -626,9 +633,14 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
               />
             </div>
             <span className="text-slate-400 whitespace-nowrap text-[11px] font-medium">
-              Thu hồi: <strong className="text-emerald-400">{termRecoveryRate}%</strong>
+              Thu hồi: <strong className="text-emerald-400">{termRecoveryRateLabel}%</strong>
             </span>
           </div>
+          {currentTerm && (
+            <div className="mt-1.5 text-[10.5px] text-slate-400 truncate font-medium">
+              {currentTerm.name} ({formatDateVN(currentTerm.start_date)} – {formatDateVN(currentTerm.end_date)})
+            </div>
+          )}
         </div>
 
         {/* Thẻ 4: SỐ LƯỢNG ĐĂNG KÝ HỌC */}
@@ -946,7 +958,12 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
             </div>
           </div>
 
-          <div className="mt-6 pt-4 border-t border-slate-800">
+          <div className="mt-5 pt-4 border-t border-slate-800 space-y-2.5">
+            {currentTerm && (
+              <div className="text-[11px] text-slate-400 text-center font-medium">
+                {currentTerm.name} ({formatDateVN(currentTerm.start_date)} – {formatDateVN(currentTerm.end_date)})
+              </div>
+            )}
             <button
               onClick={() => onNavigateTab('sub_finance')}
               className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition-colors flex items-center justify-center gap-1.5"

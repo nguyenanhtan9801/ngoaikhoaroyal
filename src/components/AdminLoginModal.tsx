@@ -68,7 +68,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
         status: 'active',
         created_at: new Date().toISOString(),
         last_login: new Date().toISOString(),
-        is_root: true,
       };
 
       try {

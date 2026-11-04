@@ -26,7 +26,8 @@ import {
   getEffectivePrice, 
   calculateCeilSessionRate, 
   createAuditRecord, 
-  appendAuditLog 
+  appendAuditLog,
+  getCurrentTerm
 } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
@@ -188,7 +189,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
   // Initial form values
   const defaultTermId = initialTermId && initialTermId !== 'all' 
     ? initialTermId 
-    : (store.terms.find(t => t.is_active)?.id || store.terms[0]?.id || 'term_fall_2026');
+    : (getCurrentTerm(store.terms)?.id || store.terms[0]?.id || 'term_fall_2026');
   const defaultCampusId = initialCampusId && initialCampusId !== 'all'
     ? initialCampusId
     : (store.campuses[0]?.id || 'camp_pmh');

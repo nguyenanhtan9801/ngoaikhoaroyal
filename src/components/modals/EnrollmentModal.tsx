@@ -20,7 +20,8 @@ import {
   getDefaultClassStartDate, 
   formatDateVN,
   getEffectivePrice,
-  calculateCeilSessionRate
+  calculateCeilSessionRate,
+  getCurrentTerm
 } from '../../lib/storage';
 import { showToast } from '../../lib/toast';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
@@ -154,9 +155,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
   // Danh sách Khóa học (Academic Terms) & Khóa học đang chọn
   const [terms, setTerms] = useState<AcademicTerm[]>(store.terms || []);
   const [selectedTermId, setSelectedTermId] = useState<string>(() => {
-    const activeTerm = (store.terms || []).find(
-      (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
-    ) || store.terms?.[0];
+    const activeTerm = getCurrentTerm(store.terms || []) || store.terms?.[0];
     return activeTerm?.id || '';
   });
 
@@ -234,9 +233,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       if (!client) {
         if (store.terms && store.terms.length > 0 && isMounted) {
           setTerms(store.terms);
-          const activeTerm = store.terms.find(
-            (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
-          ) || store.terms[0];
+          const activeTerm = getCurrentTerm(store.terms) || store.terms[0];
           if (activeTerm && !selectedTermId) {
             setSelectedTermId(activeTerm.id);
           }
@@ -248,15 +245,13 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
         const { data, error } = await client
           .from('academic_terms')
           .select('*')
-          .order('start_date', { ascending: false });
+          .order('start_date', { ascending: true });
 
         if (isMounted) {
           const termsData = (!error && data && data.length > 0) ? (data as AcademicTerm[]) : store.terms;
           if (termsData && termsData.length > 0) {
             setTerms(termsData);
-            const activeTerm = termsData.find(
-              (t: any) => t.is_active || t.status === 'active' || t.status === 'recruiting' || t.status === 'open_enrollment' || t.status === 'in_progress'
-            ) || termsData[0];
+            const activeTerm = getCurrentTerm(termsData) || termsData[0];
             if (activeTerm && !selectedTermId) {
               setSelectedTermId(activeTerm.id);
             }
@@ -617,16 +612,15 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
           p_student_id: resolvedStudentId,
           p_student_code: resolvedStudentCode,
           p_student_name: enrollingStudent.name,
+          p_campus_id: enrollingStudent.campus_id || selectedClass.campus_id || 'pmh',
+          p_parent_name: enrollingStudent.parent_name || 'Phụ huynh',
+          p_parent_phone: enrollingStudent.parent_phone || '',
           p_class_id: selectedClass.id,
           p_is_trial: isTrialMode,
           p_start_date: isTrialMode ? trialDateVal : startDate,
-          p_sessions: isTrialMode ? 1 : effectiveSessions,
+          p_actual_sessions: isTrialMode ? 1 : effectiveSessions,
           p_session_rate: isTrialMode ? 0 : rate,
-          p_total_amount: grossAmount,
-          p_campus_id: enrollingStudent.campus_id || selectedClass.campus_id || 'pmh',
-          p_is_royal: Boolean(enrollingStudent.is_royal_student),
-          p_parent_name: enrollingStudent.parent_name || 'Phụ huynh',
-          p_parent_phone: enrollingStudent.parent_phone || ''
+          p_total_tuition: grossAmount
         });
 
         if (!rpcErr && (!rpcRes || rpcRes.success !== false)) {

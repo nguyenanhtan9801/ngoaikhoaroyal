@@ -108,7 +108,7 @@ export const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
     setEditingUser(user);
     setFormData({
       username: user.username,
-      password: user.password,
+      password: user.password || '',
       full_name: user.full_name,
       phone: user.phone,
       email: user.email,

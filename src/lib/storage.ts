@@ -864,6 +864,53 @@ export function saveStore(store: AppStore): boolean {
   }
 }
 
+export function getTodayStrHoChiMinh(today: Date | string = new Date()): string {
+  if (typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today.trim())) {
+    return today.trim();
+  }
+  const d = typeof today === 'string' ? new Date(today) : today;
+  const validDate = isNaN(d.getTime()) ? new Date() : d;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(validDate);
+}
+
+/**
+ * Xác định Khóa học hiện tại dựa trên ngày theo múi giờ Asia/Ho_Chi_Minh (không dựa vào is_active):
+ * 1. Ưu tiên khóa có start_date <= hôm nay <= end_date (nếu chồng ngày thì chọn khóa có start_date muộn nhất).
+ * 2. Nếu không có thì chọn khóa sắp tới gần nhất (start_date > hôm nay nhỏ nhất).
+ * 3. Nếu không có thì chọn khóa đã kết thúc gần nhất (end_date < hôm nay lớn nhất).
+ */
+export function getCurrentTerm(
+  terms: AcademicTerm[] = [],
+  today: Date | string = new Date()
+): AcademicTerm | undefined {
+  if (!Array.isArray(terms) || terms.length === 0) return undefined;
+  const todayStr = getTodayStrHoChiMinh(today);
+  const validTerms = terms.filter(t => t && t.start_date && t.end_date);
+  if (validTerms.length === 0) return terms[0];
+
+  const activeByDate = validTerms
+    .filter(t => t.start_date <= todayStr && todayStr <= t.end_date)
+    .sort((a, b) => b.start_date.localeCompare(a.start_date) || b.end_date.localeCompare(a.end_date));
+  if (activeByDate.length > 0) return activeByDate[0];
+
+  const upcoming = validTerms
+    .filter(t => t.start_date > todayStr)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date));
+  if (upcoming.length > 0) return upcoming[0];
+
+  const ended = validTerms
+    .filter(t => t.end_date < todayStr)
+    .sort((a, b) => b.end_date.localeCompare(a.end_date));
+  if (ended.length > 0) return ended[0];
+
+  return terms[0];
+}
+
 // Check if term is closed (read-only mode)
 export function isTermClosed(termId: string, store: AppStore): boolean {
   const term = store.terms.find(t => t.id === termId);

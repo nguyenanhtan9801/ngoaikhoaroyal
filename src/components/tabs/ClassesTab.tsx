@@ -24,7 +24,7 @@ import {
   Globe,
   Trash2
 } from 'lucide-react';
-import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN } from '../../lib/storage';
+import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN, getCurrentTerm } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -271,7 +271,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   // Form state for Create / Edit Class Modal
   const defaultActiveTermId =
     (localTermId !== 'all' ? localTermId : undefined) ||
-    store.terms.find(t => t.is_active)?.id ||
+    getCurrentTerm(store.terms)?.id ||
     store.terms[0]?.id ||
     'term_fall_2026';
   const defaultCampusId =
@@ -570,9 +570,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       if (client) {
         try {
           await client.from('tuition_invoices').delete().eq('class_id', classItem.id);
-          await client.from('class_sessions').delete().eq('class_id', classItem.id);
         } catch (e) {
-          console.warn('Lỗi dọn dẹp sessions/invoices:', e);
+          console.warn('Lỗi dọn dẹp invoices:', e);
         }
 
         // 4. Xóa lớp học khỏi bảng extracurricular_classes

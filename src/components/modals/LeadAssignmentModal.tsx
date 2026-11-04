@@ -65,50 +65,9 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
       const actualSessionsVal = Number(actualSessions || 12);
       const totalFeeVal = isTrial ? 0 : Number(calculatedFee || 3000000);
 
-      // 1. Gọi hàm RPC assign_student_to_class / confirm_lead_enrollment trực tiếp trên Supabase
-      let rpcOk = false;
-      let rpcErrDetail = '';
-      try {
-        const { data: assignRpcData, error: assignRpcErr } = await client.rpc('assign_student_to_class', {
-          p_student_id: studentCode,
-          p_class_id: targetClassId,
-          p_is_trial: isTrial,
-          p_start_date: startDateVal,
-          p_actual_sessions: actualSessionsVal,
-          p_tuition_fee: totalFeeVal
-        });
-
-        if (!assignRpcErr && (!assignRpcData || assignRpcData.success !== false)) {
-          rpcOk = true;
-        } else {
-          const { data, error } = await client.rpc('confirm_lead_enrollment', {
-            p_reg_id: registrationData.id,
-            p_student_code: studentCode,
-            p_student_name: registrationData.student_name || registrationData.name,
-            p_date_of_birth: registrationData.date_of_birth || registrationData.student_dob || '2016-05-15',
-            p_campus_id: cleanCampus,
-            p_parent_name: registrationData.parent_name || 'Na',
-            p_parent_phone: registrationData.parent_phone || '0915279768',
-            p_class_id: targetClassId,
-            p_is_trial: isTrial,
-            p_total_fee: totalFeeVal,
-            p_actual_sessions: actualSessionsVal
-          });
-
-          if (error) {
-            rpcErrDetail = error.message;
-          } else if (data && !data.success) {
-            rpcErrDetail = data.error || 'Lỗi không xác định từ CSDL';
-          } else {
-            rpcOk = true;
-          }
-        }
-      } catch (err: any) {
-        rpcErrDetail = err.message;
-      }
-
-      // 2. Direct Supabase fallback to ensure student is 100% saved in students & enrollments
+      // 1. Ghi trực tiếp vào Supabase (bảng students, enrollments, parent_registrations)
       let directOk = false;
+      let directErrDetail = '';
       try {
         // Chuẩn hóa ngày sinh
         const birthDateValue = registrationData.date_of_birth || registrationData.dob || registrationData.student_dob || '2016-05-15';
@@ -116,7 +75,6 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
 
         const studentPayload: any = {
           id: studentCode,
-          student_code: studentCode,
           code: studentCode,
           name: registrationData.student_name || registrationData.name || 'Học viên mới',
           full_name: registrationData.student_name || registrationData.name || 'Học viên mới',
@@ -148,11 +106,13 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
           // Nếu lỗi do cột nào chưa nhận, thử lại chỉ với các trường cơ bản
           console.warn('Lỗi upsert students, đang thử lại với fallback:', studentErr);
           delete studentPayload.date_of_birth;
-          delete studentPayload.student_code;
           delete studentPayload.full_name;
           const { error: retryErr } = await client.from('students').upsert(studentPayload, { onConflict: 'id' });
           if (!retryErr) directOk = true;
-          else console.warn('Lỗi retry upsert student:', retryErr);
+          else {
+            directErrDetail = retryErr.message;
+            console.warn('Lỗi retry upsert student:', retryErr);
+          }
         } else {
           directOk = true;
         }
@@ -182,6 +142,8 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
 
         if (!enrollUpsertErr) {
           directOk = true;
+        } else if (!directErrDetail) {
+          directErrDetail = enrollUpsertErr.message;
         }
 
         const { error: regUpdErr } = await client.from('parent_registrations').update({
@@ -200,12 +162,13 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
             assigned_class_id: targetClassId
           }).eq('id', registrationData.id);
         }
-      } catch (directErr) {
-        console.warn('Direct fallback warning:', directErr);
+      } catch (directErr: any) {
+        console.warn('Direct write error:', directErr);
+        directErrDetail = directErr?.message || String(directErr);
       }
 
-      if (!rpcOk && !directOk && rpcErrDetail) {
-        throw new Error(rpcErrDetail);
+      if (!directOk && directErrDetail) {
+        throw new Error(directErrDetail);
       }
 
       alert(`✅ Thành công! Đã lưu học sinh ${registrationData.student_name || registrationData.name} (${studentCode}) và xếp lớp ${isTrial ? 'HỌC THỬ' : 'CHÍNH THỨC'} vào CSDL.`);

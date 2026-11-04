@@ -32,6 +32,7 @@ import {
   getNextTermAndRedemptionOptions,
   NextTermClassRedemptionOption,
   canModifyRedeemedCredit,
+  getCurrentTerm,
 } from '../../lib/storage';
 import { MakeupCredit, Student, ExtracurricularClass, UserRole, TuitionInvoice, Enrollment, AppUser } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -88,7 +89,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
   }, [store.enrollments, issueForm.student_id]);
 
   const currentTermClasses = useMemo(() => {
-    const activeTerm = store.terms.find(t => t.is_active) || store.terms[0];
+    const activeTerm = getCurrentTerm(store.terms) || store.terms[0];
     return store.classes.filter(c => !activeTerm || c.term_id === activeTerm.id);
   }, [store.classes, store.terms]);
 

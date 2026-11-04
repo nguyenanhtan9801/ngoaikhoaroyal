@@ -45,7 +45,6 @@ export async function syncStoreToSupabase(
   const tables = [
     'campuses',
     'academic_terms',
-    'subject_masters',
     'teachers',
     'extracurricular_classes',
     'students',
@@ -96,25 +95,7 @@ export async function syncStoreToSupabase(
       else totalSynced += termRows.length;
     }
 
-    // 3. Subject Masters
-    onProgress?.({ currentTable: 'subject_masters', progressPercent: 30 });
-    const subjectRows = (store.subjects || []).map(s => ({
-      id: s.id,
-      code: s.code,
-      name: s.name,
-      category: s.category || 'sports',
-      required_room_type: s.required_room_type || null,
-      standard_duration: s.standard_duration || '90 phút (2 tiết)',
-      is_active: s.is_active ?? true,
-      description: s.description || null,
-    }));
-    if (subjectRows.length > 0) {
-      const { error } = await client.from('subject_masters').upsert(subjectRows, { onConflict: 'id' });
-      if (error) console.warn('Supabase sync subjects error:', error);
-      else totalSynced += subjectRows.length;
-    }
-
-    // 4. Teachers
+    // 3. Teachers
     onProgress?.({ currentTable: 'teachers', progressPercent: 40 });
     const teacherRows = (store.teachers || []).map(t => ({
       id: t.id,

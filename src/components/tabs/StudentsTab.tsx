@@ -175,16 +175,16 @@ const QuickEditRow: React.FC<{ student: Student; onUpdateStore: any }> = ({ stud
         if (updateErr) {
           // Thử gọi RPC quick_update_student_profile hoặc fallback chỉ cập nhật các cột hiện có
           const { error: rpcErr } = await client.rpc('quick_update_student_profile', {
-            p_student_id: student.id,
-            p_regular_student_code: cleanPayload.regular_student_code,
+            p_id: student.id,
             p_name: cleanPayload.name,
+            p_regular_code: cleanPayload.regular_student_code,
             p_dob: cleanPayload.dob,
             p_parent_name: cleanPayload.parent_name,
             p_parent_phone: cleanPayload.parent_phone,
             p_email: cleanPayload.email,
           });
           if (rpcErr) {
-            await client
+            const { error: fallbackErr } = await client
               .from('students')
               .update({
                 name: cleanPayload.name,
@@ -194,6 +194,9 @@ const QuickEditRow: React.FC<{ student: Student; onUpdateStore: any }> = ({ stud
                 updated_at: new Date().toISOString(),
               })
               .eq('id', student.id);
+            if (fallbackErr) {
+              throw fallbackErr;
+            }
           }
         }
       }
@@ -856,8 +859,47 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   }, [selectedCampus, filterType, search, onlyHealth]);
 
   // Convert Outside Student to Royal Student
-  const handleConfirmConvert = (student: Student) => {
+  const handleConfirmConvert = async (student: Student) => {
     const newCode = generateStudentCode(true, store.students);
+    const updatedSchoolName = student.school_name?.includes('Royal')
+      ? student.school_name
+      : 'Royal School (Chính khóa)';
+
+    // Đồng bộ trực tiếp vào Supabase
+    try {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        const { error: convertErr } = await client
+          .from('students')
+          .update({
+            code: newCode,
+            previous_student_code: student.code,
+            is_royal_student: true,
+            student_type: 'royal',
+            has_snack: true,
+            school_name: updatedSchoolName,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', student.id);
+
+        if (convertErr) {
+          showToast(
+            `Không thể chuyển đổi học sinh trên CSDL: ${convertErr.message}`,
+            'error',
+            { title: 'Lỗi cập nhật CSDL' }
+          );
+          return;
+        }
+      }
+    } catch (e: any) {
+      showToast(
+        `Lỗi kết nối CSDL khi chuyển đổi học sinh: ${e?.message || String(e)}`,
+        'error',
+        { title: 'Lỗi cập nhật CSDL' }
+      );
+      return;
+    }
+
     onUpdateStore(prev => {
       const updatedStudents = prev.students.map(s => {
         if (s.id === student.id) {
@@ -868,7 +910,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             is_royal_student: true,
             student_type: 'royal' as const,
             has_snack: true,
-            school_name: s.school_name?.includes('Royal') ? s.school_name : 'Royal School (Chính khóa)',
+            school_name: updatedSchoolName,
           };
         }
         return s;
@@ -891,25 +933,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         ],
       };
     });
-
-    // Đồng bộ trực tiếp vào Supabase
-    try {
-      const client = getSupabaseClient() || supabase;
-      if (client) {
-        client.from('students').update({
-          code: newCode,
-          student_code: newCode,
-          previous_student_code: student.code,
-          is_royal_student: true,
-          student_type: 'royal',
-          has_snack: true,
-          school_name: student.school_name?.includes('Royal') ? student.school_name : 'Royal School (Chính khóa)',
-          updated_at: new Date().toISOString()
-        }).eq('id', student.id).then();
-      }
-    } catch (e) {
-      console.warn('Sync convert to Supabase error:', e);
-    }
 
     setConvertingStudent(null);
     showToast(`Đã chuyển đổi học sinh ${student.name} sang mã ROYAL SCHOOL (${newCode})!`, 'success', {
@@ -1420,7 +1443,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           if (classId) {
             minQuery = minQuery.eq('class_id', classId);
           }
-          await minQuery;
+          const { error: minErr } = await minQuery;
+          if (minErr && error) {
+            throw minErr;
+          }
         }
 
         // Kích hoạt hóa đơn học phí liên quan nếu đang ở trạng thái chờ học thử
@@ -1434,7 +1460,10 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         if (classId) {
           invQuery = invQuery.eq('class_id', classId);
         }
-        await invQuery;
+        const { error: invErr } = await invQuery;
+        if (invErr && error) {
+          throw invErr;
+        }
       }
 
       // 2. Cập nhật ngay trên State UI
@@ -1546,8 +1575,25 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         });
         if (rpcErr || (res && res.success === false)) {
           console.warn('Lỗi RPC cancel_class_enrollment, thực hiện fallback DELETE:', rpcErr || res);
-          await client.from('enrollments').delete().eq('class_id', classId).or(`student_id.eq.${student.id},student_id.eq.${student.code}`);
-          await client.from('tuition_invoices').delete().eq('class_id', classId).in('payment_status', ['unpaid', 'trial_pending']).or(`student_id.eq.${student.id},student_id.eq.${student.code}`);
+          const { error: delEnrErr } = await client
+            .from('enrollments')
+            .delete()
+            .eq('class_id', classId)
+            .or(`student_id.eq.${student.id},student_id.eq.${student.code}`);
+          if (delEnrErr) {
+            showToast(`Lỗi khi xóa ghi danh lớp học: ${delEnrErr.message}`, 'error');
+            throw delEnrErr;
+          }
+          const { error: delInvErr } = await client
+            .from('tuition_invoices')
+            .delete()
+            .eq('class_id', classId)
+            .in('payment_status', ['unpaid', 'trial_pending'])
+            .or(`student_id.eq.${student.id},student_id.eq.${student.code}`);
+          if (delInvErr) {
+            showToast(`Lỗi khi xóa hóa đơn học phí: ${delInvErr.message}`, 'error');
+            throw delInvErr;
+          }
         }
       }
 
@@ -1600,26 +1646,46 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   };
 
   // Drop Trial Enrollment (Nghỉ sau buổi học thử 1 - Hủy hóa đơn, không nợ, giải phóng chỗ)
-  const handleConfirmDropTrial = (enrollmentId: string, notes?: string) => {
+  const handleConfirmDropTrial = async (enrollmentId: string, notes?: string) => {
     const enr = store.enrollments.find(e => e.id === enrollmentId);
     if (!enr) return;
 
     const client = getSupabaseClient() || supabase;
     if (client) {
-      client.from('enrollments').update({
-        status: 'trial_dropped',
-        trial_attended: true,
-        trial_outcome: 'dropped',
-        trial_notes: notes || 'Học sinh dừng học sau buổi thử 1 (Trial Dropped)'
-      }).eq('id', enrollmentId).then();
+      const { error: enrErr } = await client
+        .from('enrollments')
+        .update({
+          status: 'trial_dropped',
+          trial_attended: true,
+          trial_outcome: 'dropped',
+          trial_notes: notes || 'Học sinh dừng học sau buổi thử 1 (Trial Dropped)',
+        })
+        .eq('id', enrollmentId);
 
-      client.from('tuition_invoices').update({
-        is_trial_pending: false,
-        payment_status: 'cancelled',
-        outstanding_amount: 0,
-        net_payable: 0,
-        payment_reference: 'MIỄN PHÍ BUỔI HỌC THỬ (DỪNG HỌC)'
-      }).match({ student_id: enr.student_id, class_id: enr.class_id }).then();
+      if (enrErr) {
+        showToast(`Lỗi cập nhật trạng thái dừng học thử: ${enrErr.message}`, 'error', {
+          title: 'Lỗi cập nhật CSDL',
+        });
+        return;
+      }
+
+      const { error: invErr } = await client
+        .from('tuition_invoices')
+        .update({
+          is_trial_pending: false,
+          payment_status: 'cancelled',
+          outstanding_amount: 0,
+          net_payable: 0,
+          payment_reference: 'MIỄN PHÍ BUỔI HỌC THỬ (DỪNG HỌC)',
+        })
+        .match({ student_id: enr.student_id, class_id: enr.class_id });
+
+      if (invErr) {
+        showToast(`Lỗi hủy hóa đơn học thử: ${invErr.message}`, 'error', {
+          title: 'Lỗi cập nhật CSDL',
+        });
+        return;
+      }
     }
 
     onUpdateStore(prev => {

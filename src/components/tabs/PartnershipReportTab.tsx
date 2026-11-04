@@ -21,6 +21,7 @@ import {
   formatDateVN,
   formatDaysListLabel,
   getClassDaysOfWeek,
+  getCurrentTerm,
 } from '../../lib/storage';
 import {
   PartnershipReportItem,
@@ -52,8 +53,7 @@ export const PartnershipReportTab: React.FC<PartnershipReportTabProps> = ({
   const [termFilter, setTermFilter] = useState<string>(() => {
     if (selectedTermId && selectedTermId !== 'all') return selectedTermId;
     return (
-      store.terms.find(t => t.is_active)?.id ||
-      store.terms.find(t => t.status === 'in_progress' || t.status === 'open_enrollment')?.id ||
+      getCurrentTerm(store.terms)?.id ||
       store.terms[0]?.id ||
       ''
     );
