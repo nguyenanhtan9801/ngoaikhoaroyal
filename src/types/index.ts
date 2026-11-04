@@ -351,6 +351,8 @@ export interface ExtracurricularClass {
 export interface Student {
   id: string;
   code: string; // RY-2026-xxxxx or EXT-2026-xxxxx
+  regular_student_code?: string; // Mã HS Chính Khóa (VD: RY2026-...)
+  student_id_official?: string;
   previous_student_code?: string;
   name: string;
   normalized_name?: string;
@@ -365,6 +367,7 @@ export interface Student {
   parent_name: string;
   parent_phone: string;
   parent_email?: string;
+  email?: string;
   grade?: string;
   school_name?: string; // Royal School PMH / Royal School PL
   regular_class?: string; // 3A1, 2A1...

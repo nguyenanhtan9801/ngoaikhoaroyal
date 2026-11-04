@@ -25,7 +25,8 @@ import {
   Save,
   ExternalLink,
   Calendar,
-  BookOpen
+  BookOpen,
+  Zap
 } from 'lucide-react';
 import { 
   AppStore, 
@@ -108,6 +109,200 @@ export const getDisplaySchoolName = (student: any): string => {
   return 'Royal School PMH';
 };
 
+const QuickEditRow: React.FC<{ student: Student; onUpdateStore: any }> = ({ student, onUpdateStore }) => {
+  const [row, setRow] = useState({
+    regular_student_code: student.regular_student_code || (student as any).student_id_official || '',
+    name: student.name || '',
+    dob: student.dob || '2016-01-01',
+    parent_name: student.parent_name || '',
+    parent_phone: student.parent_phone || '',
+    email: student.email || (student as any).parent_email || '',
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
+
+  useEffect(() => {
+    setRow({
+      regular_student_code: student.regular_student_code || (student as any).student_id_official || '',
+      name: student.name || '',
+      dob: student.dob || '2016-01-01',
+      parent_name: student.parent_name || '',
+      parent_phone: student.parent_phone || '',
+      email: student.email || (student as any).parent_email || '',
+    });
+  }, [
+    student.id,
+    student.regular_student_code,
+    (student as any).student_id_official,
+    student.name,
+    student.dob,
+    student.parent_name,
+    student.parent_phone,
+    student.email,
+    student.parent_email,
+  ]);
+
+  const handleSave = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    const client = getSupabaseClient() || supabase;
+    const cleanPayload = {
+      regular_student_code: row.regular_student_code.trim(),
+      name: row.name.trim(),
+      dob: row.dob || '2016-01-01',
+      parent_name: row.parent_name.trim(),
+      parent_phone: row.parent_phone.trim(),
+      email: row.email.trim().toLowerCase(),
+      parent_email: row.email.trim().toLowerCase(),
+    };
+
+    try {
+      if (client) {
+        const { error: updateErr } = await client
+          .from('students')
+          .update({
+            name: cleanPayload.name,
+            regular_student_code: cleanPayload.regular_student_code,
+            dob: cleanPayload.dob,
+            parent_name: cleanPayload.parent_name,
+            parent_phone: cleanPayload.parent_phone,
+            email: cleanPayload.email,
+            parent_email: cleanPayload.parent_email,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', student.id);
+
+        if (updateErr) {
+          // Thử gọi RPC quick_update_student_profile hoặc fallback chỉ cập nhật các cột hiện có
+          const { error: rpcErr } = await client.rpc('quick_update_student_profile', {
+            p_student_id: student.id,
+            p_regular_student_code: cleanPayload.regular_student_code,
+            p_name: cleanPayload.name,
+            p_dob: cleanPayload.dob,
+            p_parent_name: cleanPayload.parent_name,
+            p_parent_phone: cleanPayload.parent_phone,
+            p_email: cleanPayload.email,
+          });
+          if (rpcErr) {
+            await client
+              .from('students')
+              .update({
+                name: cleanPayload.name,
+                dob: cleanPayload.dob,
+                parent_name: cleanPayload.parent_name,
+                parent_phone: cleanPayload.parent_phone,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', student.id);
+          }
+        }
+      }
+
+      onUpdateStore((prev: AppStore) => ({
+        ...prev,
+        students: prev.students.map((s) =>
+          s.id === student.id ? { ...s, ...cleanPayload } : s
+        ),
+      }));
+
+      setIsSaved(true);
+      showToast(`Đã lưu nhanh thông tin học sinh ${cleanPayload.name} (${student.code})`, 'success');
+      setTimeout(() => setIsSaved(false), 2000);
+    } catch (err: any) {
+      showToast('Lỗi lưu: ' + (err.message || String(err)), 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSave();
+    }
+  };
+
+  return (
+    <tr className="hover:bg-slate-800/40 transition-colors">
+      <td className="py-2 px-3 font-mono font-bold text-amber-400 text-xs whitespace-nowrap">
+        {student.code}
+      </td>
+      <td className="py-2 px-3">
+        <input
+          type="text"
+          value={row.regular_student_code}
+          onChange={(e) => setRow({ ...row, regular_student_code: e.target.value })}
+          onKeyDown={handleKeyDown}
+          placeholder="vd: RY2026-..."
+          className="w-28 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:border-cyan-400 focus:outline-none"
+        />
+      </td>
+      <td className="py-2 px-3">
+        <input
+          type="text"
+          value={row.name}
+          onChange={(e) => setRow({ ...row, name: e.target.value })}
+          onKeyDown={handleKeyDown}
+          className="w-36 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white font-bold text-xs focus:border-cyan-400 focus:outline-none"
+        />
+      </td>
+      <td className="py-2 px-3">
+        <input
+          type="date"
+          value={row.dob}
+          onChange={(e) => setRow({ ...row, dob: e.target.value })}
+          onKeyDown={handleKeyDown}
+          className="w-32 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs focus:border-cyan-400 focus:outline-none"
+        />
+      </td>
+      <td className="py-2 px-3">
+        <input
+          type="text"
+          value={row.parent_name}
+          onChange={(e) => setRow({ ...row, parent_name: e.target.value })}
+          onKeyDown={handleKeyDown}
+          placeholder="Họ tên PH"
+          className="w-32 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-xs focus:border-cyan-400 focus:outline-none"
+        />
+      </td>
+      <td className="py-2 px-3">
+        <input
+          type="text"
+          value={row.parent_phone}
+          onChange={(e) => setRow({ ...row, parent_phone: e.target.value })}
+          onKeyDown={handleKeyDown}
+          placeholder="SĐT"
+          className="w-28 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-amber-300 font-mono text-xs focus:border-cyan-400 focus:outline-none"
+        />
+      </td>
+      <td className="py-2 px-3">
+        <input
+          type="email"
+          value={row.email}
+          onChange={(e) => setRow({ ...row, email: e.target.value })}
+          onKeyDown={handleKeyDown}
+          placeholder="email@..."
+          className="w-36 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 text-xs focus:border-cyan-400 focus:outline-none"
+        />
+      </td>
+      <td className="py-2 px-3 text-center">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={isSaving}
+          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+            isSaved
+              ? 'bg-emerald-500 text-slate-950 font-bold'
+              : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+          }`}
+        >
+          {isSaving ? '...' : isSaved ? '✓ Đã lưu' : 'Lưu'}
+        </button>
+      </td>
+    </tr>
+  );
+};
+
 interface StudentsTabProps {
   store: AppStore;
   currentRole: UserRole;
@@ -125,6 +320,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   focusHealth = false,
   initialSearch,
 }) => {
+  const [studentViewTab, setStudentViewTab] = useState<'view' | 'quick_edit'>('view');
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [search, setSearch] = useState(initialSearch || '');
   const [selectedCampus, setSelectedCampus] = useState<'all' | 'pmh' | 'pl'>('all');
@@ -412,6 +608,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               ...(existing || {}),
               id: targetKey,
               code: scode,
+              regular_student_code: r.regular_student_code || r.student_id_official || existing?.regular_student_code || (existing as any)?.student_id_official,
+              student_id_official: r.student_id_official || r.regular_student_code || (existing as any)?.student_id_official,
               previous_student_code: r.previous_student_code || existing?.previous_student_code,
               name: r.name || r.full_name || existing?.name || '',
               dob,
@@ -426,6 +624,8 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               class_name: regularClass,
               parent_name: r.parent_name || existing?.parent_name || '',
               parent_phone: r.parent_phone || existing?.parent_phone || '',
+              email: r.email || r.parent_email || existing?.email || existing?.parent_email || '',
+              parent_email: r.parent_email || r.email || existing?.parent_email || existing?.email || '',
               medical_notes: r.medical_notes ?? existing?.medical_notes ?? '',
               avatar_url: r.avatar_url || existing?.avatar_url,
               status: r.status || existing?.status || 'active',
@@ -631,7 +831,11 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         !query ||
         student.name.toLowerCase().includes(query) ||
         student.code.toLowerCase().includes(query) ||
+        Boolean(student.regular_student_code && student.regular_student_code.toLowerCase().includes(query)) ||
+        Boolean((student as any).student_id_official && String((student as any).student_id_official).toLowerCase().includes(query)) ||
         student.parent_phone.includes(query) ||
+        Boolean(student.email && student.email.toLowerCase().includes(query)) ||
+        Boolean(student.parent_email && student.parent_email.toLowerCase().includes(query)) ||
         Boolean(student.medical_notes && student.medical_notes.toLowerCase().includes(query));
 
       return matchCampus && matchType && matchHealth && matchSearch;
@@ -1472,6 +1676,32 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Thanh chuyển tab chế độ: "Danh Sách Hồ Sơ" và "⚡ Sửa Nhanh Học Sinh" */}
+      <div className="flex items-center gap-1.5 p-1 bg-slate-900/90 rounded-2xl border border-slate-800 self-start w-fit">
+        <button
+          type="button"
+          onClick={() => setStudentViewTab('view')}
+          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            studentViewTab === 'view'
+              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          📋 Danh Sách Hồ Sơ
+        </button>
+        <button
+          type="button"
+          onClick={() => setStudentViewTab('quick_edit')}
+          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+            studentViewTab === 'quick_edit'
+              ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Zap className="w-3.5 h-3.5" />
+          <span>⚡ Sửa Nhanh Học Sinh</span>
+        </button>
+      </div>
       
       {/* Action Bar */}
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
@@ -1614,8 +1844,46 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         </div>
       </div>
 
-      {/* VIEW MODE 1: DẠNG LƯỚI (TABLE VIEW) */}
-      {viewMode === 'table' ? (
+      {studentViewTab === 'quick_edit' ? (
+        <div className="rounded-3xl bg-[#111827]/90 border border-slate-800 overflow-hidden shadow-2xl p-4 animate-fadeIn">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Zap className="w-4 h-4 text-cyan-400" />
+                <span>Chế Độ Chỉnh Sửa Nhanh Hồ Sơ Học Sinh</span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Nhập trực tiếp thông tin vào các ô bên dưới và bấm Lưu (hoặc nhấn Enter) để đồng bộ ngay lập tức lên Supabase.
+              </p>
+            </div>
+            <span className="text-xs font-mono text-cyan-400 bg-cyan-500/10 px-2.5 py-1 rounded-xl border border-cyan-500/30">
+              {filteredStudents.length} học sinh
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-300">
+              <thead className="bg-slate-900 text-slate-400 font-bold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                <tr>
+                  <th className="py-2.5 px-3">Mã Ngoại Khóa</th>
+                  <th className="py-2.5 px-3">Mã Chính Khóa *</th>
+                  <th className="py-2.5 px-3">Họ Và Tên *</th>
+                  <th className="py-2.5 px-3">Ngày Sinh</th>
+                  <th className="py-2.5 px-3">Họ Tên Phụ Huynh</th>
+                  <th className="py-2.5 px-3">SĐT Phụ Huynh *</th>
+                  <th className="py-2.5 px-3">Email</th>
+                  <th className="py-2.5 px-3 text-center">Thao Tác</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {filteredStudents.map((st) => (
+                  <QuickEditRow key={st.id} onUpdateStore={onUpdateStore} student={st} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : viewMode === 'table' ? (
         <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 overflow-hidden backdrop-blur-md shadow-xl">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -1623,6 +1891,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 <tr>
                   <th className="py-3 px-3 text-center w-14">Hình Thẻ</th>
                   <th className="py-3 px-3 whitespace-nowrap">Mã HV</th>
+                  <th className="py-3 px-3">Mã Chính Khóa</th>
                   <th className="py-3 px-4">Họ và Tên</th>
                   <th className="py-3 px-3">Ngày Sinh & Giới Tính</th>
                   <th className="py-3 px-3">Phân Loại / Bánh Sữa</th>
@@ -1637,6 +1906,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 {paginatedStudents.map(student => {
                   const studentEnrollments = getStudentEnrollmentsList(student);
                   const isRoyal = checkIsRoyalStudent(student);
+                  const officialStudentCode = student.regular_student_code || (student as any).student_id_official;
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
@@ -1687,6 +1957,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                           <div className="text-[10px] text-cyan-400 font-mono mt-0.5 whitespace-nowrap">
                             Cũ: {student.previous_student_code}
                           </div>
+                        )}
+                      </td>
+
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        {officialStudentCode ? (
+                          <span className="px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-300 font-mono font-bold text-xs border border-blue-500/30">
+                            {officialStudentCode}
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 font-mono text-[11px] italic">-- Chưa có --</span>
                         )}
                       </td>
 
