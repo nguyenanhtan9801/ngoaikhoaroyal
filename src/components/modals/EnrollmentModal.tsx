@@ -18,7 +18,9 @@ import {
   formatDaysListLabel, 
   formatStudentScheduleLabel, 
   getDefaultClassStartDate, 
-  formatDateVN 
+  formatDateVN,
+  getEffectivePrice,
+  calculateCeilSessionRate
 } from '../../lib/storage';
 import { showToast } from '../../lib/toast';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
@@ -354,6 +356,62 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     );
   }, [store.subjects, selectedClass]);
 
+  // Lấy biểu phí chuẩn xác có xét Override theo Cơ sở của lớp đang chọn
+  const effectivePricing = useMemo(() => {
+    if (!selectedClass) {
+      return {
+        course_fee: 0,
+        session_rate: 0,
+        total_sessions: 16,
+        source: 'default',
+      };
+    }
+
+    const termId = selectedClass.term_id || (selectedClass as any).primary_term_id || selectedTermId;
+    const classCampusId = String(selectedClass.campus_id || '').toLowerCase();
+    const normalizedCampus = (classCampusId.includes('pl') || selectedClass.name.toUpperCase().includes('PL')) ? 'pl' : 'pmh';
+    const subjectId = String(selectedClass.subject_id || '');
+
+    // 1. Gọi hàm getEffectivePrice từ storage (Ưu tiên: Campus Override > Term Standard > Subject Default)
+    const priceResult = getEffectivePrice(termId, normalizedCampus, subjectId, store);
+    const hasCampusOverride = priceResult.source === 'campus_override' || priceResult.override_pricing;
+
+    // 2. Xác định học phí trọn khóa: nếu có Campus Override thì ưu tiên giá Override của Cơ sở
+    const finalCourseFee = Number(
+      (selectedClass as any).course_fee ||
+      (selectedClass as any).price ||
+      (hasCampusOverride ? priceResult.course_fee : 0) ||
+      selectedClass.full_course_fee ||
+      priceResult.course_fee ||
+      priceResult.base_course_fee ||
+      2400000
+    );
+
+    const finalSessions = Number(
+      (hasCampusOverride ? priceResult.total_sessions : 0) ||
+      selectedClass.total_sessions ||
+      priceResult.total_sessions ||
+      16
+    );
+
+    // 3. Tính đơn giá mỗi buổi (làm tròn lên hàng nghìn chuẩn Royal School)
+    const finalSessionRate = Number(
+      (hasCampusOverride ? priceResult.session_rate : 0) ||
+      priceResult.session_rate ||
+      calculateCeilSessionRate(finalCourseFee, finalSessions)
+    );
+
+    return {
+      course_fee: finalCourseFee,
+      session_rate: finalSessionRate,
+      total_sessions: finalSessions,
+      source: priceResult.source || 'campus_override',
+    };
+  }, [selectedClass, selectedTermId, store]);
+
+  const rate = effectivePricing.session_rate;
+  const standardCourseFee = effectivePricing.course_fee;
+
   // Total schedule days of the selected class
   const totalClassDays: string[] = useMemo(() => {
     if (!selectedClass) return [];
@@ -391,7 +449,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     setEnrollmentError(null);
   }, [selectedClassId]);
 
-  // Reactive Calculation: Each time startDate, selectedDays, selectedClass, or activeHolidays changes
+  // Reactive Calculation: Each time startDate, selectedDays, selectedClass, rate, or activeHolidays changes
   useEffect(() => {
     if (!selectedClass || !startDate) return;
 
@@ -413,19 +471,11 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       setManualSessions(actualSessions);
     }
 
-    // 3. Tính tổng học phí
+    // 3. Tính tổng học phí theo đơn giá chuẩn của cơ sở (effectivePricing.session_rate)
     const effectiveSessionsToCharge = isManualOverride ? manualSessions : actualSessions;
-    const rate = Number(
-      selectedClass.price_per_session || 
-      (selectedClass as any)?.session_rate || 
-      selectedSubject?.standard_session_rate || 
-      (selectedSubject?.standard_course_fee && selectedClass.total_sessions 
-        ? Math.ceil(selectedSubject.standard_course_fee / selectedClass.total_sessions) 
-        : 250000)
-    );
     const totalFee = isTrialMode ? 0 : (effectiveSessionsToCharge * rate);
     setTotalTuition(totalFee);
-  }, [startDate, selectedDays, selectedClassId, isTrialMode, isManualOverride, manualSessions, activeHolidays]);
+  }, [startDate, selectedDays, selectedClassId, isTrialMode, isManualOverride, manualSessions, activeHolidays, rate]);
 
   // Ràng buộc triệt để thuộc tính min và max cho ô Input Date
   const handleStartDateInputChange = (val: string) => {
@@ -494,14 +544,8 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     );
   }, [termClasses, selectedEnrollSubjectId]);
 
-  const rate = Number(
-    selectedClass?.price_per_session || 
-    (selectedClass as any)?.session_rate || 
-    selectedSubject?.standard_session_rate || 
-    250000
-  );
-
   const effectiveSessions = isTrialMode ? 1 : (isManualOverride ? manualSessions : calculatedSessions);
+  const grossAmount = isTrialMode ? 0 : (effectiveSessions * rate);
 
   if (!isOpen || !enrollingStudent) return null;
 
@@ -555,10 +599,9 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
 
       let invoiceId = `inv_${Date.now()}`;
       let invoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
-      const grossAmount = isTrialMode ? 0 : totalTuition;
       const todayStr = new Date().toISOString().split('T')[0];
       const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
-      const totalStd = selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 24;
+      const totalStd = effectivePricing.total_sessions || selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 16;
       const scheduleLabel = formatStudentScheduleLabel(selectedDays, totalClassDays);
       const proratedNote = isPartial
         ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${effectiveSessions} buổi x ${formatVND(rate)}/buổi)`
@@ -1013,16 +1056,16 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                 <span className="font-bold text-white truncate block">{selectedSubject?.name || selectedClass.name}</span>
               </div>
               <div className="space-y-0.5">
-                <span className="text-[10px] text-slate-400 block font-medium">Thời lượng chuẩn</span>
-                <span className="font-semibold text-cyan-300 block">{selectedSubject?.standard_duration || '90 phút'}</span>
+                <span className="text-[10px] text-slate-400 block font-medium">Học phí chuẩn khóa</span>
+                <span className="font-mono font-semibold text-cyan-300 block">{formatVND(standardCourseFee)}</span>
               </div>
               <div className="space-y-0.5">
                 <span className="text-[10px] text-slate-400 block font-medium">Số buổi chuẩn lớp</span>
-                <span className="font-mono font-bold text-amber-400 block">{selectedClass.total_sessions || 24} buổi</span>
+                <span className="font-mono font-bold text-amber-400 block">{effectivePricing.total_sessions} buổi</span>
               </div>
               <div className="space-y-0.5">
                 <span className="text-[10px] text-slate-400 block font-medium">Đơn giá buổi (R)</span>
-                <span className="font-mono font-bold text-emerald-400 block">{new Intl.NumberFormat('vi-VN').format(rate)} đ/b</span>
+                <span className="font-mono font-bold text-emerald-400 block">{formatVND(effectivePricing.session_rate)}/b</span>
               </div>
             </div>
           )}
@@ -1230,7 +1273,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                   <div className="grid grid-cols-3 gap-2 pt-1 text-center">
                     <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                       <div className="text-[9px] text-slate-400 uppercase font-semibold">Chuẩn lớp</div>
-                      <div className="font-mono font-bold text-white text-xs mt-0.5">{selectedClass.total_sessions || 24} buổi</div>
+                      <div className="font-mono font-bold text-white text-xs mt-0.5">{effectivePricing.total_sessions} buổi</div>
                     </div>
                     <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                       <div className="text-[9px] text-slate-400 uppercase font-semibold">Lịch tuần</div>
@@ -1280,11 +1323,11 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                   <div className="p-3 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-2 text-xs">
                     <div className="flex justify-between text-slate-400">
                       <span>Lịch học của lớp:</span>
-                      <span className="font-mono text-slate-200">[{totalClassDays.join(', ')}] ({selectedClass.total_sessions || 24} buổi)</span>
+                      <span className="font-mono text-slate-200">[{totalClassDays.join(', ')}] ({effectivePricing.total_sessions} buổi)</span>
                     </div>
                     <div className="flex justify-between text-slate-400">
                       <span>Đơn giá buổi (standard_session_rate):</span>
-                      <span className="font-mono font-bold text-white">{new Intl.NumberFormat('vi-VN').format(rate)} đ/buổi</span>
+                      <span className="font-mono font-bold text-white">{formatVND(effectivePricing.session_rate)}/buổi</span>
                     </div>
                     <div className="flex justify-between text-slate-400">
                       <span>Dòng công thức tính số buổi:</span>
@@ -1296,13 +1339,13 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
                     <div className="flex justify-between items-center text-slate-300 pt-1 border-t border-slate-800">
                       <span className="font-semibold text-slate-300">Dòng công thức tính học phí:</span>
                       <span className="font-mono font-bold text-amber-300">
-                        {effectiveSessions} buổi × {new Intl.NumberFormat('vi-VN').format(rate)} đ = {new Intl.NumberFormat('vi-VN').format(totalTuition)} đ
+                        {effectiveSessions} buổi × {formatVND(rate)} = {formatVND(grossAmount)}
                       </span>
                     </div>
                     <div className="flex justify-between items-center text-emerald-400 font-bold border-t border-slate-800 pt-1.5 text-sm">
                       <span>Tổng tiền học phí:</span>
                       <span className="font-mono font-black text-base">
-                        {new Intl.NumberFormat('vi-VN').format(totalTuition)} đ
+                        {formatVND(grossAmount)}
                       </span>
                     </div>
                   </div>
@@ -1344,7 +1387,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
             ) : isTrialMode ? (
               <span>Xác Nhận Đăng Ký Học Thử (1 buổi - Miễn phí)</span>
             ) : (
-              <span>Xác Nhận Ghi Danh ({effectiveSessions} buổi - {new Intl.NumberFormat('vi-VN').format(totalTuition)} đ)</span>
+              <span>Xác Nhận Ghi Danh ({effectiveSessions} buổi - {formatVND(grossAmount)})</span>
             )}
           </button>
         </div>

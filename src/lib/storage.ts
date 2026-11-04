@@ -897,20 +897,38 @@ export function getEffectivePrice(
   subjectId: string,
   store: AppStore
 ): EffectivePricingResult {
+  const normCampus = (id?: string) =>
+    String(id || '').toLowerCase().includes('pl') ? 'pl' : 'pmh';
+  const targetCampus = normCampus(campusId);
+
+  const subjectObj = store.subjects?.find(
+    s => String(s.id) === String(subjectId) || s.code === String(subjectId)
+  );
+  const resolvedSubjectId = subjectObj?.id || subjectId;
+
   // 1. Kiểm tra cấu hình Môn ở cấp Khóa trước (TermSubjectConfig)
   const termConfig = store.termSubjects?.find(
-    ts => ts.term_id === termId && ts.subject_id === subjectId
+    ts =>
+      ts.term_id === termId &&
+      (String(ts.subject_id) === String(resolvedSubjectId) || String(ts.subject_id) === String(subjectId))
   );
 
   const termActive = termConfig ? termConfig.is_active : true;
-  const termSessions = termConfig ? termConfig.standard_sessions : 24;
-  const termBaseCourseFee = termConfig ? termConfig.standard_course_fee : 3990000;
+  const termSessions =
+    termConfig?.standard_sessions || subjectObj?.standard_sessions || 24;
+  const termBaseCourseFee =
+    termConfig?.standard_course_fee || subjectObj?.standard_course_fee || 3990000;
   const termSessionRate =
-    termConfig?.standard_session_rate || Math.ceil(termBaseCourseFee / Math.max(1, termSessions));
+    termConfig?.standard_session_rate ||
+    subjectObj?.standard_session_rate ||
+    Math.ceil(termBaseCourseFee / Math.max(1, termSessions));
 
   // 2. Kiểm tra biểu phí ở cấp Cơ Sở (CampusTermPricing)
   const campusPricing = store.campusPricings?.find(
-    cp => cp.term_id === termId && cp.campus_id === campusId && cp.subject_id === subjectId
+    cp =>
+      cp.term_id === termId &&
+      normCampus(cp.campus_id) === targetCampus &&
+      (String(cp.subject_id) === String(resolvedSubjectId) || String(cp.subject_id) === String(subjectId))
   );
 
   // Nếu cơ sở thiết lập không mở môn này
@@ -942,13 +960,15 @@ export function getEffectivePrice(
       campusPricing.custom_session_rate || Math.ceil(baseFee / Math.max(1, sessions));
 
     return {
-      source: campusPricing.override_pricing ? 'campus_override' : 'term_standard',
+      source: (campusPricing.override_pricing || campusPricing.custom_course_fee !== termBaseCourseFee)
+        ? 'campus_override'
+        : 'term_standard',
       is_offered: termActive && campusPricing.is_offered_at_campus !== false,
       total_sessions: sessions,
       base_course_fee: baseFee,
       course_fee: baseFee,
       session_rate: rate,
-      override_pricing: !!campusPricing.override_pricing,
+      override_pricing: !!(campusPricing.override_pricing || campusPricing.custom_course_fee !== termBaseCourseFee),
       discount_type: 'none',
       discount_value: 0,
       discount_amount: 0,
@@ -956,30 +976,16 @@ export function getEffectivePrice(
     };
   }
 
-  // 3. Nếu không override, kế thừa chuẩn từ Cấp Khóa Học (TermSubjectConfig)
-  if (termConfig) {
-    return {
-      source: 'term_standard',
-      is_offered: termConfig.is_active,
-      total_sessions: termSessions,
-      base_course_fee: termBaseCourseFee,
-      course_fee: termBaseCourseFee,
-      session_rate: termSessionRate,
-      override_pricing: false,
-      discount_type: 'none',
-      discount_value: 0,
-      discount_amount: 0,
-      notes: termConfig.notes || 'Kế thừa biểu phí chuẩn của khóa học',
-    };
-  }
-
-  // 4. Fallback legacy pricings nếu có
+  // 3. Fallback legacy pricings theo cơ sở nếu có
   const legacyPricing = store.pricings?.find(
-    p => p.term_id === termId && p.campus_id === campusId && p.subject_id === subjectId
+    p =>
+      p.term_id === termId &&
+      normCampus(p.campus_id) === targetCampus &&
+      (String(p.subject_id) === String(resolvedSubjectId) || String(p.subject_id) === String(subjectId))
   );
   if (legacyPricing) {
-    const baseFee = legacyPricing.final_price || legacyPricing.base_price || 3990000;
-    const sessions = legacyPricing.total_sessions || 24;
+    const baseFee = legacyPricing.final_price || legacyPricing.base_price || termBaseCourseFee;
+    const sessions = legacyPricing.total_sessions || termSessions;
     const rate = legacyPricing.session_rate || Math.ceil(baseFee / Math.max(1, sessions));
     return {
       source: 'campus_override',
@@ -996,14 +1002,31 @@ export function getEffectivePrice(
     };
   }
 
-  // 5. Fallback mặc định
+  // 4. Nếu không override, kế thừa chuẩn từ Cấp Khóa Học (TermSubjectConfig)
+  if (termConfig) {
+    return {
+      source: 'term_standard',
+      is_offered: termConfig.is_active,
+      total_sessions: termSessions,
+      base_course_fee: termBaseCourseFee,
+      course_fee: termBaseCourseFee,
+      session_rate: termSessionRate,
+      override_pricing: false,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      notes: termConfig.notes || 'Kế thừa biểu phí chuẩn của khóa học',
+    };
+  }
+
+  // 5. Fallback mặc định theo môn hoặc toàn hệ thống
   return {
     source: 'subject_default',
     is_offered: true,
-    total_sessions: 24,
-    base_course_fee: 3990000,
-    course_fee: 3990000,
-    session_rate: 166250,
+    total_sessions: termSessions,
+    base_course_fee: termBaseCourseFee,
+    course_fee: termBaseCourseFee,
+    session_rate: termSessionRate,
     override_pricing: false,
     discount_type: 'none',
     discount_value: 0,
@@ -1025,33 +1048,47 @@ export function getCampusPricingForClass(
   campusName: string;
   campusCode: string;
 } {
-  const campus = store.campuses?.find(cp => cp.id === classItem.campus_id);
+  const normCampus = (id?: string) =>
+    String(id || '').toLowerCase().includes('pl') ? 'pl' : 'pmh';
+  const targetCampus =
+    String(classItem.campus_id || '').toLowerCase().includes('pl') ||
+    String(classItem.name || '').toUpperCase().includes('PL')
+      ? 'pl'
+      : 'pmh';
+  const campus = store.campuses?.find(cp => normCampus(cp.id) === targetCampus);
   const campusPricing = store.campusPricings?.find(
     cp =>
       cp.term_id === classItem.term_id &&
-      cp.campus_id === classItem.campus_id &&
-      cp.subject_id === classItem.subject_id
+      normCampus(cp.campus_id) === targetCampus &&
+      String(cp.subject_id) === String(classItem.subject_id)
   );
   const legacyPricing = store.pricings?.find(
     p =>
       p.term_id === classItem.term_id &&
-      p.campus_id === classItem.campus_id &&
-      p.subject_id === classItem.subject_id
+      normCampus(p.campus_id) === targetCampus &&
+      String(p.subject_id) === String(classItem.subject_id)
+  );
+
+  const hasCampusOverride = Boolean(
+    campusPricing && (campusPricing.override_pricing || campusPricing.custom_course_fee)
   );
 
   const totalSessions =
+    (hasCampusOverride ? campusPricing?.custom_sessions : undefined) ||
     classItem.total_sessions ||
     campusPricing?.custom_sessions ||
     legacyPricing?.total_sessions ||
     24;
 
   const fullCourseFee =
+    (hasCampusOverride ? campusPricing?.custom_course_fee : undefined) ||
     classItem.full_course_fee ||
     campusPricing?.custom_course_fee ||
     legacyPricing?.final_price ||
     3990000;
 
   const sessionRate =
+    (hasCampusOverride ? campusPricing?.custom_session_rate : undefined) ||
     classItem.price_per_session ||
     campusPricing?.custom_session_rate ||
     legacyPricing?.session_rate ||
@@ -1061,8 +1098,8 @@ export function getCampusPricingForClass(
     totalSessions,
     fullCourseFee,
     sessionRate,
-    campusName: campus?.name || 'Royal School',
-    campusCode: campus?.code || 'PMH',
+    campusName: campus?.name || (targetCampus === 'pl' ? 'Phú Lâm' : 'Phú Mỹ Hưng'),
+    campusCode: campus?.code || (targetCampus === 'pl' ? 'PL' : 'PMH'),
   };
 }
 
