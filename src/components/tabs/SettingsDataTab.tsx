@@ -55,12 +55,14 @@ import {
   Table,
   ShieldCheck,
   Users,
-  CalendarOff
+  CalendarOff,
+  LayoutGrid
 } from 'lucide-react';
 import { 
   AppStore, 
   formatVND, 
   calculateCeilSessionRate, 
+  calculateSessionRateExact,
   getInitialStore, 
   getSampleDemoStore,
   deduplicateEnrollments,
@@ -114,6 +116,8 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateSubjectModal } from '../modals/CreateSubjectModal';
 import { ImportSubjectsModal } from '../modals/ImportSubjectsModal';
+
+export { calculateSessionRateExact };
 
 
 interface SettingsDataTabProps {
@@ -524,6 +528,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [hierarchySubTab, setHierarchySubTab] = useState<'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix'>(initialSubTab);
   const [selectedConfigTermId, setSelectedConfigTermId] = useState<string>(store.terms[0]?.id || 'term_fall_2026');
   const [selectedConfigCampusId, setSelectedConfigCampusId] = useState<string>(store.campuses[0]?.id || 'camp_pmh');
+  const [viewMode, setViewMode] = useState<'grid' | 'cards'>('grid');
+  const [editingPricingItem, setEditingPricingItem] = useState<{
+    subject_id: string;
+    subject_name: string;
+    override_pricing: boolean;
+    course_fee: number;
+    total_sessions: number;
+    is_offered: boolean;
+    notes: string;
+  } | null>(null);
 
   // Filters for Subtab 6: Ma Trận Biểu Phí Hiệu Lực Toàn Trường (Full Matrix View)
   const [matrixFilterTermId, setMatrixFilterTermId] = useState<string>('all');
@@ -4057,277 +4071,700 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           )}
 
           {/* SUB-VIEW 3: CẤU HÌNH BIỂU PHÍ THEO CƠ SỞ (CAMPUS-LEVEL PRICING: OVERRIDE OR INHERIT) */}
-          {hierarchySubTab === 'campus_pricing' && (
-            <div className="space-y-4">
-              <div className="p-4 rounded-2xl bg-[#111827]/80 border border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
-                    <Building2 className="w-4 h-4" />
+          {hierarchySubTab === 'campus_pricing' && (() => {
+            const normCampus = (id?: string) =>
+              String(id || '').toLowerCase().includes('pl') ? 'pl' : 'pmh';
+            const isClosed = isTermClosed(selectedConfigTermId, store);
+
+            const displayedSubjectPricings = store.subjects.map(subject => {
+              const termConfig = store.termSubjects.find(
+                ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
+              );
+              const isTermSubjectActive = termConfig ? termConfig.is_active : true;
+
+              const campusPricing = store.campusPricings.find(
+                cp =>
+                  cp.term_id === selectedConfigTermId &&
+                  normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                  String(cp.subject_id) === String(subject.id)
+              );
+
+              const effectivePricing = getEffectivePrice(
+                selectedConfigTermId,
+                selectedConfigCampusId,
+                subject.id,
+                store
+              );
+
+              const isOverride = Boolean(
+                campusPricing?.override_pricing || effectivePricing.source === 'campus_override'
+              );
+              const fee = Number(
+                (isOverride ? campusPricing?.custom_course_fee : undefined) ||
+                effectivePricing.course_fee ||
+                effectivePricing.base_course_fee ||
+                termConfig?.standard_course_fee ||
+                subject.standard_course_fee ||
+                0
+              );
+              const sessions = Number(
+                (isOverride ? campusPricing?.custom_sessions : undefined) ||
+                effectivePricing.total_sessions ||
+                termConfig?.standard_sessions ||
+                subject.standard_sessions ||
+                16
+              );
+              const isOffered =
+                campusPricing !== undefined
+                  ? campusPricing.is_offered_at_campus !== false
+                  : isTermSubjectActive;
+
+              return {
+                subject_id: subject.id,
+                subject_name: subject.name,
+                subject_code: subject.code,
+                source: isOverride ? 'campus_override' : effectivePricing.source,
+                override_pricing: isOverride,
+                course_fee: fee,
+                custom_course_fee: campusPricing?.custom_course_fee,
+                base_course_fee: effectivePricing.base_course_fee,
+                total_sessions: sessions,
+                custom_sessions: campusPricing?.custom_sessions,
+                is_offered: isOffered && isTermSubjectActive,
+                is_term_active: isTermSubjectActive,
+                notes: campusPricing?.notes || '',
+                subject,
+                termConfig,
+                campusPricing,
+                effectivePricing,
+              };
+            });
+
+            const handleOpenEditPricing = (item: typeof displayedSubjectPricings[number]) => {
+              setEditingPricingItem({
+                subject_id: item.subject_id,
+                subject_name: item.subject_name,
+                override_pricing: Boolean(item.override_pricing),
+                course_fee: Number(item.course_fee || item.custom_course_fee || item.base_course_fee || 2400000),
+                total_sessions: Number(item.total_sessions || item.custom_sessions || 16),
+                is_offered: item.is_offered !== false,
+                notes: item.notes || '',
+              });
+            };
+
+            const handleSaveCampusPricingModal = async (e: React.FormEvent) => {
+              e.preventDefault();
+              if (!editingPricingItem) return;
+
+              const exactRate = calculateSessionRateExact(
+                editingPricingItem.course_fee,
+                editingPricingItem.total_sessions
+              );
+
+              onUpdateStore(prev => {
+                const existing = prev.campusPricings.find(
+                  cp =>
+                    cp.term_id === selectedConfigTermId &&
+                    normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                    String(cp.subject_id) === String(editingPricingItem.subject_id)
+                );
+
+                if (existing) {
+                  return {
+                    ...prev,
+                    campusPricings: prev.campusPricings.map(cp =>
+                      cp.id === existing.id
+                        ? {
+                            ...cp,
+                            override_pricing: editingPricingItem.override_pricing,
+                            custom_course_fee: editingPricingItem.course_fee,
+                            custom_sessions: editingPricingItem.total_sessions,
+                            custom_session_rate: exactRate,
+                            is_offered_at_campus: editingPricingItem.is_offered,
+                            notes: editingPricingItem.notes,
+                          }
+                        : cp
+                    ),
+                  };
+                } else {
+                  const newCp: CampusTermPricing = {
+                    id: `cp_${selectedConfigTermId}_${selectedConfigCampusId}_${editingPricingItem.subject_id}`,
+                    term_id: selectedConfigTermId,
+                    campus_id: selectedConfigCampusId,
+                    subject_id: editingPricingItem.subject_id,
+                    override_pricing: editingPricingItem.override_pricing,
+                    custom_course_fee: editingPricingItem.course_fee,
+                    custom_sessions: editingPricingItem.total_sessions,
+                    custom_session_rate: exactRate,
+                    is_offered_at_campus: editingPricingItem.is_offered,
+                    notes: editingPricingItem.notes || 'Ghi đè biểu phí riêng cơ sở',
+                  };
+                  return {
+                    ...prev,
+                    campusPricings: [...prev.campusPricings, newCp],
+                  };
+                }
+              });
+
+              showToast(
+                `Đã lưu biểu phí môn ${editingPricingItem.subject_name}: ${editingPricingItem.course_fee.toLocaleString('vi-VN')} đ / ${editingPricingItem.total_sessions} buổi (${exactRate.toLocaleString('vi-VN')} đ/b)`,
+                'success'
+              );
+              setEditingPricingItem(null);
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-[#111827]/80 border border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-white">Biểu Phí Theo Cơ Sở: Kế Thừa Chuẩn Khóa HOẶC Ghi Đè (Override)</h4>
+                      <p className="text-[11px] text-slate-400">
+                        Mỗi cơ sở có thể kế thừa Biểu phí chuẩn của khóa hoặc đặt mức học phí ưu đãi riêng mà không ảnh hưởng cơ sở khác. Đơn giá buổi = Học phí / Số buổi (làm tròn hàng đơn vị).
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-white">Biểu Phí Theo Cơ Sở: Kế Thừa Chuẩn Khóa HOẶC Ghi Đè (Override)</h4>
-                    <p className="text-[11px] text-slate-400">
-                      Mỗi cơ sở có thể kế thừa Biểu phí chuẩn của khóa hoặc đặt mức học phí ưu đãi riêng mà không ảnh hưởng cơ sở khác.
-                    </p>
-                  </div>
-                </div>
 
-                {/* Term & Campus Selectors */}
-                <div className="flex items-center gap-2">
-                  <select
-                    value={selectedConfigTermId}
-                    onChange={(e) => setSelectedConfigTermId(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-amber-400 text-xs font-bold focus:outline-none"
-                  >
-                    {store.terms.map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={selectedConfigCampusId}
-                    onChange={(e) => setSelectedConfigCampusId(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40 text-cyan-400 text-xs font-bold focus:outline-none"
-                  >
-                    {store.campuses.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Campus Pricing Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {store.subjects.map(subject => {
-                  const termConfig = store.termSubjects.find(
-                    ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
-                  );
-                  const isTermSubjectActive = termConfig ? termConfig.is_active : false;
-
-                  const campusPricing = store.campusPricings.find(
-                    cp => cp.term_id === selectedConfigTermId && cp.campus_id === selectedConfigCampusId && cp.subject_id === subject.id
-                  );
-
-                  const isOverride = campusPricing ? campusPricing.override_pricing : false;
-                  const isOffered = campusPricing ? campusPricing.is_offered_at_campus : true;
-                  const effectivePricing = getEffectivePrice(selectedConfigTermId, selectedConfigCampusId, subject.id, store);
-                  const isClosed = isTermClosed(selectedConfigTermId, store);
-
-                  return (
-                    <div
-                      key={subject.id}
-                      className={`rounded-2xl p-4 sm:p-5 flex flex-col justify-between transition-all backdrop-blur-md ${
-                        !isTermSubjectActive
-                          ? 'bg-slate-950/40 border border-slate-900 opacity-50'
-                          : isOverride
-                          ? 'bg-gradient-to-b from-[#111827] to-amber-950/20 border border-amber-500/40 shadow-xl'
-                          : 'bg-[#111827]/90 border border-slate-800'
-                      }`}
+                  {/* Term & Campus Selectors + View Mode Toggle */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={selectedConfigTermId}
+                      onChange={(e) => setSelectedConfigTermId(e.target.value)}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-amber-500/40 text-amber-400 text-xs font-bold focus:outline-none"
                     >
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="font-extrabold text-white text-sm">{subject.name}</span>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            !isTermSubjectActive
-                              ? 'bg-slate-800 text-slate-500'
-                              : isOverride
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                              : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                          }`}>
-                            {!isTermSubjectActive 
-                              ? 'Chưa bật ở Khóa'
-                              : isOverride 
-                              ? '★ Ghi Đè Cơ Sở' 
-                              : '✓ Kế Thừa Khóa'}
-                          </span>
-                        </div>
+                      {store.terms.map(t => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
 
-                        {/* Inheritance Switcher */}
-                        <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-slate-400 font-medium">Chính sách biểu phí:</span>
+                    <select
+                      value={selectedConfigCampusId}
+                      onChange={(e) => setSelectedConfigCampusId(e.target.value)}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40 text-cyan-400 text-xs font-bold focus:outline-none"
+                    >
+                      {store.campuses.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+
+                    <div className="flex items-center gap-1 bg-slate-900/90 p-1 rounded-2xl border border-slate-800 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('grid')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          viewMode === 'grid'
+                            ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <LayoutGrid className="w-3.5 h-3.5" />
+                        <span>Dạng Lưới</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('cards')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          viewMode === 'cards'
+                            ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>Dạng Thẻ</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {viewMode === 'grid' ? (
+                  <div className="rounded-3xl bg-[#111827]/80 border border-slate-800 overflow-hidden shadow-xl animate-fadeIn">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs text-slate-300">
+                        <thead className="bg-slate-900/90 text-slate-400 font-bold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                          <tr>
+                            <th className="py-3 px-4">Môn Học</th>
+                            <th className="py-3 px-4">Chính Sách Biểu Phí</th>
+                            <th className="py-3 px-4 text-center">Số Buổi</th>
+                            <th className="py-3 px-4 text-right">Học Phí Áp Dụng</th>
+                            <th className="py-3 px-4 text-right">Đơn Giá Buổi (Học phí / Số buổi)</th>
+                            <th className="py-3 px-4 text-center">Tuyển Sinh Tại Cơ Sở</th>
+                            <th className="py-3 px-4 text-right">Thao Tác</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-sans">
+                          {displayedSubjectPricings.map((item) => {
+                            const isOverride = item.source === 'campus_override' || item.override_pricing;
+                            const fee = Number(item.course_fee || item.custom_course_fee || item.base_course_fee || 0);
+                            const sessions = Number(item.total_sessions || item.custom_sessions || 16);
+                            const sessionRate = calculateSessionRateExact(fee, sessions);
+
+                            return (
+                              <tr key={item.subject_id} className="hover:bg-slate-800/30 transition-colors">
+                                {/* 1. Tên Môn */}
+                                <td className="py-3 px-4 font-bold text-white text-sm">
+                                  {item.subject_name}
+                                </td>
+
+                                {/* 2. Chính sách */}
+                                <td className="py-3 px-4">
+                                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                                    isOverride
+                                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                      : 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                                  }`}>
+                                    {isOverride ? '★ Override Cơ Sở' : '✓ Kế Thừa Chuẩn Khóa'}
+                                  </span>
+                                </td>
+
+                                {/* 3. Số buổi */}
+                                <td className="py-3 px-4 text-center font-mono font-bold text-slate-200">
+                                  {sessions} buổi
+                                </td>
+
+                                {/* 4. Học phí áp dụng */}
+                                <td className="py-3 px-4 text-right font-mono font-bold text-amber-400 text-sm">
+                                  {fee.toLocaleString('vi-VN')} đ
+                                </td>
+
+                                {/* 5. Đơn giá buổi làm tròn hàng đơn vị */}
+                                <td className="py-3 px-4 text-right font-mono font-bold text-emerald-400 text-sm">
+                                  {sessionRate.toLocaleString('vi-VN')} đ/b
+                                </td>
+
+                                {/* 6. Tuyển sinh cơ sở */}
+                                <td className="py-3 px-4 text-center">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    item.is_offered !== false
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                  }`}>
+                                    {item.is_offered !== false ? '● Đang mở tại CS' : '○ Không mở'}
+                                  </span>
+                                </td>
+
+                                {/* 7. Thao tác */}
+                                <td className="py-3 px-4 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditPricing(item)}
+                                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                                  >
+                                    Thiết Lập Giá
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  /* Giữ nguyên lưới render dạng thẻ hiện tại */
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {store.subjects.map(subject => {
+                      const termConfig = store.termSubjects.find(
+                        ts => ts.term_id === selectedConfigTermId && ts.subject_id === subject.id
+                      );
+                      const isTermSubjectActive = termConfig ? termConfig.is_active : true;
+
+                      const campusPricing = store.campusPricings.find(
+                        cp =>
+                          cp.term_id === selectedConfigTermId &&
+                          normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                          String(cp.subject_id) === String(subject.id)
+                      );
+
+                      const isOverride = campusPricing ? campusPricing.override_pricing : false;
+                      const isOffered = campusPricing ? campusPricing.is_offered_at_campus : true;
+                      const effectivePricing = getEffectivePrice(selectedConfigTermId, selectedConfigCampusId, subject.id, store);
+                      const exactSessionRate = calculateSessionRateExact(
+                        effectivePricing.course_fee,
+                        effectivePricing.total_sessions
+                      );
+
+                      return (
+                        <div
+                          key={subject.id}
+                          className={`rounded-2xl p-4 sm:p-5 flex flex-col justify-between transition-all backdrop-blur-md ${
+                            !isTermSubjectActive
+                              ? 'bg-slate-950/40 border border-slate-900 opacity-50'
+                              : isOverride
+                              ? 'bg-gradient-to-b from-[#111827] to-amber-950/20 border border-amber-500/40 shadow-xl'
+                              : 'bg-[#111827]/90 border border-slate-800'
+                          }`}
+                        >
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="font-extrabold text-white text-sm">{subject.name}</span>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                !isTermSubjectActive
+                                  ? 'bg-slate-800 text-slate-500'
+                                  : isOverride
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                  : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                              }`}>
+                                {!isTermSubjectActive 
+                                  ? 'Chưa bật ở Khóa'
+                                  : isOverride 
+                                  ? '★ Ghi Đè Cơ Sở' 
+                                  : '✓ Kế Thừa Khóa'}
+                              </span>
+                            </div>
+
+                            {/* Inheritance Switcher */}
+                            <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2">
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-slate-400 font-medium">Chính sách biểu phí:</span>
+                                <button
+                                  disabled={isClosed || !isTermSubjectActive}
+                                  onClick={() => {
+                                    if (isClosed || !isTermSubjectActive) return;
+                                    onUpdateStore(prev => {
+                                      const existing = prev.campusPricings.find(
+                                        cp =>
+                                          cp.term_id === selectedConfigTermId &&
+                                          normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                                          String(cp.subject_id) === String(subject.id)
+                                      );
+
+                                      if (existing) {
+                                        return {
+                                          ...prev,
+                                          campusPricings: prev.campusPricings.map(cp => 
+                                            cp.id === existing.id 
+                                              ? { 
+                                                  ...cp, 
+                                                  override_pricing: !cp.override_pricing,
+                                                  custom_course_fee: cp.custom_course_fee || termConfig?.standard_course_fee || 3600000,
+                                                  custom_sessions: cp.custom_sessions || termConfig?.standard_sessions || 24,
+                                                } 
+                                              : cp
+                                          ),
+                                        };
+                                      } else {
+                                        const newCp: CampusTermPricing = {
+                                          id: `cp_${selectedConfigTermId}_${selectedConfigCampusId}_${subject.id}`,
+                                          term_id: selectedConfigTermId,
+                                          campus_id: selectedConfigCampusId,
+                                          subject_id: subject.id,
+                                          override_pricing: true,
+                                          custom_course_fee: termConfig?.standard_course_fee || 3600000,
+                                          custom_sessions: termConfig?.standard_sessions || 24,
+                                          is_offered_at_campus: true,
+                                          notes: 'Ghi đè biểu phí riêng cơ sở',
+                                        };
+                                        return {
+                                          ...prev,
+                                          campusPricings: [...prev.campusPricings, newCp],
+                                        };
+                                      }
+                                    });
+                                  }}
+                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                                    isOverride
+                                      ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                                      : 'bg-slate-800 text-slate-300 hover:text-white'
+                                  } disabled:opacity-50`}
+                                >
+                                  {isOverride ? 'Đang ghi đè riêng' : 'Kế thừa chuẩn khóa'}
+                                </button>
+                              </div>
+
+                              {/* Override Fields */}
+                              {isOverride && (
+                                <div className="space-y-2 pt-2 border-t border-slate-800/80">
+                                  <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                      <label className="text-[10px] text-slate-400 block mb-0.5">Học phí cơ sở (VND):</label>
+                                      <input
+                                        type="number"
+                                        step={50000}
+                                        disabled={isClosed}
+                                        value={campusPricing?.custom_course_fee || termConfig?.standard_course_fee || 3600000}
+                                        onChange={(e) => {
+                                          const val = Number(e.target.value);
+                                          onUpdateStore(prev => ({
+                                            ...prev,
+                                            campusPricings: prev.campusPricings.map(cp => 
+                                              cp.term_id === selectedConfigTermId &&
+                                              normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                                              String(cp.subject_id) === String(subject.id)
+                                                ? { 
+                                                    ...cp, 
+                                                    custom_course_fee: val,
+                                                    custom_session_rate: calculateSessionRateExact(val, cp.custom_sessions || termConfig?.standard_sessions || 24)
+                                                  } 
+                                                : cp
+                                            ),
+                                          }));
+                                        }}
+                                        className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-amber-500/40 text-amber-300 font-mono font-bold text-xs"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="text-[10px] text-slate-400 block mb-0.5">Số buổi cơ sở:</label>
+                                      <input
+                                        type="number"
+                                        min={4}
+                                        max={60}
+                                        disabled={isClosed}
+                                        value={campusPricing?.custom_sessions || termConfig?.standard_sessions || 24}
+                                        onChange={(e) => {
+                                          const val = Number(e.target.value);
+                                          onUpdateStore(prev => ({
+                                            ...prev,
+                                            campusPricings: prev.campusPricings.map(cp => 
+                                              cp.term_id === selectedConfigTermId &&
+                                              normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                                              String(cp.subject_id) === String(subject.id)
+                                                ? { 
+                                                    ...cp, 
+                                                    custom_sessions: val,
+                                                    custom_session_rate: calculateSessionRateExact(cp.custom_course_fee || termConfig?.standard_course_fee || 3600000, val)
+                                                  } 
+                                                : cp
+                                            ),
+                                          }));
+                                        }}
+                                        className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono font-bold text-xs text-center"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <label className="text-[10px] text-slate-400 block mb-0.5">Lý do ưu đãi cơ sở:</label>
+                                    <input
+                                      type="text"
+                                      disabled={isClosed}
+                                      placeholder="Ví dụ: Ưu đãi khai trương cơ sở..."
+                                      value={campusPricing?.notes || ''}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        onUpdateStore(prev => ({
+                                          ...prev,
+                                          campusPricings: prev.campusPricings.map(cp => 
+                                            cp.term_id === selectedConfigTermId &&
+                                            normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                                            String(cp.subject_id) === String(subject.id)
+                                              ? { ...cp, notes: val } 
+                                              : cp
+                                          ),
+                                        }));
+                                      }}
+                                      className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-300 placeholder-slate-600"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Current Effective Display */}
+                            <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1 text-xs">
+                              <div className="flex justify-between text-slate-400">
+                                <span>Học phí áp dụng:</span>
+                                <span className="font-mono font-bold text-white text-sm">{formatVND(effectivePricing.course_fee)}</span>
+                              </div>
+                              <div className="flex justify-between text-slate-400">
+                                <span>Số buổi:</span>
+                                <span className="font-mono font-bold text-slate-200">{effectivePricing.total_sessions} buổi</span>
+                              </div>
+                              <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800">
+                                <span>Đơn giá buổi:</span>
+                                <span className="font-mono font-bold text-emerald-400">{exactSessionRate.toLocaleString('vi-VN')} đ/b</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Campus offering toggle */}
+                          <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+                            <span className="text-slate-400">Tuyển sinh tại cơ sở:</span>
                             <button
                               disabled={isClosed || !isTermSubjectActive}
                               onClick={() => {
                                 if (isClosed || !isTermSubjectActive) return;
-                                onUpdateStore(prev => {
-                                  const existing = prev.campusPricings.find(
-                                    cp => cp.term_id === selectedConfigTermId && cp.campus_id === selectedConfigCampusId && cp.subject_id === subject.id
-                                  );
-
-                                  if (existing) {
-                                    return {
-                                      ...prev,
-                                      campusPricings: prev.campusPricings.map(cp => 
-                                        cp.id === existing.id 
-                                          ? { 
-                                              ...cp, 
-                                              override_pricing: !cp.override_pricing,
-                                              custom_course_fee: cp.custom_course_fee || termConfig?.standard_course_fee || 3600000,
-                                              custom_sessions: cp.custom_sessions || termConfig?.standard_sessions || 24,
-                                            } 
-                                          : cp
-                                      ),
-                                    };
-                                  } else {
-                                    const newCp: CampusTermPricing = {
-                                      id: `cp_${selectedConfigTermId}_${selectedConfigCampusId}_${subject.id}`,
-                                      term_id: selectedConfigTermId,
-                                      campus_id: selectedConfigCampusId,
-                                      subject_id: subject.id,
-                                      override_pricing: true,
-                                      custom_course_fee: termConfig?.standard_course_fee || 3600000,
-                                      custom_sessions: termConfig?.standard_sessions || 24,
-                                      is_offered_at_campus: true,
-                                      notes: 'Ghi đè biểu phí riêng cơ sở',
-                                    };
-                                    return {
-                                      ...prev,
-                                      campusPricings: [...prev.campusPricings, newCp],
-                                    };
-                                  }
-                                });
+                                onUpdateStore(prev => ({
+                                  ...prev,
+                                  campusPricings: prev.campusPricings.map(cp => 
+                                    cp.term_id === selectedConfigTermId &&
+                                    normCampus(cp.campus_id) === normCampus(selectedConfigCampusId) &&
+                                    String(cp.subject_id) === String(subject.id)
+                                      ? { ...cp, is_offered_at_campus: !cp.is_offered_at_campus } 
+                                      : cp
+                                  ),
+                                }));
                               }}
-                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
-                                isOverride
-                                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                                  : 'bg-slate-800 text-slate-300 hover:text-white'
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                isOffered && isTermSubjectActive
+                                  ? 'bg-emerald-500/20 text-emerald-400'
+                                  : 'bg-rose-500/20 text-rose-400'
                               } disabled:opacity-50`}
                             >
-                              {isOverride ? 'Đang ghi đè riêng' : 'Kế thừa chuẩn khóa'}
+                              {isOffered && isTermSubjectActive ? 'Đang mở tại CS' : 'Không mở tại CS'}
                             </button>
                           </div>
-
-                          {/* Override Fields */}
-                          {isOverride && (
-                            <div className="space-y-2 pt-2 border-t border-slate-800/80">
-                              <div className="grid grid-cols-2 gap-2 text-xs">
-                                <div>
-                                  <label className="text-[10px] text-slate-400 block mb-0.5">Học phí cơ sở (VND):</label>
-                                  <input
-                                    type="number"
-                                    step={50000}
-                                    disabled={isClosed}
-                                    value={campusPricing?.custom_course_fee || termConfig?.standard_course_fee || 3600000}
-                                    onChange={(e) => {
-                                      const val = Number(e.target.value);
-                                      onUpdateStore(prev => ({
-                                        ...prev,
-                                        campusPricings: prev.campusPricings.map(cp => 
-                                          cp.term_id === selectedConfigTermId && cp.campus_id === selectedConfigCampusId && cp.subject_id === subject.id
-                                            ? { 
-                                                ...cp, 
-                                                custom_course_fee: val,
-                                                custom_session_rate: calculateCeilSessionRate(val, cp.custom_sessions || termConfig?.standard_sessions || 24)
-                                              } 
-                                            : cp
-                                        ),
-                                      }));
-                                    }}
-                                    className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-amber-500/40 text-amber-300 font-mono font-bold text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[10px] text-slate-400 block mb-0.5">Số buổi cơ sở:</label>
-                                  <input
-                                    type="number"
-                                    min={4}
-                                    max={60}
-                                    disabled={isClosed}
-                                    value={campusPricing?.custom_sessions || termConfig?.standard_sessions || 24}
-                                    onChange={(e) => {
-                                      const val = Number(e.target.value);
-                                      onUpdateStore(prev => ({
-                                        ...prev,
-                                        campusPricings: prev.campusPricings.map(cp => 
-                                          cp.term_id === selectedConfigTermId && cp.campus_id === selectedConfigCampusId && cp.subject_id === subject.id
-                                            ? { 
-                                                ...cp, 
-                                                custom_sessions: val,
-                                                custom_session_rate: calculateCeilSessionRate(cp.custom_course_fee || termConfig?.standard_course_fee || 3600000, val)
-                                              } 
-                                            : cp
-                                        ),
-                                      }));
-                                    }}
-                                    className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono font-bold text-xs text-center"
-                                  />
-                                </div>
-                              </div>
-
-                              <div>
-                                <label className="text-[10px] text-slate-400 block mb-0.5">Lý do ưu đãi cơ sở:</label>
-                                <input
-                                  type="text"
-                                  disabled={isClosed}
-                                  placeholder="Ví dụ: Ưu đãi khai trương cơ sở..."
-                                  value={campusPricing?.notes || ''}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    onUpdateStore(prev => ({
-                                      ...prev,
-                                      campusPricings: prev.campusPricings.map(cp => 
-                                        cp.term_id === selectedConfigTermId && cp.campus_id === selectedConfigCampusId && cp.subject_id === subject.id
-                                          ? { ...cp, notes: val } 
-                                          : cp
-                                      ),
-                                    }));
-                                  }}
-                                  className="w-full px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-300 placeholder-slate-600"
-                                />
-                              </div>
-                            </div>
-                          )}
                         </div>
+                      );
+                    })}
+                  </div>
+                )}
 
-                        {/* Current Effective Display */}
-                        <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1 text-xs">
-                          <div className="flex justify-between text-slate-400">
-                            <span>Học phí áp dụng:</span>
-                            <span className="font-mono font-bold text-white text-sm">{formatVND(effectivePricing.course_fee)}</span>
-                          </div>
-                          <div className="flex justify-between text-slate-400">
-                            <span>Số buổi:</span>
-                            <span className="font-mono font-bold text-slate-200">{effectivePricing.total_sessions} buổi</span>
-                          </div>
-                          <div className="flex justify-between text-slate-400 pt-1 border-t border-slate-800">
-                            <span>Đơn giá buổi:</span>
-                            <span className="font-mono font-bold text-emerald-400">{formatVND(effectivePricing.session_rate)}/b</span>
-                          </div>
+                {/* Modal Thiết Lập Giá Cơ Sở */}
+                {editingPricingItem && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+                    <div className="w-full max-w-md rounded-3xl bg-[#111827] border border-slate-700 p-6 shadow-2xl space-y-4 animate-fadeIn">
+                      <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                        <div>
+                          <h3 className="text-base font-bold text-white">Thiết Lập Biểu Phí Cơ Sở</h3>
+                          <p className="text-xs text-amber-400 font-semibold mt-0.5">
+                            Môn: {editingPricingItem.subject_name}
+                          </p>
                         </div>
-                      </div>
-
-                      {/* Campus offering toggle */}
-                      <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Tuyển sinh tại cơ sở:</span>
                         <button
-                          disabled={isClosed || !isTermSubjectActive}
-                          onClick={() => {
-                            if (isClosed || !isTermSubjectActive) return;
-                            onUpdateStore(prev => ({
-                              ...prev,
-                              campusPricings: prev.campusPricings.map(cp => 
-                                cp.term_id === selectedConfigTermId && cp.campus_id === selectedConfigCampusId && cp.subject_id === subject.id
-                                  ? { ...cp, is_offered_at_campus: !cp.is_offered_at_campus } 
-                                  : cp
-                              ),
-                            }));
-                          }}
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            isOffered && isTermSubjectActive
-                              ? 'bg-emerald-500/20 text-emerald-400'
-                              : 'bg-rose-500/20 text-rose-400'
-                          } disabled:opacity-50`}
+                          type="button"
+                          onClick={() => setEditingPricingItem(null)}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors cursor-pointer"
                         >
-                          {isOffered && isTermSubjectActive ? 'Đang mở tại CS' : 'Không mở tại CS'}
+                          <X className="w-4 h-4" />
                         </button>
                       </div>
+
+                      <form onSubmit={handleSaveCampusPricingModal} className="space-y-3.5 text-xs">
+                        <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-900 border border-slate-800">
+                          <span className="text-slate-300 font-semibold">Chính sách biểu phí:</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingPricingItem({
+                                ...editingPricingItem,
+                                override_pricing: !editingPricingItem.override_pricing,
+                              })
+                            }
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                              editingPricingItem.override_pricing
+                                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                                : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                            }`}
+                          >
+                            {editingPricingItem.override_pricing ? '★ Override Cơ Sở' : '✓ Kế Thừa Chuẩn Khóa'}
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-slate-400 font-medium mb-1">
+                              Học phí áp dụng (VNĐ):
+                            </label>
+                            <input
+                              type="number"
+                              step={10000}
+                              value={editingPricingItem.course_fee}
+                              onChange={(e) =>
+                                setEditingPricingItem({
+                                  ...editingPricingItem,
+                                  course_fee: Math.max(0, Number(e.target.value) || 0),
+                                  override_pricing: true,
+                                })
+                              }
+                              className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-amber-500/40 text-amber-300 font-mono font-bold text-xs focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-slate-400 font-medium mb-1">
+                              Số buổi:
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={60}
+                              value={editingPricingItem.total_sessions}
+                              onChange={(e) =>
+                                setEditingPricingItem({
+                                  ...editingPricingItem,
+                                  total_sessions: Math.max(1, Number(e.target.value) || 1),
+                                  override_pricing: true,
+                                })
+                              }
+                              className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono font-bold text-xs text-center focus:outline-none focus:border-amber-500"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-3 rounded-2xl bg-slate-950 border border-emerald-500/30 flex items-center justify-between">
+                          <span className="text-slate-400 font-medium">
+                            Đơn giá buổi (Học phí / Số buổi):
+                          </span>
+                          <span className="font-mono font-extrabold text-emerald-400 text-sm">
+                            {calculateSessionRateExact(
+                              editingPricingItem.course_fee,
+                              editingPricingItem.total_sessions
+                            ).toLocaleString('vi-VN')} đ/b
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-900 border border-slate-800">
+                          <span className="text-slate-300 font-medium">Tuyển sinh tại cơ sở:</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingPricingItem({
+                                ...editingPricingItem,
+                                is_offered: !editingPricingItem.is_offered,
+                              })
+                            }
+                            className={`px-3 py-1 rounded-full text-[11px] font-bold cursor-pointer ${
+                              editingPricingItem.is_offered
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            }`}
+                          >
+                            {editingPricingItem.is_offered ? '● Đang mở tại CS' : '○ Không mở'}
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-400 font-medium mb-1">
+                            Ghi chú / Lý do ưu đãi cơ sở:
+                          </label>
+                          <input
+                            type="text"
+                            value={editingPricingItem.notes}
+                            onChange={(e) =>
+                              setEditingPricingItem({
+                                ...editingPricingItem,
+                                notes: e.target.value,
+                              })
+                            }
+                            placeholder="VD: Biểu phí riêng cơ sở Phú Lâm..."
+                            className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                          <button
+                            type="button"
+                            onClick={() => setEditingPricingItem(null)}
+                            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold cursor-pointer"
+                          >
+                            Hủy
+                          </button>
+                          <button
+                            type="submit"
+                            className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20 cursor-pointer"
+                          >
+                            Lưu Thiết Lập Giá
+                          </button>
+                        </div>
+                      </form>
                     </div>
-                  );
-                })}
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* SUB-VIEW 6: MA TRẬN BIỂU PHÍ TOÀN TRƯỜNG (FULL MATRIX VIEW) */}
           {(() => {

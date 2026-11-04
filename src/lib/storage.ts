@@ -890,6 +890,12 @@ export function computeDiscountedFee(
   return { netFee: baseFee, discountAmount: 0 };
 }
 
+// Hàm tính đơn giá buổi làm tròn hàng đơn vị
+export function calculateSessionRateExact(courseFee: number, totalSessions: number): number {
+  if (!totalSessions || totalSessions <= 0) return 0;
+  return Math.round(courseFee / totalSessions);
+}
+
 // Hierarchical Pricing Calculator: Campus Override > Term Standard > Default (No automatic discount)
 export function getEffectivePrice(
   termId: string,
@@ -918,10 +924,7 @@ export function getEffectivePrice(
     termConfig?.standard_sessions || subjectObj?.standard_sessions || 24;
   const termBaseCourseFee =
     termConfig?.standard_course_fee || subjectObj?.standard_course_fee || 3990000;
-  const termSessionRate =
-    termConfig?.standard_session_rate ||
-    subjectObj?.standard_session_rate ||
-    Math.ceil(termBaseCourseFee / Math.max(1, termSessions));
+  const termSessionRate = calculateSessionRateExact(termBaseCourseFee, termSessions);
 
   // 2. Kiểm tra biểu phí ở cấp Cơ Sở (CampusTermPricing)
   const campusPricing = store.campusPricings?.find(
@@ -935,8 +938,7 @@ export function getEffectivePrice(
   if (campusPricing && campusPricing.is_offered_at_campus === false) {
     const baseFee = campusPricing.custom_course_fee || termBaseCourseFee;
     const sessions = campusPricing.custom_sessions || termSessions;
-    const rate =
-      campusPricing.custom_session_rate || Math.ceil(baseFee / Math.max(1, sessions));
+    const rate = calculateSessionRateExact(baseFee, sessions);
     return {
       source: 'campus_override',
       is_offered: false,
@@ -956,8 +958,7 @@ export function getEffectivePrice(
   if (campusPricing && (campusPricing.override_pricing || campusPricing.custom_course_fee)) {
     const baseFee = campusPricing.custom_course_fee || termBaseCourseFee;
     const sessions = campusPricing.custom_sessions || termSessions;
-    const rate =
-      campusPricing.custom_session_rate || Math.ceil(baseFee / Math.max(1, sessions));
+    const rate = calculateSessionRateExact(baseFee, sessions);
 
     return {
       source: (campusPricing.override_pricing || campusPricing.custom_course_fee !== termBaseCourseFee)
@@ -986,7 +987,7 @@ export function getEffectivePrice(
   if (legacyPricing) {
     const baseFee = legacyPricing.final_price || legacyPricing.base_price || termBaseCourseFee;
     const sessions = legacyPricing.total_sessions || termSessions;
-    const rate = legacyPricing.session_rate || Math.ceil(baseFee / Math.max(1, sessions));
+    const rate = calculateSessionRateExact(baseFee, sessions);
     return {
       source: 'campus_override',
       is_offered: true,
@@ -1088,11 +1089,9 @@ export function getCampusPricingForClass(
     3990000;
 
   const sessionRate =
-    (hasCampusOverride ? campusPricing?.custom_session_rate : undefined) ||
+    (hasCampusOverride ? calculateSessionRateExact(fullCourseFee, totalSessions) : undefined) ||
     classItem.price_per_session ||
-    campusPricing?.custom_session_rate ||
-    legacyPricing?.session_rate ||
-    Math.ceil(fullCourseFee / Math.max(1, totalSessions));
+    calculateSessionRateExact(fullCourseFee, totalSessions);
 
   return {
     totalSessions,
@@ -1159,7 +1158,7 @@ export function cloneTermConfiguration(
 // Business Calculations
 export function calculateCeilSessionRate(finalPrice: number, totalSessions: number): number {
   if (!totalSessions || totalSessions <= 0) return 0;
-  return Math.ceil(finalPrice / totalSessions / 1000) * 1000;
+  return Math.round(finalPrice / totalSessions);
 }
 
 export const JS_DAY_TO_VN_CODE: Record<number, string> = {
