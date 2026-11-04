@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { 
   Users, 
   CheckCircle2, 
@@ -12,7 +12,10 @@ import {
   FileText,
   CalendarDays,
   Building2,
-  Coins
+  Coins,
+  BarChart3,
+  BookOpen,
+  School
 } from 'lucide-react';
 import { AppStore, formatVND } from '../../lib/storage';
 import { Student, ExtracurricularClass } from '../../types';
@@ -355,6 +358,171 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     };
   }, [store.enrollments, store.classes]);
 
+  // ============================================================================
+  // TÍNH TOÁN THỐNG KÊ MÔN HỌC & CƠ CẤU HỌC SINH (THAY THẾ KHUNG CẢNH BÁO VẮNG)
+  // ============================================================================
+  const detailedStats = useMemo(() => {
+    const activeEnrs = (store.enrollments || []).filter(e => e.status === 'active' || !e.status);
+    const classes = store.classes || [];
+    const subjects = store.subjects || [];
+    const students = store.students || [];
+
+    // 1. THỐNG KÊ LƯỢT ĐĂNG KÝ THEO MÔN HỌC (1 HS học 2 lớp cùng môn = tính 2 lượt)
+    const subjectStatsMap = new Map<string, { id: string; name: string; pmh_count: number; pl_count: number; total_count: number }>();
+
+    // Khởi tạo tất cả các môn học có trong hệ thống
+    subjects.forEach(sub => {
+      subjectStatsMap.set(String(sub.id), {
+        id: String(sub.id),
+        name: sub.name,
+        pmh_count: 0,
+        pl_count: 0,
+        total_count: 0
+      });
+    });
+
+    // Map tra cứu thông tin lớp học -> môn học & cơ sở
+    const classInfoMap = new Map<string, { subject_id: string; subject_name: string; campus: 'pmh' | 'pl' }>();
+    classes.forEach(cls => {
+      const rawCampus = String(cls.campus_id || '').toLowerCase();
+      const campus: 'pmh' | 'pl' = (rawCampus.includes('pl') || cls.name.toUpperCase().includes('PL')) ? 'pl' : 'pmh';
+      const subId = String(cls.subject_id || cls.name.split('-')[0].trim());
+      const matchedSub = subjects.find(s => String(s.id) === subId);
+
+      classInfoMap.set(String(cls.id), {
+        subject_id: subId,
+        subject_name: matchedSub ? matchedSub.name : (cls.name.split('-')[0].trim() || 'Môn khác'),
+        campus
+      });
+    });
+
+    // Cộng dồn từng lượt đăng ký (enrollments)
+    activeEnrs.forEach(enr => {
+      const clsInfo = classInfoMap.get(String(enr.class_id));
+      if (!clsInfo) return;
+
+      let stat = subjectStatsMap.get(clsInfo.subject_id);
+      if (!stat) {
+        stat = {
+          id: clsInfo.subject_id,
+          name: clsInfo.subject_name,
+          pmh_count: 0,
+          pl_count: 0,
+          total_count: 0
+        };
+        subjectStatsMap.set(clsInfo.subject_id, stat);
+      }
+
+      if (clsInfo.campus === 'pl') {
+        stat.pl_count += 1;
+      } else {
+        stat.pmh_count += 1;
+      }
+      stat.total_count += 1;
+    });
+
+    const subjectList = Array.from(subjectStatsMap.values()).sort((a, b) => b.total_count - a.total_count);
+
+    return { subjectList };
+  }, [store.enrollments, store.classes, store.subjects]);
+
+  const studentBreakdown = useMemo(() => {
+    // Lấy danh sách học sinh (ưu tiên những em đang học active hoặc toàn bộ danh sách)
+    const students = store.students || [];
+
+    const counts = {
+      // 1. Phổ thông Royal
+      pt_royal_pmh: 0,
+      pt_royal_pl: 0,
+      // 2. Mầm non Royal
+      mn_royal_pmh: 0,
+      mn_royal_pl: 0,
+      // 3. Phổ thông Ngoài
+      pt_ext_pmh: 0,
+      pt_ext_pl: 0,
+      // 4. Mầm non Ngoài
+      mn_ext_pmh: 0,
+      mn_ext_pl: 0,
+    };
+
+    students.forEach((st) => {
+      const isRoyal = Boolean(st.is_royal_student || String(st.code || '').startsWith('RY-'));
+      const isPL = String(st.campus_id || '').toLowerCase().includes('pl');
+
+      // Phân loại Mầm non vs Phổ thông
+      const regClass = String(st.regular_class || '').toUpperCase();
+      const isMN = regClass.includes('MN') || 
+                   regClass.includes('MẦM') || 
+                   regClass.includes('MAM') || 
+                   regClass.includes('KINDY') || 
+                   (st.dob && new Date().getFullYear() - new Date(st.dob).getFullYear() < 6);
+
+      if (isRoyal) {
+        if (isMN) {
+          if (isPL) counts.mn_royal_pl++;
+          else counts.mn_royal_pmh++;
+        } else {
+          if (isPL) counts.pt_royal_pl++;
+          else counts.pt_royal_pmh++;
+        }
+      } else {
+        if (isMN) {
+          if (isPL) counts.mn_ext_pl++;
+          else counts.mn_ext_pmh++;
+        } else {
+          if (isPL) counts.pt_ext_pl++;
+          else counts.pt_ext_pmh++;
+        }
+      }
+    });
+
+    const total_pmh = counts.pt_royal_pmh + counts.mn_royal_pmh + counts.pt_ext_pmh + counts.mn_ext_pmh;
+    const total_pl = counts.pt_royal_pl + counts.mn_royal_pl + counts.pt_ext_pl + counts.mn_ext_pl;
+    const total_all = total_pmh + total_pl;
+
+    return {
+      rows: [
+        {
+          label: 'Học sinh Phổ thông Royal',
+          color: 'bg-amber-400',
+          textColor: 'text-amber-300',
+          pmh: counts.pt_royal_pmh,
+          pl: counts.pt_royal_pl,
+          total: counts.pt_royal_pmh + counts.pt_royal_pl
+        },
+        {
+          label: 'Học sinh Mầm non Royal',
+          color: 'bg-pink-400',
+          textColor: 'text-pink-300',
+          pmh: counts.mn_royal_pmh,
+          pl: counts.mn_royal_pl,
+          total: counts.mn_royal_pmh + counts.mn_royal_pl
+        },
+        {
+          label: 'Học sinh Phổ thông Ngoài trường',
+          color: 'bg-blue-400',
+          textColor: 'text-blue-300',
+          pmh: counts.pt_ext_pmh,
+          pl: counts.pt_ext_pl,
+          total: counts.pt_ext_pmh + counts.pt_ext_pl
+        },
+        {
+          label: 'Học sinh Mầm non Ngoài trường',
+          color: 'bg-purple-400',
+          textColor: 'text-purple-300',
+          pmh: counts.mn_ext_pmh,
+          pl: counts.mn_ext_pl,
+          total: counts.mn_ext_pmh + counts.mn_ext_pl
+        }
+      ],
+      total_pmh,
+      total_pl,
+      total_all,
+      royal_percent: total_all > 0 ? (((counts.pt_royal_pmh + counts.pt_royal_pl + counts.mn_royal_pmh + counts.mn_royal_pl) / total_all) * 100).toFixed(1) : '0.0',
+      pt_percent: total_all > 0 ? (((counts.pt_royal_pmh + counts.pt_royal_pl + counts.pt_ext_pmh + counts.pt_ext_pl) / total_all) * 100).toFixed(1) : '0.0'
+    };
+  }, [store.students]);
+
   return (
     <div className="space-y-4">
       
@@ -514,198 +682,180 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
         </div>
       </div>
 
-      {/* CORE BUSINESS ALERTS & CONSECUTIVE ABSENCES */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5 sm:gap-4">
-        
-        {/* Left 2 Cols: Consecutive Absence >= 3 Warning */}
-        <div className="lg:col-span-2 rounded-2xl sm:rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-4 sm:p-5 backdrop-blur-md shadow-xl">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
-                <ShieldAlert className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  Cảnh Báo Vắng Học Liên Tiếp Từ 3 Buổi (Đủ Điều Kiện Bảo Lưu)
-                  {consecutiveAlerts.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 text-xs font-bold border border-rose-500/30">
-                      {consecutiveAlerts.length} học sinh
-                    </span>
-                  )}
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Quy định Royal: Vắng có phép liên tục ≥ 3 buổi được cấp Phiếu bảo lưu học phí (Hiệu lực 1 năm, cấn trừ khóa sau)
-                </p>
-              </div>
+      {/* HÀNG 2: THỐNG KÊ NHANH TUYỂN SINH & CƠ CẤU HỌC VIÊN (CHIẾM HẾT CHIỀU NGANG 100%) */}
+      <div className="w-full rounded-3xl bg-[#111827]/90 border border-slate-800 p-6 shadow-xl space-y-5 animate-fadeIn">
+        {/* Header của khối */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3.5 border-b border-slate-800/80 gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+              <BarChart3 className="w-5 h-5 text-amber-400" />
             </div>
-
-            <div className="flex items-center gap-3">
-              <ViewToggle viewMode={alertViewMode} onViewModeChange={setAlertViewMode} />
-
-              <button
-                onClick={() => onNavigateTab('sub_credits')}
-                className="text-xs font-bold text-amber-400 hover:text-amber-300 flex items-center gap-1 transition-colors ml-1"
-              >
-                <span>Xem sổ</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-base font-black text-white">
+                  Thống Kê Nhanh Tuyển Sinh & Cơ Cấu Học Viên
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold font-mono">
+                  ● Real-time
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Tổng hợp lượt đăng ký theo từng môn học (1 HS học 2 lớp = tính 2 lượt) và phân bổ cấp học Mầm non / Phổ thông, Royal / Ngoài trường
+              </p>
             </div>
           </div>
+        </div>
 
-          {consecutiveAlerts.length === 0 ? (
-            <div className="py-8 text-center rounded-2xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
-              <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
-              Không có học sinh nào vắng liên tiếp từ 3 buổi trong kỳ lọc này.
+        {/* Nội dung 2 Bảng hiển thị song song trải rộng */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* BẢNG 1: SỐ LƯỢNG ĐĂNG KÝ TỪNG MÔN THEO CƠ SỞ (Chiếm 7/12 chiều ngang) */}
+          <div className="lg:col-span-7 flex flex-col space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5 uppercase tracking-wide">
+                <BookOpen className="w-4 h-4 text-amber-400" />
+                <span>1. Số Lượng Đăng Ký Từng Môn Học Theo Cơ Sở</span>
+              </span>
+              <span className="text-[11px] text-slate-400 font-mono">
+                Đơn vị: <strong className="text-cyan-400">Lượt đăng ký lớp</strong>
+              </span>
             </div>
-          ) : alertViewMode === 'cards' ? (
-            <div className="space-y-3">
-              {consecutiveAlerts.map((item, idx) => {
-                const alreadyHasCredit = store.makeupCredits.some(
-                  c => c.student_id === item.student.id && c.source_class_id === item.cls.id && c.status === 'issued'
-                );
 
-                return (
-                  <div
-                    key={idx}
-                    className="p-4 rounded-2xl bg-slate-900/90 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 text-xs font-mono font-bold border border-rose-500/30">
-                          {item.student.code}
-                        </span>
-                        <span className="text-sm font-bold text-white">{item.student.name}</span>
-                        <span className="text-xs text-slate-400 font-medium">({item.cls.name})</span>
-                        {item.student.is_royal_student && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                            Royal School
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-2 text-xs text-slate-300 flex items-center gap-2 flex-wrap">
-                        <span className="text-rose-400 font-bold">Vắng liên tiếp: {item.count} buổi</span>
-                        <span className="text-slate-500">&bull;</span>
-                        <span className="text-slate-400">Các ngày: {item.dates.join(', ')}</span>
-                      </div>
-
-                      {item.notes.length > 0 && (
-                        <div className="mt-1 text-[11px] text-slate-400 italic">
-                          Lý do: {item.notes.join('; ')}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="shrink-0 flex items-center gap-2">
-                      {alreadyHasCredit ? (
-                        <span className="px-3 py-1.5 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          Đã Lập Phiếu Bảo Lưu
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => onIssueCreditForStudent(item.student, item.cls, item.dates)}
-                          className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-md shadow-amber-500/20 transition-all flex items-center gap-1.5"
-                        >
-                          <FileText className="w-3.5 h-3.5 text-slate-950" />
-                          <span>Lập Phiếu Bảo Lưu Ngay</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-2xl border border-slate-800">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-900/80 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
-                  <tr>
-                    <th className="py-2.5 px-3">Mã HV</th>
-                    <th className="py-2.5 px-3">Họ và Tên</th>
-                    <th className="py-2.5 px-3">Lớp Ngoại Khóa</th>
-                    <th className="py-2.5 px-3 text-center">Số Buổi Vắng</th>
-                    <th className="py-2.5 px-3">Ngày Vắng Cụ Thể</th>
-                    <th className="py-2.5 px-3 text-right">Xử Lý Bảo Lưu</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {consecutiveAlerts.map((item, idx) => {
-                    const alreadyHasCredit = store.makeupCredits.some(
-                      c => c.student_id === item.student.id && c.source_class_id === item.cls.id && c.status === 'issued'
-                    );
-
-                    return (
-                      <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-2.5 px-3 font-mono font-bold text-amber-400">{item.student.code}</td>
-                        <td className="py-2.5 px-3 font-bold text-white">{item.student.name}</td>
-                        <td className="py-2.5 px-3 text-slate-300">{item.cls.name}</td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-bold border border-rose-500/30 text-[10px]">
-                            {item.count} buổi
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400">{item.dates.join(', ')}</td>
-                        <td className="py-2.5 px-3 text-right">
-                          {alreadyHasCredit ? (
-                            <span className="text-emerald-400 font-semibold text-[11px]">Đã lập phiếu</span>
-                          ) : (
-                            <button
-                              onClick={() => onIssueCreditForStudent(item.student, item.cls, item.dates)}
-                              className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-[11px] transition-colors"
-                            >
-                              Lập phiếu ngay
-                            </button>
-                          )}
+            <div className="rounded-2xl bg-slate-950/80 border border-slate-800/80 overflow-hidden flex-1 shadow-inner flex flex-col justify-between">
+              <div className="max-h-[360px] overflow-y-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-slate-900 sticky top-0 text-[10.5px] font-bold uppercase text-slate-400 border-b border-slate-800 z-10">
+                    <tr>
+                      <th className="py-3 px-4 font-bold text-slate-300">Tên Môn Học</th>
+                      <th className="py-3 px-3 text-center text-amber-400 font-bold w-24">PMH</th>
+                      <th className="py-3 px-3 text-center text-cyan-400 font-bold w-24">Phú Lâm</th>
+                      <th className="py-3 px-4 text-right text-emerald-400 font-bold w-28">Tổng Lượt</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-sans">
+                    {detailedStats.subjectList.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-8 text-center text-slate-500">
+                          Chưa có dữ liệu môn học
                         </td>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    ) : (
+                      detailedStats.subjectList.map((sub) => (
+                        <tr key={sub.id} className="hover:bg-slate-800/40 transition-colors">
+                          <td className="py-2.5 px-4 font-semibold text-slate-200">{sub.name}</td>
+                          <td className="py-2.5 px-3 text-center font-mono text-amber-300 font-semibold w-24">
+                            {sub.pmh_count}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono text-cyan-300 font-semibold w-24">
+                            {sub.pl_count}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-400 w-28">
+                            {sub.total_count} lượt
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot className="bg-slate-900/95 border-t border-slate-800 font-bold text-xs sticky bottom-0">
+                    <tr>
+                      <td className="py-3 px-4 text-white uppercase">Tổng Cộng Tất Cả Môn</td>
+                      <td className="py-3 px-3 text-center font-mono text-amber-400 w-24">
+                        {detailedStats.subjectList.reduce((sum, s) => sum + s.pmh_count, 0)}
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono text-cyan-400 w-24">
+                        {detailedStats.subjectList.reduce((sum, s) => sum + s.pl_count, 0)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-emerald-400 w-28">
+                        {detailedStats.subjectList.reduce((sum, s) => sum + s.total_count, 0)} lượt
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
             </div>
-          )}
-        </div>
+          </div>
 
-        {/* Right Col: Snacks & Meals Live Audit */}
-        <div className="rounded-3xl bg-[#111827]/80 border border-slate-800/80 p-6 backdrop-blur-md shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                  <Coffee className="w-4 h-4" />
-                </div>
-                <h3 className="text-base font-bold text-white">Đối Soát Bánh Sữa Sau Giờ</h3>
-              </div>
-              <button
-                onClick={() => onNavigateTab('sub_snacks')}
-                className="text-xs font-bold text-amber-400 hover:text-amber-300"
-              >
-                Chi tiết
-              </button>
+          {/* BẢNG 2: CƠ CẤU CẤP HỌC & ĐỐI TƯỢNG HỌC SINH */}
+          <div className="lg:col-span-5 flex flex-col space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-cyan-400 flex items-center gap-1.5 uppercase tracking-wide">
+                <School className="w-4 h-4 text-cyan-400" />
+                <span>2. Cơ Cấu Cấp Học & Đối Tượng</span>
+              </span>
+              <span className="text-[11px] text-slate-400 font-mono">
+                Tổng: <strong className="text-white">{studentBreakdown.total_all} HS</strong>
+              </span>
             </div>
 
-            <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-              Quy tắc Hoàng Gia: Chỉ cấp suất cho Học sinh Royal. Học sinh vắng có phép hoàn trả bếp; vắng không phép tính tiêu thụ.
-            </p>
+            <div className="rounded-2xl bg-slate-950/80 border border-slate-800/80 overflow-hidden flex-1 shadow-inner flex flex-col justify-between">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-slate-900 text-[10.5px] font-bold uppercase text-slate-400 border-b border-slate-800">
+                    <tr>
+                      <th className="py-3 px-4">Phân Loại Học Viên</th>
+                      <th className="py-3 px-3 text-center text-amber-400 font-bold w-20">PMH</th>
+                      <th className="py-3 px-3 text-center text-cyan-400 font-bold w-20">Phú Lâm</th>
+                      <th className="py-3 px-4 text-right text-emerald-400 font-bold w-24">Toàn Trường</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-sans">
+                    {studentBreakdown.rows.map((row, index) => (
+                      <tr key={index} className="hover:bg-slate-800/30 transition-colors">
+                        <td className="py-2.5 px-4 font-medium flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${row.color}`}></span>
+                          <span className="text-slate-200">{row.label}</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-200">
+                          {row.pmh > 0 ? (
+                            <span className="text-amber-300">{row.pmh}</span>
+                          ) : (
+                            <span className="text-slate-600">0</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-200">
+                          {row.pl > 0 ? (
+                            <span className="text-cyan-300">{row.pl}</span>
+                          ) : (
+                            <span className="text-slate-600">0</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono font-bold">
+                          <span className={row.textColor}>{row.total} HS</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  {/* Dòng tổng cộng */}
+                  <tfoot className="bg-slate-900/90 font-bold border-t border-slate-800 text-xs">
+                    <tr>
+                      <td className="py-3 px-4 text-white uppercase font-black">
+                        Tổng Cộng Học Sinh
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono text-amber-400 text-sm">
+                        {studentBreakdown.total_pmh}
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono text-cyan-400 text-sm">
+                        {studentBreakdown.total_pl}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-emerald-400 text-sm">
+                        {studentBreakdown.total_all} HS
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
 
-            <div className="space-y-3">
-              <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between">
-                <span className="text-xs text-slate-400 font-medium">Suất cấp ban đầu (Định mức)</span>
-                <span className="text-sm font-bold text-white font-mono">{snacksAllocated} suất</span>
-              </div>
-              <div className="p-3 rounded-2xl bg-slate-900/90 border border-emerald-500/30 flex items-center justify-between">
-                <span className="text-xs text-emerald-400 font-medium">Thực tế tiêu thụ (Có mặt + Vắng KP)</span>
-                <span className="text-sm font-bold text-emerald-400 font-mono">{snacksConsumed} suất</span>
-              </div>
-              <div className="p-3 rounded-2xl bg-slate-900/90 border border-amber-500/30 flex items-center justify-between">
-                <span className="text-xs text-amber-400 font-medium">Hoàn trả kho/bếp (Vắng Có phép)</span>
-                <span className="text-sm font-bold text-amber-400 font-mono">{snacksReturned} suất</span>
+              {/* Footer hiển thị tỷ lệ */}
+              <div className="p-3 bg-slate-900/80 border-t border-slate-800 flex items-center justify-between text-[11px] font-mono">
+                <span className="text-slate-400">
+                  Tỷ lệ HS Royal: <strong className="text-amber-400">{studentBreakdown.royal_percent}%</strong>
+                </span>
+                <span className="text-slate-400">
+                  Tỷ lệ Phổ thông: <strong className="text-cyan-400">{studentBreakdown.pt_percent}%</strong>
+                </span>
               </div>
             </div>
           </div>
         </div>
-
       </div>
 
       {/* Row 3: Day of Week Attendance Chart & Financial Summary */}
