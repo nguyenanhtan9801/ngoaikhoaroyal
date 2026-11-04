@@ -261,7 +261,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
       if (isTeacherRole) {
         const isPrimary = matchedTeacherIds.has(cls.primary_teacher_id);
+        const td = cls.term_distribution;
+        const sec1 = cls.secondary_teacher_1 || td?.secondary_teacher_1;
+        const sec2 = cls.secondary_teacher_2 || td?.secondary_teacher_2;
+        const sec3 = cls.secondary_teacher_3 || td?.secondary_teacher_3;
         const isAssistant =
+          Boolean(sec1 && matchedTeacherIds.has(sec1)) ||
+          Boolean(sec2 && matchedTeacherIds.has(sec2)) ||
+          Boolean(sec3 && matchedTeacherIds.has(sec3)) ||
           Boolean((cls as any).assistant_teacher_id && matchedTeacherIds.has((cls as any).assistant_teacher_id)) ||
           Boolean((cls as any).substitute_teacher_id && matchedTeacherIds.has((cls as any).substitute_teacher_id));
         return isPrimary || isAssistant;
@@ -526,12 +533,62 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   const [attendanceState, setAttendanceState] = useState<Record<string, StudentAttendanceLocal>>(initialStatusMap);
 
+  // Danh sách Giáo viên phụ / Trợ giảng (1 - 3 GV phụ) của lớp hiện tại
+  const classSecondaryTeacherIds = useMemo(() => {
+    if (!currentClass) return [] as string[];
+    const td = currentClass.term_distribution;
+    const rawIds = [
+      currentClass.secondary_teacher_1 || td?.secondary_teacher_1,
+      currentClass.secondary_teacher_2 || td?.secondary_teacher_2,
+      currentClass.secondary_teacher_3 || td?.secondary_teacher_3,
+    ].filter((id): id is string => Boolean(id && id !== currentClass.primary_teacher_id));
+    return Array.from(new Set(rawIds));
+  }, [currentClass]);
+
+  const [secondaryTeacherStates, setSecondaryTeacherStates] = useState<
+    Record<
+      string,
+      {
+        mode: 'present' | 'late' | 'substitute' | 'absent';
+        actualTeacherId: string;
+        periodsCount: number;
+        note: string;
+      }
+    >
+  >({});
+
+  // Trạng thái Nhân sự trực ca buổi học (Bảo mẫu, Quản sinh, Y tế trực)
+  const [supportStaffDuty, setSupportStaffDuty] = useState<{
+    nanny_name: string;
+    nanny_status: 'present' | 'absent' | 'substitute';
+    nanny_substitute_name: string;
+    supervisor_name: string;
+    supervisor_status: 'present' | 'absent' | 'substitute';
+    supervisor_note: string;
+    medical_staff_name: string;
+    medical_status: 'present' | 'absent' | 'substitute';
+    medical_note: string;
+  }>({
+    nanny_name: '',
+    nanny_status: 'present',
+    nanny_substitute_name: '',
+    supervisor_name: '',
+    supervisor_status: 'present',
+    supervisor_note: '',
+    medical_staff_name: '',
+    medical_status: 'present',
+    medical_note: '',
+  });
+
   // Update teacher selection and load existing TeacherAttendanceRecord when class or selectedDate changes
   useEffect(() => {
     if (!currentClass) return;
-    const existingTeacherAtt = (store.teacherAttendance || []).find(
+    const sessionTeacherRecords = (store.teacherAttendance || []).filter(
       ta => ta.class_id === currentClass.id && ta.session_date === selectedDate
     );
+    const existingTeacherAtt =
+      sessionTeacherRecords.find(ta => ta.assigned_teacher_id === currentClass.primary_teacher_id) ||
+      sessionTeacherRecords[0];
     const assignedTeacher = store.teachers.find(t => t.id === currentClass.primary_teacher_id);
     const defaultPeriods = assignedTeacher?.periods_per_session || 2;
     const defaultStartTime = timeSlot?.start_time || '16:45';
@@ -570,7 +627,62 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       setTeacherLateMinutes(10);
       setTeacherSessionNote('');
     }
-  }, [currentClass?.id, selectedDate, store.teacherAttendance]);
+
+    // Load secondary teacher attendance states
+    const nextSecStates: Record<
+      string,
+      {
+        mode: 'present' | 'late' | 'substitute' | 'absent';
+        actualTeacherId: string;
+        periodsCount: number;
+        note: string;
+      }
+    > = {};
+    classSecondaryTeacherIds.forEach(secId => {
+      const secTeacherObj = store.teachers.find(t => t.id === secId);
+      const secDefaultPeriods = secTeacherObj?.periods_per_session || 2;
+      const existingSecAtt = sessionTeacherRecords.find(ta => ta.assigned_teacher_id === secId);
+      if (existingSecAtt) {
+        const mode: 'present' | 'late' | 'substitute' | 'absent' =
+          existingSecAtt.status === 'absent_excused' || existingSecAtt.status === 'absent_unexcused'
+            ? 'absent'
+            : existingSecAtt.is_substitute
+            ? 'substitute'
+            : existingSecAtt.status === 'late'
+            ? 'late'
+            : 'present';
+        nextSecStates[secId] = {
+          mode,
+          actualTeacherId: existingSecAtt.actual_teacher_id || secId,
+          periodsCount: existingSecAtt.periods_count || secDefaultPeriods,
+          note: existingSecAtt.notes || '',
+        };
+      } else {
+        nextSecStates[secId] = {
+          mode: 'present',
+          actualTeacherId: secId,
+          periodsCount: secDefaultPeriods,
+          note: '',
+        };
+      }
+    });
+    setSecondaryTeacherStates(nextSecStates);
+
+    // Load support staff duty state
+    const td = currentClass.term_distribution;
+    const savedDuty = currentSession?.support_staff_duty;
+    setSupportStaffDuty({
+      nanny_name: savedDuty?.nanny_name ?? (currentClass.nanny_name || td?.nanny_name || ''),
+      nanny_status: savedDuty?.nanny_status || 'present',
+      nanny_substitute_name: savedDuty?.nanny_substitute_name || '',
+      supervisor_name: savedDuty?.supervisor_name ?? (currentClass.supervisor_name || td?.supervisor_name || ''),
+      supervisor_status: savedDuty?.supervisor_status || 'present',
+      supervisor_note: savedDuty?.supervisor_note || '',
+      medical_staff_name: savedDuty?.medical_staff_name ?? (currentClass.medical_staff_name || td?.medical_staff_name || ''),
+      medical_status: savedDuty?.medical_status || 'present',
+      medical_note: savedDuty?.medical_note || '',
+    });
+  }, [currentClass?.id, selectedDate, store.teacherAttendance, classSecondaryTeacherIds]);
 
   // Live Teacher Rate & Payout Calculation for Current Session based on teacher_contracts at session_date
   const assignedTeacherObj = currentClass
@@ -594,6 +706,49 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const liveTeacherSessionRate = liveSessionContractCalc.sessionRate;
   const liveTeacherEffectivePeriods = teacherMode === 'absent' ? 0 : teacherPeriodsCount;
   const liveTeacherTotalPayout = teacherMode === 'absent' ? 0 : liveSessionContractCalc.earnedAmount;
+
+  // Live calculations for secondary teachers (GV phụ / Trợ giảng 1, 2, 3)
+  const secondaryTeachersLiveList = useMemo(() => {
+    return classSecondaryTeacherIds.map((secId, index) => {
+      const assignedSecObj = store.teachers.find(t => t.id === secId);
+      const secState = secondaryTeacherStates[secId] || {
+        mode: 'present' as const,
+        actualTeacherId: secId,
+        periodsCount: assignedSecObj?.periods_per_session || 2,
+        note: '',
+      };
+      const actualSecObj = store.teachers.find(t => t.id === secState.actualTeacherId) || assignedSecObj;
+      const calc = calculateTeacherSessionPayAtDate({
+        teacher: actualSecObj,
+        cls: currentClass,
+        sessionDate: selectedDate,
+        periodsCount: secState.mode === 'absent' ? 0 : secState.periodsCount,
+        isWeekendOverride: isWeekendSlot,
+        store,
+      });
+      const payout = secState.mode === 'absent' ? 0 : calc.earnedAmount;
+      return {
+        index: index + 1,
+        assignedTeacherId: secId,
+        assignedTeacherObj: assignedSecObj,
+        actualTeacherObj: actualSecObj,
+        state: secState,
+        ratePerPeriod: calc.ratePerPeriod,
+        sessionRate: calc.sessionRate,
+        payout,
+      };
+    });
+  }, [classSecondaryTeacherIds, secondaryTeacherStates, store, currentClass, selectedDate, isWeekendSlot]);
+
+  const totalAllTeachersPayout = useMemo(() => {
+    const secSum = secondaryTeachersLiveList.reduce((acc, item) => acc + item.payout, 0);
+    return liveTeacherTotalPayout + secSum;
+  }, [liveTeacherTotalPayout, secondaryTeachersLiveList]);
+
+  // Danh sách học sinh trong lớp có lưu ý y tế / dị ứng cần nhân viên y tế theo dõi
+  const studentsWithMedicalNotes = useMemo(() => {
+    return enrolledStudents.filter(s => Boolean(s.medical_notes && s.medical_notes.trim()));
+  }, [enrolledStudents]);
 
   // Update attendance state when selectedDate or store.attendance changes (Guaranteed Persistence)
   useEffect(() => {
@@ -903,6 +1058,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         snacks_consumed: liveConsumed,
         snacks_returned: liveReturned,
         status: 'completed',
+        support_staff_duty: supportStaffDuty,
       };
       updatedSessions.push(newSession);
 
@@ -1074,10 +1230,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         }
       });
 
-      // 1B. TeacherAttendanceRecord persistence (Chấm công giáo viên buổi học)
-      const existingTeacherAtt = (prev.teacherAttendance || []).find(
+      // 1B. TeacherAttendanceRecord persistence (Chấm công giáo viên buổi học cho 1 - 4 GV)
+      const existingSessionTeacherAtts = (prev.teacherAttendance || []).filter(
         ta => ta.class_id === currentClass.id && ta.session_date === selectedDate
       );
+      const existingPrimaryAtt =
+        existingSessionTeacherAtts.find(ta => ta.assigned_teacher_id === currentClass.primary_teacher_id) ||
+        existingSessionTeacherAtts[0];
       const remainingTeacherAttendance = (prev.teacherAttendance || []).filter(
         ta => !(ta.class_id === currentClass.id && ta.session_date === selectedDate)
       );
@@ -1090,7 +1249,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           : 'present';
 
       const newTeacherAttendanceRecord: TeacherAttendanceRecord = {
-        id: existingTeacherAtt?.id || `tatt_${currentClass.id}_${selectedDate}`,
+        id: existingPrimaryAtt?.id || `tatt_${currentClass.id}_${selectedDate}`,
         class_id: currentClass.id,
         term_id: selectedTermId || currentClass.term_id,
         campus_id: currentClass.campus_id,
@@ -1119,7 +1278,52 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             : 'Giáo viên chính thức đứng lớp đúng giờ'),
       };
 
-      const finalTeacherAttendance = [...remainingTeacherAttendance, newTeacherAttendanceRecord];
+      const secondaryAttendanceRecords: TeacherAttendanceRecord[] = secondaryTeachersLiveList.map(secItem => {
+        const existingSecAtt = existingSessionTeacherAtts.find(
+          ta => ta.assigned_teacher_id === secItem.assignedTeacherId
+        );
+        const secStatus: TeacherAttendanceRecord['status'] =
+          secItem.state.mode === 'absent'
+            ? 'absent_excused'
+            : secItem.state.mode === 'late'
+            ? 'late'
+            : 'present';
+        const isSub =
+          secItem.state.mode === 'substitute' ||
+          (secItem.state.actualTeacherId !== secItem.assignedTeacherId && secItem.state.mode !== 'absent');
+        return {
+          id: existingSecAtt?.id || `tatt_${currentClass.id}_${selectedDate}_${secItem.assignedTeacherId}`,
+          class_id: currentClass.id,
+          term_id: selectedTermId || currentClass.term_id,
+          campus_id: currentClass.campus_id,
+          session_date: selectedDate,
+          session_number: newSession.session_number,
+          periods_count: secItem.state.mode === 'absent' ? 0 : secItem.state.periodsCount,
+          assigned_teacher_id: secItem.assignedTeacherId,
+          actual_teacher_id: secItem.state.mode === 'absent' ? secItem.assignedTeacherId : secItem.state.actualTeacherId,
+          is_substitute: isSub,
+          status: secStatus,
+          check_in_time: secItem.state.mode === 'absent' ? undefined : teacherCheckInTime,
+          rate_per_period: secItem.ratePerPeriod,
+          rate_applied: secItem.sessionRate,
+          earned_amount: secItem.payout,
+          total_payout: secItem.payout,
+          verified_by: currentUser?.full_name || 'Ban Học Vụ',
+          notes:
+            secItem.state.note.trim() ||
+            (isSub
+              ? `GV phụ ${secItem.assignedTeacherObj?.name || ''} nghỉ, ${secItem.actualTeacherObj?.name || ''} dạy thay (${formatVND(secItem.payout)})`
+              : secItem.state.mode === 'absent'
+              ? `GV phụ ${secItem.assignedTeacherObj?.name || ''} vắng mặt (0 đ)`
+              : `Giáo viên phụ / Trợ giảng ${secItem.index} đứng lớp`),
+        };
+      });
+
+      const finalTeacherAttendance = [
+        ...remainingTeacherAttendance,
+        newTeacherAttendanceRecord,
+        ...secondaryAttendanceRecords,
+      ];
 
       const isTeacherAccountSaving = currentUser?.role === 'teacher';
 
@@ -1789,10 +1993,381 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         ? `Ghi chú dạy thay (VD: Cô Hương nghỉ ốm có phép, ${actualTeacherObj?.name} dạy thay ${teacherPeriodsCount} tiết)...`
                         : teacherMode === 'late'
                         ? 'Ghi chú lý do đi muộn & phương án dạy bù giờ...'
-                        : 'Ghi chú chấm công giáo viên buổi học này (không bắt buộc)...'
+                        : 'Ghi chú chấm công giáo viên chính buổi học này (không bắt buộc)...'
                     }
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-200 placeholder-slate-500 text-xs focus:outline-none focus:border-amber-500/60"
                   />
+                </div>
+              </div>
+
+              {/* DANH SÁCH GIÁO VIÊN PHỤ / TRỢ GIẢNG (GV 2, 3, 4 NẾU CÓ PHÂN CÔNG) */}
+              {secondaryTeachersLiveList.length > 0 && (
+                <div className="pt-3 border-t border-slate-800/90 space-y-2.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-[11px] font-extrabold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <UserCheck className="w-3.5 h-3.5" />
+                      <span>Danh Sách Giáo Viên Phụ / Trợ Giảng Đứng Lớp ({secondaryTeachersLiveList.length} GV phụ)</span>
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-300 bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800">
+                      Tổng thù lao đội ngũ GV ({1 + secondaryTeachersLiveList.length} GV):{' '}
+                      <strong className="text-emerald-400 font-extrabold">{formatVND(totalAllTeachersPayout)}</strong>
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {secondaryTeachersLiveList.map(secItem => {
+                      const secId = secItem.assignedTeacherId;
+                      const st = secItem.state;
+                      return (
+                        <div
+                          key={secId}
+                          className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono font-bold text-[10px]">
+                              GV Phụ #{secItem.index}
+                            </span>
+                            <div>
+                              <div className="text-xs font-bold text-white flex items-center gap-2">
+                                <span>{secItem.assignedTeacherObj?.name || 'Giáo viên phụ'}</span>
+                                <span className="text-[10px] text-slate-400 font-normal">
+                                  ({(secItem.assignedTeacherObj?.type || secItem.assignedTeacherObj?.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-mono">
+                                Đơn giá buổi: <strong className="text-amber-300">{formatVND(secItem.sessionRate)}/buổi</strong> &bull; Thù lao thực nhận:{' '}
+                                <strong className="text-emerald-400">{formatVND(secItem.payout)}</strong>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {(['present', 'late', 'substitute', 'absent'] as const).map(m => {
+                              const isAct = st.mode === m;
+                              const label =
+                                m === 'present'
+                                  ? '✓ Có mặt'
+                                  : m === 'late'
+                                  ? '⏱ Đi muộn'
+                                  : m === 'substitute'
+                                  ? '🔄 Dạy thay'
+                                  : '✕ Vắng';
+                              return (
+                                <button
+                                  key={m}
+                                  type="button"
+                                  disabled={isFutureDate}
+                                  onClick={() => {
+                                    setSecondaryTeacherStates(prev => ({
+                                      ...prev,
+                                      [secId]: {
+                                        ...st,
+                                        mode: m,
+                                        actualTeacherId: m === 'substitute' ? st.actualTeacherId : secId,
+                                      },
+                                    }));
+                                    setIsDirty(true);
+                                  }}
+                                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-all ${
+                                    isAct
+                                      ? m === 'present'
+                                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                        : m === 'late'
+                                        ? 'bg-amber-500 text-slate-950 border-amber-400 font-extrabold'
+                                        : m === 'substitute'
+                                        ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                        : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                      : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+
+                            {st.mode === 'substitute' && (
+                              <select
+                                value={st.actualTeacherId}
+                                disabled={isFutureDate}
+                                onChange={(e) => {
+                                  const nextActual = e.target.value;
+                                  setSecondaryTeacherStates(prev => ({
+                                    ...prev,
+                                    [secId]: {
+                                      ...st,
+                                      actualTeacherId: nextActual,
+                                    },
+                                  }));
+                                  setIsDirty(true);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-purple-500/50 text-white text-[11px] font-bold"
+                              >
+                                {store.teachers
+                                  .filter(t => t.status !== 'inactive' || t.id === st.actualTeacherId)
+                                  .map(t => (
+                                    <option key={t.id} value={t.id}>
+                                      {t.name}
+                                    </option>
+                                  ))}
+                              </select>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* KHỐI NHÂN SỰ TRỰC CA BUỔI HỌC (BẢO MẪU, QUẢN SINH & Y TẾ TRỰC) */}
+            <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                    <ShieldCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-extrabold text-white uppercase tracking-wide">
+                      Nhân Sự Trực Ca Buổi Học (Bảo Mẫu, Quản Sinh &amp; Y Tế Trực)
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Theo dõi điểm danh đội ngũ hỗ trợ chăm sóc bánh sữa, đưa đón bàn giao học sinh và trực y tế ca học
+                    </p>
+                  </div>
+                </div>
+
+                {studentsWithMedicalNotes.length > 0 && (
+                  <span className="px-2.5 py-1 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[11px] font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    <span>Cảnh báo y tế: {studentsWithMedicalNotes.length} HS có lưu ý dị ứng/y tế</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+                {/* CARD 1: BẢO MẪU TRỰC LỚP */}
+                <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5 flex flex-col justify-between">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-extrabold text-cyan-300 flex items-center gap-1.5">
+                        <span>🍼 Bảo Mẫu Trực Lớp</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400">Chăm sóc &amp; Bánh sữa</span>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={supportStaffDuty.nanny_name}
+                      disabled={isFutureDate}
+                      onChange={(e) => {
+                        setSupportStaffDuty(prev => ({ ...prev, nanny_name: e.target.value }));
+                        setIsDirty(true);
+                      }}
+                      placeholder="Nhập tên bảo mẫu trực lớp..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-cyan-500"
+                    />
+
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      {(['present', 'substitute', 'absent'] as const).map(st => {
+                        const isAct = supportStaffDuty.nanny_status === st;
+                        const label =
+                          st === 'present'
+                            ? '✓ Có mặt'
+                            : st === 'substitute'
+                            ? '🔄 Đổi người'
+                            : '✕ Vắng';
+                        return (
+                          <button
+                            key={st}
+                            type="button"
+                            disabled={isFutureDate}
+                            onClick={() => {
+                              setSupportStaffDuty(prev => ({ ...prev, nanny_status: st }));
+                              setIsDirty(true);
+                            }}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all ${
+                              isAct
+                                ? st === 'present'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                  : st === 'substitute'
+                                  ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                  : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {supportStaffDuty.nanny_status === 'substitute' ? (
+                    <input
+                      type="text"
+                      value={supportStaffDuty.nanny_substitute_name}
+                      disabled={isFutureDate}
+                      onChange={(e) => {
+                        setSupportStaffDuty(prev => ({ ...prev, nanny_substitute_name: e.target.value }));
+                        setIsDirty(true);
+                      }}
+                      placeholder="Nhập tên bảo mẫu trực thay..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-purple-950/30 border border-purple-500/40 text-purple-200 placeholder-purple-300/50 text-[11px] focus:outline-none"
+                    />
+                  ) : (
+                    <div className="text-[10px] text-slate-400 font-mono pt-1 border-t border-slate-800/80">
+                      Suất bánh sữa Royal: <strong className="text-amber-300">{liveConsumed}/{totalRoyalCount}</strong> tiêu thụ &bull; Hoàn bếp: <strong className="text-emerald-400">{liveReturned}</strong>
+                    </div>
+                  )}
+                </div>
+
+                {/* CARD 2: QUẢN SINH CA HỌC */}
+                <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5 flex flex-col justify-between">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-extrabold text-purple-300 flex items-center gap-1.5">
+                        <span>📋 Quản Sinh Trực</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400">Trật tự &amp; Đưa đón HS</span>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={supportStaffDuty.supervisor_name}
+                      disabled={isFutureDate}
+                      onChange={(e) => {
+                        setSupportStaffDuty(prev => ({ ...prev, supervisor_name: e.target.value }));
+                        setIsDirty(true);
+                      }}
+                      placeholder="Nhập tên quản sinh trực..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-purple-500"
+                    />
+
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      {(['present', 'substitute', 'absent'] as const).map(st => {
+                        const isAct = supportStaffDuty.supervisor_status === st;
+                        const label =
+                          st === 'present'
+                            ? '✓ Có mặt'
+                            : st === 'substitute'
+                            ? '🔄 Đổi người'
+                            : '✕ Vắng';
+                        return (
+                          <button
+                            key={st}
+                            type="button"
+                            disabled={isFutureDate}
+                            onClick={() => {
+                              setSupportStaffDuty(prev => ({ ...prev, supervisor_status: st }));
+                              setIsDirty(true);
+                            }}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all ${
+                              isAct
+                                ? st === 'present'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                  : st === 'substitute'
+                                  ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                  : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <input
+                    type="text"
+                    value={supportStaffDuty.supervisor_note}
+                    disabled={isFutureDate}
+                    onChange={(e) => {
+                      setSupportStaffDuty(prev => ({ ...prev, supervisor_note: e.target.value }));
+                      setIsDirty(true);
+                    }}
+                    placeholder="Ghi chú bàn giao học sinh / đưa đón cuối giờ..."
+                    className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 placeholder-slate-500 text-[11px] focus:outline-none focus:border-purple-500/50"
+                  />
+                </div>
+
+                {/* CARD 3: Y TẾ TRỰC & CẢNH BÁO DỊ ỨNG / Y TẾ */}
+                <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5 flex flex-col justify-between">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-extrabold text-emerald-300 flex items-center gap-1.5">
+                        <span>🩺 Y Tế Trực Ca Học</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400">Phòng Y tế &amp; Sơ cứu</span>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={supportStaffDuty.medical_staff_name}
+                      disabled={isFutureDate}
+                      onChange={(e) => {
+                        setSupportStaffDuty(prev => ({ ...prev, medical_staff_name: e.target.value }));
+                        setIsDirty(true);
+                      }}
+                      placeholder="Nhập tên nhân viên y tế trực..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-emerald-500"
+                    />
+
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      {(['present', 'substitute', 'absent'] as const).map(st => {
+                        const isAct = supportStaffDuty.medical_status === st;
+                        const label =
+                          st === 'present'
+                            ? '✓ Có mặt'
+                            : st === 'substitute'
+                            ? '🔄 Đổi người'
+                            : '✕ Vắng';
+                        return (
+                          <button
+                            key={st}
+                            type="button"
+                            disabled={isFutureDate}
+                            onClick={() => {
+                              setSupportStaffDuty(prev => ({ ...prev, medical_status: st }));
+                              setIsDirty(true);
+                            }}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all ${
+                              isAct
+                                ? st === 'present'
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                  : st === 'substitute'
+                                  ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                  : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {studentsWithMedicalNotes.length > 0 ? (
+                    <div className="p-2 rounded-lg bg-rose-950/40 border border-rose-500/40 space-y-1">
+                      <div className="text-[10px] font-extrabold text-rose-300 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                        <span>Lưu ý y tế / dị ứng trong lớp ({studentsWithMedicalNotes.length} HS):</span>
+                      </div>
+                      <div className="max-h-16 overflow-y-auto space-y-0.5 pr-1">
+                        {studentsWithMedicalNotes.map(st => (
+                          <div key={st.id} className="text-[10px] text-rose-200 leading-tight">
+                            &bull; <strong>{st.name}:</strong> {st.medical_notes}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-emerald-400/90 font-medium pt-1 border-t border-slate-800/80">
+                      ✓ Lớp không có học sinh nào ghi nhận cảnh báo dị ứng/bệnh lý đặc biệt.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

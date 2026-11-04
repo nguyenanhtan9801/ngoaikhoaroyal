@@ -326,6 +326,12 @@ export interface ExtracurricularClass {
   term_distribution?: {
     primary_term_sessions: number; // Số buổi ở khóa 1 (VD: 14)
     spanning_term_sessions: number; // Số buổi ở khóa 2 (VD: 10)
+    secondary_teacher_1?: string;
+    secondary_teacher_2?: string;
+    secondary_teacher_3?: string;
+    nanny_name?: string;
+    supervisor_name?: string;
+    medical_staff_name?: string;
   };
   campus_id: string;
   subject_id: string;
@@ -338,6 +344,12 @@ export interface ExtracurricularClass {
   end_date?: string; // Ngày kết thúc dự kiến (YYYY-MM-DD)
   standard_sessions?: number; // Số buổi chuẩn ban đầu của môn học trong khóa (VD: 24)
   primary_teacher_id: string;
+  secondary_teacher_1?: string;
+  secondary_teacher_2?: string;
+  secondary_teacher_3?: string;
+  nanny_name?: string;
+  supervisor_name?: string;
+  medical_staff_name?: string;
   max_students: number;
   current_students?: number;
   total_sessions: number; // Số buổi thực tế của lớp (VD: 18 hoặc 24)
@@ -459,6 +471,17 @@ export interface ClassSession {
   snacks_consumed: number; // Present Royal + Absent Unexcused Royal
   snacks_returned: number; // Absent Excused Royal
   status: 'scheduled' | 'completed' | 'canceled';
+  support_staff_duty?: {
+    nanny_name?: string;
+    nanny_status?: 'present' | 'absent' | 'substitute';
+    nanny_substitute_name?: string;
+    supervisor_name?: string;
+    supervisor_status?: 'present' | 'absent' | 'substitute';
+    supervisor_note?: string;
+    medical_staff_name?: string;
+    medical_status?: 'present' | 'absent' | 'substitute';
+    medical_note?: string;
+  };
 }
 
 export interface AttendanceRecord {

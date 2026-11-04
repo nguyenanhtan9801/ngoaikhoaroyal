@@ -16,7 +16,8 @@ import {
   Users, 
   ArrowRight,
   Globe,
-  Info
+  Info,
+  ShieldCheck
 } from 'lucide-react';
 import { ExtracurricularClass, ClassSession, AppStore, AcademicTerm, Holiday } from '../../types';
 import { 
@@ -246,6 +247,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       store.teachers.find(t => t.status !== 'inactive')?.id ||
       store.teachers[0]?.id ||
       '',
+    secondary_teacher_1: editingClass?.secondary_teacher_1 || editingClass?.term_distribution?.secondary_teacher_1 || '',
+    secondary_teacher_2: editingClass?.secondary_teacher_2 || editingClass?.term_distribution?.secondary_teacher_2 || '',
+    secondary_teacher_3: editingClass?.secondary_teacher_3 || editingClass?.term_distribution?.secondary_teacher_3 || '',
+    nanny_name: editingClass?.nanny_name || editingClass?.term_distribution?.nanny_name || '',
+    supervisor_name: editingClass?.supervisor_name || editingClass?.term_distribution?.supervisor_name || '',
+    medical_staff_name: editingClass?.medical_staff_name || editingClass?.term_distribution?.medical_staff_name || '',
     max_students: editingClass?.max_students || 15,
     allow_over_quota: editingClass?.allow_over_quota || false,
   });
@@ -275,6 +282,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
           : ['T2', 'T4'],
         start_date: editingClass.start_date || '2026-09-01',
         primary_teacher_id: editingClass.primary_teacher_id || '',
+        secondary_teacher_1: editingClass.secondary_teacher_1 || editingClass.term_distribution?.secondary_teacher_1 || '',
+        secondary_teacher_2: editingClass.secondary_teacher_2 || editingClass.term_distribution?.secondary_teacher_2 || '',
+        secondary_teacher_3: editingClass.secondary_teacher_3 || editingClass.term_distribution?.secondary_teacher_3 || '',
+        nanny_name: editingClass.nanny_name || editingClass.term_distribution?.nanny_name || '',
+        supervisor_name: editingClass.supervisor_name || editingClass.term_distribution?.supervisor_name || '',
+        medical_staff_name: editingClass.medical_staff_name || editingClass.term_distribution?.medical_staff_name || '',
         max_students: editingClass.max_students || 15,
         allow_over_quota: Boolean(editingClass.allow_over_quota),
       });
@@ -298,6 +311,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
           store.teachers.find(t => t.status !== 'inactive')?.id ||
           store.teachers[0]?.id ||
           '',
+        secondary_teacher_1: '',
+        secondary_teacher_2: '',
+        secondary_teacher_3: '',
+        nanny_name: '',
+        supervisor_name: '',
+        medical_staff_name: '',
         max_students: 15,
         allow_over_quota: false,
       });
@@ -623,15 +642,16 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
       const finalFee = scheduleAnalysis.effectiveFee;
       const finalEndDate = scheduleAnalysis.projectedEndDate;
 
-      const termDistribution = isCrossSpanning
-        ? {
-            primary_term_sessions: scheduleAnalysis.primaryCount,
-            spanning_term_sessions: scheduleAnalysis.spanningCount,
-          }
-        : {
-            primary_term_sessions: scheduleAnalysis.primaryCount,
-            spanning_term_sessions: 0,
-          };
+      const termDistribution = {
+        primary_term_sessions: scheduleAnalysis.primaryCount,
+        spanning_term_sessions: isCrossSpanning ? scheduleAnalysis.spanningCount : 0,
+        ...(formData.secondary_teacher_1 ? { secondary_teacher_1: formData.secondary_teacher_1 } : {}),
+        ...(formData.secondary_teacher_2 ? { secondary_teacher_2: formData.secondary_teacher_2 } : {}),
+        ...(formData.secondary_teacher_3 ? { secondary_teacher_3: formData.secondary_teacher_3 } : {}),
+        ...(formData.nanny_name.trim() ? { nanny_name: formData.nanny_name.trim() } : {}),
+        ...(formData.supervisor_name.trim() ? { supervisor_name: formData.supervisor_name.trim() } : {}),
+        ...(formData.medical_staff_name.trim() ? { medical_staff_name: formData.medical_staff_name.trim() } : {}),
+      };
 
       const targetClassId = editingClass ? editingClass.id : `cls_${Date.now()}`;
       const cleanCampusId = formData.campus_id === 'pmh' 
@@ -740,6 +760,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
         end_date: finalEndDate,
         standard_sessions: standardSessions,
         primary_teacher_id: validatedTeacherId || '',
+        secondary_teacher_1: formData.secondary_teacher_1 || undefined,
+        secondary_teacher_2: formData.secondary_teacher_2 || undefined,
+        secondary_teacher_3: formData.secondary_teacher_3 || undefined,
+        nanny_name: formData.nanny_name.trim() || undefined,
+        supervisor_name: formData.supervisor_name.trim() || undefined,
+        medical_staff_name: formData.medical_staff_name.trim() || undefined,
         max_students: formData.max_students,
         total_sessions: finalTotalSessions,
         full_course_fee: finalFee,
@@ -1362,36 +1388,153 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
             )}
           </div>
 
-          {/* TEACHER & MAX STUDENTS */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-slate-300 font-bold mb-1.5">Giáo viên phụ trách chính *</label>
-              <select
-                value={formData.primary_teacher_id}
-                onChange={(e) => setFormData({ ...formData, primary_teacher_id: e.target.value })}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
-              >
-                {store.teachers
-                  .filter(t => t.status !== 'inactive' || t.id === editingClass?.primary_teacher_id)
-                  .map(t => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} ({(t.type || t.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'}
-                      {t.status === 'inactive' ? ' - Đã khóa' : ''})
-                    </option>
-                  ))}
-              </select>
+          {/* MULTI-LEVEL TEACHER & SUPPORT STAFF ASSIGNMENT */}
+          <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="text-[11px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="w-4 h-4" />
+                <span>Đội Ngũ Giảng Dạy (Hỗ trợ 1 - 4 Giáo Viên / Lớp)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-300 font-bold">Sĩ số tối đa:</span>
+                <input
+                  type="number"
+                  min={5}
+                  max={60}
+                  value={formData.max_students}
+                  onChange={(e) => setFormData({ ...formData, max_students: Number(e.target.value) })}
+                  className="w-20 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono font-bold text-xs text-center"
+                />
+                <span className="text-[10px] text-slate-400">HS</span>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-slate-300 font-bold mb-1.5">Sĩ số tối đa</label>
-              <input
-                type="number"
-                min={5}
-                max={40}
-                value={formData.max_students}
-                onChange={(e) => setFormData({ ...formData, max_students: Number(e.target.value) })}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono font-bold"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Giáo viên chính */}
+              <div>
+                <label className="block text-slate-300 font-bold mb-1.5 text-xs">
+                  1. Giáo viên phụ trách chính (Bắt buộc) *
+                </label>
+                <select
+                  value={formData.primary_teacher_id}
+                  onChange={(e) => setFormData({ ...formData, primary_teacher_id: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-amber-500/40 text-white text-xs font-bold focus:outline-none focus:border-amber-500"
+                >
+                  {store.teachers
+                    .filter(t => t.status !== 'inactive' || t.id === editingClass?.primary_teacher_id)
+                    .map(t => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({(t.type || t.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Giáo viên phụ 1 */}
+              <div>
+                <label className="block text-slate-400 font-semibold mb-1.5 text-xs">
+                  2. Giáo viên phụ / Trợ giảng 1 (Tùy chọn)
+                </label>
+                <select
+                  value={formData.secondary_teacher_1 || ''}
+                  onChange={(e) => setFormData({ ...formData, secondary_teacher_1: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-amber-500"
+                >
+                  <option value="">-- Không phân công --</option>
+                  {store.teachers
+                    .filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id)
+                    .map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Giáo viên phụ 2 */}
+              <div>
+                <label className="block text-slate-400 font-semibold mb-1.5 text-xs">
+                  3. Giáo viên phụ / Trợ giảng 2 (Tùy chọn)
+                </label>
+                <select
+                  value={formData.secondary_teacher_2 || ''}
+                  onChange={(e) => setFormData({ ...formData, secondary_teacher_2: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-amber-500"
+                >
+                  <option value="">-- Không phân công --</option>
+                  {store.teachers
+                    .filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id && t.id !== formData.secondary_teacher_1)
+                    .map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Giáo viên phụ 3 */}
+              <div>
+                <label className="block text-slate-400 font-semibold mb-1.5 text-xs">
+                  4. Giáo viên phụ / Trợ giảng 3 (Tùy chọn)
+                </label>
+                <select
+                  value={formData.secondary_teacher_3 || ''}
+                  onChange={(e) => setFormData({ ...formData, secondary_teacher_3: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-amber-500"
+                >
+                  <option value="">-- Không phân công --</option>
+                  {store.teachers
+                    .filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id && t.id !== formData.secondary_teacher_1 && t.id !== formData.secondary_teacher_2)
+                    .map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Nhân sự hỗ trợ vận hành ca học */}
+            <div className="pt-3 border-t border-slate-800 space-y-3">
+              <div className="text-[11px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Nhân Sự Hỗ Trợ Ca Học (Bảo Mẫu, Quản Sinh &amp; Y Tế)</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1 text-[11px]">
+                    🍼 Bảo mẫu trực lớp
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.nanny_name || ''}
+                    onChange={(e) => setFormData({ ...formData, nanny_name: e.target.value })}
+                    placeholder="VD: Cô Nguyễn Thị Mai"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1 text-[11px]">
+                    📋 Quản sinh ca học
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.supervisor_name || ''}
+                    onChange={(e) => setFormData({ ...formData, supervisor_name: e.target.value })}
+                    placeholder="VD: Thầy Trần Văn Hùng"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1 text-[11px]">
+                    🩺 Nhân viên y tế trực
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.medical_staff_name || ''}
+                    onChange={(e) => setFormData({ ...formData, medical_staff_name: e.target.value })}
+                    placeholder="VD: Y sĩ Lê Thu Hà"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 

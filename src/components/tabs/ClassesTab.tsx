@@ -184,29 +184,39 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
           onUpdateStore(prev => {
             let nextClasses = prev.classes;
             if (!classesRes.error && Array.isArray(classesRes.data) && classesRes.data.length > 0) {
-              const mappedClasses: ExtracurricularClass[] = classesRes.data.map((r: any): ExtracurricularClass => ({
-                id: r.id,
-                code: r.code || r.id,
-                name: r.name,
-                term_id: r.term_id,
-                spanning_term_id: r.spanning_term_id || undefined,
-                is_cross_term: Boolean(r.is_cross_term),
-                term_distribution: r.term_distribution || undefined,
-                campus_id: r.campus_id,
-                subject_id: r.subject_id,
-                facility_id: r.facility_id || '',
-                time_slot_id: r.time_slot_id || '',
-                days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
-                start_date: r.start_date || undefined,
-                end_date: r.end_date || undefined,
-                primary_teacher_id: r.primary_teacher_id || '',
-                max_students: Number(r.max_students) || 25,
-                total_sessions: Number(r.total_sessions) || 24,
-                full_course_fee: Number(r.full_course_fee) || 0,
-                price_per_session: Number(r.price_per_session) || 0,
-                status: r.status || 'active',
-                allow_over_quota: Boolean(r.allow_over_quota),
-              }));
+              const mappedClasses: ExtracurricularClass[] = classesRes.data.map((r: any): ExtracurricularClass => {
+                const existingLocal = prev.classes.find(c => c.id === r.id);
+                const td = r.term_distribution || {};
+                return {
+                  id: r.id,
+                  code: r.code || r.id,
+                  name: r.name,
+                  term_id: r.term_id,
+                  spanning_term_id: r.spanning_term_id || undefined,
+                  is_cross_term: Boolean(r.is_cross_term),
+                  term_distribution: r.term_distribution || undefined,
+                  campus_id: r.campus_id,
+                  subject_id: r.subject_id,
+                  facility_id: r.facility_id || '',
+                  time_slot_id: r.time_slot_id || '',
+                  days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+                  start_date: r.start_date || undefined,
+                  end_date: r.end_date || undefined,
+                  primary_teacher_id: r.primary_teacher_id || '',
+                  secondary_teacher_1: r.secondary_teacher_1 || td.secondary_teacher_1 || existingLocal?.secondary_teacher_1 || undefined,
+                  secondary_teacher_2: r.secondary_teacher_2 || td.secondary_teacher_2 || existingLocal?.secondary_teacher_2 || undefined,
+                  secondary_teacher_3: r.secondary_teacher_3 || td.secondary_teacher_3 || existingLocal?.secondary_teacher_3 || undefined,
+                  nanny_name: r.nanny_name || td.nanny_name || existingLocal?.nanny_name || undefined,
+                  supervisor_name: r.supervisor_name || td.supervisor_name || existingLocal?.supervisor_name || undefined,
+                  medical_staff_name: r.medical_staff_name || td.medical_staff_name || existingLocal?.medical_staff_name || undefined,
+                  max_students: Number(r.max_students) || 25,
+                  total_sessions: Number(r.total_sessions) || 24,
+                  full_course_fee: Number(r.full_course_fee) || 0,
+                  price_per_session: Number(r.price_per_session) || 0,
+                  status: r.status || 'active',
+                  allow_over_quota: Boolean(r.allow_over_quota),
+                };
+              });
 
               const map = new Map<string, ExtracurricularClass>();
               prev.classes.forEach(c => map.set(c.id, c));
@@ -1213,7 +1223,37 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       <td className="py-3 px-4 text-slate-400">{facility?.name}</td>
 
                       <td className="py-3 px-4 text-slate-300 font-medium">
-                        {teacher?.name} <span className="text-[10px] text-slate-500">({teacher?.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})</span>
+                        <div>
+                          {teacher?.name} <span className="text-[10px] text-slate-500">({teacher?.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})</span>
+                        </div>
+                        {[cls.secondary_teacher_1, cls.secondary_teacher_2, cls.secondary_teacher_3].filter(Boolean).length > 0 && (
+                          <div className="text-[10px] text-amber-300/90 mt-0.5">
+                            + {[cls.secondary_teacher_1, cls.secondary_teacher_2, cls.secondary_teacher_3]
+                              .filter(Boolean)
+                              .map(id => store.teachers.find(t => t.id === id)?.name)
+                              .filter(Boolean)
+                              .join(', ')} (GV phụ)
+                          </div>
+                        )}
+                        {(cls.nanny_name || cls.supervisor_name || cls.medical_staff_name) && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {cls.nanny_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-[9px] text-cyan-300">
+                                🍼 {cls.nanny_name}
+                              </span>
+                            )}
+                            {cls.supervisor_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-[9px] text-purple-300">
+                                📋 {cls.supervisor_name}
+                              </span>
+                            )}
+                            {cls.medical_staff_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] text-emerald-300">
+                                🩺 {cls.medical_staff_name}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-4 text-center">
@@ -1379,11 +1419,41 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       <span>{facility?.name || 'Chưa xếp phòng/sân'}</span>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <User className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span className="text-amber-300 font-medium">
-                        GV: {teacher?.name || 'Chưa phân công'} ({teacher?.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
-                      </span>
+                    <div className="flex items-start gap-2">
+                      <User className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="text-amber-300 font-medium">
+                          GV Chính: {teacher?.name || 'Chưa phân công'} ({teacher?.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                        </div>
+                        {[cls.secondary_teacher_1, cls.secondary_teacher_2, cls.secondary_teacher_3].filter(Boolean).length > 0 && (
+                          <div className="text-[11px] text-slate-300 mt-0.5">
+                            GV Phụ: {[cls.secondary_teacher_1, cls.secondary_teacher_2, cls.secondary_teacher_3]
+                              .filter(Boolean)
+                              .map(id => store.teachers.find(t => t.id === id)?.name)
+                              .filter(Boolean)
+                              .join(', ')}
+                          </div>
+                        )}
+                        {(cls.nanny_name || cls.supervisor_name || cls.medical_staff_name) && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {cls.nanny_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-[10px] text-cyan-300">
+                                🍼 {cls.nanny_name}
+                              </span>
+                            )}
+                            {cls.supervisor_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-[10px] text-purple-300">
+                                📋 {cls.supervisor_name}
+                              </span>
+                            )}
+                            {cls.medical_staff_name && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[10px] text-emerald-300">
+                                🩺 {cls.medical_staff_name}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 

@@ -1471,7 +1471,16 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         term_id: c.term_id,
         spanning_term_id: c.spanning_term_id || null,
         is_cross_term: Boolean(c.is_cross_term),
-        term_distribution: c.term_distribution || null,
+        term_distribution: {
+          primary_term_sessions: c.term_distribution?.primary_term_sessions ?? c.total_sessions ?? 24,
+          spanning_term_sessions: c.term_distribution?.spanning_term_sessions ?? 0,
+          ...(c.secondary_teacher_1 ? { secondary_teacher_1: c.secondary_teacher_1 } : {}),
+          ...(c.secondary_teacher_2 ? { secondary_teacher_2: c.secondary_teacher_2 } : {}),
+          ...(c.secondary_teacher_3 ? { secondary_teacher_3: c.secondary_teacher_3 } : {}),
+          ...(c.nanny_name ? { nanny_name: c.nanny_name } : {}),
+          ...(c.supervisor_name ? { supervisor_name: c.supervisor_name } : {}),
+          ...(c.medical_staff_name ? { medical_staff_name: c.medical_staff_name } : {}),
+        },
         campus_id: c.campus_id,
         subject_id: c.subject_id,
         facility_id: c.facility_id || '',
@@ -1939,29 +1948,39 @@ export async function pullAllTablesFromSupabase(
           nextStore.teachers = data.map((r: any): Teacher => mapSupabaseRowToStoreEntity('teachers', r));
           break;
         case 'extracurricular_classes':
-          nextStore.classes = data.map((r: any): ExtracurricularClass => ({
-            id: r.id,
-            code: r.code || r.id,
-            name: r.name,
-            term_id: r.term_id,
-            spanning_term_id: r.spanning_term_id || undefined,
-            is_cross_term: Boolean(r.is_cross_term),
-            term_distribution: r.term_distribution || undefined,
-            campus_id: r.campus_id,
-            subject_id: r.subject_id,
-            facility_id: r.facility_id || '',
-            time_slot_id: r.time_slot_id || '',
-            days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
-            start_date: r.start_date || undefined,
-            end_date: r.end_date || undefined,
-            primary_teacher_id: r.primary_teacher_id || '',
-            max_students: Number(r.max_students) || 25,
-            total_sessions: Number(r.total_sessions) || 24,
-            full_course_fee: Number(r.full_course_fee) || 0,
-            price_per_session: Number(r.price_per_session) || 0,
-            status: r.status || 'active',
-            allow_over_quota: Boolean(r.allow_over_quota),
-          }));
+          nextStore.classes = data.map((r: any): ExtracurricularClass => {
+            const existingLocal = currentStore.classes.find(c => c.id === r.id);
+            const td = r.term_distribution || {};
+            return {
+              id: r.id,
+              code: r.code || r.id,
+              name: r.name,
+              term_id: r.term_id,
+              spanning_term_id: r.spanning_term_id || undefined,
+              is_cross_term: Boolean(r.is_cross_term),
+              term_distribution: r.term_distribution || undefined,
+              campus_id: r.campus_id,
+              subject_id: r.subject_id,
+              facility_id: r.facility_id || '',
+              time_slot_id: r.time_slot_id || '',
+              days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
+              start_date: r.start_date || undefined,
+              end_date: r.end_date || undefined,
+              primary_teacher_id: r.primary_teacher_id || '',
+              secondary_teacher_1: r.secondary_teacher_1 || td.secondary_teacher_1 || existingLocal?.secondary_teacher_1 || undefined,
+              secondary_teacher_2: r.secondary_teacher_2 || td.secondary_teacher_2 || existingLocal?.secondary_teacher_2 || undefined,
+              secondary_teacher_3: r.secondary_teacher_3 || td.secondary_teacher_3 || existingLocal?.secondary_teacher_3 || undefined,
+              nanny_name: r.nanny_name || td.nanny_name || existingLocal?.nanny_name || undefined,
+              supervisor_name: r.supervisor_name || td.supervisor_name || existingLocal?.supervisor_name || undefined,
+              medical_staff_name: r.medical_staff_name || td.medical_staff_name || existingLocal?.medical_staff_name || undefined,
+              max_students: Number(r.max_students) || 25,
+              total_sessions: Number(r.total_sessions) || 24,
+              full_course_fee: Number(r.full_course_fee) || 0,
+              price_per_session: Number(r.price_per_session) || 0,
+              status: r.status || 'active',
+              allow_over_quota: Boolean(r.allow_over_quota),
+            };
+          });
           break;
         case 'students':
           nextStore.students = data.map((r: any): Student => {
@@ -2307,7 +2326,8 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
       };
     }
 
-    case 'extracurricular_classes':
+    case 'extracurricular_classes': {
+      const td = r.term_distribution || {};
       return {
         id: r.id,
         code: r.code || r.id,
@@ -2324,6 +2344,12 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         start_date: r.start_date || undefined,
         end_date: r.end_date || undefined,
         primary_teacher_id: r.primary_teacher_id || '',
+        secondary_teacher_1: r.secondary_teacher_1 || td.secondary_teacher_1 || undefined,
+        secondary_teacher_2: r.secondary_teacher_2 || td.secondary_teacher_2 || undefined,
+        secondary_teacher_3: r.secondary_teacher_3 || td.secondary_teacher_3 || undefined,
+        nanny_name: r.nanny_name || td.nanny_name || undefined,
+        supervisor_name: r.supervisor_name || td.supervisor_name || undefined,
+        medical_staff_name: r.medical_staff_name || td.medical_staff_name || undefined,
         max_students: Number(r.max_students) || 25,
         current_students: r.current_students !== undefined ? Number(r.current_students) : undefined,
         total_sessions: Number(r.total_sessions) || 24,
@@ -2332,6 +2358,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         status: r.status || 'active',
         allow_over_quota: Boolean(r.allow_over_quota),
       };
+    }
 
     case 'students': {
       const isRoyal = checkIsRoyalStudent(r);
