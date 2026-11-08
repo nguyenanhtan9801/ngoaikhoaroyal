@@ -144,6 +144,10 @@ async function recordAdminEndpointAudit(params: {
   callerId?: string;
   callerUsername?: string;
   callerFullName?: string;
+  callerRole?: string;
+  callerCampusId?: string;
+  category?: 'AUTH' | 'ACADEMIC' | 'FINANCE' | 'SYSTEM';
+  moduleName?: string;
   targetId?: string;
   status: 'success' | 'failed';
   description: string;
@@ -159,6 +163,8 @@ async function recordAdminEndpointAudit(params: {
     actor_id: params.callerId || 'anonymous',
     actor_username: params.callerUsername || 'unknown',
     actor_name: params.callerFullName || 'Unknown',
+    actor_role: params.callerRole || 'super_admin',
+    actor_campus: params.callerCampusId || 'all',
     target_id: params.targetId || '',
     status: params.status,
     description: params.description,
@@ -179,12 +185,12 @@ async function recordAdminEndpointAudit(params: {
         actor_id: auditEntry.actor_id,
         actor_username: auditEntry.actor_username,
         actor_name: auditEntry.actor_name,
-        actor_role: 'super_admin',
-        actor_campus: 'all',
+        actor_role: auditEntry.actor_role,
+        actor_campus: auditEntry.actor_campus,
         ip_address: auditEntry.ip_address,
         action_code: auditEntry.action_code,
-        category: 'SYSTEM',
-        module: 'Quản Trị Tài Khoản (Server API)',
+        category: params.category || 'SYSTEM',
+        module: params.moduleName || 'Quản Trị Tài Khoản (Server API)',
         target_id: auditEntry.target_id,
         description: auditEntry.description,
         details: {
@@ -2740,6 +2746,1184 @@ app.get('/api/files/proofs', requireAuth, async (req: Request, res: Response) =>
     res.json({ files });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Lỗi đọc danh sách tệp trên Supabase Storage' });
+  }
+});
+
+// ============================================================================
+// GIAI ĐOẠN CHECK IN GIÁO VIÊN (PHẦN 1: MÁY CHỦ VÀ DỮ LIỆU) & BACKUP AUDIT
+// ============================================================================
+
+const RAW_CHECKIN_QR_SECRET = String(process.env.CHECKIN_QR_SECRET || '').trim();
+const CHECKIN_QR_SECRET_KEY: string = (() => {
+  if (
+    RAW_CHECKIN_QR_SECRET &&
+    RAW_CHECKIN_QR_SECRET !== 'YOUR_CHECKIN_QR_SECRET' &&
+    Buffer.byteLength(RAW_CHECKIN_QR_SECRET, 'utf8') >= 32
+  ) {
+    return RAW_CHECKIN_QR_SECRET;
+  }
+  const ephemeralSecret = crypto.randomBytes(32).toString('hex');
+  console.warn(
+    '[CheckinQR] CẢNH BÁO: CHECKIN_QR_SECRET chưa được cấu hình hoặc ngắn hơn 32 byte. Đã sinh khóa tạm thời cho phiên khởi động này.'
+  );
+  return ephemeralSecret;
+})();
+
+const CHECKIN_QR_TTL_SECONDS: number = (() => {
+  const parsed = Number(process.env.CHECKIN_QR_TTL_SECONDS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 90;
+})();
+
+const CHECKIN_LATE_GRACE_MIN: number = (() => {
+  const parsed = Number(process.env.CHECKIN_LATE_GRACE_MIN);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 5;
+})();
+
+export interface CheckinTokenPayload {
+  t: string;
+  iat: number;
+  exp: number;
+  j: string;
+}
+
+export function signCheckinToken({ teacherId }: { teacherId: string }): {
+  token: string;
+  payload: CheckinTokenPayload;
+} {
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + CHECKIN_QR_TTL_SECONDS;
+  const j = crypto.randomBytes(16).toString('hex');
+  const payload: CheckinTokenPayload = {
+    t: String(teacherId).trim(),
+    iat,
+    exp,
+    j,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sigB64 = crypto
+    .createHmac('sha256', CHECKIN_QR_SECRET_KEY)
+    .update(`RSC1.${payloadB64}`)
+    .digest('base64url');
+  return {
+    token: `RSC1.${payloadB64}.${sigB64}`,
+    payload,
+  };
+}
+
+export function verifyCheckinToken(
+  rawToken: string
+):
+  | { ok: true; payload: CheckinTokenPayload }
+  | { ok: false; reason: 'invalid' | 'expired'; payload?: CheckinTokenPayload } {
+  if (!rawToken || typeof rawToken !== 'string') {
+    return { ok: false, reason: 'invalid' };
+  }
+  const parts = rawToken.trim().split('.');
+  if (parts.length !== 3 || parts[0] !== 'RSC1') {
+    return { ok: false, reason: 'invalid' };
+  }
+  const [, payloadB64, sigB64] = parts;
+  if (!payloadB64 || !sigB64) {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  const expectedSigB64 = crypto
+    .createHmac('sha256', CHECKIN_QR_SECRET_KEY)
+    .update(`RSC1.${payloadB64}`)
+    .digest('base64url');
+
+  const sigBuf = Buffer.from(sigB64, 'utf8');
+  const expectedBuf = Buffer.from(expectedSigB64, 'utf8');
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    if (
+      !decoded ||
+      typeof decoded.t !== 'string' ||
+      !decoded.t.trim() ||
+      typeof decoded.iat !== 'number' ||
+      typeof decoded.exp !== 'number' ||
+      typeof decoded.j !== 'string' ||
+      !decoded.j.trim()
+    ) {
+      return { ok: false, reason: 'invalid' };
+    }
+    const payload: CheckinTokenPayload = {
+      t: decoded.t.trim(),
+      iat: decoded.iat,
+      exp: decoded.exp,
+      j: decoded.j.trim(),
+    };
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (nowSec > payload.exp) {
+      return { ok: false, reason: 'expired', payload };
+    }
+    return { ok: true, payload };
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
+}
+
+const CHECKIN_STAFF_ALLOWED_ROLES = new Set<string>(
+  Array.from(VALID_USER_ROLES).filter(
+    role =>
+      role === 'super_admin' ||
+      role === 'campus_manager' ||
+      role === 'academic' ||
+      (role.startsWith('academic_') &&
+        role !== 'teacher' &&
+        role !== 'accountant' &&
+        role !== 'admissions')
+  )
+);
+
+interface TeacherAuthenticatedRequest extends Request {
+  teacherAuth?: {
+    supabaseAdmin: SupabaseClient;
+    callerId: string;
+    callerUsername: string;
+    callerFullName: string;
+    callerCampusId: string;
+    clientIp: string;
+    teacher: {
+      id: string;
+      name: string;
+      code: string;
+      campus_id: string;
+    };
+  };
+}
+
+interface CheckinStaffAuthenticatedRequest extends Request {
+  checkinStaff?: {
+    supabaseAdmin: SupabaseClient;
+    scannerId: string;
+    scannerUsername: string;
+    scannerFullName: string;
+    scannerRole: string;
+    scannerCampusId: string;
+    clientIp: string;
+  };
+}
+
+const teacherQrRateLimitMap = new Map<string, number[]>();
+const checkinScanRateLimitMap = new Map<string, number[]>();
+const checkinManualRateLimitMap = new Map<string, number[]>();
+let lastNonceCleanupAt = 0;
+
+async function requireTeacher(
+  req: Request,
+  res: Response,
+  next: express.NextFunction
+): Promise<void> {
+  const clientIp = getClientIpFromReq(req);
+  const supabaseAdmin = getServerSupabaseAdmin();
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (!authHeader.toLowerCase().startsWith('bearer ')) {
+    res.status(401).json({ error: 'Thiếu Bearer token xác thực.' });
+    return;
+  }
+  const token = authHeader.slice(7).trim();
+  if (!token) {
+    res.status(401).json({ error: 'Bearer token không hợp lệ.' });
+    return;
+  }
+  if (!supabaseAdmin) {
+    res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
+    return;
+  }
+
+  const { data: userData, error: authError } = await supabaseAdmin.auth.getUser(token);
+  if (authError || !userData?.user) {
+    res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.' });
+    return;
+  }
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('id, username, full_name, role, campus_id, status, linked_teacher_id')
+    .eq('id', userData.user.id)
+    .single();
+
+  if (profileError || !profile || profile.status !== 'active') {
+    res.status(401).json({ error: 'Tài khoản không hợp lệ hoặc đã bị khóa.' });
+    return;
+  }
+
+  if (profile.role !== 'teacher') {
+    res.status(403).json({ error: 'Chỉ tài khoản Giáo viên mới được sử dụng chức năng này.' });
+    return;
+  }
+
+  const linkedTeacherId = String(profile.linked_teacher_id || '').trim();
+  if (!linkedTeacherId) {
+    res.status(403).json({
+      error: 'Tài khoản giáo viên chưa được liên kết với hồ sơ giáo viên (linked_teacher_id).',
+    });
+    return;
+  }
+
+  const { data: teacherRow, error: teacherError } = await supabaseAdmin
+    .from('teachers')
+    .select('id, code, name, campus_id, status')
+    .eq('id', linkedTeacherId)
+    .single();
+
+  if (teacherError || !teacherRow || teacherRow.status !== 'active') {
+    res.status(403).json({
+      error: 'Hồ sơ giáo viên không tồn tại hoặc đang ngưng hoạt động.',
+    });
+    return;
+  }
+
+  (req as TeacherAuthenticatedRequest).teacherAuth = {
+    supabaseAdmin,
+    callerId: userData.user.id,
+    callerUsername: String(profile.username || userData.user.email || 'teacher'),
+    callerFullName: String(profile.full_name || teacherRow.name || 'Giáo viên'),
+    callerCampusId: String(profile.campus_id || teacherRow.campus_id || 'all'),
+    clientIp,
+    teacher: {
+      id: String(teacherRow.id),
+      name: String(teacherRow.name || profile.full_name || ''),
+      code: String(teacherRow.code || teacherRow.id),
+      campus_id: String(teacherRow.campus_id || profile.campus_id || 'camp_pmh'),
+    },
+  };
+
+  next();
+}
+
+async function requireCheckinStaff(
+  req: Request,
+  res: Response,
+  next: express.NextFunction
+): Promise<void> {
+  const clientIp = getClientIpFromReq(req);
+  const supabaseAdmin = getServerSupabaseAdmin();
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (!authHeader.toLowerCase().startsWith('bearer ')) {
+    res.status(401).json({ error: 'Thiếu Bearer token xác thực.' });
+    return;
+  }
+  const token = authHeader.slice(7).trim();
+  if (!token) {
+    res.status(401).json({ error: 'Bearer token không hợp lệ.' });
+    return;
+  }
+  if (!supabaseAdmin) {
+    res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
+    return;
+  }
+
+  const { data: userData, error: authError } = await supabaseAdmin.auth.getUser(token);
+  if (authError || !userData?.user) {
+    res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.' });
+    return;
+  }
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('id, username, full_name, role, campus_id, status')
+    .eq('id', userData.user.id)
+    .single();
+
+  if (profileError || !profile || profile.status !== 'active') {
+    res.status(401).json({ error: 'Tài khoản không hợp lệ hoặc đã bị khóa.' });
+    return;
+  }
+
+  const role = String(profile.role || '').trim();
+  if (!CHECKIN_STAFF_ALLOWED_ROLES.has(role)) {
+    res.status(403).json({
+      error:
+        'Từ chối truy cập: Chỉ Super Admin, Quản lý cơ sở hoặc Chuyên viên Học vụ mới có quyền thực hiện check-in giáo viên.',
+    });
+    return;
+  }
+
+  (req as CheckinStaffAuthenticatedRequest).checkinStaff = {
+    supabaseAdmin,
+    scannerId: String(profile.id),
+    scannerUsername: String(profile.username || userData.user.email || 'staff'),
+    scannerFullName: String(profile.full_name || profile.username || 'Nhân sự Học vụ'),
+    scannerRole: role,
+    scannerCampusId: String(profile.campus_id || 'all'),
+    clientIp,
+  };
+
+  next();
+}
+
+function getVietnamClock(now = new Date()): {
+  dateStr: string;
+  timeStr: string;
+  currentMinutes: number;
+  weekdayIndex: number; // 0 = Sun, 1 = Mon, ..., 6 = Sat
+} {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+
+  const partMap: Record<string, string> = {};
+  for (const p of parts) {
+    partMap[p.type] = p.value;
+  }
+
+  const year = partMap.year || '2026';
+  const month = partMap.month || '01';
+  const day = partMap.day || '01';
+  let hour = Number(partMap.hour || 0);
+  if (hour === 24) hour = 0;
+  const minute = Number(partMap.minute || 0);
+
+  const dateStr = `${year}-${month}-${day}`;
+  const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const currentMinutes = hour * 60 + minute;
+  const utcMidday = new Date(`${dateStr}T12:00:00Z`);
+  const weekdayIndex = utcMidday.getUTCDay();
+
+  return {
+    dateStr,
+    timeStr,
+    currentMinutes,
+    weekdayIndex,
+  };
+}
+
+function parseDayTokenToWeekdayIndex(token: string): number | null {
+  const clean = String(token || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
+  if (!clean) return null;
+  if (clean === 'CN' || clean === 'SUN' || clean === 'SUNDAY' || clean === 'T8' || clean === 'CHỦNHẬT') return 0;
+  if (clean === 'T2' || clean === 'MON' || clean === 'MONDAY' || clean === '2' || clean === 'THỨ2') return 1;
+  if (clean === 'T3' || clean === 'TUE' || clean === 'TUESDAY' || clean === '3' || clean === 'THỨ3') return 2;
+  if (clean === 'T4' || clean === 'WED' || clean === 'WEDNESDAY' || clean === '4' || clean === 'THỨ4') return 3;
+  if (clean === 'T5' || clean === 'THU' || clean === 'THURSDAY' || clean === '5' || clean === 'THỨ5') return 4;
+  if (clean === 'T6' || clean === 'FRI' || clean === 'FRIDAY' || clean === '6' || clean === 'THỨ6') return 5;
+  if (clean === 'T7' || clean === 'SAT' || clean === 'SATURDAY' || clean === '7' || clean === 'THỨ7') return 6;
+  return null;
+}
+
+function parseTimeHmmToMinutes(rawTime?: string | null, fallbackMinutes = 16 * 60 + 30): {
+  formatted: string;
+  minutes: number;
+} {
+  const clean = String(rawTime || '').trim();
+  const match = clean.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) {
+    const h = Math.floor(fallbackMinutes / 60);
+    const m = fallbackMinutes % 60;
+    return {
+      formatted: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+      minutes: fallbackMinutes,
+    };
+  }
+  const h = Math.min(23, Math.max(0, Number(match[1])));
+  const m = Math.min(59, Math.max(0, Number(match[2])));
+  return {
+    formatted: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+    minutes: h * 60 + m,
+  };
+}
+
+// 3) GET /api/teacher/checkin-qr (requireTeacher, giới hạn 6 lần/phút/giáo viên)
+app.get('/api/teacher/checkin-qr', requireTeacher, async (req: Request, res: Response) => {
+  try {
+    const auth = (req as TeacherAuthenticatedRequest).teacherAuth!;
+    const teacher = auth.teacher;
+
+    const rateCheck = checkSlidingWindowRateLimit(
+      teacherQrRateLimitMap,
+      `teacher_qr:${teacher.id}`,
+      60 * 1000,
+      6
+    );
+    if (!rateCheck.allowed) {
+      res.setHeader('Retry-After', String(rateCheck.retryAfterSec));
+      res.status(429).json({
+        error: `Bạn đã làm mới mã QR quá nhiều lần (tối đa 6 lần/phút). Vui lòng đợi ${rateCheck.retryAfterSec} giây.`,
+      });
+      return;
+    }
+
+    const { token, payload } = signCheckinToken({ teacherId: teacher.id });
+    const issuedAtIso = new Date(payload.iat * 1000).toISOString();
+    const expiresAtIso = new Date(payload.exp * 1000).toISOString();
+    const serverTimeIso = new Date().toISOString();
+
+    res.json({
+      token,
+      issued_at: issuedAtIso,
+      expires_at: expiresAtIso,
+      refresh_in: 60,
+      server_time: serverTimeIso,
+      teacher: {
+        id: teacher.id,
+        name: teacher.name,
+        code: teacher.code,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      error: err?.message || 'Không thể khởi tạo mã QR check-in.',
+    });
+  }
+});
+
+// 4) POST /api/checkin/scan { qr } (requireCheckinStaff, giới hạn 30 lần/phút/người quét)
+app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Response) => {
+  try {
+    const staff = (req as CheckinStaffAuthenticatedRequest).checkinStaff!;
+    const { supabaseAdmin, scannerId, scannerUsername, scannerFullName, scannerRole, scannerCampusId, clientIp } =
+      staff;
+
+    const rateCheck = checkSlidingWindowRateLimit(
+      checkinScanRateLimitMap,
+      `checkin_scan:${scannerId}`,
+      60 * 1000,
+      30
+    );
+    if (!rateCheck.allowed) {
+      res.setHeader('Retry-After', String(rateCheck.retryAfterSec));
+      res.status(429).json({
+        error: `Đã vượt giới hạn quét QR (tối đa 30 lần/phút). Vui lòng thử lại sau ${rateCheck.retryAfterSec} giây.`,
+      });
+      return;
+    }
+
+    const rawQr = String(req.body?.qr || '').trim();
+    if (!rawQr) {
+      res.status(400).json({ error: 'Mã QR không hợp lệ' });
+      return;
+    }
+
+    // a. Xác thực token
+    const verified = verifyCheckinToken(rawQr);
+    if (!verified.ok) {
+      const msg =
+        verified.reason === 'expired'
+          ? 'Mã QR đã hết hạn, nhờ giáo viên làm mới'
+          : 'Mã QR không hợp lệ';
+      res.status(400).json({ error: msg });
+      return;
+    }
+
+    const { payload } = verified;
+    const { data: teacherRow, error: teacherErr } = await supabaseAdmin
+      .from('teachers')
+      .select('id, code, name, campus_id, status')
+      .eq('id', payload.t)
+      .single();
+
+    if (teacherErr || !teacherRow || teacherRow.status !== 'active') {
+      res.status(400).json({ error: 'Mã QR không hợp lệ' });
+      return;
+    }
+
+    const teacher = {
+      id: String(teacherRow.id),
+      name: String(teacherRow.name || ''),
+      code: String(teacherRow.code || teacherRow.id),
+      campus_id: String(teacherRow.campus_id || 'camp_pmh'),
+    };
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    // Dọn dẹp định kỳ các nonce cũ hơn 2 ngày
+    if (Date.now() - lastNonceCleanupAt > 10 * 60 * 1000) {
+      lastNonceCleanupAt = Date.now();
+      const twoDaysAgoIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+      Promise.resolve(
+        supabaseAdmin.from('teacher_checkin_nonces').delete().lt('issued_at', twoDaysAgoIso)
+      ).catch(() => {});
+    }
+
+    // b. Ghi jti vào teacher_checkin_nonces; nếu trùng khóa trả 409 "Mã QR này đã được dùng"
+    const { error: nonceErr } = await supabaseAdmin.from('teacher_checkin_nonces').insert({
+      jti: payload.j,
+      teacher_id: teacher.id,
+      issued_at: new Date(payload.iat * 1000).toISOString(),
+      used_at: nowIso,
+      used_by: scannerId,
+    });
+
+    if (nonceErr) {
+      const errCode = String(nonceErr.code || '');
+      const errMsg = String(nonceErr.message || '').toLowerCase();
+      if (errCode === '23505' || errMsg.includes('duplicate') || errMsg.includes('unique')) {
+        res.status(409).json({ error: 'Mã QR này đã được dùng' });
+        return;
+      }
+      res.status(500).json({ error: 'Không thể lưu trạng thái mã QR: ' + nonceErr.message });
+      return;
+    }
+
+    // c. Lấy ngày và giờ hiện tại theo múi giờ Asia/Ho_Chi_Minh từ đồng hồ server
+    const { dateStr: todayDate, currentMinutes, weekdayIndex } = getVietnamClock(now);
+
+    // d. Tìm các lớp hôm nay của giáo viên
+    const [classesRes, slotsRes, holidaysRes, sessionStaffRes] = await Promise.all([
+      supabaseAdmin
+        .from('extracurricular_classes')
+        .select(
+          'id, code, name, campus_id, time_slot_id, days_of_week, start_date, end_date, primary_teacher_id, term_distribution, status'
+        )
+        .eq('status', 'active'),
+      supabaseAdmin
+        .from('time_slots')
+        .select('id, code, name, start_time, end_time, days_of_week, status'),
+      supabaseAdmin
+        .from('holidays')
+        .select('id, start_date, end_date, campus_id, status')
+        .eq('status', 'active')
+        .lte('start_date', todayDate)
+        .gte('end_date', todayDate),
+      Promise.resolve(
+        supabaseAdmin
+          .from('class_session_staff')
+          .select('class_id, session_date, primary_teacher_id, assistant_teacher_ids')
+          .eq('session_date', todayDate)
+      ).catch(() => ({ data: null, error: null })),
+    ]);
+
+    const allActiveClasses = Array.isArray(classesRes.data) ? classesRes.data : [];
+    const allSlots = Array.isArray(slotsRes.data) ? slotsRes.data : [];
+    const activeHolidaysToday = Array.isArray(holidaysRes.data) ? holidaysRes.data : [];
+    const sessionStaffRows = Array.isArray(sessionStaffRes?.data) ? sessionStaffRes.data : [];
+
+    const slotById = new Map<string, any>();
+    for (const s of allSlots) {
+      if (s && s.id) slotById.set(String(s.id), s);
+    }
+
+    const sessionStaffByClassId = new Map<string, any>();
+    for (const row of sessionStaffRows) {
+      if (row && row.class_id) {
+        sessionStaffByClassId.set(String(row.class_id), row);
+      }
+    }
+
+    const isHolidayForCampus = (rawCampusId?: string | null): boolean => {
+      const normClassCampus = normalizeCampusCodeForServer(rawCampusId || 'all');
+      return activeHolidaysToday.some(h => {
+        const normHolidayCampus = normalizeCampusCodeForServer(h.campus_id || 'all');
+        return (
+          !h.campus_id ||
+          normHolidayCampus === 'all' ||
+          normHolidayCampus === normClassCampus
+        );
+      });
+    };
+
+    const teacherClassesToday = allActiveClasses.filter(cls => {
+      if (!cls || !cls.id) return false;
+      if (cls.start_date && String(cls.start_date) > todayDate) return false;
+      if (cls.end_date && String(cls.end_date) < todayDate) return false;
+      if (isHolidayForCampus(cls.campus_id)) return false;
+
+      const slot = cls.time_slot_id ? slotById.get(String(cls.time_slot_id)) : null;
+      const rawDays: string[] =
+        Array.isArray(cls.days_of_week) && cls.days_of_week.length > 0
+          ? cls.days_of_week
+          : Array.isArray(slot?.days_of_week)
+          ? slot.days_of_week
+          : [];
+
+      const matchesWeekday = rawDays.some(
+        d => parseDayTokenToWeekdayIndex(d) === weekdayIndex
+      );
+      if (!matchesWeekday) return false;
+
+      const staffOverride = sessionStaffByClassId.get(String(cls.id));
+      if (staffOverride) {
+        const isPrimary = String(staffOverride.primary_teacher_id || '') === teacher.id;
+        const isAssistant =
+          Array.isArray(staffOverride.assistant_teacher_ids) &&
+          staffOverride.assistant_teacher_ids.map(String).includes(teacher.id);
+        return isPrimary || isAssistant;
+      }
+
+      const td = cls.term_distribution && typeof cls.term_distribution === 'object' ? cls.term_distribution : {};
+      return (
+        String(cls.primary_teacher_id || '') === teacher.id ||
+        String(td.secondary_teacher_1 || '') === teacher.id ||
+        String(td.secondary_teacher_2 || '') === teacher.id ||
+        String(td.secondary_teacher_3 || '') === teacher.id
+      );
+    });
+
+    const scannerCampusNorm = normalizeCampusCodeForServer(scannerCampusId);
+    const isScannerAllCampus = scannerRole === 'super_admin' || scannerCampusNorm === 'all';
+
+    const results: Array<{
+      class_id: string | null;
+      class_code: string;
+      class_name: string;
+      start: string | null;
+      end: string | null;
+      status: 'on_time' | 'late' | 'no_class';
+      late_minutes: number;
+      already: boolean;
+      checked_in_at: string | null;
+      skipped_reason?: string;
+    }> = [];
+
+    // g. Nếu hôm nay giáo viên không có lớp nào: ghi một dòng teacher_checkins với class_id rỗng, status = 'no_class'
+    if (teacherClassesToday.length === 0) {
+      const noClassId = crypto.randomUUID();
+      const noClassCampus = teacher.campus_id || scannerCampusId || null;
+      await supabaseAdmin.from('teacher_checkins').insert({
+        id: noClassId,
+        teacher_id: teacher.id,
+        campus_id: noClassCampus,
+        class_id: null,
+        session_date: todayDate,
+        checked_in_at: nowIso,
+        scheduled_start: null,
+        late_minutes: 0,
+        status: 'no_class',
+        method: 'qr',
+        scanned_by: scannerId,
+        scanner_name: scannerFullName,
+        token_jti: payload.j,
+        note: 'Không có lịch dạy hôm nay',
+      });
+
+      results.push({
+        class_id: null,
+        class_code: 'NO_CLASS',
+        class_name: 'Không có ca dạy hôm nay',
+        start: null,
+        end: null,
+        status: 'no_class',
+        late_minutes: 0,
+        already: false,
+        checked_in_at: nowIso,
+      });
+    } else {
+      for (const cls of teacherClassesToday) {
+        const classId = String(cls.id);
+        const classCode = String(cls.code || cls.id);
+        const className = String(cls.name || classCode);
+        const slot = cls.time_slot_id ? slotById.get(String(cls.time_slot_id)) : null;
+        const startParsed = parseTimeHmmToMinutes(slot?.start_time, 16 * 60 + 30);
+        const endParsed = parseTimeHmmToMinutes(slot?.end_time, 18 * 60);
+
+        // e. Kiểm tra cơ sở của người quét
+        const classCampusNorm = normalizeCampusCodeForServer(cls.campus_id);
+        if (!isScannerAllCampus && classCampusNorm !== scannerCampusNorm) {
+          results.push({
+            class_id: classId,
+            class_code: classCode,
+            class_name: className,
+            start: startParsed.formatted,
+            end: endParsed.formatted,
+            status: 'on_time',
+            late_minutes: 0,
+            already: false,
+            checked_in_at: null,
+            skipped_reason: 'Lớp thuộc cơ sở khác ngoài phạm vi phụ trách',
+          });
+          continue;
+        }
+
+        // f. Nếu đã kết thúc (giờ hiện tại > end) thì không check-in
+        if (currentMinutes > endParsed.minutes) {
+          results.push({
+            class_id: classId,
+            class_code: classCode,
+            class_name: className,
+            start: startParsed.formatted,
+            end: endParsed.formatted,
+            status: 'late',
+            late_minutes: Math.max(0, currentMinutes - startParsed.minutes),
+            already: false,
+            checked_in_at: null,
+            skipped_reason: 'Lớp học đã kết thúc',
+          });
+          continue;
+        }
+
+        const lateMinutes = Math.max(0, currentMinutes - startParsed.minutes);
+        const status: 'on_time' | 'late' =
+          lateMinutes > CHECKIN_LATE_GRACE_MIN ? 'late' : 'on_time';
+
+        // Kiểm tra đã có bản ghi (teacher_id, class_id, session_date) chưa
+        const { data: existingRow } = await supabaseAdmin
+          .from('teacher_checkins')
+          .select('id, status, late_minutes, checked_in_at, scheduled_start')
+          .eq('teacher_id', teacher.id)
+          .eq('class_id', classId)
+          .eq('session_date', todayDate)
+          .maybeSingle();
+
+        if (existingRow) {
+          results.push({
+            class_id: classId,
+            class_code: classCode,
+            class_name: className,
+            start: existingRow.scheduled_start || startParsed.formatted,
+            end: endParsed.formatted,
+            status: existingRow.status === 'late' ? 'late' : 'on_time',
+            late_minutes: Number(existingRow.late_minutes || 0),
+            already: true,
+            checked_in_at: String(existingRow.checked_in_at || nowIso),
+          });
+          continue;
+        }
+
+        const newCheckinId = crypto.randomUUID();
+        const { data: insertedRow, error: insertErr } = await supabaseAdmin
+          .from('teacher_checkins')
+          .insert({
+            id: newCheckinId,
+            teacher_id: teacher.id,
+            campus_id: cls.campus_id || teacher.campus_id || null,
+            class_id: classId,
+            session_date: todayDate,
+            checked_in_at: nowIso,
+            scheduled_start: startParsed.formatted,
+            late_minutes: lateMinutes,
+            status,
+            method: 'qr',
+            scanned_by: scannerId,
+            scanner_name: scannerFullName,
+            token_jti: payload.j,
+            note: null,
+          })
+          .select('id, status, late_minutes, checked_in_at')
+          .maybeSingle();
+
+        if (insertErr) {
+          // Trường hợp race condition chạm unique (teacher_id, class_id, session_date)
+          const { data: raceRow } = await supabaseAdmin
+            .from('teacher_checkins')
+            .select('id, status, late_minutes, checked_in_at, scheduled_start')
+            .eq('teacher_id', teacher.id)
+            .eq('class_id', classId)
+            .eq('session_date', todayDate)
+            .maybeSingle();
+
+          if (raceRow) {
+            results.push({
+              class_id: classId,
+              class_code: classCode,
+              class_name: className,
+              start: raceRow.scheduled_start || startParsed.formatted,
+              end: endParsed.formatted,
+              status: raceRow.status === 'late' ? 'late' : 'on_time',
+              late_minutes: Number(raceRow.late_minutes || 0),
+              already: true,
+              checked_in_at: String(raceRow.checked_in_at || nowIso),
+            });
+            continue;
+          }
+        }
+
+        results.push({
+          class_id: classId,
+          class_code: classCode,
+          class_name: className,
+          start: startParsed.formatted,
+          end: endParsed.formatted,
+          status: insertedRow?.status === 'late' ? 'late' : status,
+          late_minutes: Number(insertedRow?.late_minutes ?? lateMinutes),
+          already: false,
+          checked_in_at: String(insertedRow?.checked_in_at || nowIso),
+        });
+      }
+    }
+
+    // h. Ghi audit_logs (action_code: 'TEACHER_CHECKIN_SCAN')
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/checkin/scan',
+      actionCode: 'TEACHER_CHECKIN_SCAN',
+      ip: clientIp,
+      callerId: scannerId,
+      callerUsername: scannerUsername,
+      callerFullName: scannerFullName,
+      callerRole: scannerRole,
+      callerCampusId: scannerCampusId,
+      category: 'ACADEMIC',
+      moduleName: 'Check-in Giáo Viên (QR)',
+      targetId: teacher.id,
+      status: 'success',
+      description: `${scannerFullName} quét mã QR check-in cho giáo viên ${teacher.name} (${teacher.code}) ngày ${todayDate}`,
+      details: {
+        teacher_id: teacher.id,
+        teacher_code: teacher.code,
+        teacher_name: teacher.name,
+        session_date: todayDate,
+        token_jti: payload.j,
+        results,
+      },
+    });
+
+    const checkedInCount = results.filter(r => !r.skipped_reason && r.status !== 'no_class').length;
+    const message =
+      teacherClassesToday.length === 0
+        ? `Giáo viên ${teacher.name} không có lịch dạy hôm nay (đã ghi nhận check-in không ca dạy).`
+        : checkedInCount > 0
+        ? `Đã xác nhận check-in cho giáo viên ${teacher.name} (${checkedInCount} lớp).`
+        : `Không có lớp nào được check-in mới cho giáo viên ${teacher.name}.`;
+
+    res.json({
+      teacher,
+      server_time: nowIso,
+      results,
+      message,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      error: err?.message || 'Lỗi máy chủ khi xử lý quét mã QR check-in.',
+    });
+  }
+});
+
+// 5) POST /api/checkin/manual { teacher_id, class_id, session_date?, reason } (requireCheckinStaff, giới hạn 20 lần/phút)
+app.post('/api/checkin/manual', requireCheckinStaff, async (req: Request, res: Response) => {
+  try {
+    const staff = (req as CheckinStaffAuthenticatedRequest).checkinStaff!;
+    const { supabaseAdmin, scannerId, scannerUsername, scannerFullName, scannerRole, scannerCampusId, clientIp } =
+      staff;
+
+    const rateCheck = checkSlidingWindowRateLimit(
+      checkinManualRateLimitMap,
+      `checkin_manual:${scannerId}`,
+      60 * 1000,
+      20
+    );
+    if (!rateCheck.allowed) {
+      res.setHeader('Retry-After', String(rateCheck.retryAfterSec));
+      res.status(429).json({
+        error: `Đã vượt giới hạn check-in thủ công (tối đa 20 lần/phút). Vui lòng thử lại sau ${rateCheck.retryAfterSec} giây.`,
+      });
+      return;
+    }
+
+    const teacherId = String(req.body?.teacher_id || '').trim();
+    const classId = String(req.body?.class_id || '').trim();
+    const rawSessionDate = String(req.body?.session_date || '').trim();
+    const reason = String(req.body?.reason || '').trim();
+
+    if (!teacherId || !classId) {
+      res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ teacher_id và class_id.' });
+      return;
+    }
+
+    if (reason.length < 5) {
+      res.status(400).json({ error: 'Lý do check-in thủ công (reason) phải có ít nhất 5 ký tự.' });
+      return;
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const { dateStr: todayDate, currentMinutes } = getVietnamClock(now);
+    const targetDate = rawSessionDate || todayDate;
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+      res.status(400).json({ error: 'Định dạng ngày buổi học (session_date) không hợp lệ (YYYY-MM-DD).' });
+      return;
+    }
+
+    const isManagerOrSuperAdmin =
+      scannerRole === 'super_admin' || scannerRole === 'campus_manager';
+
+    if (!isManagerOrSuperAdmin) {
+      if (targetDate !== todayDate) {
+        res.status(403).json({
+          error: 'Chuyên viên Học vụ chỉ được phép check-in thủ công cho ngày hôm nay.',
+        });
+        return;
+      }
+    } else {
+      const todayMs = new Date(`${todayDate}T00:00:00Z`).getTime();
+      const targetMs = new Date(`${targetDate}T00:00:00Z`).getTime();
+      const diffDays = Math.round((todayMs - targetMs) / (24 * 60 * 60 * 1000));
+      if (diffDays < 0 || diffDays > 7) {
+        res.status(400).json({
+          error: 'Chỉ được phép chọn ngày check-in thủ công trong vòng 7 ngày gần nhất tính đến hôm nay.',
+        });
+        return;
+      }
+    }
+
+    const [{ data: teacherRow, error: teacherErr }, { data: clsRow, error: clsErr }] =
+      await Promise.all([
+        supabaseAdmin
+          .from('teachers')
+          .select('id, code, name, campus_id, status')
+          .eq('id', teacherId)
+          .single(),
+        supabaseAdmin
+          .from('extracurricular_classes')
+          .select('id, code, name, campus_id, time_slot_id, status')
+          .eq('id', classId)
+          .single(),
+      ]);
+
+    if (teacherErr || !teacherRow || teacherRow.status !== 'active') {
+      res.status(404).json({ error: 'Không tìm thấy giáo viên hoặc giáo viên đang ngưng hoạt động.' });
+      return;
+    }
+
+    if (clsErr || !clsRow) {
+      res.status(404).json({ error: 'Không tìm thấy lớp học.' });
+      return;
+    }
+
+    // Quy tắc cơ sở như mục 4e
+    const scannerCampusNorm = normalizeCampusCodeForServer(scannerCampusId);
+    const classCampusNorm = normalizeCampusCodeForServer(clsRow.campus_id);
+    if (
+      scannerRole !== 'super_admin' &&
+      scannerCampusNorm !== 'all' &&
+      classCampusNorm !== scannerCampusNorm
+    ) {
+      res.status(403).json({
+        error: 'Từ chối thao tác: Lớp học thuộc cơ sở khác ngoài phạm vi quản lý của bạn.',
+      });
+      return;
+    }
+
+    let scheduledStart = '16:30';
+    let scheduledEnd = '18:00';
+    let startMinutes = 16 * 60 + 30;
+    if (clsRow.time_slot_id) {
+      const { data: slotRow } = await supabaseAdmin
+        .from('time_slots')
+        .select('start_time, end_time')
+        .eq('id', clsRow.time_slot_id)
+        .maybeSingle();
+      if (slotRow) {
+        const sParsed = parseTimeHmmToMinutes(slotRow.start_time, 16 * 60 + 30);
+        const eParsed = parseTimeHmmToMinutes(slotRow.end_time, 18 * 60);
+        scheduledStart = sParsed.formatted;
+        scheduledEnd = eParsed.formatted;
+        startMinutes = sParsed.minutes;
+      }
+    }
+
+    // Kiểm tra đã có bản ghi (teacher_id, class_id, session_date) chưa
+    const { data: existingRow } = await supabaseAdmin
+      .from('teacher_checkins')
+      .select('*')
+      .eq('teacher_id', teacherId)
+      .eq('class_id', classId)
+      .eq('session_date', targetDate)
+      .maybeSingle();
+
+    if (existingRow) {
+      res.json({
+        teacher: {
+          id: String(teacherRow.id),
+          name: String(teacherRow.name || ''),
+          code: String(teacherRow.code || teacherRow.id),
+        },
+        server_time: nowIso,
+        checkin: existingRow,
+        already: true,
+        results: [
+          {
+            class_id: String(clsRow.id),
+            class_code: String(clsRow.code || clsRow.id),
+            class_name: String(clsRow.name || clsRow.id),
+            start: existingRow.scheduled_start || scheduledStart,
+            end: scheduledEnd,
+            status: existingRow.status === 'late' ? 'late' : 'on_time',
+            late_minutes: Number(existingRow.late_minutes || 0),
+            already: true,
+            checked_in_at: String(existingRow.checked_in_at || nowIso),
+          },
+        ],
+        message: 'Lớp học này đã được check-in trước đó.',
+      });
+      return;
+    }
+
+    // super_admin và campus_manager được chọn ngày trong 7 ngày gần nhất (late 0);
+    // Học vụ chọn hôm nay tính theo giờ server
+    const lateMinutes = isManagerOrSuperAdmin
+      ? 0
+      : Math.max(0, currentMinutes - startMinutes);
+    const status: 'on_time' | 'late' =
+      lateMinutes > CHECKIN_LATE_GRACE_MIN ? 'late' : 'on_time';
+
+    const newCheckinId = crypto.randomUUID();
+    const insertPayload = {
+      id: newCheckinId,
+      teacher_id: teacherId,
+      campus_id: clsRow.campus_id || teacherRow.campus_id || null,
+      class_id: classId,
+      session_date: targetDate,
+      checked_in_at: nowIso,
+      scheduled_start: scheduledStart,
+      late_minutes: lateMinutes,
+      status,
+      method: 'manual' as const,
+      scanned_by: scannerId,
+      scanner_name: scannerFullName,
+      token_jti: null,
+      note: reason,
+    };
+
+    const { data: insertedRow, error: insertErr } = await supabaseAdmin
+      .from('teacher_checkins')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    if (insertErr) {
+      res.status(500).json({
+        error: 'Không thể lưu bản ghi check-in thủ công: ' + insertErr.message,
+      });
+      return;
+    }
+
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/checkin/manual',
+      actionCode: 'TEACHER_CHECKIN_MANUAL',
+      ip: clientIp,
+      callerId: scannerId,
+      callerUsername: scannerUsername,
+      callerFullName: scannerFullName,
+      callerRole: scannerRole,
+      callerCampusId: scannerCampusId,
+      category: 'ACADEMIC',
+      moduleName: 'Check-in Giáo Viên (Thủ Công)',
+      targetId: teacherId,
+      status: 'success',
+      description: `${scannerFullName} check-in thủ công cho giáo viên ${teacherRow.name} tại lớp ${clsRow.name} (ngày ${targetDate}): ${reason}`,
+      details: {
+        teacher_id: teacherId,
+        teacher_name: teacherRow.name,
+        class_id: classId,
+        class_name: clsRow.name,
+        session_date: targetDate,
+        late_minutes: lateMinutes,
+        status,
+        reason,
+      },
+    });
+
+    res.json({
+      teacher: {
+        id: String(teacherRow.id),
+        name: String(teacherRow.name || ''),
+        code: String(teacherRow.code || teacherRow.id),
+      },
+      server_time: nowIso,
+      checkin: insertedRow || insertPayload,
+      already: false,
+      results: [
+        {
+          class_id: String(clsRow.id),
+          class_code: String(clsRow.code || clsRow.id),
+          class_name: String(clsRow.name || clsRow.id),
+          start: scheduledStart,
+          end: scheduledEnd,
+          status,
+          late_minutes: lateMinutes,
+          already: false,
+          checked_in_at: String(insertedRow?.checked_in_at || nowIso),
+        },
+      ],
+      message: `Đã check-in thủ công cho giáo viên ${teacherRow.name} tại lớp ${clsRow.name}.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      error: err?.message || 'Lỗi máy chủ khi xử lý check-in thủ công.',
+    });
+  }
+});
+
+// 6) POST /api/admin/backup-audit { format, complete, checksum, warnings, tables: [{ name, expected, exported }] } (chỉ super_admin)
+app.post('/api/admin/backup-audit', async (req: Request, res: Response) => {
+  try {
+    const auth = await verifySuperAdminRequest(
+      req,
+      res,
+      '/api/admin/backup-audit',
+      'BACKUP_EXPORT'
+    );
+    if (!auth) return;
+
+    const { supabaseAdmin, callerId, callerUsername, callerFullName, callerRole, callerCampusId, clientIp } =
+      auth;
+
+    const format = String(req.body?.format || 'json').trim();
+    const complete = Boolean(req.body?.complete);
+    const checksum = String(req.body?.checksum || '').trim();
+    const warnings = Array.isArray(req.body?.warnings) ? req.body.warnings.map(String) : [];
+    const tablesRaw = Array.isArray(req.body?.tables) ? req.body.tables : [];
+
+    const normalizedTables = tablesRaw.map((t: any) => ({
+      name: String(t?.name || ''),
+      expected: Number(t?.expected || 0),
+      exported: Number(t?.exported || 0),
+    }));
+
+    const totalExpected = normalizedTables.reduce((sum: number, t: any) => sum + t.expected, 0);
+    const totalExported = normalizedTables.reduce((sum: number, t: any) => sum + t.exported, 0);
+    const tableSummaryText = normalizedTables
+      .map((t: any) => `${t.name}: ${t.exported}/${t.expected}`)
+      .join(', ');
+
+    await recordAdminEndpointAudit({
+      supabaseAdmin,
+      endpoint: '/api/admin/backup-audit',
+      actionCode: 'BACKUP_EXPORT',
+      ip: clientIp,
+      callerId,
+      callerUsername,
+      callerFullName,
+      callerRole,
+      callerCampusId,
+      category: 'SYSTEM',
+      moduleName: 'Sao Lưu Hệ Thống (Backup Audit)',
+      targetId: checksum || format,
+      status: complete ? 'success' : 'failed',
+      description: `Sao lưu dữ liệu định dạng ${format.toUpperCase()} (${
+        complete ? 'Hoàn tất' : 'Chưa đầy đủ'
+      }) — Tổng ${totalExported}/${totalExpected} dòng [${tableSummaryText}]`,
+      details: {
+        format,
+        complete,
+        checksum,
+        warnings,
+        total_expected: totalExpected,
+        total_exported: totalExported,
+        tables: normalizedTables,
+      },
+    });
+
+    res.json({
+      success: true,
+      format,
+      complete,
+      total_expected: totalExpected,
+      total_exported: totalExported,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      error: err?.message || 'Lỗi ghi nhật ký kiểm toán sao lưu dữ liệu.',
+    });
   }
 });
 

@@ -27,10 +27,9 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
     return true;
   }
 
-  // Giáo viên (role === 'teacher') chỉ xem và thao tác trên Sổ điểm danh của lớp mình,
-  // KHÔNG thấy mục Giáo Viên (sub_teachers), học phí, lương người khác, hay quản trị hệ thống.
+  // Giáo viên (role === 'teacher') chỉ được truy cập Cổng Giáo Viên ('teacher_portal')
   if (user.role === 'teacher') {
-    return routeId === 'sub_attendance' || routeId === 'sub_classes' || routeId === 'sub_schedule';
+    return routeId === 'teacher_portal';
   }
 
   const perms = getEffectivePermissions(user);
@@ -81,6 +80,17 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
     case 'sub_attendance':
     case 'sub_snacks':
       return Boolean(perms.can_take_attendance);
+    case 'sub_teacher_checkin':
+      if (
+        user.role === 'campus_manager' ||
+        user.role === 'academic' ||
+        user.role === 'academic_accountant' ||
+        user.role === 'academic_admissions' ||
+        user.role === 'academic_staff'
+      ) {
+        return true;
+      }
+      return Boolean(perms.can_scan_teacher_checkin);
     case 'sub_finance':
     case 'sub_finance_invoices':
     case 'sub_finance_clearance':
@@ -102,7 +112,7 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
  */
 export function getDefaultRouteForUser(user?: Partial<AppUser> | null): string {
   if (!user || !user.role) return 'sub_kpi';
-  if (user.role === 'teacher') return 'sub_attendance';
+  if (user.role === 'teacher') return 'teacher_portal';
   if (user.role === 'admissions') return 'sub_parents';
   if (user.role === 'accountant') return 'sub_finance_invoices';
   return 'sub_kpi';

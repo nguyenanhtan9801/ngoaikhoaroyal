@@ -402,6 +402,11 @@ export function useSupabaseRealtime({
       return;
     }
 
+    if (currentUser.role === 'teacher') {
+      loadedAuthenticatedUserIdRef.current = currentUser.id;
+      return;
+    }
+
     if (loadedAuthenticatedUserIdRef.current === currentUser.id) return;
     loadedAuthenticatedUserIdRef.current = currentUser.id;
 
@@ -438,7 +443,7 @@ export function useSupabaseRealtime({
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUser || currentUser.role === 'teacher') {
       prevStoreRef.current = store;
       return;
     }
@@ -537,8 +542,8 @@ export function useSupabaseRealtime({
       pollingIntervalRef.current = null;
     }
 
-    // Khi chưa có nhân sự đăng nhập: tuyệt đối KHÔNG mở kênh Realtime tới *.supabase.co
-    if (!currentUser?.id) {
+    // Khi chưa có nhân sự đăng nhập hoặc role === 'teacher': tuyệt đối KHÔNG đăng ký kênh Realtime các bảng nghiệp vụ
+    if (!currentUser?.id || currentUser.role === 'teacher') {
       setIsSupabaseCloudActive(false);
       setConnectionState('disconnected');
       return;
@@ -601,6 +606,7 @@ export function useSupabaseRealtime({
         'enrollments',
         'attendance_records',
         'teacher_work_sessions',
+        'teacher_checkins',
         'profiles',
       ];
       const staffExtraTables =

@@ -27,6 +27,7 @@ export interface UserPermissionMatrix {
   can_manage_trial?: boolean;         // Học thử 1 buổi
   can_config_payroll_rates?: boolean; // Cài đặt mức thù lao cơ hữu/thỉnh giảng
   can_manage_teachers?: boolean;      // Quản lý hồ sơ giáo viên, chuyển ngạch & hợp đồng
+  can_scan_teacher_checkin?: boolean; // Quét mã QR check-in giáo viên & theo dõi ca dạy hôm nay
 }
 
 export type AttendanceStatus = 'present' | 'absent_excused' | 'absent_unexcused';
@@ -314,6 +315,27 @@ export interface TeacherAttendanceRecord {
   total_payout: number; // Thành tiền buổi dạy
   verified_by?: string; // Học vụ xác nhận
   notes?: string; // Ghi chú (VD: "Cô Hương nghỉ ốm, Thầy Tuấn dạy thay 1 buổi")
+  check_in_id?: string | null;
+  check_in_method?: 'qr' | 'manual' | null;
+  check_in_at?: string | null;
+}
+
+export interface TeacherCheckin {
+  id: string;
+  teacher_id: string;
+  campus_id?: string | null;
+  class_id?: string | null;
+  session_date: string;
+  checked_in_at: string;
+  scheduled_start?: string | null;
+  late_minutes?: number;
+  status: 'on_time' | 'late' | 'no_class';
+  method: 'qr' | 'manual';
+  scanned_by?: string | null;
+  scanner_name?: string | null;
+  token_jti?: string | null;
+  note?: string | null;
+  created_at?: string;
 }
 
 export interface ExtracurricularClass {
@@ -718,7 +740,10 @@ export type LogActionType =
   | 'TEACHER_CONTRACT_CHANGE' // Chuyển ngạch / Đổi mức lương giáo viên
   | 'TIME_SLOT_CREATE'        // Thêm khung giờ học
   | 'TIME_SLOT_UPDATE'        // Cập nhật khung giờ học
-  | 'TIME_SLOT_DELETE';       // Xóa khung giờ học
+  | 'TIME_SLOT_DELETE'        // Xóa khung giờ học
+  | 'TEACHER_CHECKIN_SCAN'    // Quét mã QR check-in giáo viên
+  | 'TEACHER_CHECKIN_MANUAL'  // Check-in thủ công giáo viên
+  | 'BACKUP_EXPORT';          // Sao lưu dữ liệu hệ thống
 
 export interface AuditLogRecord {
   id: string;
@@ -785,6 +810,7 @@ export interface AppStore {
   invoices: TuitionInvoice[];
   sessions: ClassSession[];
   teacherAttendance?: TeacherAttendanceRecord[];
+  teacherCheckins?: TeacherCheckin[];
   attendance: AttendanceRecord[];
   makeupCredits: MakeupCredit[];
   transfers: ClassTransfer[];

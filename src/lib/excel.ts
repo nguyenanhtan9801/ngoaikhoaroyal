@@ -315,6 +315,39 @@ export function exportMasterWorkbook(
   const ws8 = XLSX.utils.json_to_sheet(ws8Data, { header: ws8Headers });
   XLSX.utils.book_append_sheet(wb, ws8, '08_DIEM_DANH_HS');
 
+  const resolveTeacherCheckinForExcel = (ta: any) => {
+    const actualId = ta.actual_teacher_id || ta.assigned_teacher_id;
+    const matched = (store.teacherCheckins || []).find(
+      c =>
+        (ta.check_in_id && c.id === ta.check_in_id) ||
+        (c.teacher_id === actualId && c.class_id === ta.class_id && c.session_date === ta.session_date)
+    );
+    const method: 'qr' | 'manual' | null =
+      ta.check_in_method === 'qr' || ta.check_in_method === 'manual'
+        ? ta.check_in_method
+        : matched?.method === 'qr' || matched?.method === 'manual'
+        ? matched.method
+        : null;
+    const rawIso = ta.check_in_at || matched?.checked_in_at || null;
+    let vnHhMm = '';
+    if (rawIso) {
+      const dt = new Date(rawIso);
+      if (!Number.isNaN(dt.getTime())) {
+        vnHhMm = dt.toLocaleTimeString('vi-VN', {
+          timeZone: 'Asia/Ho_Chi_Minh',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      }
+    }
+    const checkInTime =
+      vnHhMm ||
+      (method && ta.check_in_time ? ta.check_in_time : ta.check_in_time && ta.check_in_time !== '16:40' ? ta.check_in_time : '');
+    const methodLabel = method === 'qr' ? 'QR' : method === 'manual' ? 'Thủ công' : 'Chưa check in';
+    return { checkInTime, methodLabel };
+  };
+
   // 09. 09_CHAM_CONG_GV (teacher_work_sessions)
   const ws9Headers = [
     'ID Ca Dạy',
@@ -331,6 +364,7 @@ export function exportMasterWorkbook(
     'Là Ca Dạy Thay',
     'Trạng Thái Chấm Công',
     'Giờ Check-in',
+    'Hình thức check in',
     'Số Tiết Quy Đổi',
     'Đơn Giá Buổi Áp Dụng (VNĐ)',
     'Thành Tiền Thù Lao (VNĐ)',
@@ -343,6 +377,7 @@ export function exportMasterWorkbook(
     const term = (store.terms || []).find(tm => tm.id === ta.term_id);
     const assignedT = (store.teachers || []).find(t => t.id === ta.assigned_teacher_id);
     const actualT = (store.teachers || []).find(t => t.id === ta.actual_teacher_id);
+    const { checkInTime, methodLabel } = resolveTeacherCheckinForExcel(ta);
     return {
       'ID Ca Dạy': ta.id,
       'Ngày Giảng Dạy': ta.session_date,
@@ -357,7 +392,8 @@ export function exportMasterWorkbook(
       'Tên GV Thực Dạy': actualT?.name || '',
       'Là Ca Dạy Thay': ta.is_substitute ? 'CÓ' : 'KHÔNG',
       'Trạng Thái Chấm Công': ta.status,
-      'Giờ Check-in': ta.check_in_time || '16:40',
+      'Giờ Check-in': checkInTime,
+      'Hình thức check in': methodLabel,
       'Số Tiết Quy Đổi': ta.periods_count || 2,
       'Đơn Giá Buổi Áp Dụng (VNĐ)': ta.rate_applied || ta.total_payout || 300000,
       'Thành Tiền Thù Lao (VNĐ)': ta.total_payout || 0,
@@ -1222,6 +1258,36 @@ export function exportTeacherPayrollWorkbook(
         ? 'Vắng có phép'
         : 'Vắng không phép';
 
+    const actualId = rec.actual_teacher_id || rec.assigned_teacher_id;
+    const matchedCheckin = (store.teacherCheckins || []).find(
+      c =>
+        (rec.check_in_id && c.id === rec.check_in_id) ||
+        (c.teacher_id === actualId && c.class_id === rec.class_id && c.session_date === rec.session_date)
+    );
+    const method: 'qr' | 'manual' | null =
+      rec.check_in_method === 'qr' || rec.check_in_method === 'manual'
+        ? rec.check_in_method
+        : matchedCheckin?.method === 'qr' || matchedCheckin?.method === 'manual'
+        ? matchedCheckin.method
+        : null;
+    const rawIso = rec.check_in_at || matchedCheckin?.checked_in_at || null;
+    let vnHhMm = '';
+    if (rawIso) {
+      const dt = new Date(rawIso);
+      if (!Number.isNaN(dt.getTime())) {
+        vnHhMm = dt.toLocaleTimeString('vi-VN', {
+          timeZone: 'Asia/Ho_Chi_Minh',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+      }
+    }
+    const realCheckInTime =
+      vnHhMm ||
+      (method && rec.check_in_time ? rec.check_in_time : rec.check_in_time && rec.check_in_time !== '16:40' ? rec.check_in_time : '');
+    const checkInMethodLabel = method === 'qr' ? 'QR' : method === 'manual' ? 'Thủ công' : 'Chưa check in';
+
     return {
       'STT': idx + 1,
       'Ngày Giảng Dạy': rec.session_date,
@@ -1233,7 +1299,8 @@ export function exportTeacherPayrollWorkbook(
       'GV Thực Dạy': actualTeacher?.name || '',
       'Vai Trò Ca Dạy': rec.is_substitute ? 'GV Dạy Thay' : 'GV Chính Thức',
       'Trạng Thái Chấm Công': statusLabel,
-      'Giờ Check-in': rec.check_in_time || '16:40',
+      'Giờ Check-in': realCheckInTime,
+      'Hình thức check in': checkInMethodLabel,
       'Số Tiết Thực Dạy': rec.periods_count,
       'Đơn Giá / Tiết (VNĐ)': rec.rate_per_period,
       'Thành Tiền Buổi Dạy (VNĐ)': rec.total_payout,

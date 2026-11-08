@@ -92,6 +92,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>(externalSearchQuery || '');
   const [isRefreshingInvoices, setIsRefreshingInvoices] = useState(false);
 
+  // Modal xác nhận quyết toán khi giáo viên còn buổi dạy chưa check-in
+  const [unverifiedSettlementRowId, setUnverifiedSettlementRowId] = useState<string | null>(null);
+  const [unverifiedSettlementReason, setUnverifiedSettlementReason] = useState<string>('');
+  const [unverifiedSettlementError, setUnverifiedSettlementError] = useState<string | null>(null);
+
   useEffect(() => {
     if (externalSearchQuery !== undefined) {
       setSearchQuery(externalSearchQuery);
@@ -1609,6 +1614,54 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
       {/* SECTION 2: TEACHER PAYROLL & WORKLOAD BI DASHBOARD */}
       {activeSection === 'payroll' && (() => {
+        const formatVietnamHhMmFromIso = (isoStr?: string | null): string | undefined => {
+          if (!isoStr) return undefined;
+          try {
+            const dt = new Date(isoStr);
+            if (Number.isNaN(dt.getTime())) return undefined;
+            return dt.toLocaleTimeString('vi-VN', {
+              timeZone: 'Asia/Ho_Chi_Minh',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+            });
+          } catch {
+            return undefined;
+          }
+        };
+
+        const resolveSessionCheckinInfo = (rec: TeacherAttendanceRecord): {
+          method: 'qr' | 'manual' | null;
+          label: 'QR' | 'Thủ công' | 'Chưa';
+          checkedInAt: string | null;
+          checkInTimeHhMm: string | undefined;
+        } => {
+          const actualId = rec.actual_teacher_id || rec.assigned_teacher_id;
+          const matchedCheckin = (store.teacherCheckins || []).find(
+            c =>
+              (rec.check_in_id && c.id === rec.check_in_id) ||
+              (c.teacher_id === actualId &&
+                c.class_id === rec.class_id &&
+                c.session_date === rec.session_date)
+          );
+          const method: 'qr' | 'manual' | null =
+            rec.check_in_method === 'qr' || rec.check_in_method === 'manual'
+              ? rec.check_in_method
+              : matchedCheckin?.method === 'qr' || matchedCheckin?.method === 'manual'
+              ? matchedCheckin.method
+              : null;
+          const checkedInAt = rec.check_in_at || matchedCheckin?.checked_in_at || null;
+          const checkInTimeHhMm =
+            formatVietnamHhMmFromIso(checkedInAt) ||
+            (method ? rec.check_in_time : undefined);
+          return {
+            method,
+            label: method === 'qr' ? 'QR' : method === 'manual' ? 'Thủ công' : 'Chưa',
+            checkedInAt,
+            checkInTimeHhMm,
+          };
+        };
+
         // Synthesize teacher attendance records from store.teacherAttendance + fallback from completed store.sessions
         const effectiveTeacherRecords: TeacherAttendanceRecord[] = (() => {
           const baseList = (store.teacherAttendance || []).map(ta => {
@@ -1643,8 +1696,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             if (!alreadyRecorded) {
               const cls = store.classes.find(c => c.id === ses.class_id);
               if (!cls) return;
-              const actualTeacher = store.teachers.find(
-                t => t.id === (ses.actual_teacher_id || cls.primary_teacher_id)
+              const actualTeacherId = ses.actual_teacher_id || cls.primary_teacher_id;
+              const actualTeacher = store.teachers.find(t => t.id === actualTeacherId);
+              const matchedCheckin = (store.teacherCheckins || []).find(
+                c =>
+                  c.teacher_id === actualTeacherId &&
+                  c.class_id === cls.id &&
+                  c.session_date === ses.session_date
               );
               const calc = calculateTeacherSessionPayAtDate({
                 teacher: actualTeacher,
@@ -1662,13 +1720,17 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 session_number: ses.session_number,
                 periods_count: calc.contract.periods_per_session || 2,
                 assigned_teacher_id: cls.primary_teacher_id,
-                actual_teacher_id: ses.actual_teacher_id || cls.primary_teacher_id,
+                actual_teacher_id: actualTeacherId,
                 is_substitute: Boolean(
                   ses.is_substitute ||
                     (ses.actual_teacher_id && ses.actual_teacher_id !== cls.primary_teacher_id)
                 ),
-                status: 'present',
-                check_in_time: '16:40',
+                status: matchedCheckin?.status === 'late' ? 'late' : 'present',
+                late_minutes: matchedCheckin?.late_minutes || undefined,
+                check_in_time: formatVietnamHhMmFromIso(matchedCheckin?.checked_in_at),
+                check_in_id: matchedCheckin?.id || null,
+                check_in_method: matchedCheckin?.method || null,
+                check_in_at: matchedCheckin?.checked_in_at || null,
                 rate_per_period: calc.ratePerPeriod,
                 rate_applied: calc.sessionRate,
                 earned_amount: calc.earnedAmount,
@@ -1803,6 +1865,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
             const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
 
+            const unverifiedCheckinRecords = taughtRecords.filter(
+              rec => resolveSessionCheckinInfo(rec).method === null
+            );
+            const qrCheckinCount = taughtRecords.filter(
+              rec => resolveSessionCheckinInfo(rec).method === 'qr'
+            ).length;
+            const manualCheckinCount = taughtRecords.filter(
+              rec => resolveSessionCheckinInfo(rec).method === 'manual'
+            ).length;
+
             return {
               teacher,
               code: teacher.code || `GV-PMH-00${idx + 1}`,
@@ -1825,6 +1897,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               settlementRecord,
               taughtRecords,
               absentOrTransferredRecords,
+              unverifiedCheckinRecords,
+              unverifiedCheckinCount: unverifiedCheckinRecords.length,
+              qrCheckinCount,
+              manualCheckinCount,
             };
           });
 
@@ -1835,14 +1911,16 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         const settledTeachersCount = teacherPayrollRows.filter(r => r.isSettled).length;
         const pendingTeachersCount = Math.max(0, teacherPayrollRows.length - settledTeachersCount);
 
-        const handleConfirmTeacherTermSettlement = (row: typeof teacherPayrollRows[number]) => {
-          if (row.totalPayout <= 0) {
-            showToast(`Giáo viên ${row.teacher.name} chưa phát sinh buổi dạy thực tế nào trong phạm vi lọc!`, 'info');
-            return;
-          }
-
+        const executeTeacherTermSettlement = (
+          row: typeof teacherPayrollRows[number],
+          overrideReasonNote?: string
+        ) => {
           const settledDate = new Date().toISOString().split('T')[0];
           const bankRef = `PAY-${row.code}-${Date.now().toString().slice(-5)}`;
+          const trimmedReason = (overrideReasonNote || '').trim();
+          const settlementNotes = trimmedReason
+            ? `Quyết toán ${row.taughtSessionsCount} buổi dạy thực tế khóa ${payrollTermFilter} (Duyệt ${row.unverifiedCheckinCount} buổi chưa check-in — Lý do: ${trimmedReason})`
+            : `Quyết toán ${row.taughtSessionsCount} buổi dạy thực tế khóa ${payrollTermFilter}`;
 
           onUpdateStore(prev => {
             const otherSettlements = (prev.payrollSettlements || []).filter(
@@ -1867,14 +1945,14 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               is_settled: true,
               verified_by: currentUser?.full_name || 'Kế Toán Trưởng',
               bank_reference: bankRef,
-              notes: `Quyết toán ${row.taughtSessionsCount} buổi dạy thực tế khóa ${payrollTermFilter}`,
+              notes: settlementNotes,
             };
 
             const log = createAuditRecord(
               'TEACHER_PAYROLL_SETTLE',
               'FINANCE',
               `Quyết toán thù lao ${row.teacher.name} (${row.code})`,
-              `Xác nhận chi trả thù lao giảng dạy cho ${row.teacher.name}: ${row.taughtSessionsCount} buổi (Dạy thay +${row.substituteSessionsAdded} buổi) = ${formatVND(row.totalPayout)} (Mã UNC: ${bankRef})`,
+              `Xác nhận chi trả thù lao giảng dạy cho ${row.teacher.name}: ${row.taughtSessionsCount} buổi (Dạy thay +${row.substituteSessionsAdded} buổi) = ${formatVND(row.totalPayout)} (Mã UNC: ${bankRef})${trimmedReason ? ` | Lý do duyệt ca chưa check-in: ${trimmedReason}` : ''}`,
               currentUser,
               {
                 target_id: row.code,
@@ -1886,6 +1964,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     taught_sessions: row.taughtSessionsCount,
                     substitute_sessions: row.substituteSessionsAdded,
                     absent_sessions: row.absentSessionsDeducted,
+                    unverified_checkin_sessions: row.unverifiedCheckinCount,
+                    unverified_override_reason: trimmedReason || undefined,
                     total_payroll: row.totalPayout,
                     bank_reference: bankRef,
                   },
@@ -1905,6 +1985,23 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
             'success',
             { title: 'Quyết toán thù lao giáo viên' }
           );
+        };
+
+        const handleConfirmTeacherTermSettlement = (row: typeof teacherPayrollRows[number]) => {
+          if (row.totalPayout <= 0) {
+            showToast(`Giáo viên ${row.teacher.name} chưa phát sinh buổi dạy thực tế nào trong phạm vi lọc!`, 'info');
+            return;
+          }
+
+          // Nếu còn buổi dạy "Chưa check in" thì mở modal liệt kê các buổi đó
+          if (row.unverifiedCheckinCount > 0) {
+            setUnverifiedSettlementRowId(row.teacher.id);
+            setUnverifiedSettlementReason('');
+            setUnverifiedSettlementError(null);
+            return;
+          }
+
+          executeTeacherTermSettlement(row);
         };
 
         const handleExportPayrollExcel = () => {
@@ -2112,6 +2209,20 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                               </strong>
                             </span>
                           </div>
+                          <div className="flex justify-between text-slate-400">
+                            <span>Đối soát Check-in:</span>
+                            <span className="font-mono">
+                              {row.unverifiedCheckinCount > 0 ? (
+                                <strong className="text-rose-400">
+                                  Chưa check in: {row.unverifiedCheckinCount} buổi
+                                </strong>
+                              ) : (
+                                <strong className="text-emerald-400">
+                                  Đủ check in ({row.qrCheckinCount} QR • {row.manualCheckinCount} TC)
+                                </strong>
+                              )}
+                            </span>
+                          </div>
                           <div className="flex justify-between pt-1.5 border-t border-slate-800 text-sm">
                             <span className="font-bold text-white">Thực nhận:</span>
                             <strong className="font-mono font-extrabold text-emerald-400">{formatVND(row.totalPayout)}</strong>
@@ -2167,10 +2278,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         <th className="py-3.5 px-3">3. Cơ Sở</th>
                         <th className="py-3.5 px-3">4. Đơn Giá / Buổi</th>
                         <th className="py-3.5 px-3 text-center">5. Số Buổi Đã Dạy</th>
-                        <th className="py-3.5 px-3 text-center">6. Buổi Dạy Thay (+)</th>
-                        <th className="py-3.5 px-3 text-center">7. Buổi Vắng / Chuyển (-)</th>
-                        <th className="py-3.5 px-4 text-right">8. Tổng Thù Lao Thực Nhận</th>
-                        <th className="py-3.5 px-4 text-right">9. Thao Tác Quyết Toán</th>
+                        <th className="py-3.5 px-3 text-center">6. Check in</th>
+                        <th className="py-3.5 px-3 text-center">7. Buổi Dạy Thay (+)</th>
+                        <th className="py-3.5 px-3 text-center">8. Buổi Vắng / Chuyển (-)</th>
+                        <th className="py-3.5 px-4 text-right">9. Tổng Thù Lao Thực Nhận</th>
+                        <th className="py-3.5 px-4 text-right">10. Thao Tác Quyết Toán</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/70">
@@ -2222,7 +2334,34 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             </span>
                           </td>
 
-                          {/* 6. Buổi dạy thay nhận thêm (+) */}
+                          {/* 6. Check in (QR / Thủ công / Chưa check in) */}
+                          <td className="py-3.5 px-3 text-center font-mono">
+                            {row.taughtSessionsCount === 0 ? (
+                              <span className="text-slate-500">—</span>
+                            ) : row.unverifiedCheckinCount > 0 ? (
+                              <div className="space-y-1">
+                                <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 font-extrabold text-[11px] inline-block">
+                                  Chưa: {row.unverifiedCheckinCount} buổi
+                                </span>
+                                {(row.qrCheckinCount > 0 || row.manualCheckinCount > 0) && (
+                                  <div className="text-[10px] text-slate-400">
+                                    QR: {row.qrCheckinCount} • TC: {row.manualCheckinCount}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="space-y-1">
+                                <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-extrabold text-[11px] inline-block">
+                                  Đủ ({row.taughtSessionsCount}/{row.taughtSessionsCount})
+                                </span>
+                                <div className="text-[10px] text-slate-400">
+                                  QR: {row.qrCheckinCount} • TC: {row.manualCheckinCount}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+
+                          {/* 7. Buổi dạy thay nhận thêm (+) */}
                           <td className="py-3.5 px-3 text-center font-mono">
                             {row.substituteSessionsAdded > 0 ? (
                               <span className="px-2 py-0.5 rounded-lg bg-purple-500/20 border border-purple-500/40 text-purple-300 font-extrabold">
@@ -2233,7 +2372,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             )}
                           </td>
 
-                          {/* 7. Buổi vắng / chuyển giao (-) */}
+                          {/* 8. Buổi vắng / chuyển giao (-) */}
                           <td className="py-3.5 px-3 text-center font-mono">
                             {row.absentSessionsDeducted > 0 ? (
                               <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-400 font-extrabold">
@@ -2244,7 +2383,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             )}
                           </td>
 
-                          {/* 8. Tổng thù lao thực nhận */}
+                          {/* 9. Tổng thù lao thực nhận */}
                           <td className="py-3.5 px-4 text-right font-mono">
                             <div className="text-sm font-extrabold text-emerald-400">
                               {formatVND(row.totalPayout)}
@@ -2259,7 +2398,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             )}
                           </td>
 
-                          {/* 9. Thao tác */}
+                          {/* 10. Thao tác */}
                           <td className="py-3.5 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
                               <button
@@ -2397,6 +2536,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                 <th className="py-2.5 px-3">Ngày học / Buổi</th>
                                 <th className="py-2.5 px-3">Lớp &amp; Môn Ngoại Khóa</th>
                                 <th className="py-2.5 px-3">Vai trò ca dạy</th>
+                                <th className="py-2.5 px-3 text-center">Check in</th>
                                 <th className="py-2.5 px-3 text-center">Trạng thái chấm công</th>
                                 <th className="py-2.5 px-3 text-center">Số buổi tính lương</th>
                                 <th className="py-2.5 px-3 text-right">Đơn giá / buổi</th>
@@ -2418,6 +2558,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                 const appliedSessionRate = rec.rate_applied || targetRow?.defaultSessionRate || 300000;
                                 const sessionEarned = isTaughtByThisTeacher ? (rec.earned_amount || rec.total_payout || appliedSessionRate) : 0;
                                 const actualTeacher = store.teachers.find(t => t.id === rec.actual_teacher_id);
+                                const checkinInfo = resolveSessionCheckinInfo(rec);
 
                                 return (
                                   <tr
@@ -2429,7 +2570,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                     <td className="py-2.5 px-3 font-mono">
                                       <div className="font-bold text-white">{formatDateVN(rec.session_date)}</div>
                                       <div className="text-[10px] text-slate-400">
-                                        Buổi #{rec.session_number} {rec.check_in_time ? `• Check-in ${rec.check_in_time}` : ''}
+                                        Buổi #{rec.session_number} {checkinInfo.checkInTimeHhMm ? `• Check-in ${checkinInfo.checkInTimeHhMm}` : ''}
                                       </div>
                                     </td>
                                     <td className="py-2.5 px-3">
@@ -2450,6 +2591,23 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                       ) : (
                                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
                                           ✕ Nghỉ / Đã chuyển ca
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-center">
+                                      {!isTaughtByThisTeacher ? (
+                                        <span className="text-slate-500 text-[10px]">—</span>
+                                      ) : checkinInfo.method === 'qr' ? (
+                                        <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-extrabold">
+                                          QR
+                                        </span>
+                                      ) : checkinInfo.method === 'manual' ? (
+                                        <span className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-extrabold">
+                                          Thủ công
+                                        </span>
+                                      ) : (
+                                        <span className="px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-extrabold">
+                                          Chưa
                                         </span>
                                       )}
                                     </td>
@@ -2735,6 +2893,144 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <div className="font-bold text-white">{currentUser?.full_name || 'Phòng Kế Toán Royal School'}</div>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* MODAL 3: XÁC NHẬN QUYẾT TOÁN KHI CÒN BUỔI CHƯA CHECK IN */}
+            {unverifiedSettlementRowId && (() => {
+              const targetRow = teacherPayrollRows.find(r => r.teacher.id === unverifiedSettlementRowId);
+              if (!targetRow) return null;
+
+              const canApproveUnverified =
+                currentUser?.role === 'super_admin' || currentUser?.role === 'campus_manager';
+
+              return (
+                <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+                  <div className="bg-[#111827] border border-amber-500/40 rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-slate-100">
+                    <div className="p-5 border-b border-slate-800 bg-slate-900 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                          <AlertTriangle className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-extrabold text-white">
+                            Cảnh Báo Quyết Toán: Còn {targetRow.unverifiedCheckinCount} Buổi Dạy Chưa Check in
+                          </h3>
+                          <p className="text-xs text-slate-400">
+                            Giáo viên: <strong className="text-amber-300">{targetRow.teacher.name} ({targetRow.code})</strong> • Tổng thực nhận:{' '}
+                            <strong className="text-emerald-400 font-mono">{formatVND(targetRow.totalPayout)}</strong>
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setUnverifiedSettlementRowId(null)}
+                        className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="p-5 overflow-y-auto space-y-4 text-xs">
+                      <div className="p-3.5 rounded-2xl bg-amber-950/30 border border-amber-500/30 text-amber-200 leading-relaxed">
+                        Danh sách <strong>{targetRow.unverifiedCheckinCount} buổi dạy</strong> dưới đây đã được ghi nhận trong Sổ điểm danh nhưng{' '}
+                        <strong>chưa có bản ghi Check-in QR hoặc Thủ công</strong> trên hệ thống:
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-800 overflow-hidden max-h-56 overflow-y-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead className="bg-slate-950 text-[10px] uppercase text-slate-400 border-b border-slate-800">
+                            <tr>
+                              <th className="py-2 px-3">Ngày dạy</th>
+                              <th className="py-2 px-3">Buổi thứ</th>
+                              <th className="py-2 px-3">Lớp ngoại khóa</th>
+                              <th className="py-2 px-3 text-center">Trạng thái Check in</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/70">
+                            {targetRow.unverifiedCheckinRecords.map(rec => {
+                              const cls = store.classes.find(c => c.id === rec.class_id);
+                              return (
+                                <tr key={rec.id} className="bg-slate-900/60">
+                                  <td className="py-2 px-3 font-mono font-bold text-white">
+                                    {formatDateVN(rec.session_date)}
+                                  </td>
+                                  <td className="py-2 px-3 font-mono text-slate-300">
+                                    Buổi #{rec.session_number}
+                                  </td>
+                                  <td className="py-2 px-3 font-bold text-amber-300">
+                                    {cls?.name || rec.class_id}
+                                  </td>
+                                  <td className="py-2 px-3 text-center">
+                                    <span className="px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-extrabold">
+                                      Chưa check in
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {canApproveUnverified ? (
+                        <div className="space-y-2">
+                          {unverifiedSettlementError && (
+                            <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 font-semibold">
+                              {unverifiedSettlementError}
+                            </div>
+                          )}
+                          <label className="block font-bold text-slate-200">
+                            Lý do phê duyệt quyết toán các buổi chưa check-in (bắt buộc, lưu vào ghi chú quyết toán) *
+                          </label>
+                          <textarea
+                            rows={3}
+                            value={unverifiedSettlementReason}
+                            onChange={e => {
+                              setUnverifiedSettlementReason(e.target.value);
+                              setUnverifiedSettlementError(null);
+                            }}
+                            placeholder="Nhập lý do phê duyệt (VD: Đã đối chiếu biên bản điểm danh giấy và xác nhận giáo viên có đứng lớp đủ buổi)..."
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      ) : (
+                        <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/40 text-rose-200 font-semibold">
+                          Chỉ tài khoản <strong>Super Admin</strong> hoặc <strong>Quản lý cơ sở (Campus Manager)</strong> mới có quyền phê duyệt quyết toán thù lao khi còn buổi dạy chưa check-in. Vui lòng yêu cầu Học vụ bổ sung check-in hoặc liên hệ Quản lý cơ sở.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="p-4 border-t border-slate-800 bg-slate-900 flex items-center justify-end gap-2.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setUnverifiedSettlementRowId(null)}
+                        className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold cursor-pointer"
+                      >
+                        Đóng
+                      </button>
+                      {canApproveUnverified && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (unverifiedSettlementReason.trim().length < 5) {
+                              setUnverifiedSettlementError(
+                                'Vui lòng nhập lý do phê duyệt tối thiểu 5 ký tự để lưu vào hồ sơ quyết toán.'
+                              );
+                              return;
+                            }
+                            executeTeacherTermSettlement(targetRow, unverifiedSettlementReason.trim());
+                            setUnverifiedSettlementRowId(null);
+                          }}
+                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Tiếp tục quyết toán &amp; Lưu lý do</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

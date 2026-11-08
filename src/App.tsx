@@ -15,6 +15,8 @@ import { AuditLogsTab } from './components/tabs/AuditLogsTab';
 import { UserManagementTab } from './components/tabs/UserManagementTab';
 import { TeachersManagement } from './components/teachers/TeachersManagement';
 import { HolidayManagementView } from './components/settings/HolidayManagementView';
+import { TeacherPortal } from './components/teacher/TeacherPortal';
+import { TeacherCheckinTab } from './components/tabs/TeacherCheckinTab';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
@@ -65,6 +67,7 @@ const ROUTE_HASH_MAP: Record<string, string> = {
   sub_teachers: 'teachers',
   sub_schedule: 'schedule',
   sub_attendance: 'attendance',
+  sub_teacher_checkin: 'teacher-checkin',
   sub_snacks: 'snacks',
   sub_finance_invoices: 'invoices',
   sub_finance_payroll: 'payroll',
@@ -75,6 +78,7 @@ const ROUTE_HASH_MAP: Record<string, string> = {
   sub_holidays: 'holidays',
   sub_audit_logs: 'audit-logs',
   sub_backup: 'backup',
+  teacher_portal: 'teacher-portal',
 };
 
 // Hàm đọc route từ Hash URL hoặc Session khi khởi tạo
@@ -211,8 +215,10 @@ export default function App() {
     setCurrentUser(cleanUser);
     setIsAuthenticated(true);
     setIsLoginModalOpen(false);
-    syncAcademicTermsFromSupabase(setStore);
-    syncProfilesListForSuperAdmin(cleanUser);
+    if (cleanUser.role !== 'teacher') {
+      syncAcademicTermsFromSupabase(setStore);
+      syncProfilesListForSuperAdmin(cleanUser);
+    }
 
     // Enforce campus scope if user is restricted to PMH or Phú Lâm
     const scopedCampus = normalizeCampusScope(cleanUser.campus_id);
@@ -220,17 +226,8 @@ export default function App() {
 
     // Điều hướng thông minh sau đăng nhập theo vai trò (Role-based Routing)
     if (cleanUser.role === 'teacher') {
-      const teacherClasses = store.classes.filter(
-        c =>
-          (cleanUser.linked_teacher_id && c.primary_teacher_id === cleanUser.linked_teacher_id) ||
-          (c as any).assistant_teacher_id === cleanUser.linked_teacher_id
-      );
-      if (teacherClasses.length === 1) {
-        setFocusedClass(teacherClasses[0]);
-      } else {
-        setFocusedClass(null);
-      }
-      setCurrentRoute('sub_attendance');
+      setFocusedClass(null);
+      setCurrentRoute('teacher_portal');
     } else {
       setCurrentRoute(getDefaultRouteForUser(cleanUser));
     }
@@ -371,9 +368,13 @@ export default function App() {
             });
             setIsAuthenticated(true);
             setSelectedCampusId(normalizeCampusScope(profileUser.campus_id));
-            syncAcademicTermsFromSupabase(setStore);
-            if (profileUser.role === 'super_admin') {
-              syncProfilesListForSuperAdmin(profileUser);
+            if (profileUser.role === 'teacher') {
+              setCurrentRoute('teacher_portal');
+            } else {
+              syncAcademicTermsFromSupabase(setStore);
+              if (profileUser.role === 'super_admin') {
+                syncProfilesListForSuperAdmin(profileUser);
+              }
             }
           } else {
             // Khi đọc profile thất bại (401/406 hoặc 0 dòng), KHÔNG tự thử lại trong vòng lặp.
@@ -941,6 +942,121 @@ export default function App() {
     );
   }
 
+  // 2.5. CỔNG GIÁO VIÊN ĐỘC LẬP: Nếu tài khoản có vai trò 'teacher', CHỈ hiển thị TeacherPortal, không có Navbar nghiệp vụ
+  if (currentUser.role === 'teacher') {
+    return (
+      <>
+        <TeacherPortal
+          currentUser={currentUser}
+          onLogout={handleLogout}
+          onOpenChangePassword={() => {
+            setNewPasswordInput('');
+            setConfirmPasswordInput('');
+            setChangePasswordError(null);
+            setIsChangePasswordOpen(true);
+          }}
+        />
+
+        {isChangePasswordOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+            <div className="w-full max-w-md rounded-3xl bg-[#0B0F19] border border-slate-800 shadow-2xl overflow-hidden text-slate-100">
+              <div className="px-6 py-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    <KeyRound className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-extrabold text-white">Đổi Mật Khẩu Tài Khoản</h3>
+                    <p className="text-[11px] text-slate-400">
+                      Tài khoản: <strong className="text-amber-300 font-mono">@{currentUser.username}</strong>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsChangePasswordOpen(false)}
+                  className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleChangePasswordSubmit} className="p-6 space-y-4 text-xs">
+                {changePasswordError && (
+                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 font-semibold">
+                    {changePasswordError}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-bold text-slate-300 mb-1.5">
+                    Mật khẩu mới (tối thiểu 10 ký tự) *
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={10}
+                    value={newPasswordInput}
+                    onChange={e => {
+                      setNewPasswordInput(e.target.value);
+                      setChangePasswordError(null);
+                    }}
+                    placeholder="Nhập mật khẩu mới (>= 10 ký tự)"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-300 mb-1.5">
+                    Xác nhận mật khẩu mới *
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={10}
+                    value={confirmPasswordInput}
+                    onChange={e => {
+                      setConfirmPasswordInput(e.target.value);
+                      setChangePasswordError(null);
+                    }}
+                    placeholder="Nhập lại mật khẩu mới"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsChangePasswordOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isChangingPassword}
+                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-extrabold flex items-center gap-1.5"
+                  >
+                    {isChangingPassword ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Đang cập nhật...</span>
+                      </>
+                    ) : (
+                      <span>Cập Nhật Mật Khẩu</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        <ToastContainer />
+      </>
+    );
+  }
+
   const routeAllowed = isRouteAllowed(currentRoute, currentUser);
 
   // 3. ADMIN DASHBOARD: User is authenticated as staff
@@ -1133,6 +1249,14 @@ export default function App() {
               onPrintAttendanceBook={handlePrintAttendanceBook}
               onIssueCreditForStudent={handleIssueCreditForStudent}
               onNavigateTab={(tab) => setCurrentRoute(tab as any)}
+            />
+          )}
+
+          {currentRoute === 'sub_teacher_checkin' && (
+            <TeacherCheckinTab
+              store={store}
+              currentUser={currentUser}
+              onUpdateStore={updateStore}
             />
           )}
 

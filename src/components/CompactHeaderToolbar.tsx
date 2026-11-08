@@ -18,7 +18,8 @@ import {
   GraduationCap,
   ArrowRightLeft,
   UserCheck,
-  CheckCircle2
+  CheckCircle2,
+  QrCode
 } from 'lucide-react';
 
 interface CompactHeaderToolbarProps {
@@ -48,6 +49,7 @@ export const CompactHeaderToolbar: React.FC<CompactHeaderToolbarProps> = ({
     sub_classes: { parent: 'Đào Tạo & Vận Hành', title: 'Lớp Học Ngoại Khóa', icon: Calendar, badge: 'Phòng Học & Giáo Viên' },
     sub_teachers: { parent: 'Đào Tạo & Vận Hành', title: 'Giáo Viên', icon: UserCheck, badge: 'Nhân Sự & Chuyển Ngạch' },
     sub_attendance: { parent: 'Đào Tạo & Vận Hành', title: 'Sổ Điểm Danh & Dạy Thay', icon: CheckCircle2, badge: 'Chuyên Cần & Bù Trừ' },
+    sub_teacher_checkin: { parent: 'Đào Tạo & Vận Hành', title: 'Check in giáo viên', icon: QrCode, badge: 'QR Động & Chấm Công' },
     sub_snacks: { parent: 'Đào Tạo & Vận Hành', title: 'Báo Cáo Đối Soát Bánh Sữa', icon: Coffee, badge: 'Học Sinh Hoàng Gia' },
     
     // Nhóm 4: Tài Chính & Kế Toán

@@ -238,6 +238,7 @@ export function buildGuestCatalogStore(
     termSubjects: [],
     teachers: [],
     teacherContracts: [],
+    teacherCheckins: [],
     students: [],
     classes: [],
     enrollments: [],
@@ -364,6 +365,15 @@ export async function loadInitialDataSafely(
     let totalRecordsLoaded = 0;
 
     const userRole = activeUser?.role || 'super_admin';
+    if (userRole === 'teacher') {
+      return {
+        store: fallbackStore,
+        isOfflineFallback: false,
+        loadedFromCloud: false,
+        totalRecordsLoaded: 0,
+      };
+    }
+
     const rawCampus = String(activeUser?.campus_id || 'all').toLowerCase().trim();
     const scopedCampusCode =
       rawCampus === 'pmh' || rawCampus === 'camp_pmh'
@@ -389,14 +399,10 @@ export async function loadInitialDataSafely(
       { tableName: 'time_slots', storeKey: 'timeSlots' },
       { tableName: 'term_subjects', storeKey: 'termSubjects' },
       { tableName: 'teacher_contracts', storeKey: 'teacherContracts' },
+      { tableName: 'teacher_checkins', storeKey: 'teacherCheckins' },
     ];
 
-    const allTableDefinitions = baseTableDefinitions.filter(item => {
-      if (userRole === 'teacher') {
-        return !['tuition_invoices', 'credit_notes', 'parent_registrations'].includes(item.tableName);
-      }
-      return true;
-    });
+    const allTableDefinitions = baseTableDefinitions;
 
     // Nạp song song độc lập từng bảng với Promise.allSettled + fetchOnce (TTL 60s)
     const fetchPromises = allTableDefinitions.map(async item => {
@@ -423,6 +429,7 @@ export async function loadInitialDataSafely(
                 item.tableName === 'extracurricular_classes' ||
                 item.tableName === 'teachers' ||
                 item.tableName === 'teacher_work_sessions' ||
+                item.tableName === 'teacher_checkins' ||
                 item.tableName === 'students'
               ) {
                 query = query.in('campus_id', campusVariants);

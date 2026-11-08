@@ -295,6 +295,7 @@ export function getInitialStore(): AppStore {
     invoices: [],
     sessions: [],
     teacherAttendance: [],
+    teacherCheckins: [],
     attendance: [],
     makeupCredits: [],
     transfers: [],
@@ -2878,6 +2879,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
       return {
         can_manage_classes: true,
         can_take_attendance: true,
+        can_scan_teacher_checkin: true,
         can_manage_enrollment: true,
         can_manage_finance: true,
         can_manage_credits: true,
@@ -2894,6 +2896,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
       return {
         can_manage_classes: true,
         can_take_attendance: true,
+        can_scan_teacher_checkin: true,
         can_manage_enrollment: true,
         can_manage_finance: true,
         can_manage_credits: true,
@@ -2910,6 +2913,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
       return {
         can_manage_classes: true,
         can_take_attendance: true,
+        can_scan_teacher_checkin: true,
         can_manage_enrollment: true,
         can_manage_finance: true,
         can_manage_credits: true,
@@ -2923,10 +2927,12 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_teachers: false,
       };
     case 'academic_admissions':
+    case 'academic_staff':
     case 'academic':
       return {
         can_manage_classes: true,
         can_take_attendance: true,
+        can_scan_teacher_checkin: true,
         can_manage_enrollment: true,
         can_manage_finance: false,
         can_manage_credits: true,
@@ -2943,6 +2949,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
       return {
         can_manage_classes: false,
         can_take_attendance: false,
+        can_scan_teacher_checkin: false,
         can_manage_enrollment: true,
         can_manage_finance: false,
         can_manage_credits: false,
@@ -2959,6 +2966,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
       return {
         can_manage_classes: false,
         can_take_attendance: false,
+        can_scan_teacher_checkin: false,
         can_manage_enrollment: false,
         can_manage_finance: true,
         can_manage_credits: true,
@@ -2976,6 +2984,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
       return {
         can_manage_classes: false,
         can_take_attendance: true,
+        can_scan_teacher_checkin: false,
         can_manage_enrollment: false,
         can_manage_finance: false,
         can_manage_credits: false,

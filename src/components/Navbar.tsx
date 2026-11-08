@@ -32,7 +32,8 @@ import {
   Database,
   RefreshCw,
   AlertTriangle,
-  KeyRound
+  KeyRound,
+  QrCode
 } from 'lucide-react';
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
@@ -195,6 +196,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           label: 'Sổ Điểm Danh & Dạy Thay', 
           icon: CheckCircle2, 
           desc: 'Điểm danh 3 trạng thái, quản lý dạy thay và tính bù trừ bánh sữa theo buổi' 
+        },
+        { 
+          id: 'sub_teacher_checkin', 
+          label: 'Check in giáo viên', 
+          icon: QrCode, 
+          desc: 'Quét mã QR động và theo dõi trạng thái check-in ca dạy giáo viên theo thời gian thực' 
         },
         { 
           id: 'sub_snacks', 

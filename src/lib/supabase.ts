@@ -28,6 +28,7 @@ import {
   Enrollment,
   AttendanceRecord,
   TeacherAttendanceRecord,
+  TeacherCheckin,
   TuitionInvoice,
   MakeupCredit,
   AppUser,
@@ -64,7 +65,9 @@ export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
   attendance_records:
     'id,session_id,class_id,student_id,session_date,status,note,proof_file_name,proof_url,uploaded_by,uploaded_at',
   teacher_work_sessions:
-    'id,class_id,term_id,campus_id,session_date,session_number,periods_count,assigned_teacher_id,actual_teacher_id,is_substitute,substitute_reason,status,late_minutes,check_in_time,rate_per_period,rate_applied,earned_amount,total_payout,verified_by,notes,recalculated_at',
+    'id,class_id,term_id,campus_id,session_date,session_number,periods_count,assigned_teacher_id,actual_teacher_id,is_substitute,substitute_reason,status,late_minutes,check_in_time,rate_per_period,rate_applied,earned_amount,total_payout,verified_by,notes,recalculated_at,check_in_id,check_in_method,check_in_at',
+  teacher_checkins:
+    'id,teacher_id,campus_id,class_id,session_date,checked_in_at,scheduled_start,late_minutes,status,method,scanned_by,scanner_name,token_jti,note,created_at',
   tuition_invoices:
     'id,invoice_code,student_id,class_id,registered_sessions,total_class_sessions,session_rate,gross_amount,credit_deducted,discount_amount,net_payable,paid_amount,outstanding_amount,payment_status,due_date,payment_reference,verified_by,verified_at,payment_history,created_at',
   credit_notes:
@@ -1581,7 +1584,14 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         verified_by: ta.verified_by || '',
         notes: ta.notes || '',
         recalculated_at: ta.recalculated_at || null,
+        check_in_id: ta.check_in_id || null,
+        check_in_method: ta.check_in_method || null,
+        check_in_at: ta.check_in_at || null,
       }));
+
+    case 'teacher_checkins':
+      // Bảng teacher_checkins CHỈ ĐỌC từ phía trình duyệt; mọi lệnh ghi do server thực hiện bằng service role
+      return [];
 
     case 'tuition_invoices':
       return (store.invoices || []).map(inv => ({
@@ -1807,7 +1817,11 @@ export async function pushSingleTableToSupabase(
   anonKeyInput?: string
 ): Promise<{ success: boolean; count: number; message: string }> {
   const safeTableName = sanitizeSupabaseTableName(tableName);
-  if (safeTableName === 'app_users' || safeTableName === 'profiles') {
+  if (
+    safeTableName === 'app_users' ||
+    safeTableName === 'profiles' ||
+    safeTableName === 'teacher_checkins'
+  ) {
     return {
       success: true,
       count: 0,
@@ -2072,6 +2086,9 @@ export async function pullAllTablesFromSupabase(
             verified_by: r.verified_by || '',
             notes: r.notes || '',
             recalculated_at: r.recalculated_at || undefined,
+            check_in_id: r.check_in_id || null,
+            check_in_method: r.check_in_method || null,
+            check_in_at: r.check_in_at || null,
           }));
           break;
         case 'tuition_invoices':
@@ -2192,6 +2209,21 @@ export async function pullAllTablesFromSupabase(
     // ignore
   }
 
+  try {
+    const { data: checkinsData } = await client
+      .from('teacher_checkins')
+      .select<string, any>(SUPABASE_TABLE_SELECT_COLUMNS.teacher_checkins)
+      .order('checked_in_at', { ascending: false });
+    if (Array.isArray(checkinsData) && checkinsData.length > 0) {
+      nextStore.teacherCheckins = checkinsData.map((r: any): TeacherCheckin =>
+        mapSupabaseRowToStoreEntity('teacher_checkins', r)
+      );
+      totalPulled += checkinsData.length;
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     success: true,
     updatedStore: nextStore,
@@ -2281,6 +2313,7 @@ export const SUPABASE_TABLE_TO_STORE_KEY: Record<string, keyof AppStore> = {
   enrollments: 'enrollments',
   attendance_records: 'attendance',
   teacher_work_sessions: 'teacherAttendance',
+  teacher_checkins: 'teacherCheckins',
   tuition_invoices: 'invoices',
   credit_notes: 'makeupCredits',
   parent_registrations: 'parentRegistrations',
@@ -2448,6 +2481,28 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         verified_by: r.verified_by || '',
         notes: r.notes || '',
         recalculated_at: r.recalculated_at || undefined,
+        check_in_id: r.check_in_id || null,
+        check_in_method: r.check_in_method || null,
+        check_in_at: r.check_in_at || null,
+      };
+
+    case 'teacher_checkins':
+      return {
+        id: r.id,
+        teacher_id: r.teacher_id,
+        campus_id: r.campus_id ?? null,
+        class_id: r.class_id ?? null,
+        session_date: r.session_date,
+        checked_in_at: r.checked_in_at,
+        scheduled_start: r.scheduled_start ?? null,
+        late_minutes: r.late_minutes !== undefined && r.late_minutes !== null ? Number(r.late_minutes) : 0,
+        status: r.status === 'late' ? 'late' : r.status === 'no_class' ? 'no_class' : 'on_time',
+        method: r.method === 'manual' ? 'manual' : 'qr',
+        scanned_by: r.scanned_by ?? null,
+        scanner_name: r.scanner_name ?? null,
+        token_jti: r.token_jti ?? null,
+        note: r.note ?? null,
+        created_at: r.created_at || undefined,
       };
 
     case 'tuition_invoices':
@@ -2736,7 +2791,7 @@ export async function syncStoreDeltaToSupabase(
   );
 
   for (const { table, storeKey } of tablesToWatch) {
-    if (table === 'app_users' || table === 'profiles') continue;
+    if (table === 'app_users' || table === 'profiles' || table === 'teacher_checkins') continue;
 
     const prevList = ((prevStore[storeKey] as any[]) || []);
     const nextList = ((nextStore[storeKey] as any[]) || []);
