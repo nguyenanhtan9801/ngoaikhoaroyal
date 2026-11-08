@@ -490,73 +490,35 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         }
       }
 
-      // Optional: Create login account directly in public.app_users + Local Store (and optional /api/admin/create-user)
+      // Tạo tài khoản đăng nhập: BẮT BUỘC đi qua máy chủ (/api/admin/create-user) để tạo user trong Supabase Auth + bảng profiles.
+      // Không ghi trực tiếp vào app_users hay cột username/user_id của teachers.
       let createdUserAccount: AppUser | null = null;
+      let accountErrorMessage = '';
       if (formData.create_login_account && !existingLinkedUser) {
         const loginEmail = (formData.login_email || formData.email).trim().toLowerCase();
         const rawUsername = loginEmail.split('@')[0] || teacherCode.toLowerCase().replace(/[^a-z0-9]/g, '');
         const cleanPass = formData.login_password.trim();
-        const userId =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-        const newUserPayload = {
-          id: userId,
-          username: rawUsername,
-          password_hash: cleanPass ? btoa(cleanPass) : 'default_hash',
-          full_name: cleanName,
-          email: loginEmail,
-          phone: formData.phone.trim(),
-          role: 'teacher' as const,
-          department: 'Đội ngũ Giáo viên Ngoại khóa',
-          campus_id: formData.campus_id || 'all',
-          status: 'active' as const,
-          linked_teacher_id: teacherId,
-          permissions: {
-            can_manage_classes: false,
-            can_take_attendance: true,
-            can_manage_enrollment: false,
-            can_manage_finance: false,
-            can_manage_payroll: false,
-            can_export_reports: false,
-            can_manage_catalogs: false,
-            can_manage_users: false,
-            can_manage_credits: false,
-            can_settle_payroll: false,
-            can_config_system: false,
-            view_assigned_classes: true,
-            attendance_marking: true,
-            view_own_payroll: true,
-            academic_attendance: true,
-          },
-          created_at: new Date().toISOString(),
+        const teacherPermissions = {
+          can_manage_classes: false,
+          can_take_attendance: true,
+          can_manage_enrollment: false,
+          can_manage_finance: false,
+          can_manage_payroll: false,
+          can_export_reports: false,
+          can_manage_catalogs: false,
+          can_manage_users: false,
+          can_manage_credits: false,
+          can_settle_payroll: false,
+          can_config_system: false,
+          view_assigned_classes: true,
+          attendance_marking: true,
+          view_own_payroll: true,
+          academic_attendance: true,
         };
 
-        if (supabase) {
-          try {
-            const { error: dbErr } = await supabase
-              .from('app_users')
-              .upsert([newUserPayload], { onConflict: 'username' });
-            if (dbErr) {
-              console.warn('Lưu app_users trên Supabase chưa thành công, chuyển sang lưu Local Store:', dbErr.message);
-            }
-            await supabase
-              .from('teachers')
-              .update({
-                username: rawUsername,
-                user_id: userId,
-              })
-              .eq('id', teacherId);
-          } catch (supaErr) {
-            console.warn('Cảnh báo đồng bộ Supabase app_users:', supaErr);
-          }
-        }
-
-        // Best-effort sync to server admin API if available
         try {
           const headers = await getAdminAuthHeaders();
-          await fetch('/api/admin/create-user', {
+          const resp = await fetch('/api/admin/create-user', {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -566,23 +528,37 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
               full_name: cleanName,
               phone: formData.phone.trim(),
               department: 'Đội ngũ Giáo viên Ngoại khóa',
-              campus_id: formData.campus_id,
+              campus_id: formData.campus_id || 'all',
               role: 'teacher',
               status: 'active',
               linked_teacher_id: teacherId,
+              permissions: teacherPermissions,
             }),
           });
-        } catch {
-          // Ignore server admin error when running without service role key
+          const result = await resp.json().catch(() => ({} as any));
+          if (!resp.ok || !result?.success || !result?.user?.id) {
+            accountErrorMessage = result?.error || `Máy chủ trả về lỗi HTTP ${resp.status}.`;
+          } else {
+            const serverUser = result.user;
+            createdUserAccount = {
+              id: String(serverUser.id),
+              username: String(serverUser.username || rawUsername),
+              email: loginEmail,
+              full_name: cleanName,
+              phone: formData.phone.trim(),
+              role: 'teacher',
+              department: 'Đội ngũ Giáo viên Ngoại khóa',
+              campus_id: (serverUser.campus_id || formData.campus_id || 'all') as any,
+              status: 'active',
+              linked_teacher_id: teacherId,
+              permissions: serverUser.permissions || teacherPermissions,
+              created_at: new Date().toISOString(),
+            };
+          }
+        } catch (netErr: any) {
+          accountErrorMessage =
+            'Không kết nối được máy chủ quản trị: ' + (netErr?.message || 'lỗi mạng');
         }
-
-        teacherRecord.username = rawUsername;
-        teacherRecord.user_id = userId;
-
-        createdUserAccount = {
-          ...newUserPayload,
-          campus_id: (formData.campus_id || 'all') as any,
-        };
       }
 
       onUpdateStore(prev => {
@@ -627,12 +603,19 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         return nextState;
       });
 
-      showToast(
-        `${editingTeacher ? 'Đã cập nhật' : 'Đã thêm mới'} giáo viên ${teacherRecord.name} (${teacherRecord.code})${
-          createdUserAccount ? ' và cấp tài khoản đăng nhập' : ''
-        } thành công!`,
-        'success'
-      );
+      if (accountErrorMessage) {
+        showToast(
+          `Đã lưu hồ sơ giáo viên ${teacherRecord.name} (${teacherRecord.code}) nhưng CHƯA tạo được tài khoản đăng nhập: ${accountErrorMessage}`,
+          'error'
+        );
+      } else {
+        showToast(
+          `${editingTeacher ? 'Đã cập nhật' : 'Đã thêm mới'} giáo viên ${teacherRecord.name} (${teacherRecord.code})${
+            createdUserAccount ? ' và cấp tài khoản đăng nhập' : ''
+          } thành công!`,
+          'success'
+        );
+      }
       setIsAddEditModalOpen(false);
       setEditingTeacher(null);
     } catch (err: any) {
@@ -991,51 +974,29 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     setResetPasswordError(null);
 
     const cleanPass = newResetPassword.trim();
-    if (cleanPass.length < 4) {
-      setResetPasswordError('Mật khẩu mới bắt buộc phải có tối thiểu 4 ký tự.');
+    if (cleanPass.length < 10) {
+      setResetPasswordError('Mật khẩu mới bắt buộc phải có tối thiểu 10 ký tự.');
       return;
     }
 
     setIsResettingPassword(true);
     try {
-      const encodedHash = btoa(cleanPass);
       const targetUser = resetPasswordTeacher.linkedUser;
-
-      if (supabase) {
-        try {
-          await supabase
-            .from('app_users')
-            .update({ password_hash: encodedHash })
-            .eq('username', targetUser.username.trim().toLowerCase());
-        } catch (supaErr) {
-          console.warn('Cảnh báo cập nhật mật khẩu trên Supabase app_users:', supaErr);
-        }
+      const headers = await getAdminAuthHeaders();
+      const res = await fetch('/api/admin/reset-password', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          id: targetUser.id,
+          username: targetUser.username,
+          email: targetUser.email,
+          newPassword: cleanPass,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'Không thể đặt lại mật khẩu cho tài khoản giáo viên.');
       }
-
-      try {
-        const headers = await getAdminAuthHeaders();
-        await fetch('/api/admin/reset-password', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            id: targetUser.id,
-            username: targetUser.username,
-            email: targetUser.email,
-            newPassword: cleanPass,
-          }),
-        });
-      } catch {
-        // Ignore server admin error when running without service role key
-      }
-
-      onUpdateStore(prev => ({
-        ...prev,
-        users: (prev.users || []).map(u =>
-          u.id === targetUser.id || u.username.toLowerCase() === targetUser.username.toLowerCase()
-            ? { ...u, password_hash: encodedHash }
-            : u
-        ),
-      }));
 
       showToast(
         `Đã đặt lại mật khẩu đăng nhập cho giáo viên ${resetPasswordTeacher.teacher.name} (@${targetUser.username})!`,

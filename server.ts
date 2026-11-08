@@ -442,6 +442,18 @@ function normalizeCampusCodeForServer(raw?: string): string {
   return clean || 'all';
 }
 
+/**
+ * Các endpoint /api/admin/* BẮT BUỘC có service_role / secret key thật.
+ * Nếu thiếu, getServerSupabaseAdmin() sẽ lùi về publishable key (quyền anon) khiến mọi thao tác ghi bị RLS chặn.
+ */
+function hasRealServiceRoleKey(): boolean {
+  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || '').trim();
+  if (!key || key.toUpperCase().startsWith('YOUR_') || key.startsWith('sb_publishable_')) {
+    return false;
+  }
+  return isLikelyValidSupabaseKey(key);
+}
+
 async function verifySuperAdminRequest(
   req: Request,
   res: Response,
@@ -458,6 +470,16 @@ async function verifySuperAdminRequest(
   clientIp: string;
 } | null> {
   const clientIp = getClientIpFromReq(req);
+  if (!hasRealServiceRoleKey()) {
+    console.error(
+      `[${endpointName}] Thiếu SUPABASE_SERVICE_ROLE_KEY (hoặc SUPABASE_SECRET_KEY) hợp lệ trong biến môi trường của máy chủ.`
+    );
+    res.status(500).json({
+      error:
+        'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY nên không thể tạo/sửa tài khoản. Hãy thêm khóa này vào biến môi trường của máy chủ rồi khởi động lại.',
+    });
+    return null;
+  }
   const rateCheck = checkAdminRateLimit(clientIp);
   if (!rateCheck.allowed) {
     await recordAdminEndpointAudit({
@@ -3948,6 +3970,17 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Royal School Server] Listening on http://0.0.0.0:${PORT}`);
+    if (!hasRealServiceRoleKey()) {
+      console.warn(
+        '[Royal School Server] CẢNH BÁO: Biến môi trường SUPABASE_SERVICE_ROLE_KEY chưa được cấu hình (hoặc không hợp lệ). Các thao tác tạo/sửa/xóa tài khoản qua /api/admin/* sẽ bị từ chối cho đến khi cấu hình SUPABASE_SERVICE_ROLE_KEY trong Secrets.'
+      );
+    }
+    const rawParentSecret = (process.env.PARENT_SESSION_SECRET || '').trim();
+    if (!rawParentSecret || rawParentSecret === 'YOUR_PARENT_SESSION_SECRET') {
+      console.warn(
+        '[Royal School Server] CẢNH BÁO: Biến môi trường PARENT_SESSION_SECRET chưa được cấu hình. Đang dùng khóa tạm thời cho phiên làm việc của cổng phụ huynh.'
+      );
+    }
   });
 }
 
