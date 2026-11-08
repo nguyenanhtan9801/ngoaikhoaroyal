@@ -28,6 +28,8 @@ export interface UserPermissionMatrix {
   can_config_payroll_rates?: boolean; // Cài đặt mức thù lao cơ hữu/thỉnh giảng
   can_manage_teachers?: boolean;      // Quản lý hồ sơ giáo viên, chuyển ngạch & hợp đồng
   can_scan_teacher_checkin?: boolean; // Quét mã QR check-in giáo viên & theo dõi ca dạy hôm nay
+  view_assigned_classes?: boolean;    // Giáo viên xem các lớp được phân công
+  view_own_payroll?: boolean;         // Giáo viên xem thù lao của mình
 }
 
 export type AttendanceStatus = 'present' | 'absent_excused' | 'absent_unexcused';
@@ -265,6 +267,7 @@ export interface TeacherContract {
 export interface Teacher {
   id: string;
   user_id?: string;
+  username?: string;
   code?: string; // Mã GV (VD: GV-PMH-001)
   name: string;
   phone: string;

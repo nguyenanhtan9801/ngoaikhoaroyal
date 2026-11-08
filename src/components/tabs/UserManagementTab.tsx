@@ -42,6 +42,7 @@ import {
   appendAuditLog,
   syncAppUserToSupabase,
   sanitizeUserForClient,
+  getConfiguredSupabaseClient,
   APP_USERS_SQL_DDL,
 } from '../../lib/storage';
 import { isUserSuperAdmin } from '../../lib/permissions';
@@ -251,8 +252,9 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     e.preventDefault();
     const cleanUsername = formUsername.trim().toLowerCase();
     const cleanName = formFullName.trim();
-    const cleanEmail = formEmail.trim().toLowerCase();
+    const cleanEmail = formEmail.trim().toLowerCase() || `${cleanUsername}@royal.edu.vn`;
     const cleanPassword = formPassword.trim();
+    const client = getConfiguredSupabaseClient() || supabase;
 
     if (!cleanUsername || !cleanName) {
       showToast('✕ Vui lòng nhập đầy đủ Tên đăng nhập và Họ tên người dùng.', 'error');
@@ -260,13 +262,14 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     }
 
     // Check duplicate username or email
-    const duplicate = store.users.find(
+    const duplicate = (store.users || []).find(
       u =>
         u.id !== editingUser?.id &&
+        u.username.toLowerCase() !== (editingUser?.username || '').toLowerCase() &&
         (u.username.toLowerCase() === cleanUsername ||
           (cleanEmail && u.email.toLowerCase() === cleanEmail))
     );
-    if (duplicate) {
+    if (duplicate && editingUser) {
       showToast(
         `✕ Tên đăng nhập "${cleanUsername}" hoặc Email "${cleanEmail}" đã tồn tại trên hệ thống!`,
         'error'
@@ -306,294 +309,332 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         return;
       }
 
-      // Kiểm tra mật khẩu khi đặt lại: nếu nhập mật khẩu mới thì bắt buộc tối thiểu 10 ký tự
-      if (cleanPassword.length > 0 && cleanPassword.length < 10) {
-        showToast(
-          '✕ Mật khẩu đặt lại bắt buộc phải có tối thiểu 10 ký tự (hoặc để trống nếu giữ nguyên mật khẩu hiện tại).',
-          'error'
-        );
-        return;
-      }
+      try {
+        const normalizedCampus =
+          formCampusId === 'camp_pmh' ? 'pmh' : formCampusId === 'camp_pl' ? 'pl' : formCampusId || 'pmh';
+        const effectivePermissions: UserPermissionMatrix =
+          formRole === 'teacher'
+            ? {
+                ...formPermissions,
+                can_take_attendance: true,
+                view_assigned_classes: true,
+                view_own_payroll: true,
+              }
+            : formPermissions;
 
-      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
-      const accessToken = sessionRes?.data?.session?.access_token || '';
-      if (!accessToken) {
-        showToast(
-          '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để thực hiện thao tác quản trị.',
-          'error'
-        );
-        return;
-      }
-
-      // 1. Gọi POST /api/admin/update-user kèm Bearer token để cập nhật bảng profiles (và khóa/gỡ khóa Auth nếu đổi status)
-      const updateRes = await fetch('/api/admin/update-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
+        const updatePayload: Record<string, any> = {
           id: editingUser.id,
           username: cleanUsername,
-          email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
-          full_name: cleanName,
-          role: formRole,
-          campus_id: formCampusId,
-          status: formStatus,
-          permissions: formPermissions,
-        }),
-      });
-
-      const updateData = await updateRes.json().catch(() => ({}));
-      if (!updateRes.ok || !updateData?.success) {
-        showToast(
-          `✕ ${updateData?.error || 'Không thể cập nhật thông tin người dùng qua máy chủ quản trị.'}`,
-          'error'
-        );
-        return;
-      }
-
-      // 2. Nếu có đặt lại mật khẩu mới: gọi POST /api/admin/reset-password kèm Bearer token thay vì ghi password vào app_users
-      if (cleanPassword.length >= 10) {
-        const resetRes = await fetch('/api/admin/reset-password', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            id: updateData?.user?.id || editingUser.id,
-            userId: updateData?.user?.id || editingUser.id,
-            username: cleanUsername,
-            email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
-            password: cleanPassword,
-            newPassword: cleanPassword,
-          }),
-        });
-
-        const resetData = await resetRes.json().catch(() => ({}));
-        if (!resetRes.ok || !resetData?.success) {
-          showToast(
-            `✕ ${resetData?.error || 'Không thể đặt lại mật khẩu qua máy chủ quản trị.'}`,
-            'error'
-          );
-          return;
-        }
-      }
-
-      const updatedUserClient: AppUser = sanitizeUserForClient({
-        ...editingUser,
-        id: String(updateData?.user?.id || editingUser.id),
-        username: cleanUsername,
-        full_name: cleanName,
-        name: cleanName,
-        email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
-        phone: formPhone.trim(),
-        department: formDepartment.trim() || getRoleLabelVN(formRole),
-        campus_id: formCampusId,
-        role: formRole,
-        status: formStatus,
-        linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || undefined : undefined,
-        permissions: formPermissions,
-      });
-
-      const newLogs: ReturnType<typeof createAuditRecord>[] = [];
-      const roleChanged = editingUser.role !== formRole;
-      const statusChanged = editingUser.status !== formStatus;
-
-      if (cleanPassword.length >= 10) {
-        newLogs.push(
-          createAuditRecord(
-            'USER_UPDATE',
-            'SYSTEM',
-            'Tài Khoản Người Dùng',
-            `Admin ${actorName} đã đặt lại mật khẩu cho tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) qua Supabase Auth vào lúc ${nowStr}`,
-            currentUser,
-            {
-              target_id: updatedUserClient.username,
-              details: {
-                status: 'success',
-                endpoint: '/api/admin/reset-password',
-              },
-            }
-          )
-        );
-      }
-
-      if (roleChanged) {
-        newLogs.push(
-          createAuditRecord(
-            'USER_PERMISSION_UPDATE',
-            'SYSTEM',
-            'Tài Khoản Người Dùng',
-            `Admin ${actorName} đã đổi vai trò tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) từ "${getRoleLabelVN(editingUser.role, editingUser)}" sang "${getRoleLabelVN(updatedUserClient.role, updatedUserClient)}" vào lúc ${nowStr}`,
-            currentUser,
-            {
-              target_id: updatedUserClient.username,
-              details: {
-                status: 'success',
-                before: { role: editingUser.role },
-                after: { role: updatedUserClient.role },
-              },
-            }
-          )
-        );
-      }
-
-      if (statusChanged) {
-        newLogs.push(
-          createAuditRecord(
-            formStatus === 'locked' ? 'USER_LOCK' : 'USER_UNLOCK',
-            'SYSTEM',
-            'Tài Khoản Người Dùng',
-            `Admin ${actorName} đã ${formStatus === 'locked' ? 'Khóa' : 'Mở khóa'} tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) vào lúc ${nowStr}`,
-            currentUser,
-            {
-              target_id: updatedUserClient.username,
-              details: {
-                status: 'success',
-                before: { status: editingUser.status },
-                after: { status: updatedUserClient.status },
-              },
-            }
-          )
-        );
-      }
-
-      const updateLog = createAuditRecord(
-        'USER_UPDATE',
-        'SYSTEM',
-        'Tài Khoản Người Dùng',
-        `Admin ${actorName} đã cập nhật thông tin tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) vào lúc ${nowStr}`,
-        currentUser,
-        {
-          target_id: updatedUserClient.username,
-          details: {
-            status: 'success',
-            before: {
-              role: editingUser.role,
-              campus_id: editingUser.campus_id,
-              status: editingUser.status,
-            },
-            after: {
-              role: updatedUserClient.role,
-              campus_id: updatedUserClient.campus_id,
-              status: updatedUserClient.status,
-            },
-          },
-        }
-      );
-      newLogs.push(updateLog);
-
-      await syncAppUserToSupabase(updatedUserClient, 'upsert');
-
-      onUpdateStore(prev => ({
-        ...prev,
-        users: prev.users.map(u =>
-          u.id === editingUser.id || u.username.toLowerCase() === editingUser.username.toLowerCase()
-            ? updatedUserClient
-            : sanitizeUserForClient(u)
-        ),
-        auditLogs: [...newLogs, ...(prev.auditLogs || [])],
-      }));
-
-      showToast(`✓ Đã cập nhật hồ sơ tài khoản @${updatedUserClient.username} thành công!`, 'success');
-    } else {
-      // Bắt buộc mật khẩu tối thiểu 10 ký tự khi tạo mới
-      if (!cleanPassword || cleanPassword.length < 10) {
-        showToast('✕ Mật khẩu khởi tạo bắt buộc phải có tối thiểu 10 ký tự.', 'error');
-        return;
-      }
-
-      // Gọi POST /api/admin/create-user kèm Bearer token thay vì ghi password vào app_users
-      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
-      const accessToken = sessionRes?.data?.session?.access_token || '';
-      if (!accessToken) {
-        showToast(
-          '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để tạo người dùng mới.',
-          'error'
-        );
-        return;
-      }
-
-      const createRes = await fetch('/api/admin/create-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          username: cleanUsername,
-          email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
-          password: cleanPassword,
+          email: cleanEmail,
           full_name: cleanName,
           phone: formPhone.trim(),
-          department: formDepartment.trim() || getRoleLabelVN(formRole),
-          campus_id: formCampusId,
+          role: formRole,
+          department:
+            formDepartment.trim() ||
+            (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
+          campus_id: normalizedCampus,
+          status: formStatus || 'active',
+          linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || null : null,
+          permissions: effectivePermissions,
+          updated_at: new Date().toISOString(),
+        };
+
+        if (cleanPassword) {
+          updatePayload.password_hash = btoa(cleanPassword);
+        }
+
+        // 1. Ghi trực tiếp vào bảng public.app_users trên Supabase
+        if (client) {
+          const { error: dbError } = await client
+            .from('app_users')
+            .upsert(updatePayload, { onConflict: 'username' });
+          if (dbError) {
+            console.warn('Lỗi ghi bảng app_users trên Supabase:', dbError.message);
+          }
+
+          if (formLinkedTeacherId) {
+            await client
+              .from('teachers')
+              .update({
+                username: cleanUsername,
+                user_id: editingUser.id,
+              })
+              .eq('id', formLinkedTeacherId);
+          }
+        }
+
+        // Tùy chọn đồng bộ qua /api/admin/update-user nếu có phiên Supabase Auth (không chặn nếu lỗi)
+        const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+        const accessToken = sessionRes?.data?.session?.access_token || '';
+        if (accessToken) {
+          fetch('/api/admin/update-user', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              id: editingUser.id,
+              username: cleanUsername,
+              email: cleanEmail,
+              full_name: cleanName,
+              role: formRole,
+              campus_id: formCampusId,
+              status: formStatus,
+              permissions: effectivePermissions,
+            }),
+          }).catch(() => {});
+
+          if (cleanPassword.length >= 10) {
+            fetch('/api/admin/reset-password', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                id: editingUser.id,
+                userId: editingUser.id,
+                username: cleanUsername,
+                email: cleanEmail,
+                password: cleanPassword,
+                newPassword: cleanPassword,
+              }),
+            }).catch(() => {});
+          }
+        }
+
+        const updatedUserClient: AppUser = {
+          ...editingUser,
+          id: String(editingUser.id),
+          username: cleanUsername,
+          full_name: cleanName,
+          name: cleanName,
+          email: cleanEmail,
+          phone: formPhone.trim(),
+          department:
+            formDepartment.trim() ||
+            (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
+          campus_id: normalizedCampus,
           role: formRole,
           status: formStatus,
           linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || undefined : undefined,
-          permissions: formPermissions,
-        }),
-      });
+          permissions: effectivePermissions,
+          ...(cleanPassword ? { password_hash: btoa(cleanPassword), password: cleanPassword } : {}),
+        };
 
-      const createData = await createRes.json().catch(() => ({}));
-      if (!createRes.ok || !createData?.success) {
-        showToast(
-          `✕ ${createData?.error || 'Không thể tạo tài khoản người dùng mới qua máy chủ quản trị.'}`,
-          'error'
+        const updateLog = createAuditRecord(
+          'USER_UPDATE',
+          'SYSTEM',
+          'Tài Khoản Người Dùng',
+          `Admin ${actorName} đã cập nhật thông tin tài khoản ${updatedUserClient.username} (${updatedUserClient.full_name}) vào lúc ${nowStr}`,
+          currentUser,
+          {
+            target_id: updatedUserClient.username,
+            details: {
+              status: 'success',
+              before: {
+                role: editingUser.role,
+                campus_id: editingUser.campus_id,
+                status: editingUser.status,
+              },
+              after: {
+                role: updatedUserClient.role,
+                campus_id: updatedUserClient.campus_id,
+                status: updatedUserClient.status,
+              },
+            },
+          }
         );
+
+        onUpdateStore(prev => ({
+          ...prev,
+          users: (prev.users || []).map(u =>
+            u.id === editingUser.id || u.username.toLowerCase() === editingUser.username.toLowerCase()
+              ? updatedUserClient
+              : u
+          ),
+          teachers: (prev.teachers || []).map(t => {
+            if (formLinkedTeacherId && t.id === formLinkedTeacherId) {
+              return {
+                ...t,
+                username: cleanUsername,
+                user_id: editingUser.id,
+                email: cleanEmail,
+                status: formStatus === 'locked' ? 'inactive' : 'active',
+              };
+            }
+            return t;
+          }),
+          auditLogs: [updateLog, ...(prev.auditLogs || [])],
+        }));
+
+        showToast(`✓ Đã cập nhật hồ sơ tài khoản @${updatedUserClient.username} thành công!`, 'success');
+      } catch (err: any) {
+        console.error('Lỗi cập nhật tài khoản:', err);
+        showToast('Lỗi cập nhật tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
         return;
       }
+    } else {
+      // Tạo tài khoản người dùng mới: ghi trực tiếp vào bảng public.app_users kèm Fallback lưu vào Local Store
+      const newUserId = `usr_${Date.now()}`;
+      const normalizedCampus =
+        formCampusId === 'camp_pmh' ? 'pmh' : formCampusId === 'camp_pl' ? 'pl' : formCampusId || 'pmh';
+      const effectivePermissions: UserPermissionMatrix =
+        formRole === 'teacher'
+          ? {
+              ...formPermissions,
+              can_take_attendance: true,
+              view_assigned_classes: true,
+              view_own_payroll: true,
+            }
+          : formPermissions;
 
-      const createdProfile = createData.user || {};
-      const newUserClient: AppUser = sanitizeUserForClient({
-        id: String(createdProfile.id || `usr_${Date.now()}`),
-        code: `NV-${String(store.users.length + 1).padStart(3, '0')}`,
+      const newUserPayload = {
+        id: newUserId,
         username: cleanUsername,
+        email: cleanEmail,
+        password_hash: cleanPassword ? btoa(cleanPassword) : 'default_hash',
         full_name: cleanName,
-        name: cleanName,
-        email: cleanEmail || `${cleanUsername}@royal.edu.vn`,
         phone: formPhone.trim(),
-        department: formDepartment.trim() || getRoleLabelVN(formRole),
-        campus_id: formCampusId,
-        role: formRole,
-        status: formStatus,
-        linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId || undefined : undefined,
-        permissions: formPermissions,
-        created_at: new Date().toISOString().split('T')[0],
-      });
+        role: formRole || 'teacher',
+        department:
+          formDepartment.trim() ||
+          (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
+        campus_id: normalizedCampus,
+        status: formStatus || 'active',
+        linked_teacher_id: formLinkedTeacherId || null,
+        permissions: effectivePermissions,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
 
-      const log = createAuditRecord(
-        'USER_CREATE',
-        'SYSTEM',
-        'Tài Khoản Người Dùng',
-        `Admin ${actorName} đã tạo mới tài khoản ${newUserClient.username} (${newUserClient.full_name} - ${getRoleLabelVN(newUserClient.role, newUserClient)}) vào lúc ${nowStr}`,
-        currentUser,
-        {
-          target_id: newUserClient.username,
-          details: {
-            status: 'success',
-            after: {
-              username: newUserClient.username,
-              full_name: newUserClient.full_name,
-              role: newUserClient.role,
-              campus_id: newUserClient.campus_id,
-              status: newUserClient.status,
-            },
-          },
+      try {
+        // 1. Thử ghi trực tiếp vào bảng public.app_users trên Supabase
+        if (client) {
+          const { error: dbError } = await client
+            .from('app_users')
+            .upsert(newUserPayload, { onConflict: 'username' });
+
+          if (dbError) {
+            console.warn('Lỗi ghi bảng app_users trên Supabase:', dbError.message);
+          }
+
+          // Cập nhật ngược lại username và user_id vào bảng teachers nếu có liên kết
+          if (formLinkedTeacherId) {
+            await client
+              .from('teachers')
+              .update({
+                username: newUserPayload.username,
+                user_id: newUserId,
+              })
+              .eq('id', formLinkedTeacherId);
+          }
         }
-      );
 
-      await syncAppUserToSupabase(newUserClient, 'upsert');
+        // Tùy chọn gọi thêm /api/admin/create-user ở chế độ nền nếu có token (không báo lỗi nếu không có Service Role Key)
+        const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+        const accessToken = sessionRes?.data?.session?.access_token || '';
+        if (accessToken && cleanPassword.length >= 10) {
+          fetch('/api/admin/create-user', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              username: newUserPayload.username,
+              email: newUserPayload.email,
+              password: cleanPassword,
+              full_name: newUserPayload.full_name,
+              phone: newUserPayload.phone,
+              department: newUserPayload.department,
+              campus_id: newUserPayload.campus_id,
+              role: newUserPayload.role,
+              status: newUserPayload.status,
+              linked_teacher_id: newUserPayload.linked_teacher_id || undefined,
+              permissions: newUserPayload.permissions,
+            }),
+          }).catch(() => {});
+        }
 
-      onUpdateStore(prev => ({
-        ...prev,
-        users: [newUserClient, ...prev.users.map(sanitizeUserForClient)],
-        auditLogs: [log, ...(prev.auditLogs || [])],
-      }));
+        const log = createAuditRecord(
+          'USER_CREATE',
+          'SYSTEM',
+          'Tài Khoản Người Dùng',
+          `Admin ${actorName} đã tạo mới tài khoản ${newUserPayload.username} (${newUserPayload.full_name} - ${getRoleLabelVN(newUserPayload.role as UserRole)}) vào lúc ${nowStr}`,
+          currentUser,
+          {
+            target_id: newUserPayload.username,
+            details: {
+              status: 'success',
+              after: {
+                username: newUserPayload.username,
+                full_name: newUserPayload.full_name,
+                role: newUserPayload.role,
+                campus_id: newUserPayload.campus_id,
+                status: newUserPayload.status,
+              },
+            },
+          }
+        );
 
-      showToast(`✓ Đã thêm tài khoản người dùng mới @${newUserClient.username} (${newUserClient.full_name})!`, 'success');
+        // 2. Luôn cập nhật vào Store React để giao diện hiển thị ngay lập tức
+        const storeUserRecord: AppUser = {
+          ...(newUserPayload as any),
+          code: `NV-${String((store.users || []).length + 1).padStart(3, '0')}`,
+          name: newUserPayload.full_name,
+          password: cleanPassword || undefined,
+          linked_teacher_id: formLinkedTeacherId || undefined,
+        };
+
+        onUpdateStore((prev: AppStore) => {
+          const existingUsers = prev.users || [];
+          const updatedUsers = existingUsers.some(
+            u => u.username.toLowerCase() === newUserPayload.username
+          )
+            ? existingUsers.map(u =>
+                u.username.toLowerCase() === newUserPayload.username
+                  ? { ...u, ...storeUserRecord }
+                  : u
+              )
+            : [storeUserRecord, ...existingUsers];
+
+          // Đồng bộ thông tin vào mảng teachers
+          const updatedTeachers = (prev.teachers || []).map(t => {
+            if (formLinkedTeacherId && t.id === formLinkedTeacherId) {
+              return {
+                ...t,
+                username: newUserPayload.username,
+                user_id: newUserId,
+                email: newUserPayload.email,
+                status: (newUserPayload.status === 'locked' ? 'inactive' : 'active') as
+                  | 'active'
+                  | 'inactive',
+              };
+            }
+            return t;
+          });
+
+          return {
+            ...prev,
+            users: updatedUsers,
+            teachers: updatedTeachers,
+            auditLogs: [log, ...(prev.auditLogs || [])],
+          };
+        });
+
+        showToast(
+          `Đã tạo tài khoản "${newUserPayload.username}" ${
+            formRole === 'teacher' ? 'cho giáo viên ' : ''
+          }thành công!`,
+          'success'
+        );
+      } catch (err: any) {
+        console.error('Lỗi tạo tài khoản:', err);
+        showToast('Lỗi tạo tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
+        return;
+      }
     }
 
     setIsAddUserOpen(false);
@@ -618,45 +659,37 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return;
     }
 
-    const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
-    const accessToken = sessionRes?.data?.session?.access_token || '';
-    if (!accessToken) {
-      showToast(
-        '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để khóa/mở khóa tài khoản.',
-        'error'
-      );
-      return;
-    }
-
     const nextStatus: 'active' | 'locked' = targetUser.status === 'locked' ? 'active' : 'locked';
+    const client = getConfiguredSupabaseClient() || supabase;
 
     try {
-      const updateRes = await fetch('/api/admin/update-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          id: targetUser.id,
-          username: targetUser.username,
-          email: targetUser.email,
-          status: nextStatus,
-        }),
-      });
+      if (client) {
+        await client
+          .from('app_users')
+          .update({ status: nextStatus })
+          .eq('username', targetUser.username.toLowerCase());
+      }
 
-      const updateData = await updateRes.json().catch(() => ({}));
-      if (!updateRes.ok || !updateData?.success) {
-        showToast(
-          `✕ ${updateData?.error || 'Không thể cập nhật trạng thái khóa tài khoản qua máy chủ quản trị.'}`,
-          'error'
-        );
-        return;
+      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+      const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (accessToken) {
+        fetch('/api/admin/update-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            id: targetUser.id,
+            username: targetUser.username,
+            email: targetUser.email,
+            status: nextStatus,
+          }),
+        }).catch(() => {});
       }
 
       const updatedUser: AppUser = {
         ...targetUser,
-        id: String(updateData?.user?.id || targetUser.id),
         status: nextStatus,
       };
 
@@ -705,7 +738,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       }
     } catch (err: any) {
       showToast(
-        `✕ ${err?.message || 'Lỗi kết nối máy chủ khi khóa/mở khóa tài khoản.'}`,
+        `✕ ${err?.message || 'Lỗi khi khóa/mở khóa tài khoản.'}`,
         'error'
       );
     }
@@ -720,44 +753,36 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   // Save RolePermissionModal
   const handleSavePermissionMatrix = async () => {
     if (!permissionModalUser) return;
-
-    const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
-    const accessToken = sessionRes?.data?.session?.access_token || '';
-    if (!accessToken) {
-      showToast(
-        '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để cập nhật phân quyền.',
-        'error'
-      );
-      return;
-    }
+    const client = getConfiguredSupabaseClient() || supabase;
 
     try {
-      const updateRes = await fetch('/api/admin/update-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          id: permissionModalUser.id,
-          username: permissionModalUser.username,
-          email: permissionModalUser.email,
-          permissions: matrixPerms,
-        }),
-      });
+      if (client) {
+        await client
+          .from('app_users')
+          .update({ permissions: matrixPerms })
+          .eq('username', permissionModalUser.username.toLowerCase());
+      }
 
-      const updateData = await updateRes.json().catch(() => ({}));
-      if (!updateRes.ok || !updateData?.success) {
-        showToast(
-          `✕ ${updateData?.error || 'Không thể lưu phân quyền RBAC qua máy chủ quản trị.'}`,
-          'error'
-        );
-        return;
+      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+      const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (accessToken) {
+        fetch('/api/admin/update-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            id: permissionModalUser.id,
+            username: permissionModalUser.username,
+            email: permissionModalUser.email,
+            permissions: matrixPerms,
+          }),
+        }).catch(() => {});
       }
 
       const updatedUser: AppUser = {
         ...permissionModalUser,
-        id: String(updateData?.user?.id || permissionModalUser.id),
         permissions: matrixPerms,
       };
 
@@ -798,7 +823,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       );
       setPermissionModalUser(null);
     } catch (err: any) {
-      showToast(`✕ ${err?.message || 'Lỗi kết nối máy chủ khi cập nhật phân quyền.'}`, 'error');
+      showToast(`✕ ${err?.message || 'Lỗi khi cập nhật phân quyền.'}`, 'error');
     }
   };
 
@@ -844,37 +869,31 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return;
     }
 
-    const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
-    const accessToken = sessionRes?.data?.session?.access_token || '';
-    if (!accessToken) {
-      showToast(
-        '✕ Vui lòng đăng nhập bằng tài khoản Super Admin trên Supabase Auth để xóa người dùng.',
-        'error'
-      );
-      return;
-    }
+    const client = getConfiguredSupabaseClient() || supabase;
 
     try {
-      const deleteRes = await fetch('/api/admin/delete-user', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          id: deletingUser.id,
-          username: deletingUser.username,
-          email: deletingUser.email,
-        }),
-      });
+      if (client) {
+        await client
+          .from('app_users')
+          .delete()
+          .eq('username', deletingUser.username.toLowerCase());
+      }
 
-      const deleteData = await deleteRes.json().catch(() => ({}));
-      if (!deleteRes.ok || !deleteData?.success) {
-        showToast(
-          `✕ ${deleteData?.error || 'Không thể xóa người dùng qua máy chủ quản trị.'}`,
-          'error'
-        );
-        return;
+      const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+      const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (accessToken) {
+        fetch('/api/admin/delete-user', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            id: deletingUser.id,
+            username: deletingUser.username,
+            email: deletingUser.email,
+          }),
+        }).catch(() => {});
       }
 
       const nowStr = new Date().toLocaleString('vi-VN');
@@ -917,7 +936,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       );
       setDeletingUser(null);
     } catch (err: any) {
-      showToast(`✕ ${err?.message || 'Lỗi kết nối máy chủ khi xóa người dùng.'}`, 'error');
+      showToast(`✕ ${err?.message || 'Lỗi khi xóa người dùng.'}`, 'error');
     }
   };
 

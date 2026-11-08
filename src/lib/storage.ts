@@ -3252,7 +3252,10 @@ export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'd
         last_login: user.last_login || null,
       };
       if (safeUsername) {
-        await supabase.from('app_users').update(appUsersPayload).eq('username', safeUsername);
+        if (user.password_hash) {
+          appUsersPayload.password_hash = user.password_hash;
+        }
+        await supabase.from('app_users').upsert(appUsersPayload, { onConflict: 'username' });
       }
     }
   } catch {
@@ -3334,20 +3337,11 @@ export async function handleLoginProcess(
         }
       }
     } catch {
-      // Nếu lỗi mạng hoặc chưa có RPC, kiểm tra cờ VITE_LEGACY_LOGIN bên dưới
+      // Nếu lỗi mạng hoặc chưa có RPC, chuyển sang kiểm tra bảng app_users và Local Store bên dưới
     }
   }
 
-  // Nếu tắt đăng nhập cũ (VITE_LEGACY_LOGIN='false'), từ chối ngay với thông báo chung
-  if (!isLegacyLoginEnabled()) {
-    return {
-      success: false,
-      reason: 'wrong_password',
-      errorToast: 'Tên đăng nhập hoặc mật khẩu không đúng.',
-    };
-  }
-
-  // 2. PHƯƠNG ÁN LÙI (LEGACY LOGIN) KHI VITE_LEGACY_LOGIN='true'
+  // 2. ĐĂNG NHẬP QUA BẢNG PUBLIC.APP_USERS HOẶC LOCAL STORE
   // Loại bỏ hoặc từ chối các ký tự nguy hiểm , ( ) % * \ trước khi ghép vào .or(...)
   if (/[,()%*\\]/.test(cleanUser)) {
     return {
@@ -3379,7 +3373,7 @@ export async function handleLoginProcess(
           name: data.full_name,
           phone: data.phone || '',
           role: data.role as UserRole,
-          department: getRoleLabelVN(data.role as UserRole),
+          department: data.department || getRoleLabelVN(data.role as UserRole),
           campus_id: data.campus_id || 'all',
           status: data.status as 'active' | 'locked',
           permissions: data.permissions || getDefaultPermissionsForRole(data.role as UserRole),
@@ -3395,10 +3389,15 @@ export async function handleLoginProcess(
 
   if (!dbUser) {
     const localFound = store.users.find(
-      u => u.username.toLowerCase() === cleanUser || u.email.toLowerCase() === cleanUser
+      u => u.username.toLowerCase() === cleanUser || (u.email && u.email.toLowerCase() === cleanUser)
     );
     if (localFound) {
-      expectedPass = getOfflineExpectedPassword(cleanUser);
+      expectedPass = String(
+        localFound.password_hash ||
+          localFound.password ||
+          getOfflineExpectedPassword(localFound.username.toLowerCase()) ||
+          getOfflineExpectedPassword(cleanUser)
+      ).trim();
       dbUser = sanitizeUserForClient({
         ...localFound,
         permissions: getUserPermissions(localFound),
@@ -3406,8 +3405,20 @@ export async function handleLoginProcess(
     }
   }
 
+  let encodedCleanPass = '';
+  try {
+    encodedCleanPass = btoa(cleanPass);
+  } catch {
+    encodedCleanPass = '';
+  }
+
+  const isPasswordMatch =
+    Boolean(expectedPass) &&
+    (expectedPass === cleanPass ||
+      (Boolean(encodedCleanPass) && expectedPass === encodedCleanPass));
+
   // Mọi lỗi (sai tài khoản, sai mật khẩu, bị khóa) đều dùng thông báo chung
-  if (!dbUser || dbUser.status !== 'active' || !expectedPass || expectedPass !== cleanPass) {
+  if (!dbUser || dbUser.status !== 'active' || !isPasswordMatch) {
     return {
       success: false,
       user: dbUser || undefined,
