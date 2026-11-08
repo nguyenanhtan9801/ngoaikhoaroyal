@@ -78,6 +78,38 @@ app.get('/api/whoami', (req: Request, res: Response) => {
 const DEFAULT_SERVER_SUPABASE_URL = 'https://deuuzrjpfcabfclwaqph.supabase.co';
 const DEFAULT_SERVER_SUPABASE_KEY = 'sb_publishable_SHwnK37LokxsP9zVNFSf9Q_qCMxjlat';
 
+function resolveActiveServerSupabaseUrl(): string {
+  const rawUrl =
+    sanitizeServerSupabaseUrl(process.env.VITE_SUPABASE_URL) ||
+    sanitizeServerSupabaseUrl(process.env.SUPABASE_URL) ||
+    DEFAULT_SERVER_SUPABASE_URL;
+  return rawUrl.toLowerCase().includes('wobszxqzlalzcjcfbzhq')
+    ? DEFAULT_SERVER_SUPABASE_URL
+    : rawUrl;
+}
+
+function getSupabaseProjectRefFromUrl(urlStr: string): string {
+  try {
+    const u = new URL(urlStr);
+    const hostParts = u.hostname.split('.');
+    return hostParts[0] || '';
+  } catch {
+    const match = String(urlStr || '').match(/^https?:\/\/([^./]+)\./i);
+    return match?.[1] || '';
+  }
+}
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  const activeUrl = resolveActiveServerSupabaseUrl();
+  res.json({
+    ok: true,
+    env: process.env.NODE_ENV || 'development',
+    supabaseProjectRef: getSupabaseProjectRefFromUrl(activeUrl),
+    serviceRoleConfigured: hasRealServiceRoleKey(),
+    adminRoutes: true,
+  });
+});
+
 const VALID_USER_ROLES = new Set<string>([
   'super_admin',
   'campus_manager',

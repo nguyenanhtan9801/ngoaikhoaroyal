@@ -48,6 +48,7 @@ import {
 import { isUserSuperAdmin } from '../../lib/permissions';
 import { showToast } from '../../lib/toast';
 import { supabase } from '../../supabaseClient';
+import { apiFetchJson } from '../../lib/apiClient';
 
 interface UserManagementTabProps {
   store: AppStore;
@@ -325,7 +326,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           return;
         }
 
-        const updateRes = await fetch('/api/admin/update-user', {
+        const updateResult = await apiFetchJson('/api/admin/update-user', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -343,18 +344,18 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
             permissions: effectivePermissions,
           }),
         });
-        const updateData = await updateRes.json().catch(() => ({} as any));
-        if (!updateRes.ok || !updateData?.success) {
+        const updateData = updateResult.data;
+        if (!updateResult.ok || !updateData?.success) {
           showToast(
             '✕ Không thể cập nhật tài khoản: ' +
-              (updateData?.error || `Lỗi máy chủ HTTP ${updateRes.status}`),
+              (updateResult.errorMessage || updateData?.error || `Lỗi máy chủ HTTP ${updateResult.status}`),
             'error'
           );
           return;
         }
 
         if (cleanPassword) {
-          const resetRes = await fetch('/api/admin/reset-password', {
+          const resetResult = await apiFetchJson('/api/admin/reset-password', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -369,11 +370,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
               newPassword: cleanPassword,
             }),
           });
-          const resetData = await resetRes.json().catch(() => ({} as any));
-          if (!resetRes.ok || !resetData?.success) {
+          const resetData = resetResult.data;
+          if (!resetResult.ok || !resetData?.success) {
             showToast(
               '✕ Đã cập nhật thông tin nhưng không thể đặt lại mật khẩu: ' +
-                (resetData?.error || `Lỗi máy chủ HTTP ${resetRes.status}`),
+                (resetResult.errorMessage || resetData?.error || `Lỗi máy chủ HTTP ${resetResult.status}`),
               'error'
             );
             return;
@@ -468,34 +469,36 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           return;
         }
 
-        const resp = await fetch('/api/admin/create-user', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            username: cleanUsername,
-            email: cleanEmail,
-            password: cleanPassword,
-            full_name: cleanName,
-            phone: formPhone.trim(),
-            department:
-              formDepartment.trim() ||
-              (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
-            campus_id: normalizedCampus,
-            role: formRole || 'teacher',
-            status: formStatus || 'active',
-            linked_teacher_id: cleanLinkedTeacherId,
-            permissions: effectivePermissions,
-          }),
-        });
+        const { ok, status, data: createResult, errorMessage } = await apiFetchJson(
+          '/api/admin/create-user',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              username: cleanUsername,
+              email: cleanEmail,
+              password: cleanPassword,
+              full_name: cleanName,
+              phone: formPhone.trim(),
+              department:
+                formDepartment.trim() ||
+                (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
+              campus_id: normalizedCampus,
+              role: formRole || 'teacher',
+              status: formStatus || 'active',
+              linked_teacher_id: cleanLinkedTeacherId,
+              permissions: effectivePermissions,
+            }),
+          }
+        );
 
-        const createResult = await resp.json().catch(() => ({} as any));
-        if (!resp.ok || !createResult?.success || !createResult?.user?.id) {
+        if (!ok || !createResult?.success || !createResult?.user?.id) {
           showToast(
             '✕ Không thể tạo tài khoản: ' +
-              (createResult?.error || `Lỗi máy chủ HTTP ${resp.status}`),
+              (errorMessage || createResult?.error || `Lỗi máy chủ HTTP ${status}`),
             'error'
           );
           return;
@@ -611,7 +614,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         return;
       }
 
-      const res = await fetch('/api/admin/update-user', {
+      const { ok, status, data: result, errorMessage } = await apiFetchJson('/api/admin/update-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -624,10 +627,10 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           status: nextStatus,
         }),
       });
-      const result = await res.json().catch(() => ({} as any));
-      if (!res.ok || !result?.success) {
+      if (!ok || !result?.success) {
         showToast(
-          '✕ ' + (result?.error || `Không thể cập nhật trạng thái tài khoản (HTTP ${res.status}).`),
+          '✕ ' +
+            (errorMessage || result?.error || `Không thể cập nhật trạng thái tài khoản (HTTP ${status}).`),
           'error'
         );
         return;
@@ -705,7 +708,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         return;
       }
 
-      const res = await fetch('/api/admin/update-user', {
+      const { ok, status, data: result, errorMessage } = await apiFetchJson('/api/admin/update-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -718,10 +721,10 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           permissions: matrixPerms,
         }),
       });
-      const result = await res.json().catch(() => ({} as any));
-      if (!res.ok || !result?.success) {
+      if (!ok || !result?.success) {
         showToast(
-          '✕ ' + (result?.error || `Không thể cập nhật phân quyền (HTTP ${res.status}).`),
+          '✕ ' +
+            (errorMessage || result?.error || `Không thể cập nhật phân quyền (HTTP ${status}).`),
           'error'
         );
         return;
@@ -822,7 +825,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         return;
       }
 
-      const res = await fetch('/api/admin/delete-user', {
+      const { ok, status, data: result, errorMessage } = await apiFetchJson('/api/admin/delete-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -834,10 +837,10 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           email: deletingUser.email,
         }),
       });
-      const result = await res.json().catch(() => ({} as any));
-      if (!res.ok || !result?.success) {
+      if (!ok || !result?.success) {
         showToast(
-          '✕ ' + (result?.error || `Không thể xóa tài khoản người dùng (HTTP ${res.status}).`),
+          '✕ ' +
+            (errorMessage || result?.error || `Không thể xóa tài khoản người dùng (HTTP ${status}).`),
           'error'
         );
         return;

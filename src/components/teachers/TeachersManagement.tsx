@@ -47,6 +47,7 @@ import {
 } from '../../lib/storage';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
+import { apiFetchJson } from '../../lib/apiClient';
 
 interface TeachersManagementProps {
   store: AppStore;
@@ -516,48 +517,42 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           academic_attendance: true,
         };
 
-        try {
-          const headers = await getAdminAuthHeaders();
-          const resp = await fetch('/api/admin/create-user', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              username: rawUsername,
-              email: loginEmail,
-              password: cleanPass,
-              full_name: cleanName,
-              phone: formData.phone.trim(),
-              department: 'Đội ngũ Giáo viên Ngoại khóa',
-              campus_id: formData.campus_id || 'all',
-              role: 'teacher',
-              status: 'active',
-              linked_teacher_id: teacherId,
-              permissions: teacherPermissions,
-            }),
-          });
-          const result = await resp.json().catch(() => ({} as any));
-          if (!resp.ok || !result?.success || !result?.user?.id) {
-            accountErrorMessage = result?.error || `Máy chủ trả về lỗi HTTP ${resp.status}.`;
-          } else {
-            const serverUser = result.user;
-            createdUserAccount = {
-              id: String(serverUser.id),
-              username: String(serverUser.username || rawUsername),
-              email: loginEmail,
-              full_name: cleanName,
-              phone: formData.phone.trim(),
-              role: 'teacher',
-              department: 'Đội ngũ Giáo viên Ngoại khóa',
-              campus_id: (serverUser.campus_id || formData.campus_id || 'all') as any,
-              status: 'active',
-              linked_teacher_id: teacherId,
-              permissions: serverUser.permissions || teacherPermissions,
-              created_at: new Date().toISOString(),
-            };
-          }
-        } catch (netErr: any) {
-          accountErrorMessage =
-            'Không kết nối được máy chủ quản trị: ' + (netErr?.message || 'lỗi mạng');
+        const headers = await getAdminAuthHeaders();
+        const { ok, data: result, errorMessage } = await apiFetchJson('/api/admin/create-user', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            username: rawUsername,
+            email: loginEmail,
+            password: cleanPass,
+            full_name: cleanName,
+            phone: formData.phone.trim(),
+            department: 'Đội ngũ Giáo viên Ngoại khóa',
+            campus_id: formData.campus_id || 'all',
+            role: 'teacher',
+            status: 'active',
+            linked_teacher_id: teacherId,
+            permissions: teacherPermissions,
+          }),
+        });
+        if (!ok || !result?.success || !result?.user?.id) {
+          accountErrorMessage = errorMessage || result?.error || 'Không thể tạo tài khoản đăng nhập.';
+        } else {
+          const serverUser = result.user;
+          createdUserAccount = {
+            id: String(serverUser.id),
+            username: String(serverUser.username || rawUsername),
+            email: loginEmail,
+            full_name: cleanName,
+            phone: formData.phone.trim(),
+            role: 'teacher',
+            department: 'Đội ngũ Giáo viên Ngoại khóa',
+            campus_id: (serverUser.campus_id || formData.campus_id || 'all') as any,
+            status: 'active',
+            linked_teacher_id: teacherId,
+            permissions: serverUser.permissions || teacherPermissions,
+            created_at: new Date().toISOString(),
+          };
         }
       }
 
@@ -816,7 +811,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
       if (linkedUser) {
         const headers = await getAdminAuthHeaders();
-        const res = await fetch('/api/admin/update-user', {
+        const { ok, errorMessage } = await apiFetchJson('/api/admin/update-user', {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -826,9 +821,8 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             linked_teacher_id: lockConfirmTeacher.id,
           }),
         });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          console.warn('[Lock Teacher Account Warning]:', errData?.error);
+        if (!ok) {
+          console.warn('[Lock Teacher Account Warning]:', errorMessage);
         }
       }
 
@@ -921,14 +915,14 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       const linkedUser = getLinkedUserForTeacher(targetTeacher.id);
       if (linkedUser) {
         const headers = await getAdminAuthHeaders();
-        await fetch('/api/admin/delete-user', {
+        await apiFetchJson('/api/admin/delete-user', {
           method: 'POST',
           headers,
           body: JSON.stringify({
             id: linkedUser.id,
             username: linkedUser.username,
           }),
-        }).catch(() => {});
+        });
       }
 
       if (supabase) {
@@ -983,7 +977,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     try {
       const targetUser = resetPasswordTeacher.linkedUser;
       const headers = await getAdminAuthHeaders();
-      const res = await fetch('/api/admin/reset-password', {
+      const { ok, data, errorMessage } = await apiFetchJson('/api/admin/reset-password', {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -993,9 +987,10 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           newPassword: cleanPass,
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.success) {
-        throw new Error(data?.error || 'Không thể đặt lại mật khẩu cho tài khoản giáo viên.');
+      if (!ok || !data?.success) {
+        throw new Error(
+          errorMessage || data?.error || 'Không thể đặt lại mật khẩu cho tài khoản giáo viên.'
+        );
       }
 
       showToast(
