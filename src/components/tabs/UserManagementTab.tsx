@@ -40,7 +40,6 @@ import {
   getPermissionSummaryText,
   createAuditRecord,
   appendAuditLog,
-  syncAppUserToSupabase,
   sanitizeUserForClient,
   getConfiguredSupabaseClient,
   APP_USERS_SQL_DDL,
@@ -48,7 +47,7 @@ import {
 import { isUserSuperAdmin } from '../../lib/permissions';
 import { showToast } from '../../lib/toast';
 import { supabase } from '../../supabaseClient';
-import { apiFetchJson, createNewUserAccount } from '../../lib/apiClient';
+import { apiFetchJson, apiFetchJsonOrThrow } from '../../lib/apiClient';
 
 interface UserManagementTabProps {
   store: AppStore;
@@ -301,8 +300,8 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         return;
       }
 
-      if (cleanPassword && cleanPassword.length < 6) {
-        showToast('✕ Mật khẩu đặt lại bắt buộc phải có tối thiểu 6 ký tự.', 'error');
+      if (cleanPassword && cleanPassword.length < 10) {
+        showToast('✕ Mật khẩu đặt lại bắt buộc phải có tối thiểu 10 ký tự.', 'error');
         return;
       }
 
@@ -321,12 +320,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
         const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
         const accessToken = sessionRes?.data?.session?.access_token || '';
+        if (!accessToken) {
+          showToast('✕ Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'error');
+          return;
+        }
 
-        const updateResult = await apiFetchJson('/api/admin/update-user', {
+        const updateResult = await apiFetchJsonOrThrow('/api/admin/update-user', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+            Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({
             id: editingUser.id,
@@ -341,13 +344,18 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           }),
         });
         const updateData = updateResult.data;
+        if (!updateData?.success) {
+          throw new Error(
+            updateResult.errorMessage || updateData?.error || `Lỗi máy chủ HTTP ${updateResult.status}`
+          );
+        }
 
         if (cleanPassword) {
-          await apiFetchJson('/api/admin/reset-password', {
+          const resetResult = await apiFetchJsonOrThrow('/api/admin/reset-password', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+              Authorization: `Bearer ${accessToken}`,
             },
             body: JSON.stringify({
               id: editingUser.id,
@@ -358,6 +366,12 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
               newPassword: cleanPassword,
             }),
           });
+          const resetData = resetResult.data;
+          if (!resetData?.success) {
+            throw new Error(
+              resetResult.errorMessage || resetData?.error || `Lỗi máy chủ HTTP ${resetResult.status}`
+            );
+          }
         }
 
         const updatedUserClient: AppUser = sanitizeUserForClient({
@@ -376,11 +390,6 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           status: formStatus,
           linked_teacher_id: formRole === 'teacher' ? formLinkedTeacherId.trim() || undefined : undefined,
           permissions: effectivePermissions,
-        });
-
-        await syncAppUserToSupabase({
-          ...updatedUserClient,
-          ...(cleanPassword ? { password: btoa(cleanPassword), password_hash: btoa(cleanPassword) } : {}),
         });
 
         const updateLog = createAuditRecord(
@@ -420,13 +429,13 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         showToast(`✓ Đã cập nhật hồ sơ tài khoản @${updatedUserClient.username} thành công!`, 'success');
       } catch (err: any) {
         console.error('Lỗi cập nhật tài khoản:', err);
-        showToast('Lỗi cập nhật tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
+        showToast('✕ Không thể cập nhật tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
         return;
       }
     } else {
-      // Tạo tài khoản mới trực tiếp qua Supabase Client (bảng app_users + đồng bộ Store) không yêu cầu máy chủ Express
-      if (cleanPassword.length < 6) {
-        showToast('✕ Mật khẩu khởi tạo bắt buộc phải có tối thiểu 6 ký tự.', 'error');
+      // Tạo tài khoản qua máy chủ: POST /api/admin/create-user (Supabase Auth + bảng profiles)
+      if (cleanPassword.length < 10) {
+        showToast('✕ Mật khẩu khởi tạo bắt buộc phải có tối thiểu 10 ký tự.', 'error');
         return;
       }
 
@@ -446,60 +455,50 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         formRole === 'teacher' ? formLinkedTeacherId.trim() : formLinkedTeacherId.trim() || undefined;
 
       try {
-        const directRes = await createNewUserAccount(
+        const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+        const accessToken = sessionRes?.data?.session?.access_token || '';
+        if (!accessToken) {
+          showToast('✕ Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại rồi tạo tài khoản.', 'error');
+          return;
+        }
+
+        const { ok, status, data: createResult, errorMessage } = await apiFetchJson(
+          '/api/admin/create-user',
           {
-            username: cleanUsername,
-            email: cleanEmail,
-            password: cleanPassword,
-            full_name: cleanName,
-            phone: formPhone.trim(),
-            department:
-              formDepartment.trim() ||
-              (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
-            campus_id: normalizedCampus,
-            role: formRole || 'teacher',
-            status: formStatus || 'active',
-            linked_teacher_id: cleanLinkedTeacherId,
-            permissions: effectivePermissions,
-          },
-          onUpdateStore
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              username: cleanUsername,
+              email: cleanEmail,
+              password: cleanPassword,
+              full_name: cleanName,
+              phone: formPhone.trim(),
+              department:
+                formDepartment.trim() ||
+                (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
+              campus_id: normalizedCampus,
+              role: formRole || 'teacher',
+              status: formStatus || 'active',
+              linked_teacher_id: cleanLinkedTeacherId,
+              permissions: effectivePermissions,
+            }),
+          }
         );
 
-        const createdUser = directRes.data;
-        const createdUserId = String(createdUser.id);
-        const createdUsername = String(createdUser.username || cleanUsername);
-
-        // Nếu có phiên Supabase Auth và máy chủ Express đang chạy thì đồng bộ thêm sang Supabase Auth (không chặn nếu không có Express)
-        try {
-          const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
-          const accessToken = sessionRes?.data?.session?.access_token || '';
-          if (accessToken) {
-            await apiFetchJson('/api/admin/create-user', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${accessToken}`,
-              },
-              body: JSON.stringify({
-                username: cleanUsername,
-                email: cleanEmail,
-                password: cleanPassword,
-                full_name: cleanName,
-                phone: formPhone.trim(),
-                department:
-                  formDepartment.trim() ||
-                  (formRole === 'teacher' ? 'Bộ môn Ngoại khóa' : getRoleLabelVN(formRole)),
-                campus_id: normalizedCampus,
-                role: formRole || 'teacher',
-                status: formStatus || 'active',
-                linked_teacher_id: cleanLinkedTeacherId,
-                permissions: effectivePermissions,
-              }),
-            });
-          }
-        } catch {
-          // Bỏ qua nếu không có máy chủ Express
+        if (!ok || !createResult?.success || !createResult?.user?.id) {
+          showToast(
+            '✕ Không thể tạo tài khoản: ' +
+              (errorMessage || createResult?.error || `Lỗi máy chủ HTTP ${status}`),
+            'error'
+          );
+          return;
         }
+
+        const createdUserId = String(createResult.user.id);
+        const createdUsername = String(createResult.user.username || cleanUsername);
 
         const log = createAuditRecord(
           'USER_CREATE',
@@ -540,7 +539,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           campus_id: normalizedCampus,
           status: formStatus || 'active',
           linked_teacher_id: cleanLinkedTeacherId,
-          permissions: createdUser.permissions || effectivePermissions,
+          permissions: createResult.user.permissions || effectivePermissions,
           created_at: new Date().toISOString(),
         });
 
@@ -571,7 +570,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         );
       } catch (err: any) {
         console.error('Lỗi tạo tài khoản:', err);
-        showToast('Lỗi tạo tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
+        showToast('✕ Không thể tạo tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
         return;
       }
     }
@@ -603,12 +602,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     try {
       const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
       const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (!accessToken) {
+        showToast('✕ Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'error');
+        return;
+      }
 
-      await apiFetchJson('/api/admin/update-user', {
+      const { status, data: result, errorMessage } = await apiFetchJsonOrThrow('/api/admin/update-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           id: targetUser.id,
@@ -617,12 +620,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           status: nextStatus,
         }),
       });
+      if (!result?.success) {
+        throw new Error(
+          errorMessage || result?.error || `Không thể cập nhật trạng thái tài khoản (HTTP ${status}).`
+        );
+      }
 
       const updatedUser: AppUser = {
         ...targetUser,
         status: nextStatus,
       };
-      await syncAppUserToSupabase(updatedUser);
 
       const nowStr = new Date().toLocaleString('vi-VN');
       const actorName = currentUser?.full_name || 'Quản trị viên';
@@ -686,12 +693,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     try {
       const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
       const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (!accessToken) {
+        showToast('✕ Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'error');
+        return;
+      }
 
-      await apiFetchJson('/api/admin/update-user', {
+      const { status, data: result, errorMessage } = await apiFetchJsonOrThrow('/api/admin/update-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           id: permissionModalUser.id,
@@ -700,12 +711,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           permissions: matrixPerms,
         }),
       });
+      if (!result?.success) {
+        throw new Error(
+          errorMessage || result?.error || `Không thể cập nhật phân quyền (HTTP ${status}).`
+        );
+      }
 
       const updatedUser: AppUser = {
         ...permissionModalUser,
         permissions: matrixPerms,
       };
-      await syncAppUserToSupabase(updatedUser);
 
       const nowStr = new Date().toLocaleString('vi-VN');
       const actorName = currentUser?.full_name || 'Quản trị viên';
@@ -792,12 +807,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     try {
       const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
       const accessToken = sessionRes?.data?.session?.access_token || '';
+      if (!accessToken) {
+        showToast('✕ Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'error');
+        return;
+      }
 
-      await apiFetchJson('/api/admin/delete-user', {
+      const { status, data: result, errorMessage } = await apiFetchJsonOrThrow('/api/admin/delete-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           id: deletingUser.id,
@@ -805,6 +824,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           email: deletingUser.email,
         }),
       });
+      if (!result?.success) {
+        throw new Error(
+          errorMessage || result?.error || `Không thể xóa tài khoản người dùng (HTTP ${status}).`
+        );
+      }
 
       const nowStr = new Date().toLocaleString('vi-VN');
       const actorName = currentUser?.full_name || 'Quản trị viên';

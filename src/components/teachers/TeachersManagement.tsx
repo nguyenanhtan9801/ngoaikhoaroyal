@@ -47,7 +47,7 @@ import {
 } from '../../lib/storage';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
-import { apiFetchJson, createNewUserAccount } from '../../lib/apiClient';
+import { apiFetchJsonOrThrow } from '../../lib/apiClient';
 
 interface TeachersManagementProps {
   store: AppStore;
@@ -65,20 +65,15 @@ function getTodayIso(): string {
 }
 
 async function getAdminAuthHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  try {
-    if (supabase?.auth) {
-      const { data } = await supabase.auth.getSession();
-      if (data?.session?.access_token) {
-        headers.Authorization = `Bearer ${data.session.access_token}`;
-      }
-    }
-  } catch {
-    // ignore
+  const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
+  const accessToken = sessionRes?.data?.session?.access_token || '';
+  if (!accessToken) {
+    throw new Error('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
   }
-  return headers;
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken}`,
+  };
 }
 
 export const TeachersManagement: React.FC<TeachersManagementProps> = ({
@@ -491,7 +486,8 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         }
       }
 
-      // Tạo tài khoản đăng nhập trực tiếp vào Supabase (app_users) & đồng bộ Local Store, không phụ thuộc máy chủ Express
+      // Tạo tài khoản đăng nhập: BẮT BUỘC đi qua máy chủ (/api/admin/create-user) để tạo user trong Supabase Auth + bảng profiles.
+      // Không ghi trực tiếp vào app_users hay cột username/user_id của bảng public.teachers trên Supabase.
       let createdUserAccount: AppUser | null = null;
       let accountErrorMessage = '';
       if (formData.create_login_account && !existingLinkedUser) {
@@ -517,8 +513,14 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         };
 
         try {
-          const directRes = await createNewUserAccount(
-            {
+          if (cleanPass.length < 10) {
+            throw new Error('Mật khẩu khởi tạo cho tài khoản giáo viên bắt buộc tối thiểu 10 ký tự.');
+          }
+          const headers = await getAdminAuthHeaders();
+          const { data: result, errorMessage } = await apiFetchJsonOrThrow('/api/admin/create-user', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
               username: rawUsername,
               email: loginEmail,
               password: cleanPass,
@@ -530,10 +532,12 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
               status: 'active',
               linked_teacher_id: teacherId,
               permissions: teacherPermissions,
-            },
-            onUpdateStore
-          );
-          const serverUser = directRes.data;
+            }),
+          });
+          if (!result?.success || !result?.user?.id) {
+            throw new Error(errorMessage || result?.error || 'Không thể tạo tài khoản đăng nhập.');
+          }
+          const serverUser = result.user;
           createdUserAccount = {
             id: String(serverUser.id),
             username: String(serverUser.username || rawUsername),
@@ -810,7 +814,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
       if (linkedUser) {
         const headers = await getAdminAuthHeaders();
-        const { ok, errorMessage } = await apiFetchJson('/api/admin/update-user', {
+        const { data: result, errorMessage } = await apiFetchJsonOrThrow('/api/admin/update-user', {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -820,9 +824,16 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             linked_teacher_id: lockConfirmTeacher.id,
           }),
         });
-        if (!ok) {
-          console.warn('[Lock Teacher Account Warning]:', errorMessage);
+        if (!result?.success) {
+          throw new Error(errorMessage || result?.error || 'Không thể cập nhật trạng thái tài khoản giáo viên.');
         }
+      }
+
+      if (supabase) {
+        await supabase
+          .from('teachers')
+          .update({ status: nextStatus, updated_at: new Date().toISOString() })
+          .eq('id', lockConfirmTeacher.id);
       }
 
       onUpdateStore(prev => {
@@ -867,6 +878,11 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         'success'
       );
       setLockConfirmTeacher(null);
+    } catch (err: any) {
+      showToast(
+        `✕ ${err?.message || 'Không thể khóa/mở khóa tài khoản giáo viên.'}`,
+        'error'
+      );
     } finally {
       setIsLockingBusy(false);
     }
@@ -914,7 +930,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       const linkedUser = getLinkedUserForTeacher(targetTeacher.id);
       if (linkedUser) {
         const headers = await getAdminAuthHeaders();
-        await apiFetchJson('/api/admin/delete-user', {
+        const { data: result, errorMessage } = await apiFetchJsonOrThrow('/api/admin/delete-user', {
           method: 'POST',
           headers,
           body: JSON.stringify({
@@ -922,6 +938,9 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             username: linkedUser.username,
           }),
         });
+        if (!result?.success) {
+          throw new Error(errorMessage || result?.error || 'Không thể xóa tài khoản đăng nhập liên kết.');
+        }
       }
 
       if (supabase) {
@@ -955,6 +974,8 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
       showToast(`Đã xóa hồ sơ giáo viên ${targetTeacher.name} thành công.`, 'success');
       setDeleteConfirmState(null);
+    } catch (err: any) {
+      showToast(`✕ ${err?.message || 'Lỗi khi xóa hồ sơ giáo viên.'}`, 'error');
     } finally {
       setIsDeletingBusy(false);
     }
@@ -976,7 +997,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     try {
       const targetUser = resetPasswordTeacher.linkedUser;
       const headers = await getAdminAuthHeaders();
-      const { ok, data, errorMessage } = await apiFetchJson('/api/admin/reset-password', {
+      const { data, errorMessage } = await apiFetchJsonOrThrow('/api/admin/reset-password', {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -986,7 +1007,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           newPassword: cleanPass,
         }),
       });
-      if (!ok || !data?.success) {
+      if (!data?.success) {
         throw new Error(
           errorMessage || data?.error || 'Không thể đặt lại mật khẩu cho tài khoản giáo viên.'
         );

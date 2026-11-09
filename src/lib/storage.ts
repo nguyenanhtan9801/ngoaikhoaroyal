@@ -3219,45 +3219,11 @@ export async function fetchAllProfilesFromSupabase(): Promise<AppUser[]> {
 }
 
 /**
- * Đồng bộ bảng phụ `app_users` (legacy). Tuyệt đối KHÔNG ghi hoặc xóa trực tiếp bảng `profiles` từ trình duyệt;
- * mọi thao tác thêm/sửa/khóa/xóa trên `profiles` phải đi qua các endpoint `/api/admin/*` ở phía server.
+ * Không ghi trực tiếp bảng `profiles` hay `app_users` từ trình duyệt;
+ * mọi thao tác thêm/sửa/khóa/xóa tài khoản phải đi qua các endpoint `/api/admin/*` ở phía server.
  */
-export async function syncAppUserToSupabase(user: AppUser, action: 'upsert' | 'delete' = 'upsert'): Promise<void> {
-  if (!isLegacyLoginEnabled()) return;
-  const supabase = getConfiguredSupabaseClient();
-  if (!supabase) return;
-  try {
-    const safeUsername = String(user.username || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[,()%*\\]/g, '');
-    if (action === 'delete') {
-      if (safeUsername) {
-        await supabase.from('app_users').delete().eq('username', safeUsername);
-      }
-    } else {
-      const normalizedCampus =
-        user.campus_id === 'camp_pmh' ? 'pmh' : user.campus_id === 'camp_pl' ? 'pl' : user.campus_id;
-      const appUsersPayload: Record<string, any> = {
-        username: safeUsername,
-        full_name: user.full_name,
-        role: user.role,
-        campus_id: normalizedCampus,
-        status: user.status,
-        permissions: getUserPermissions(user),
-        email: user.email.toLowerCase(),
-        phone: user.phone || '',
-        department: user.department || getRoleLabelVN(user.role),
-        linked_teacher_id: user.linked_teacher_id || null,
-        last_login: user.last_login || null,
-      };
-      if (safeUsername) {
-        await supabase.from('app_users').update(appUsersPayload).eq('username', safeUsername);
-      }
-    }
-  } catch {
-    // Fallback gracefully to local store when Supabase table is not yet provisioned
-  }
+export async function syncAppUserToSupabase(_user: AppUser, _action: 'upsert' | 'delete' = 'upsert'): Promise<void> {
+  return;
 }
 
 export async function handleLoginProcess(
@@ -3348,7 +3314,6 @@ export async function handleLoginProcess(
   }
 
   // 2. PHƯƠNG ÁN LÙI (LEGACY LOGIN) KHI VITE_LEGACY_LOGIN='true'
-  // Loại bỏ hoặc từ chối các ký tự nguy hiểm , ( ) % * \ trước khi ghép vào .or(...)
   if (/[,()%*\\]/.test(cleanUser)) {
     return {
       success: false,
@@ -3356,62 +3321,22 @@ export async function handleLoginProcess(
       errorToast: 'Tên đăng nhập hoặc mật khẩu không đúng.',
     };
   }
-  const safeCleanUser = cleanUser.replace(/[,()%*\\]/g, '');
 
   let dbUser: AppUser | null = null;
   let expectedPass = '';
 
-  if (supabase && safeCleanUser) {
-    try {
-      const { data, error } = await supabase
-        .from('app_users')
-        .select('*')
-        .or(`username.eq.${safeCleanUser},email.eq.${safeCleanUser}`)
-        .maybeSingle();
-
-      if (!error && data) {
-        expectedPass = String(data.password_hash || data.password || '').trim();
-        dbUser = sanitizeUserForClient({
-          id: data.id,
-          username: data.username,
-          email: data.email,
-          full_name: data.full_name,
-          name: data.full_name,
-          phone: data.phone || '',
-          role: data.role as UserRole,
-          department: getRoleLabelVN(data.role as UserRole),
-          campus_id: data.campus_id || 'all',
-          status: data.status as 'active' | 'locked',
-          permissions: data.permissions || getDefaultPermissionsForRole(data.role as UserRole),
-          linked_teacher_id: data.linked_teacher_id || undefined,
-          created_at: data.created_at || new Date().toISOString(),
-          last_login: data.last_login || undefined,
-        });
-      }
-    } catch {
-      // Fallback to local store.users
-    }
+  const localFound = store.users.find(
+    u => u.username.toLowerCase() === cleanUser || u.email.toLowerCase() === cleanUser
+  );
+  if (localFound) {
+    expectedPass = getOfflineExpectedPassword(cleanUser);
+    dbUser = sanitizeUserForClient({
+      ...localFound,
+      permissions: getUserPermissions(localFound),
+    });
   }
 
-  if (!dbUser) {
-    const localFound = store.users.find(
-      u => u.username.toLowerCase() === cleanUser || u.email.toLowerCase() === cleanUser
-    );
-    if (localFound) {
-      expectedPass = getOfflineExpectedPassword(cleanUser);
-      dbUser = sanitizeUserForClient({
-        ...localFound,
-        permissions: getUserPermissions(localFound),
-      });
-    }
-  }
-
-  // Mọi lỗi (sai tài khoản, sai mật khẩu, bị khóa) đều dùng thông báo chung
-  const encodedPass = typeof btoa === 'function' ? btoa(cleanPass) : '';
-  const isPasswordMatch =
-    Boolean(expectedPass) && (expectedPass === cleanPass || (encodedPass && expectedPass === encodedPass));
-
-  if (!dbUser || dbUser.status !== 'active' || !isPasswordMatch) {
+  if (!dbUser || dbUser.status !== 'active' || !expectedPass || expectedPass !== cleanPass) {
     return {
       success: false,
       user: dbUser || undefined,
@@ -3433,17 +3358,6 @@ export async function handleLoginProcess(
     permissions: getUserPermissions(dbUser),
   });
 
-  if (supabase) {
-    try {
-      await supabase
-        .from('app_users')
-        .update({ last_login: nowIso })
-        .eq('id', dbUser.id);
-    } catch {
-      // ignore
-    }
-  }
-
   saveActiveSessionUser(authenticatedUser, rememberMe);
 
   const roleLabel = getRoleLabelVN(authenticatedUser.role, authenticatedUser);
@@ -3454,86 +3368,7 @@ export async function handleLoginProcess(
   };
 }
 
-// Triển khai logic lưu tài khoản độc lập, không phụ thuộc Express:
-export async function createNewUserAccount(userData: any, onUpdateStore?: any) {
-  const client = getSupabaseClient();
-  const newUserId = userData.id || `usr_${Date.now()}`;
-  const cleanUsername = String(userData.username || '').trim().toLowerCase();
-
-  const payload = {
-    id: newUserId,
-    username: cleanUsername,
-    email: userData.email?.trim() || `${cleanUsername}@royal.edu.vn`,
-    password_hash: userData.password ? btoa(userData.password) : 'default_hash',
-    full_name: userData.full_name?.trim() || userData.username,
-    phone: userData.phone?.trim() || '',
-    role: userData.role || 'teacher',
-    department: userData.department || 'Bộ môn Ngoại khóa',
-    campus_id: userData.campus_id || 'pmh',
-    status: userData.status || 'active',
-    linked_teacher_id: userData.linked_teacher_id || null,
-    permissions: userData.permissions || {
-      can_take_attendance: true,
-      view_assigned_classes: true,
-      view_own_payroll: true,
-    },
-    updated_at: new Date().toISOString(),
-  };
-
-  // 1. Lưu vào bảng app_users trên Supabase
-  if (client) {
-    try {
-      const { error: dbErr } = await client
-        .from('app_users')
-        .upsert(payload, { onConflict: 'username' });
-
-      if (dbErr) {
-        console.warn('Cảnh báo ghi Supabase app_users:', dbErr.message);
-      }
-    } catch (err) {
-      console.warn('Cảnh báo kết nối Supabase app_users:', err);
-    }
-
-    // Nếu là tài khoản liên kết giáo viên, cập nhật ngược lại vào bảng teachers
-    if (payload.linked_teacher_id) {
-      try {
-        const { error: tchErr } = await client
-          .from('teachers')
-          .update({
-            username: payload.username,
-            user_id: newUserId,
-            email: payload.email,
-            phone: payload.phone,
-          })
-          .eq('id', payload.linked_teacher_id);
-
-        if (tchErr) {
-          await client
-            .from('teachers')
-            .update({
-              email: payload.email,
-              phone: payload.phone,
-            })
-            .eq('id', payload.linked_teacher_id);
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  // 2. Cập nhật ngay vào State của App
-  if (typeof onUpdateStore === 'function') {
-    onUpdateStore((prev: any) => ({
-      ...prev,
-      users: [...(prev.users || []).filter((u: any) => u.username !== payload.username), payload],
-      teachers: (prev.teachers || []).map((t: any) =>
-        t.id === payload.linked_teacher_id
-          ? { ...t, username: payload.username, email: payload.email, phone: payload.phone }
-          : t
-      ),
-    }));
-  }
-
-  return { success: true, data: payload };
+export async function createNewUserAccount(_userData: any, _onUpdateStore?: any): Promise<any> {
+  throw new Error('Vui lòng tạo tài khoản thông qua máy chủ quản trị (/api/admin/create-user).');
 }
+

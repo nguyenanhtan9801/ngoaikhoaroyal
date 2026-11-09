@@ -19,6 +19,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "../server.js": [
+        "./server.ts"
       ]
     },
     "allowImportingTsExtensions": true,

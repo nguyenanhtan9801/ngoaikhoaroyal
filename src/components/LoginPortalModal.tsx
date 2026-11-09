@@ -308,9 +308,16 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
       }
 
       // =======================================================================
-      // NHÁNH 2: ĐĂNG NHẬP TRỰC TIẾP QUA BẢNG app_users / LOCAL STORE
+      // NHÁNH 2: ĐĂNG NHẬP CŨ (PHƯƠNG ÁN LÙI KHI VITE_LEGACY_LOGIN='true')
       // =======================================================================
       if (!sessionUser) {
+        if (!isLegacyLoginEnabled()) {
+          const msg = registerFailedStaffLogin();
+          setStaffError(msg);
+          setIsStaffSubmitting(false);
+          return;
+        }
+
         // Trước khi ghép vào bộ lọc .or(...), từ chối hoặc loại bỏ các ký tự , ( ) % * \ trong tên đăng nhập hoặc email
         if (/[,()%*\\]/.test(inputIdentifier)) {
           const msg = registerFailedStaffLogin();
@@ -318,30 +325,12 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
           setIsStaffSubmitting(false);
           return;
         }
-        const safeLegacyIdentifier = inputIdentifier.replace(/[,()%*\\]/g, '');
 
         let user: any = null;
         let expectedPassword = '';
 
-        if (supabase && safeLegacyIdentifier) {
-          try {
-            const { data, error } = await supabase
-              .from('app_users')
-              .select('*')
-              .or(`username.ilike.${safeLegacyIdentifier},email.ilike.${safeLegacyIdentifier}`)
-              .maybeSingle();
-
-            if (!error && data) {
-              user = data;
-              expectedPassword = String(data.password_hash || data.password || '').trim();
-            }
-          } catch (sbErr) {
-            console.warn('Lỗi kết nối bảng app_users:', sbErr);
-          }
-        }
-
-        // Fallback kiểm tra danh sách nội bộ nếu Supabase offline hoặc chưa hoàn tất đồng bộ
-        if (!user && store?.users) {
+        // Kiểm tra danh sách nội bộ khi bật chế độ legacy
+        if (store?.users) {
           const local = store.users.find(
             u =>
               (u.username && u.username.toLowerCase() === inputIdentifier) ||
@@ -358,24 +347,12 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
           }
         }
 
-        const encodedInputPass = (() => {
-          try {
-            return btoa(cleanPassword);
-          } catch {
-            return '';
-          }
-        })();
-
-        const isPasswordMatched =
-          Boolean(expectedPassword) &&
-          (expectedPassword === cleanPassword ||
-            (Boolean(encodedInputPass) && expectedPassword === encodedInputPass));
-
         // Mọi lỗi (sai tài khoản, sai mật khẩu, bị khóa) đều dùng thông báo chung "Tên đăng nhập hoặc mật khẩu không đúng."
         if (
           !user ||
           String(user.status || 'active').toLowerCase() !== 'active' ||
-          !isPasswordMatched
+          !expectedPassword ||
+          expectedPassword !== cleanPassword
         ) {
           const msg = registerFailedStaffLogin();
           setStaffError(msg);
@@ -399,17 +376,6 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
           phone: user.phone || '',
           avatar_url: user.avatar_url,
         });
-
-        if (supabase && user.id) {
-          try {
-            await supabase
-              .from('app_users')
-              .update({ last_login: nowIso })
-              .eq('id', user.id);
-          } catch {
-            // noop
-          }
-        }
       }
 
       // Đăng nhập thành công: Xóa bộ đếm khóa tạm
