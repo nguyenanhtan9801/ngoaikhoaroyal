@@ -80,7 +80,6 @@ import { AuditLogsTab } from './AuditLogsTab';
 import { UserManagementTab } from './UserManagementTab';
 import { HolidayManagementView } from '../settings/HolidayManagementView';
 import { DatabaseBackupView } from '../settings/DatabaseBackupView';
-import { ServerDiagnosticsView } from '../settings/ServerDiagnosticsView';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
@@ -126,7 +125,7 @@ interface SettingsDataTabProps {
   currentRole: UserRole;
   currentUser?: AppUser | null;
   onUpdateStore: (updater: (prev: AppStore) => AppStore) => void;
-  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs' | 'backup' | 'server_diagnostics';
+  initialSection?: 'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs' | 'backup';
   initialSubTab?: 'categories' | 'subjects' | 'terms' | 'term_subjects' | 'campus_pricing' | 'matrix';
 }
 
@@ -138,7 +137,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   initialSection = 'pricing',
   initialSubTab = 'terms',
 }) => {
-  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs' | 'backup' | 'server_diagnostics'>(initialSection || 'pricing');
+  const [activeSection, setActiveSection] = useState<'pricing' | 'teacher_rates' | 'campuses' | 'holidays' | 'clean_reset' | 'excel_master' | 'telecom' | 'supabase' | 'users' | 'audit_logs' | 'backup'>(initialSection || 'pricing');
   const [pricingViewMode, setPricingViewMode] = useState<ViewMode>('table');
   const [campusesViewMode, setCampusesViewMode] = useState<ViewMode>('table');
 
@@ -1888,8 +1887,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const [cloudTestStatus, setCloudTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [cloudSaveMessage, setCloudSaveMessage] = useState<string | null>(null);
 
-  // Check if current user is Super Admin (derived from currentRole or currentUser)
-  const isSuperAdmin = currentRole === 'super_admin' || isUserSuperAdmin(currentUser);
+  // Check if current user is Super Admin (derived strictly from currentUser)
+  const isSuperAdmin = isUserSuperAdmin(currentUser);
 
   // Instant 1-Click Clean All Sample Operational Data
   const handleCleanSampleDataNow = () => {
@@ -2702,21 +2701,6 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
           <span>Nhật Ký Kiểm Toán (Audit Logs)</span>
         </button>
-
-        {isSuperAdmin && (
-          <button
-            type="button"
-            onClick={() => setActiveSection('server_diagnostics')}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
-              activeSection === 'server_diagnostics'
-                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/30 ring-1 ring-cyan-300'
-                : 'bg-slate-900 text-cyan-300 hover:text-white border border-cyan-500/40'
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5 shrink-0" />
-            <span>Chẩn đoán máy chủ (/api/health)</span>
-          </button>
-        )}
       </div>
 
       {/* SECTION 1: CẤU HÌNH KHÓA HỌC & BIỂU PHÍ CƠ SỞ (HIERARCHY MANAGER) */}
@@ -6612,7 +6596,6 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       {/* SECTION 6: SUPABASE POSTGRESQL & 10-TABLE HEALTH DIAGNOSTICS HUB */}
       {activeSection === 'supabase' && (
         <div className="space-y-6 max-w-6xl mx-auto">
-          {isSuperAdmin && <ServerDiagnosticsView />}
           {/* Main Card */}
           <div className="rounded-3xl bg-[#111827]/90 border border-slate-800/80 p-6 md:p-8 backdrop-blur-md shadow-2xl space-y-6">
             {/* Header */}
@@ -7938,13 +7921,6 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       {/* SECTION 8: SAO LƯU DỮ LIỆU CSDL SUPABASE (18 BẢNG) */}
       {activeSection === 'backup' && (
         <DatabaseBackupView store={store} />
-      )}
-
-      {/* SECTION 9: CHẨN ĐOÁN MÁY CHỦ QUẢN TRỊ (/api/health) - CHỈ SUPER ADMIN */}
-      {activeSection === 'server_diagnostics' && isSuperAdmin && (
-        <div className="max-w-6xl mx-auto">
-          <ServerDiagnosticsView />
-        </div>
       )}
 
     </div>

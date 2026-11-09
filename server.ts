@@ -3,7 +3,6 @@ import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
-import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
@@ -15,7 +14,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.disable('x-powered-by');
 
 function getPort(): number {
   for (let i = 0; i < process.argv.length; i++) {
@@ -34,49 +32,26 @@ function getPort(): number {
 
 const PORT = getPort();
 
-// Internal Data & Uploads Directory (Mọi bản ghi lâu dài đều lưu ở Supabase; thư mục cục bộ chỉ là tùy chọn)
-// Trên Vercel (serverless) hệ tệp của dự án là chỉ đọc; chỉ /tmp là ghi được (và tạm thời).
-const IS_VERCEL = Boolean(process.env.VERCEL);
-const WRITABLE_BASE_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'royal-school') : __dirname;
-const UPLOADS_DIR = path.join(WRITABLE_BASE_DIR, 'uploads');
-const DATA_DIR = path.join(WRITABLE_BASE_DIR, 'data');
+// Internal Data Directory (cho nhật ký kiểm toán nội bộ)
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const DATA_DIR = path.join(__dirname, 'data');
 
-try {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-} catch (err: any) {
-  console.warn(
-    '[Royal School Server] Cảnh báo: Không thể tạo thư mục data cục bộ (hệ tệp chỉ đọc). Mọi bản ghi kiểm toán vẫn được ghi trực tiếp lên Supabase:',
-    err?.message || err
-  );
-}
-
-try {
-  if (!fs.existsSync(UPLOADS_DIR)) {
-    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-  }
-} catch (err: any) {
-  console.warn(
-    '[Royal School Server] Cảnh báo: Không thể tạo thư mục uploads cục bộ (hệ tệp chỉ đọc). Tệp tải lên được lưu trực tiếp trên Supabase Storage:',
-    err?.message || err
-  );
-}
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const ADMIN_AUDIT_LOG_FILE = path.join(DATA_DIR, 'admin_audit.log');
 
-// Di chuyển và xóa file admin_audit.log cũ trong thư mục uploads (nếu có)
-try {
-  const legacyUploadsAuditLog = path.join(UPLOADS_DIR, 'admin_audit.log');
-  if (fs.existsSync(legacyUploadsAuditLog)) {
+// Di chuyển và xóa file admin_audit.log cũ trong thư mục uploads (nếu có) để không bao giờ tồn tại trong uploads
+const legacyUploadsAuditLog = path.join(UPLOADS_DIR, 'admin_audit.log');
+if (fs.existsSync(legacyUploadsAuditLog)) {
+  try {
     const legacyContent = fs.readFileSync(legacyUploadsAuditLog, 'utf8');
     if (legacyContent) {
       fs.appendFileSync(ADMIN_AUDIT_LOG_FILE, legacyContent, 'utf8');
     }
     fs.unlinkSync(legacyUploadsAuditLog);
+  } catch {
+    // ignore cleanup error
   }
-} catch {
-  // ignore cleanup error on read-only filesystem
 }
 
 app.set('trust proxy', 1);
@@ -102,7 +77,6 @@ app.get('/api/whoami', (req: Request, res: Response) => {
 // ============================================================================
 const DEFAULT_SERVER_SUPABASE_URL = 'https://deuuzrjpfcabfclwaqph.supabase.co';
 const DEFAULT_SERVER_SUPABASE_KEY = 'sb_publishable_SHwnK37LokxsP9zVNFSf9Q_qCMxjlat';
-const SERVER_STARTED_AT_ISO = new Date().toISOString();
 
 function resolveActiveServerSupabaseUrl(): string {
   const rawUrl =
@@ -125,107 +99,14 @@ function getSupabaseProjectRefFromUrl(urlStr: string): string {
   }
 }
 
-function hasConfiguredParentSessionSecret(): boolean {
-  const envSecret = String(process.env.PARENT_SESSION_SECRET || '').trim();
-  return Boolean(envSecret && envSecret !== 'YOUR_PARENT_SESSION_SECRET');
-}
-
-function hasConfiguredCheckinQrSecret(): boolean {
-  const raw = String(process.env.CHECKIN_QR_SECRET || '').trim();
-  return Boolean(
-    raw &&
-      raw !== 'YOUR_CHECKIN_QR_SECRET' &&
-      Buffer.byteLength(raw, 'utf8') >= 32
-  );
-}
-
-function extractExpressRoutes(expressApp: express.Express): string[] {
-  const routes: string[] = [];
-  const seen = new Set<string>();
-  const stack = (expressApp as any)?._router?.stack || (expressApp as any)?.router?.stack || [];
-
-  const pushRoute = (method: string, routePath: string) => {
-    const entry = `${method.toUpperCase()} ${routePath}`;
-    if (!seen.has(entry)) {
-      seen.add(entry);
-      routes.push(entry);
-    }
-  };
-
-  for (const layer of stack) {
-    if (layer?.route?.path && layer?.route?.methods) {
-      const routePaths = Array.isArray(layer.route.path) ? layer.route.path : [layer.route.path];
-      const methods = Object.keys(layer.route.methods).filter(Boolean);
-      for (const p of routePaths) {
-        for (const m of methods) {
-          pushRoute(m, String(p));
-        }
-      }
-    }
-  }
-
-  return routes;
-}
-
-export const SERVICE_ROLE_MISSING_ERROR_MESSAGE =
-  'Máy chủ thiếu hoặc sai SUPABASE_SERVICE_ROLE_KEY của project mới.';
-
-function sendServiceRoleMissing(res: Response): void {
-  res.status(503).json({
-    error: SERVICE_ROLE_MISSING_ERROR_MESSAGE,
-    code: 'SERVICE_ROLE_MISSING',
-  });
-}
-
-function isInvalidSupabaseServiceKeyError(err: any): boolean {
-  const msg = String(err?.message || err?.error_description || err || '').toLowerCase();
-  return (
-    msg.includes('invalid api key') ||
-    msg.includes('invalid_api_key') ||
-    msg.includes('jwt expired') ||
-    msg.includes('owned by another supabase project') ||
-    err?.status === 401
-  );
-}
-
-app.get('/api/health', async (_req: Request, res: Response) => {
+app.get('/api/health', (_req: Request, res: Response) => {
   const activeUrl = resolveActiveServerSupabaseUrl();
-  const configured = hasRealServiceRoleKey();
-  const supabaseAdmin = getAdminClient();
-  let valid = false;
-
-  if (configured && supabaseAdmin) {
-    try {
-      const checkPromise = supabaseAdmin.auth.admin
-        .listUsers({ page: 1, perPage: 1 })
-        .then(result => !result.error && Array.isArray(result.data?.users))
-        .catch(() => false);
-      const timeoutPromise = new Promise<boolean>(resolve => {
-        setTimeout(() => resolve(false), 5000);
-      });
-      valid = await Promise.race([checkPromise, timeoutPromise]);
-    } catch {
-      valid = false;
-    }
-  }
-
   res.json({
     ok: true,
-    build: process.env.APP_BUILD_ID || SERVER_STARTED_AT_ISO,
-    startedAt: SERVER_STARTED_AT_ISO,
-    node: process.version,
     env: process.env.NODE_ENV || 'development',
     supabaseProjectRef: getSupabaseProjectRefFromUrl(activeUrl),
-    serviceRole: {
-      configured,
-      valid,
-    },
-    secrets: {
-      parentSession: hasConfiguredParentSessionSecret(),
-      checkinQr: hasConfiguredCheckinQrSecret(),
-    },
-    routes: extractExpressRoutes(app),
-    legacyLogin: process.env.VITE_LEGACY_LOGIN === 'true',
+    serviceRoleConfigured: hasRealServiceRoleKey(),
+    adminRoutes: true,
   });
 });
 
@@ -389,45 +270,24 @@ export const isLikelyValidSupabaseKey = (key: string): boolean => {
   );
 };
 
-/**
- * Client dùng khóa publishable/anon: CHỈ dùng để xác thực user token qua auth.getUser(token).
- */
-export function getAnonClient(): SupabaseClient | null {
-  const supabaseUrl = resolveActiveServerSupabaseUrl();
-  const anonKey = (
+function getServerSupabaseAdmin(): SupabaseClient | null {
+  const rawUrl =
+    sanitizeServerSupabaseUrl(process.env.VITE_SUPABASE_URL) ||
+    sanitizeServerSupabaseUrl(process.env.SUPABASE_URL) ||
+    DEFAULT_SERVER_SUPABASE_URL;
+
+  const supabaseUrl = rawUrl.toLowerCase().includes('wobszxqzlalzcjcfbzhq')
+    ? DEFAULT_SERVER_SUPABASE_URL
+    : rawUrl;
+
+  const serviceRoleKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
     process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
     process.env.SUPABASE_PUBLISHABLE_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     DEFAULT_SERVER_SUPABASE_KEY
-  ).trim();
-
-  if (!supabaseUrl || !isLikelyValidSupabaseKey(anonKey)) {
-    return null;
-  }
-
-  return createClient(supabaseUrl, anonKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-}
-
-/**
- * Client quản trị (Service Role): CHỈ dùng SUPABASE_SERVICE_ROLE_KEY hoặc SUPABASE_SECRET_KEY hợp lệ.
- * Tuyệt đối KHÔNG rơi về khóa publishable/anon.
- */
-export function getAdminClient(): SupabaseClient | null {
-  if (!hasRealServiceRoleKey()) {
-    return null;
-  }
-
-  const supabaseUrl = resolveActiveServerSupabaseUrl();
-  const serviceRoleKey = (
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    ''
   ).trim();
 
   if (!supabaseUrl || !isLikelyValidSupabaseKey(serviceRoleKey)) {
@@ -440,10 +300,6 @@ export function getAdminClient(): SupabaseClient | null {
       autoRefreshToken: false,
     },
   });
-}
-
-function getServerSupabaseAdmin(): SupabaseClient | null {
-  return getAdminClient();
 }
 
 interface AuthenticatedCaller {
@@ -475,9 +331,7 @@ async function authenticateCallerRequest(
   const actionCode = options?.actionCode || 'API_AUTH_CHECK';
   const auditOnFailure = Boolean(options?.auditOnFailure);
 
-  const supabaseAdmin = getAdminClient();
-  const anonClient = getAnonClient();
-
+  const supabaseAdmin = getServerSupabaseAdmin();
   const authHeader = String(req.headers.authorization || '').trim();
   if (!authHeader.toLowerCase().startsWith('bearer ')) {
     if (auditOnFailure) {
@@ -517,20 +371,17 @@ async function authenticateCallerRequest(
         actionCode,
         ip: clientIp,
         status: 'failed',
-        description: `Lỗi gọi ${endpointName}: Máy chủ thiếu hoặc sai SUPABASE_SERVICE_ROLE_KEY`,
+        description: `Lỗi gọi ${endpointName}: Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY`,
       });
     }
-    sendServiceRoleMissing(res);
+    res.status(500).json({
+      error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.',
+    });
     return null;
   }
 
-  const tokenVerifier = anonClient || supabaseAdmin;
-  const { data: userData, error: authError } = await tokenVerifier.auth.getUser(token);
+  const { data: userData, error: authError } = await supabaseAdmin.auth.getUser(token);
   if (authError || !userData?.user) {
-    if (isInvalidSupabaseServiceKeyError(authError)) {
-      sendServiceRoleMissing(res);
-      return null;
-    }
     if (auditOnFailure) {
       await recordAdminEndpointAudit({
         supabaseAdmin,
@@ -550,11 +401,6 @@ async function authenticateCallerRequest(
     .select('id, username, full_name, role, campus_id, status')
     .eq('id', userData.user.id)
     .single();
-
-  if (profileError && isInvalidSupabaseServiceKeyError(profileError)) {
-    sendServiceRoleMissing(res);
-    return null;
-  }
 
   if (profileError || !callerProfile || callerProfile.status !== 'active') {
     if (auditOnFailure) {
@@ -656,11 +502,14 @@ async function verifySuperAdminRequest(
   clientIp: string;
 } | null> {
   const clientIp = getClientIpFromReq(req);
-  if (!getAdminClient()) {
+  if (!hasRealServiceRoleKey()) {
     console.error(
       `[${endpointName}] Thiếu SUPABASE_SERVICE_ROLE_KEY (hoặc SUPABASE_SECRET_KEY) hợp lệ trong biến môi trường của máy chủ.`
     );
-    sendServiceRoleMissing(res);
+    res.status(500).json({
+      error:
+        'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY nên không thể tạo/sửa tài khoản. Hãy thêm khóa này vào biến môi trường của máy chủ rồi khởi động lại.',
+    });
     return null;
   }
   const rateCheck = checkAdminRateLimit(clientIp);
@@ -1010,10 +859,6 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
     });
 
     if (createAuthError || !createdAuth?.user) {
-      if (isInvalidSupabaseServiceKeyError(createAuthError)) {
-        sendServiceRoleMissing(res);
-        return;
-      }
       await recordAdminEndpointAudit({
         supabaseAdmin,
         endpoint: '/api/admin/create-user',
@@ -2050,13 +1895,8 @@ async function getPublicCatalogData(supabaseAdmin: SupabaseClient | null) {
 // 1. GET /api/public/catalog
 app.get('/api/public/catalog', async (req: Request, res: Response) => {
   const clientIp = getClientIpFromReq(req);
-  const supabaseAdmin = getAdminClient();
-  if (!supabaseAdmin) {
-    sendServiceRoleMissing(res);
-    return;
-  }
-
   const rateCheck = checkSlidingWindowRateLimit(catalogIpRateMap, clientIp, 60 * 1000, 60);
+  const supabaseAdmin = getServerSupabaseAdmin();
 
   if (!rateCheck.allowed) {
     await recordAdminEndpointAudit({
@@ -2088,11 +1928,7 @@ const GENERIC_PARENT_LOGIN_ERROR =
 
 app.post('/api/parent/login', async (req: Request, res: Response) => {
   const clientIp = getClientIpFromReq(req);
-  const supabaseAdmin = getAdminClient();
-  if (!supabaseAdmin) {
-    sendServiceRoleMissing(res);
-    return;
-  }
+  const supabaseAdmin = getServerSupabaseAdmin();
 
   // Giới hạn 1: 5 lần mỗi 15 phút mỗi IP
   const ipRate = checkSlidingWindowRateLimit(parentLoginIpRateMap, clientIp, 15 * 60 * 1000, 5);
@@ -2165,17 +2001,25 @@ app.post('/api/parent/login', async (req: Request, res: Response) => {
     return;
   }
 
+  if (!supabaseAdmin) {
+    await recordAdminEndpointAudit({
+      endpoint: '/api/parent/login',
+      actionCode: 'PARENT_LOGIN_ERROR',
+      ip: clientIp,
+      targetId: cleanCode,
+      status: 'failed',
+      description: 'Không thể xác thực phụ huynh: Thiếu SUPABASE_SERVICE_ROLE_KEY trên server',
+    });
+    res.status(401).json({ error: GENERIC_PARENT_LOGIN_ERROR });
+    return;
+  }
+
   try {
     const { data: rows, error } = await supabaseAdmin
       .from('students')
       .select('*')
       .ilike('code', cleanCode)
       .limit(10);
-
-    if (error && isInvalidSupabaseServiceKeyError(error)) {
-      sendServiceRoleMissing(res);
-      return;
-    }
 
     let candidateRows = !error && Array.isArray(rows) ? rows : [];
     if (candidateRows.length === 0) {
@@ -2278,11 +2122,7 @@ app.post('/api/parent/login', async (req: Request, res: Response) => {
 // 3. POST /api/parent/register
 app.post('/api/parent/register', async (req: Request, res: Response) => {
   const clientIp = getClientIpFromReq(req);
-  const supabaseAdmin = getAdminClient();
-  if (!supabaseAdmin) {
-    sendServiceRoleMissing(res);
-    return;
-  }
+  const supabaseAdmin = getServerSupabaseAdmin();
 
   // Giới hạn 1: 5 lần mỗi giờ mỗi IP
   const ipRate = checkSlidingWindowRateLimit(parentRegisterIpRateMap, clientIp, 60 * 60 * 1000, 5);
@@ -2517,7 +2357,7 @@ app.post('/api/parent/register', async (req: Request, res: Response) => {
   const createdAt = new Date().toISOString();
 
   if (!supabaseAdmin) {
-    sendServiceRoleMissing(res);
+    res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
     return;
   }
 
@@ -2727,9 +2567,9 @@ function verifyFileMagicBytes(buffer: Buffer, extension: string): boolean {
 app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
   try {
     const authUser = (req as AuthenticatedRequest).authUser;
-    const supabaseAdmin = authUser?.supabaseAdmin || getAdminClient();
+    const supabaseAdmin = authUser?.supabaseAdmin || getServerSupabaseAdmin();
     if (!supabaseAdmin) {
-      sendServiceRoleMissing(res);
+      res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
       return;
     }
 
@@ -2875,9 +2715,9 @@ app.post('/api/upload', requireAuth, async (req: Request, res: Response) => {
 app.get('/api/files/sign', requireAuth, async (req: Request, res: Response) => {
   try {
     const authUser = (req as AuthenticatedRequest).authUser;
-    const supabaseAdmin = authUser?.supabaseAdmin || getAdminClient();
+    const supabaseAdmin = authUser?.supabaseAdmin || getServerSupabaseAdmin();
     if (!supabaseAdmin) {
-      sendServiceRoleMissing(res);
+      res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
       return;
     }
 
@@ -2932,9 +2772,9 @@ app.get('/api/files/sign', requireAuth, async (req: Request, res: Response) => {
 app.get('/api/files/proofs', requireAuth, async (req: Request, res: Response) => {
   try {
     const authUser = (req as AuthenticatedRequest).authUser;
-    const supabaseAdmin = authUser?.supabaseAdmin || getAdminClient();
+    const supabaseAdmin = authUser?.supabaseAdmin || getServerSupabaseAdmin();
     if (!supabaseAdmin) {
-      sendServiceRoleMissing(res);
+      res.json({ files: [] });
       return;
     }
 
@@ -3134,8 +2974,7 @@ async function requireTeacher(
   next: express.NextFunction
 ): Promise<void> {
   const clientIp = getClientIpFromReq(req);
-  const supabaseAdmin = getAdminClient();
-  const anonClient = getAnonClient();
+  const supabaseAdmin = getServerSupabaseAdmin();
   const authHeader = String(req.headers.authorization || '').trim();
   if (!authHeader.toLowerCase().startsWith('bearer ')) {
     res.status(401).json({ error: 'Thiếu Bearer token xác thực.' });
@@ -3147,17 +2986,12 @@ async function requireTeacher(
     return;
   }
   if (!supabaseAdmin) {
-    sendServiceRoleMissing(res);
+    res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
     return;
   }
 
-  const tokenVerifier = anonClient || supabaseAdmin;
-  const { data: userData, error: authError } = await tokenVerifier.auth.getUser(token);
+  const { data: userData, error: authError } = await supabaseAdmin.auth.getUser(token);
   if (authError || !userData?.user) {
-    if (isInvalidSupabaseServiceKeyError(authError)) {
-      sendServiceRoleMissing(res);
-      return;
-    }
     res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.' });
     return;
   }
@@ -3167,11 +3001,6 @@ async function requireTeacher(
     .select('id, username, full_name, role, campus_id, status, linked_teacher_id')
     .eq('id', userData.user.id)
     .single();
-
-  if (profileError && isInvalidSupabaseServiceKeyError(profileError)) {
-    sendServiceRoleMissing(res);
-    return;
-  }
 
   if (profileError || !profile || profile.status !== 'active') {
     res.status(401).json({ error: 'Tài khoản không hợp lệ hoặc đã bị khóa.' });
@@ -3228,8 +3057,7 @@ async function requireCheckinStaff(
   next: express.NextFunction
 ): Promise<void> {
   const clientIp = getClientIpFromReq(req);
-  const supabaseAdmin = getAdminClient();
-  const anonClient = getAnonClient();
+  const supabaseAdmin = getServerSupabaseAdmin();
   const authHeader = String(req.headers.authorization || '').trim();
   if (!authHeader.toLowerCase().startsWith('bearer ')) {
     res.status(401).json({ error: 'Thiếu Bearer token xác thực.' });
@@ -3241,17 +3069,12 @@ async function requireCheckinStaff(
     return;
   }
   if (!supabaseAdmin) {
-    sendServiceRoleMissing(res);
+    res.status(500).json({ error: 'Máy chủ chưa được cấu hình SUPABASE_SERVICE_ROLE_KEY.' });
     return;
   }
 
-  const tokenVerifier = anonClient || supabaseAdmin;
-  const { data: userData, error: authError } = await tokenVerifier.auth.getUser(token);
+  const { data: userData, error: authError } = await supabaseAdmin.auth.getUser(token);
   if (authError || !userData?.user) {
-    if (isInvalidSupabaseServiceKeyError(authError)) {
-      sendServiceRoleMissing(res);
-      return;
-    }
     res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.' });
     return;
   }
@@ -3261,11 +3084,6 @@ async function requireCheckinStaff(
     .select('id, username, full_name, role, campus_id, status')
     .eq('id', userData.user.id)
     .single();
-
-  if (profileError && isInvalidSupabaseServiceKeyError(profileError)) {
-    sendServiceRoleMissing(res);
-    return;
-  }
 
   if (profileError || !profile || profile.status !== 'active') {
     res.status(401).json({ error: 'Tài khoản không hợp lệ hoặc đã bị khóa.' });
@@ -4198,12 +4016,7 @@ async function startServer() {
   });
 }
 
-// Trên Vercel, hàm serverless api/index.ts nạp `app` và Vercel tự gọi nó cho từng yêu cầu: KHÔNG listen/phục vụ giao diện ở đây.
-if (!IS_VERCEL) {
-  startServer().catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
-  });
-}
-
-export default app;
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

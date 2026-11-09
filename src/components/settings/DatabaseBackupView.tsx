@@ -12,7 +12,7 @@ import {
   Check
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { getSupabaseClient, supabase, isLegacyLoginEnabled } from '../../supabaseClient';
+import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { AppStore } from '../../types';
 import { showToast } from '../../lib/toast';
 import { fetchOnce } from '../../lib/fetchOnce';
@@ -40,9 +40,7 @@ export const ROYAL_DATABASE_TABLES = [
   { name: 'parent_registrations', label: '16. Đơn đăng ký tuyển sinh phụ huynh' },
   { name: 'term_subjects', label: '17. Biểu phí môn học theo khóa' },
   { name: 'campus_subject_fees', label: '18. Biểu phí môn theo từng cơ sở' },
-  ...(isLegacyLoginEnabled()
-    ? [{ name: 'app_users', label: '19. Tài khoản hệ thống & Phân quyền' }]
-    : [{ name: 'profiles', label: '19. Tài khoản hệ thống & Phân quyền (profiles)' }])
+  { name: 'app_users', label: '19. Tài khoản hệ thống & Phân quyền' }
 ];
 
 export const DatabaseBackupView: React.FC<DatabaseBackupViewProps> = () => {

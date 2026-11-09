@@ -178,12 +178,9 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
     return { total: all.length, active, locked, teachers, admins };
   }, [store.users]);
 
-  const [formError, setFormError] = useState<string>('');
-
   // Open Create User modal
   const handleOpenAddUser = () => {
     setEditingUser(null);
-    setFormError('');
     setFormUsername('');
     setFormPassword('');
     setFormFullName('');
@@ -201,7 +198,6 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   // Open Edit User modal
   const handleOpenEditUser = (u: AppUser) => {
     setEditingUser(u);
-    setFormError('');
     setFormUsername(u.username);
     setFormPassword('');
     setFormFullName(u.full_name || u.name || '');
@@ -255,24 +251,21 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   // Save Add / Edit User
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    setFormError('');
     const cleanUsername = formUsername.trim().toLowerCase();
     const cleanName = formFullName.trim();
     const cleanEmail = formEmail.trim().toLowerCase() || `${cleanUsername}@royal.edu.vn`;
     const cleanPassword = formPassword.trim();
 
     if (!cleanUsername || !cleanName) {
-      const msg = 'Vui lòng nhập đầy đủ Tên đăng nhập và Họ tên người dùng.';
-      setFormError(msg);
-      showToast('✕ ' + msg, 'error');
+      showToast('✕ Vui lòng nhập đầy đủ Tên đăng nhập và Họ tên người dùng.', 'error');
       return;
     }
 
     if (formRole === 'teacher' && !formLinkedTeacherId.trim()) {
-      const msg =
-        'Tài khoản có vai trò Giáo viên (teacher) bắt buộc phải gắn với hồ sơ giáo viên (linked_teacher_id).';
-      setFormError(msg);
-      showToast('✕ ' + msg, 'error');
+      showToast(
+        '✕ Tài khoản có vai trò Giáo viên (teacher) bắt buộc phải gắn với hồ sơ giáo viên (linked_teacher_id).',
+        'error'
+      );
       return;
     }
 
@@ -353,10 +346,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         });
         const updateData = updateResult.data;
         if (!updateResult.ok || !updateData?.success) {
-          const diagMsg =
-            updateResult.errorMessage || updateData?.error || `Lỗi máy chủ HTTP ${updateResult.status}`;
-          setFormError(diagMsg);
-          showToast('✕ Không thể cập nhật tài khoản: ' + diagMsg, 'error');
+          showToast(
+            '✕ Không thể cập nhật tài khoản: ' +
+              (updateResult.errorMessage || updateData?.error || `Lỗi máy chủ HTTP ${updateResult.status}`),
+            'error'
+          );
           return;
         }
 
@@ -502,10 +496,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         );
 
         if (!ok || !createResult?.success || !createResult?.user?.id) {
-          const diagMsg =
-            errorMessage || createResult?.error || `Lỗi máy chủ HTTP ${status}`;
-          setFormError(diagMsg);
-          showToast('✕ Không thể tạo tài khoản: ' + diagMsg, 'error');
+          showToast(
+            '✕ Không thể tạo tài khoản: ' +
+              (errorMessage || createResult?.error || `Lỗi máy chủ HTTP ${status}`),
+            'error'
+          );
           return;
         }
 
@@ -582,14 +577,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         );
       } catch (err: any) {
         console.error('Lỗi tạo tài khoản:', err);
-        const msg = err?.message || 'Không thể ghi nhận';
-        setFormError(msg);
-        showToast('Lỗi tạo tài khoản: ' + msg, 'error');
+        showToast('Lỗi tạo tài khoản: ' + (err.message || 'Không thể ghi nhận'), 'error');
         return;
       }
     }
 
-    setFormError('');
     setIsAddUserOpen(false);
     setEditingUser(null);
   };
@@ -1335,16 +1327,6 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
             {/* Form Body */}
             <form onSubmit={handleSaveUser} className="p-6 overflow-y-auto space-y-5 text-xs">
-              {formError && (
-                <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 text-red-200 flex items-start gap-2.5">
-                  <ShieldAlert className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                  <div className="space-y-0.5">
-                    <div className="font-extrabold text-red-300">Không thể lưu tài khoản:</div>
-                    <div className="leading-relaxed">{formError}</div>
-                  </div>
-                </div>
-              )}
-
               {/* Khối 1: Thông tin đăng nhập */}
               <div className="p-4 rounded-2xl bg-slate-900/70 border border-slate-800 space-y-3.5">
                 <div className="text-[11px] font-extrabold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
