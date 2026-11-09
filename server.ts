@@ -2,16 +2,24 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-dotenv.config();
+try {
+  dotenv.config();
+} catch (dotenvErr: any) {
+  console.warn('[Server Env Warning] Không thể nạp .env:', dotenvErr?.message || dotenvErr);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const WRITABLE_BASE_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'royal-school') : __dirname;
 
 const app = express();
 
@@ -32,26 +40,31 @@ function getPort(): number {
 
 const PORT = getPort();
 
-// Internal Data Directory (cho nhật ký kiểm toán nội bộ)
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const DATA_DIR = path.join(__dirname, 'data');
-
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
+// Internal Data Directory (cho nhật ký kiểm toán nội bộ) - dùng WRITABLE_BASE_DIR để tương thích môi trường chỉ đọc trên Vercel
+const UPLOADS_DIR = path.join(WRITABLE_BASE_DIR, 'uploads');
+const DATA_DIR = path.join(WRITABLE_BASE_DIR, 'data');
 const ADMIN_AUDIT_LOG_FILE = path.join(DATA_DIR, 'admin_audit.log');
+
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (fsErr: any) {
+  console.warn('[Server FS Warning] Không thể tạo thư mục DATA_DIR:', fsErr?.message || fsErr);
+}
 
 // Di chuyển và xóa file admin_audit.log cũ trong thư mục uploads (nếu có) để không bao giờ tồn tại trong uploads
 const legacyUploadsAuditLog = path.join(UPLOADS_DIR, 'admin_audit.log');
-if (fs.existsSync(legacyUploadsAuditLog)) {
-  try {
+try {
+  if (fs.existsSync(legacyUploadsAuditLog)) {
     const legacyContent = fs.readFileSync(legacyUploadsAuditLog, 'utf8');
     if (legacyContent) {
       fs.appendFileSync(ADMIN_AUDIT_LOG_FILE, legacyContent, 'utf8');
     }
     fs.unlinkSync(legacyUploadsAuditLog);
-  } catch {
-    // ignore cleanup error
   }
+} catch (fsErr: any) {
+  console.warn('[Server FS Warning] Bỏ qua dọn dẹp legacy audit log:', fsErr?.message || fsErr);
 }
 
 app.set('trust proxy', 1);
@@ -204,9 +217,12 @@ async function recordAdminEndpointAudit(params: {
   };
 
   try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     fs.appendFileSync(ADMIN_AUDIT_LOG_FILE, JSON.stringify(auditEntry) + '\n', 'utf8');
-  } catch {
-    // ignore file write errors
+  } catch (fsErr: any) {
+    console.warn('[Server FS Warning] Không thể ghi admin_audit.log cục bộ:', fsErr?.message || fsErr);
   }
 
   if (params.supabaseAdmin) {
@@ -294,12 +310,17 @@ function getServerSupabaseAdmin(): SupabaseClient | null {
     return null;
   }
 
-  return createClient(supabaseUrl, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
+  try {
+    return createClient(supabaseUrl, serviceRoleKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+  } catch (err: any) {
+    console.warn('[Server Supabase Warning] Không thể khởi tạo Supabase client:', err?.message || err);
+    return null;
+  }
 }
 
 interface AuthenticatedCaller {
@@ -1541,15 +1562,34 @@ app.post('/api/admin/delete-user', async (req: Request, res: Response) => {
   }
 });
 
-// Initialize GoogleGenAI SDK Server-Side
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || '',
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+// Lazy initialization cho GoogleGenAI SDK Server-Side (chỉ khởi tạo khi gọi /api/chat hoặc /api/ai-analyze)
+let cachedGeminiClient: GoogleGenAI | null = null;
+let cachedGeminiApiKey = '';
+
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) {
+    return null;
+  }
+  if (cachedGeminiClient && cachedGeminiApiKey === apiKey) {
+    return cachedGeminiClient;
+  }
+  try {
+    cachedGeminiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+    cachedGeminiApiKey = apiKey;
+    return cachedGeminiClient;
+  } catch (err: any) {
+    console.warn('[Gemini Init Warning] Không thể khởi tạo GoogleGenAI:', err?.message || err);
+    return null;
+  }
+}
 
 const ROYAL_POLICY_SYSTEM_PROMPT = `
 Bạn là Cố Vấn Nghiệp Vụ Cấp Cao (Senior Academic & Financial Advisor) của Hệ thống Trường Song ngữ Quốc tế Hoàng Gia (Royal School - Extracurricular Department).
@@ -2428,6 +2468,12 @@ app.post('/api/parent/register', async (req: Request, res: Response) => {
 // Multi-turn Gemini Chat Endpoint (Yêu cầu xác thực Bearer token hợp lệ)
 app.post('/api/chat', requireAuth, async (req: Request, res: Response) => {
   try {
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({ error: 'Chưa cấu hình GEMINI_API_KEY trên máy chủ.' });
+      return;
+    }
+
     const { history = [], message, enableHighThinking = false, role = 'general' } = req.body;
 
     if (!message || typeof message !== 'string') {
@@ -2511,6 +2557,12 @@ app.post('/api/chat', requireAuth, async (req: Request, res: Response) => {
 // Endpoint to analyze and generate official memorandum / receipt text (Yêu cầu xác thực Bearer token hợp lệ)
 app.post('/api/ai-analyze', requireAuth, async (req: Request, res: Response) => {
   try {
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({ error: 'Chưa cấu hình GEMINI_API_KEY trên máy chủ.' });
+      return;
+    }
+
     const { actionType, payload } = req.body;
     const prompt = `
 Dựa trên quy chế của Royal School Extracurricular System:
