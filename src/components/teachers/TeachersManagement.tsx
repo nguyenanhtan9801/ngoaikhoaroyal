@@ -47,7 +47,7 @@ import {
 } from '../../lib/storage';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
-import { apiFetchJson } from '../../lib/apiClient';
+import { apiFetchJson, createNewUserAccount } from '../../lib/apiClient';
 
 interface TeachersManagementProps {
   store: AppStore;
@@ -491,8 +491,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         }
       }
 
-      // Tạo tài khoản đăng nhập: BẮT BUỘC đi qua máy chủ (/api/admin/create-user) để tạo user trong Supabase Auth + bảng profiles.
-      // Không ghi trực tiếp vào app_users hay cột username/user_id của teachers.
+      // Tạo tài khoản đăng nhập trực tiếp vào Supabase (app_users) & đồng bộ Local Store, không phụ thuộc máy chủ Express
       let createdUserAccount: AppUser | null = null;
       let accountErrorMessage = '';
       if (formData.create_login_account && !existingLinkedUser) {
@@ -517,28 +516,24 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           academic_attendance: true,
         };
 
-        const headers = await getAdminAuthHeaders();
-        const { ok, data: result, errorMessage } = await apiFetchJson('/api/admin/create-user', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            username: rawUsername,
-            email: loginEmail,
-            password: cleanPass,
-            full_name: cleanName,
-            phone: formData.phone.trim(),
-            department: 'Đội ngũ Giáo viên Ngoại khóa',
-            campus_id: formData.campus_id || 'all',
-            role: 'teacher',
-            status: 'active',
-            linked_teacher_id: teacherId,
-            permissions: teacherPermissions,
-          }),
-        });
-        if (!ok || !result?.success || !result?.user?.id) {
-          accountErrorMessage = errorMessage || result?.error || 'Không thể tạo tài khoản đăng nhập.';
-        } else {
-          const serverUser = result.user;
+        try {
+          const directRes = await createNewUserAccount(
+            {
+              username: rawUsername,
+              email: loginEmail,
+              password: cleanPass,
+              full_name: cleanName,
+              phone: formData.phone.trim(),
+              department: 'Đội ngũ Giáo viên Ngoại khóa',
+              campus_id: formData.campus_id || 'all',
+              role: 'teacher',
+              status: 'active',
+              linked_teacher_id: teacherId,
+              permissions: teacherPermissions,
+            },
+            onUpdateStore
+          );
+          const serverUser = directRes.data;
           createdUserAccount = {
             id: String(serverUser.id),
             username: String(serverUser.username || rawUsername),
@@ -553,6 +548,10 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             permissions: serverUser.permissions || teacherPermissions,
             created_at: new Date().toISOString(),
           };
+          teacherRecord.username = createdUserAccount.username;
+          teacherRecord.user_id = createdUserAccount.id;
+        } catch (createErr: any) {
+          accountErrorMessage = createErr?.message || 'Không thể tạo tài khoản đăng nhập.';
         }
       }
 

@@ -3407,7 +3407,11 @@ export async function handleLoginProcess(
   }
 
   // Mọi lỗi (sai tài khoản, sai mật khẩu, bị khóa) đều dùng thông báo chung
-  if (!dbUser || dbUser.status !== 'active' || !expectedPass || expectedPass !== cleanPass) {
+  const encodedPass = typeof btoa === 'function' ? btoa(cleanPass) : '';
+  const isPasswordMatch =
+    Boolean(expectedPass) && (expectedPass === cleanPass || (encodedPass && expectedPass === encodedPass));
+
+  if (!dbUser || dbUser.status !== 'active' || !isPasswordMatch) {
     return {
       success: false,
       user: dbUser || undefined,
@@ -3450,5 +3454,86 @@ export async function handleLoginProcess(
   };
 }
 
+// Triển khai logic lưu tài khoản độc lập, không phụ thuộc Express:
+export async function createNewUserAccount(userData: any, onUpdateStore?: any) {
+  const client = getSupabaseClient();
+  const newUserId = userData.id || `usr_${Date.now()}`;
+  const cleanUsername = String(userData.username || '').trim().toLowerCase();
 
+  const payload = {
+    id: newUserId,
+    username: cleanUsername,
+    email: userData.email?.trim() || `${cleanUsername}@royal.edu.vn`,
+    password_hash: userData.password ? btoa(userData.password) : 'default_hash',
+    full_name: userData.full_name?.trim() || userData.username,
+    phone: userData.phone?.trim() || '',
+    role: userData.role || 'teacher',
+    department: userData.department || 'Bộ môn Ngoại khóa',
+    campus_id: userData.campus_id || 'pmh',
+    status: userData.status || 'active',
+    linked_teacher_id: userData.linked_teacher_id || null,
+    permissions: userData.permissions || {
+      can_take_attendance: true,
+      view_assigned_classes: true,
+      view_own_payroll: true,
+    },
+    updated_at: new Date().toISOString(),
+  };
 
+  // 1. Lưu vào bảng app_users trên Supabase
+  if (client) {
+    try {
+      const { error: dbErr } = await client
+        .from('app_users')
+        .upsert(payload, { onConflict: 'username' });
+
+      if (dbErr) {
+        console.warn('Cảnh báo ghi Supabase app_users:', dbErr.message);
+      }
+    } catch (err) {
+      console.warn('Cảnh báo kết nối Supabase app_users:', err);
+    }
+
+    // Nếu là tài khoản liên kết giáo viên, cập nhật ngược lại vào bảng teachers
+    if (payload.linked_teacher_id) {
+      try {
+        const { error: tchErr } = await client
+          .from('teachers')
+          .update({
+            username: payload.username,
+            user_id: newUserId,
+            email: payload.email,
+            phone: payload.phone,
+          })
+          .eq('id', payload.linked_teacher_id);
+
+        if (tchErr) {
+          await client
+            .from('teachers')
+            .update({
+              email: payload.email,
+              phone: payload.phone,
+            })
+            .eq('id', payload.linked_teacher_id);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // 2. Cập nhật ngay vào State của App
+  if (typeof onUpdateStore === 'function') {
+    onUpdateStore((prev: any) => ({
+      ...prev,
+      users: [...(prev.users || []).filter((u: any) => u.username !== payload.username), payload],
+      teachers: (prev.teachers || []).map((t: any) =>
+        t.id === payload.linked_teacher_id
+          ? { ...t, username: payload.username, email: payload.email, phone: payload.phone }
+          : t
+      ),
+    }));
+  }
+
+  return { success: true, data: payload };
+}

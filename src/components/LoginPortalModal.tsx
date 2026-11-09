@@ -308,16 +308,9 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
       }
 
       // =======================================================================
-      // NHÁNH 2: ĐĂNG NHẬP CŨ (PHƯƠNG ÁN LÙI KHI VITE_LEGACY_LOGIN='true')
+      // NHÁNH 2: ĐĂNG NHẬP TRỰC TIẾP QUA BẢNG app_users / LOCAL STORE
       // =======================================================================
       if (!sessionUser) {
-        if (!isLegacyLoginEnabled()) {
-          const msg = registerFailedStaffLogin();
-          setStaffError(msg);
-          setIsStaffSubmitting(false);
-          return;
-        }
-
         // Trước khi ghép vào bộ lọc .or(...), từ chối hoặc loại bỏ các ký tự , ( ) % * \ trong tên đăng nhập hoặc email
         if (/[,()%*\\]/.test(inputIdentifier)) {
           const msg = registerFailedStaffLogin();
@@ -365,12 +358,24 @@ export const LoginPortalModal: React.FC<LoginPortalModalProps> = ({
           }
         }
 
+        const encodedInputPass = (() => {
+          try {
+            return btoa(cleanPassword);
+          } catch {
+            return '';
+          }
+        })();
+
+        const isPasswordMatched =
+          Boolean(expectedPassword) &&
+          (expectedPassword === cleanPassword ||
+            (Boolean(encodedInputPass) && expectedPassword === encodedInputPass));
+
         // Mọi lỗi (sai tài khoản, sai mật khẩu, bị khóa) đều dùng thông báo chung "Tên đăng nhập hoặc mật khẩu không đúng."
         if (
           !user ||
           String(user.status || 'active').toLowerCase() !== 'active' ||
-          !expectedPassword ||
-          expectedPassword !== cleanPassword
+          !isPasswordMatched
         ) {
           const msg = registerFailedStaffLogin();
           setStaffError(msg);

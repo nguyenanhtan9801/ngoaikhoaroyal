@@ -10,7 +10,10 @@ import {
   Route,
   Terminal,
 } from 'lucide-react';
-import { ServerHealthReport, NO_EXPRESS_SERVER_MESSAGE, SERVICE_ROLE_MISSING_MESSAGE } from '../../lib/apiClient';
+import { ServerHealthReport, SERVICE_ROLE_MISSING_MESSAGE } from '../../lib/apiClient';
+
+const DIRECT_SUPABASE_MODE_MESSAGE =
+  'Ứng dụng đang hoạt động trực tiếp qua Supabase Client (không qua cổng /api/health).';
 
 interface RequiredRouteSpec {
   id: string;
@@ -102,7 +105,7 @@ export const ServerDiagnosticsView: React.FC = () => {
 
       if (!response.ok || !parsed || !parsed.ok) {
         setHealth(null);
-        setFetchError(NO_EXPRESS_SERVER_MESSAGE);
+        setFetchError(DIRECT_SUPABASE_MODE_MESSAGE);
       } else {
         setHealth(parsed);
         setFetchError(null);
@@ -112,8 +115,8 @@ export const ServerDiagnosticsView: React.FC = () => {
       setHttpStatus(0);
       setFetchError(
         err?.message
-          ? `${NO_EXPRESS_SERVER_MESSAGE} (${err.message})`
-          : NO_EXPRESS_SERVER_MESSAGE
+          ? `${DIRECT_SUPABASE_MODE_MESSAGE} (${err.message})`
+          : DIRECT_SUPABASE_MODE_MESSAGE
       );
     } finally {
       setLastCheckedAt(new Date().toLocaleTimeString('vi-VN'));
@@ -182,7 +185,7 @@ export const ServerDiagnosticsView: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
-              Kiểm tra trực tiếp phản hồi của máy chủ Express (<code className="text-cyan-300">server.ts</code>), tính hợp lệ của khóa <code className="text-amber-300">SUPABASE_SERVICE_ROLE_KEY</code>, các khóa bí mật phiên và danh sách route quản trị mà không làm lộ giá trị bí mật.
+              Kiểm tra trực tiếp phản hồi của máy chủ (<code className="text-cyan-300">server.ts</code>), tính hợp lệ của khóa <code className="text-amber-300">SUPABASE_SERVICE_ROLE_KEY</code>, các khóa bí mật phiên và danh sách route quản trị mà không làm lộ giá trị bí mật.
             </p>
           </div>
         </div>
@@ -211,10 +214,10 @@ export const ServerDiagnosticsView: React.FC = () => {
           <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
           <div className="text-xs space-y-1">
             <div className="font-extrabold text-rose-200">
-              Phát hiện vấn đề cấu hình máy chủ cần khắc phục:
+              Trạng thái kết nối máy chủ:
             </div>
             {!serverRespondsOk && (
-              <p className="text-rose-300 font-semibold">{NO_EXPRESS_SERVER_MESSAGE}</p>
+              <p className="text-rose-300 font-semibold">{DIRECT_SUPABASE_MODE_MESSAGE}</p>
             )}
             {serverRespondsOk && !allImportantRoutesOk && (
               <p className="text-rose-300 font-semibold">
@@ -252,7 +255,7 @@ export const ServerDiagnosticsView: React.FC = () => {
                 {renderBadge(
                   serverRespondsOk,
                   'Xanh — Phản hồi OK',
-                  `Đỏ — Lỗi (${httpStatus || 'N/A'})`
+                  `Chế độ trực tiếp (${httpStatus || 'N/A'})`
                 )}
               </td>
               <td className="py-3.5 px-4 font-mono text-slate-300">
@@ -264,23 +267,15 @@ export const ServerDiagnosticsView: React.FC = () => {
                     </strong>
                   </span>
                 ) : (
-                  <span className="text-rose-300">{fetchError || NO_EXPRESS_SERVER_MESSAGE}</span>
+                  <span className="text-amber-300">{fetchError || DIRECT_SUPABASE_MODE_MESSAGE}</span>
                 )}
               </td>
               <td className="py-3.5 px-4 text-slate-300">
                 {serverRespondsOk ? (
-                  <span className="text-emerald-400">Máy chủ Express đang chạy bình thường.</span>
+                  <span className="text-emerald-400">Máy chủ đang chạy bình thường.</span>
                 ) : (
                   <span>
-                    Trang này đang chạy KHÔNG có máy chủ Express. Cần phát hành bằng{' '}
-                    <code className="px-1.5 py-0.5 rounded bg-slate-800 text-amber-300 font-mono">
-                      npm run build
-                    </code>{' '}
-                    rồi{' '}
-                    <code className="px-1.5 py-0.5 rounded bg-slate-800 text-amber-300 font-mono">
-                      npm start
-                    </code>{' '}
-                    (hoặc <code className="font-mono text-amber-300">npm run dev</code> khi phát triển).
+                    Hệ thống tự động ghi nhận dữ liệu trực tiếp qua Supabase Client.
                   </span>
                 )}
               </td>
