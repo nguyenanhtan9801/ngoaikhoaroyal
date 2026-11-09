@@ -59,6 +59,21 @@ import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherA
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
+import { supabase } from '../../supabaseClient';
+
+interface DutyPerson {
+  id: string;
+  name: string;
+  status: 'present' | 'replaced' | 'absent';
+  notes?: string;
+}
+
+interface DailyDutyData {
+  nannies: DutyPerson[];
+  supervisors: DutyPerson[];
+  medical_staff: DutyPerson[];
+  general_notes?: string;
+}
 
 interface AttendanceTabProps {
   store: AppStore;
@@ -558,28 +573,141 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     >
   >({});
 
-  // Trạng thái Nhân sự trực ca buổi học (Bảo mẫu, Quản sinh, Y tế trực)
-  const [supportStaffDuty, setSupportStaffDuty] = useState<{
-    nanny_name: string;
-    nanny_status: 'present' | 'absent' | 'substitute';
-    nanny_substitute_name: string;
-    supervisor_name: string;
-    supervisor_status: 'present' | 'absent' | 'substitute';
-    supervisor_note: string;
-    medical_staff_name: string;
-    medical_status: 'present' | 'absent' | 'substitute';
-    medical_note: string;
-  }>({
-    nanny_name: '',
-    nanny_status: 'present',
-    nanny_substitute_name: '',
-    supervisor_name: '',
-    supervisor_status: 'present',
-    supervisor_note: '',
-    medical_staff_name: '',
-    medical_status: 'present',
-    medical_note: '',
+  // Trạng thái Nhân sự trực ca theo toàn bộ ngày học của Cơ sở (Bảo mẫu, Quản sinh, Y tế)
+  const selectedSessionDate = selectedDate;
+  const currentCampusId = useMemo(() => {
+    const raw = currentClass?.campus_id || selectedCampusId || 'camp_pmh';
+    return raw === 'pmh' ? 'camp_pmh' : raw === 'pl' ? 'camp_pl' : raw;
+  }, [currentClass?.campus_id, selectedCampusId]);
+
+  const [dailyDuty, setDailyDuty] = useState<DailyDutyData>({
+    nannies: [],
+    supervisors: [],
+    medical_staff: [],
+    general_notes: '',
   });
+  const [isSavingDutyStaff, setIsSavingDutyStaff] = useState<boolean>(false);
+
+  // Tự động nạp dữ liệu ca trực theo Ngày (selectedSessionDate) và Cơ sở (currentCampusId)
+  useEffect(() => {
+    const fetchDailyDuty = async () => {
+      if (!selectedSessionDate || !currentCampusId) return;
+
+      if (!supabase) {
+        setDailyDuty({
+          nannies: [{ id: crypto.randomUUID(), name: '', status: 'present' }],
+          supervisors: [{ id: crypto.randomUUID(), name: '', status: 'present' }],
+          medical_staff: [{ id: crypto.randomUUID(), name: '', status: 'present' }],
+          general_notes: '',
+        });
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('campus_daily_duty_staff')
+        .select('*')
+        .eq('campus_id', currentCampusId)
+        .eq('duty_date', selectedSessionDate)
+        .maybeSingle();
+
+      if (data && !error) {
+        setDailyDuty({
+          nannies: Array.isArray(data.nannies) ? data.nannies : [],
+          supervisors: Array.isArray(data.supervisors) ? data.supervisors : [],
+          medical_staff: Array.isArray(data.medical_staff) ? data.medical_staff : [],
+          general_notes: data.general_notes || '',
+        });
+      } else {
+        // Nếu ngày đó chưa có dữ liệu, khởi tạo dòng trống mặc định để nhập
+        setDailyDuty({
+          nannies: [{ id: crypto.randomUUID(), name: '', status: 'present' }],
+          supervisors: [{ id: crypto.randomUUID(), name: '', status: 'present' }],
+          medical_staff: [{ id: crypto.randomUUID(), name: '', status: 'present' }],
+          general_notes: '',
+        });
+      }
+    };
+    fetchDailyDuty();
+  }, [selectedSessionDate, currentCampusId]); // CHÚ Ý: Không phụ thuộc vào selectedClassId!
+
+  const handleSaveDutyStaff = async (silent = false) => {
+    if (!selectedSessionDate || !currentCampusId || !supabase) return;
+
+    setIsSavingDutyStaff(true);
+    try {
+      const payload = {
+        id: `duty_${currentCampusId}_${selectedSessionDate}`,
+        campus_id: currentCampusId,
+        duty_date: selectedSessionDate,
+        nannies: dailyDuty.nannies.filter(p => p.name.trim() !== ''),
+        supervisors: dailyDuty.supervisors.filter(p => p.name.trim() !== ''),
+        medical_staff: dailyDuty.medical_staff.filter(p => p.name.trim() !== ''),
+        general_notes: dailyDuty.general_notes || '',
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('campus_daily_duty_staff')
+        .upsert(payload, { onConflict: 'campus_id,duty_date' });
+
+      if (error) {
+        console.error('Lỗi lưu ca trực:', error);
+        if (!silent) {
+          showToast('Không thể lưu danh sách trực ngày: ' + error.message, 'error', {
+            title: 'Lỗi lưu ca trực ngày',
+          });
+        }
+        return;
+      }
+
+      if (!silent) {
+        showToast(
+          `Đã lưu danh sách Bảo mẫu, Quản sinh & Y tế trực ngày ${formatDateVN(selectedSessionDate)} cho toàn cơ sở!`,
+          'success',
+          { title: 'Đã lưu ca trực ngày' }
+        );
+      }
+    } finally {
+      setIsSavingDutyStaff(false);
+    }
+  };
+
+  const handleAddDutyPerson = (group: 'nannies' | 'supervisors' | 'medical_staff') => {
+    setDailyDuty(prev => ({
+      ...prev,
+      [group]: [
+        ...prev[group],
+        { id: crypto.randomUUID(), name: '', status: 'present', notes: '' },
+      ],
+    }));
+  };
+
+  const handleUpdateDutyPerson = (
+    group: 'nannies' | 'supervisors' | 'medical_staff',
+    personId: string,
+    patch: Partial<DutyPerson>
+  ) => {
+    setDailyDuty(prev => ({
+      ...prev,
+      [group]: prev[group].map(item => (item.id === personId ? { ...item, ...patch } : item)),
+    }));
+  };
+
+  const handleRemoveDutyPerson = (
+    group: 'nannies' | 'supervisors' | 'medical_staff',
+    personId: string
+  ) => {
+    setDailyDuty(prev => {
+      const filtered = prev[group].filter(item => item.id !== personId);
+      return {
+        ...prev,
+        [group]:
+          filtered.length > 0
+            ? filtered
+            : [{ id: crypto.randomUUID(), name: '', status: 'present', notes: '' }],
+      };
+    });
+  };
 
   const formatCheckinVietnamHhMm = (iso?: string | null): string => {
     if (!iso) return '';
@@ -729,21 +857,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       }
     });
     setSecondaryTeacherStates(nextSecStates);
-
-    // Load support staff duty state
-    const td = currentClass.term_distribution;
-    const savedDuty = currentSession?.support_staff_duty;
-    setSupportStaffDuty({
-      nanny_name: savedDuty?.nanny_name ?? (currentClass.nanny_name || td?.nanny_name || ''),
-      nanny_status: savedDuty?.nanny_status || 'present',
-      nanny_substitute_name: savedDuty?.nanny_substitute_name || '',
-      supervisor_name: savedDuty?.supervisor_name ?? (currentClass.supervisor_name || td?.supervisor_name || ''),
-      supervisor_status: savedDuty?.supervisor_status || 'present',
-      supervisor_note: savedDuty?.supervisor_note || '',
-      medical_staff_name: savedDuty?.medical_staff_name ?? (currentClass.medical_staff_name || td?.medical_staff_name || ''),
-      medical_status: savedDuty?.medical_status || 'present',
-      medical_note: savedDuty?.medical_note || '',
-    });
   }, [currentClass?.id, selectedDate, store.teacherAttendance, store.teacherCheckins, classSecondaryTeacherIds]);
 
   // Live Teacher Rate & Payout Calculation for Current Session based on teacher_contracts at session_date
@@ -1120,6 +1233,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const executeSaveAttendance = () => {
     if (!currentClass || isFutureDate) return;
     setSaveConfirmModalOpen(false);
+    void handleSaveDutyStaff(true);
 
     onUpdateStore(prev => {
       // 1. Session record
@@ -1140,7 +1254,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         snacks_consumed: liveConsumed,
         snacks_returned: liveReturned,
         status: 'completed',
-        support_staff_duty: supportStaffDuty,
       };
       updatedSessions.push(newSession);
 
@@ -2273,7 +2386,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               )}
             </div>
 
-            {/* KHỐI NHÂN SỰ TRỰC CA BUỔI HỌC (BẢO MẪU, QUẢN SINH & Y TẾ TRỰC) */}
+            {/* KHỐI NHÂN SỰ TRỰC CA NGÀY HỌC THEO CƠ SỞ (BẢO MẪU, QUẢN SINH & Y TẾ TRỰC) */}
             <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
                 <div className="flex items-center gap-2">
@@ -2281,224 +2394,338 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <ShieldCheck className="w-4 h-4" />
                   </div>
                   <div>
-                    <div className="text-xs font-extrabold text-white uppercase tracking-wide">
-                      Nhân Sự Trực Ca Buổi Học (Bảo Mẫu, Quản Sinh &amp; Y Tế Trực)
+                    <div className="text-xs font-extrabold text-white uppercase tracking-wide flex flex-wrap items-center gap-2">
+                      <span>Đội Ngũ Trực Ngày Toàn Cơ Sở (Bảo Mẫu, Quản Sinh &amp; Y Tế)</span>
+                      <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[10px] font-bold">
+                        {currentCampusId === 'camp_pl' ? 'Cơ sở Phú Lâm' : 'Cơ sở Phú Mỹ Hưng'} &bull; Ngày {formatDateVN(selectedSessionDate)}
+                      </span>
                     </div>
                     <p className="text-[11px] text-slate-400">
-                      Theo dõi điểm danh đội ngũ hỗ trợ chăm sóc bánh sữa, đưa đón bàn giao học sinh và trực y tế ca học
+                      Dùng chung cho toàn bộ các lớp trong ngày tại cơ sở &bull; Tự động đồng bộ khi chuyển qua lại giữa các lớp học
                     </p>
                   </div>
                 </div>
 
-                {studentsWithMedicalNotes.length > 0 && (
-                  <span className="px-2.5 py-1 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[11px] font-bold flex items-center gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                    <span>Cảnh báo y tế: {studentsWithMedicalNotes.length} HS có lưu ý dị ứng/y tế</span>
-                  </span>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {studentsWithMedicalNotes.length > 0 && (
+                    <span className="px-2.5 py-1 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[11px] font-bold flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span>Cảnh báo y tế: {studentsWithMedicalNotes.length} HS có lưu ý dị ứng/y tế</span>
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isFutureDate || isSavingDutyStaff}
+                    onClick={() => void handleSaveDutyStaff(false)}
+                    className="px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-200 text-[11px] font-extrabold flex items-center gap-1.5 transition-all disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{isSavingDutyStaff ? 'Đang lưu...' : 'Lưu Ca Trực Ngày'}</span>
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-                {/* CARD 1: BẢO MẪU TRỰC LỚP */}
+                {/* CARD 1: BẢO MẪU TRỰC NGÀY */}
                 <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5 flex flex-col justify-between">
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-extrabold text-cyan-300 flex items-center gap-1.5">
-                        <span>🍼 Bảo Mẫu Trực Lớp</span>
+                        <span>🍼 Bảo Mẫu ({dailyDuty.nannies.filter(p => p.name.trim()).length})</span>
                       </span>
-                      <span className="text-[10px] text-slate-400">Chăm sóc &amp; Bánh sữa</span>
+                      <button
+                        type="button"
+                        disabled={isFutureDate}
+                        onClick={() => handleAddDutyPerson('nannies')}
+                        className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center gap-1 disabled:opacity-40"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        <span>Thêm</span>
+                      </button>
                     </div>
 
-                    <input
-                      type="text"
-                      value={supportStaffDuty.nanny_name}
-                      disabled={isFutureDate}
-                      onChange={(e) => {
-                        setSupportStaffDuty(prev => ({ ...prev, nanny_name: e.target.value }));
-                        setIsDirty(true);
-                      }}
-                      placeholder="Nhập tên bảo mẫu trực lớp..."
-                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-cyan-500"
-                    />
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {(dailyDuty.nannies.length > 0
+                        ? dailyDuty.nannies
+                        : [{ id: 'default_nanny', name: '', status: 'present' as const }]
+                      ).map((person, idx) => (
+                        <div key={person.id || idx} className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/90 space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={person.name}
+                              disabled={isFutureDate}
+                              onChange={(e) =>
+                                handleUpdateDutyPerson('nannies', person.id, { name: e.target.value })
+                              }
+                              placeholder={`Tên bảo mẫu ${idx + 1}...`}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-cyan-500"
+                            />
+                            <button
+                              type="button"
+                              disabled={isFutureDate}
+                              onClick={() => handleRemoveDutyPerson('nannies', person.id)}
+                              title="Xóa nhân sự này"
+                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-800 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
 
-                    <div className="flex items-center gap-1.5 pt-0.5">
-                      {(['present', 'substitute', 'absent'] as const).map(st => {
-                        const isAct = supportStaffDuty.nanny_status === st;
-                        const label =
-                          st === 'present'
-                            ? '✓ Có mặt'
-                            : st === 'substitute'
-                            ? '🔄 Đổi người'
-                            : '✕ Vắng';
-                        return (
-                          <button
-                            key={st}
-                            type="button"
+                          <div className="flex items-center gap-1">
+                            {(['present', 'replaced', 'absent'] as const).map(st => {
+                              const isAct = person.status === st;
+                              const label =
+                                st === 'present'
+                                  ? '✓ Có mặt'
+                                  : st === 'replaced'
+                                  ? '🔄 Đổi người'
+                                  : '✕ Vắng';
+                              return (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  disabled={isFutureDate}
+                                  onClick={() =>
+                                    handleUpdateDutyPerson('nannies', person.id, { status: st })
+                                  }
+                                  className={`flex-1 py-1 px-1.5 rounded-md text-[10px] font-bold border transition-all ${
+                                    isAct
+                                      ? st === 'present'
+                                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                        : st === 'replaced'
+                                        ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                        : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <input
+                            type="text"
+                            value={person.notes || ''}
                             disabled={isFutureDate}
-                            onClick={() => {
-                              setSupportStaffDuty(prev => ({ ...prev, nanny_status: st }));
-                              setIsDirty(true);
-                            }}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all ${
-                              isAct
-                                ? st === 'present'
-                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
-                                  : st === 'substitute'
-                                  ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
-                                  : 'bg-rose-600 text-white border-rose-400 font-extrabold'
-                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
+                            onChange={(e) =>
+                              handleUpdateDutyPerson('nannies', person.id, { notes: e.target.value })
+                            }
+                            placeholder={
+                              person.status === 'replaced'
+                                ? 'Nhập tên người trực thay / ghi chú...'
+                                : 'Ghi chú bảo mẫu (nếu có)...'
+                            }
+                            className="w-full px-2.5 py-1 rounded-md bg-slate-900/70 border border-slate-800 text-slate-200 placeholder-slate-500 text-[11px] focus:outline-none focus:border-cyan-500/50"
+                          />
+                        </div>
+                      ))}
                     </div>
                   </div>
 
-                  {supportStaffDuty.nanny_status === 'substitute' ? (
-                    <input
-                      type="text"
-                      value={supportStaffDuty.nanny_substitute_name}
-                      disabled={isFutureDate}
-                      onChange={(e) => {
-                        setSupportStaffDuty(prev => ({ ...prev, nanny_substitute_name: e.target.value }));
-                        setIsDirty(true);
-                      }}
-                      placeholder="Nhập tên bảo mẫu trực thay..."
-                      className="w-full px-3 py-1.5 rounded-lg bg-purple-950/30 border border-purple-500/40 text-purple-200 placeholder-purple-300/50 text-[11px] focus:outline-none"
-                    />
-                  ) : (
-                    <div className="text-[10px] text-slate-400 font-mono pt-1 border-t border-slate-800/80">
-                      Suất bánh sữa Royal: <strong className="text-amber-300">{liveConsumed}/{totalRoyalCount}</strong> tiêu thụ &bull; Hoàn bếp: <strong className="text-emerald-400">{liveReturned}</strong>
-                    </div>
-                  )}
+                  <div className="text-[10px] text-slate-400 font-mono pt-1 border-t border-slate-800/80">
+                    Suất bánh sữa lớp này: <strong className="text-amber-300">{liveConsumed}/{totalRoyalCount}</strong> tiêu thụ &bull; Hoàn bếp: <strong className="text-emerald-400">{liveReturned}</strong>
+                  </div>
                 </div>
 
-                {/* CARD 2: QUẢN SINH CA HỌC */}
+                {/* CARD 2: QUẢN SINH TRỰC NGÀY */}
                 <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5 flex flex-col justify-between">
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-extrabold text-purple-300 flex items-center gap-1.5">
-                        <span>📋 Quản Sinh Trực</span>
+                        <span>📋 Quản Sinh ({dailyDuty.supervisors.filter(p => p.name.trim()).length})</span>
                       </span>
-                      <span className="text-[10px] text-slate-400">Trật tự &amp; Đưa đón HS</span>
+                      <button
+                        type="button"
+                        disabled={isFutureDate}
+                        onClick={() => handleAddDutyPerson('supervisors')}
+                        className="text-[11px] font-bold text-purple-400 hover:text-purple-300 flex items-center gap-1 disabled:opacity-40"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        <span>Thêm</span>
+                      </button>
                     </div>
 
-                    <input
-                      type="text"
-                      value={supportStaffDuty.supervisor_name}
-                      disabled={isFutureDate}
-                      onChange={(e) => {
-                        setSupportStaffDuty(prev => ({ ...prev, supervisor_name: e.target.value }));
-                        setIsDirty(true);
-                      }}
-                      placeholder="Nhập tên quản sinh trực..."
-                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-purple-500"
-                    />
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {(dailyDuty.supervisors.length > 0
+                        ? dailyDuty.supervisors
+                        : [{ id: 'default_supervisor', name: '', status: 'present' as const }]
+                      ).map((person, idx) => (
+                        <div key={person.id || idx} className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/90 space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={person.name}
+                              disabled={isFutureDate}
+                              onChange={(e) =>
+                                handleUpdateDutyPerson('supervisors', person.id, { name: e.target.value })
+                              }
+                              placeholder={`Tên quản sinh ${idx + 1}...`}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-purple-500"
+                            />
+                            <button
+                              type="button"
+                              disabled={isFutureDate}
+                              onClick={() => handleRemoveDutyPerson('supervisors', person.id)}
+                              title="Xóa nhân sự này"
+                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-800 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
 
-                    <div className="flex items-center gap-1.5 pt-0.5">
-                      {(['present', 'substitute', 'absent'] as const).map(st => {
-                        const isAct = supportStaffDuty.supervisor_status === st;
-                        const label =
-                          st === 'present'
-                            ? '✓ Có mặt'
-                            : st === 'substitute'
-                            ? '🔄 Đổi người'
-                            : '✕ Vắng';
-                        return (
-                          <button
-                            key={st}
-                            type="button"
+                          <div className="flex items-center gap-1">
+                            {(['present', 'replaced', 'absent'] as const).map(st => {
+                              const isAct = person.status === st;
+                              const label =
+                                st === 'present'
+                                  ? '✓ Có mặt'
+                                  : st === 'replaced'
+                                  ? '🔄 Đổi người'
+                                  : '✕ Vắng';
+                              return (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  disabled={isFutureDate}
+                                  onClick={() =>
+                                    handleUpdateDutyPerson('supervisors', person.id, { status: st })
+                                  }
+                                  className={`flex-1 py-1 px-1.5 rounded-md text-[10px] font-bold border transition-all ${
+                                    isAct
+                                      ? st === 'present'
+                                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                        : st === 'replaced'
+                                        ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                        : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <input
+                            type="text"
+                            value={person.notes || ''}
                             disabled={isFutureDate}
-                            onClick={() => {
-                              setSupportStaffDuty(prev => ({ ...prev, supervisor_status: st }));
-                              setIsDirty(true);
-                            }}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all ${
-                              isAct
-                                ? st === 'present'
-                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
-                                  : st === 'substitute'
-                                  ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
-                                  : 'bg-rose-600 text-white border-rose-400 font-extrabold'
-                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
+                            onChange={(e) =>
+                              handleUpdateDutyPerson('supervisors', person.id, { notes: e.target.value })
+                            }
+                            placeholder="Ghi chú bàn giao / điều phối đưa đón..."
+                            className="w-full px-2.5 py-1 rounded-md bg-slate-900/70 border border-slate-800 text-slate-200 placeholder-slate-500 text-[11px] focus:outline-none focus:border-purple-500/50"
+                          />
+                        </div>
+                      ))}
                     </div>
                   </div>
 
                   <input
                     type="text"
-                    value={supportStaffDuty.supervisor_note}
+                    value={dailyDuty.general_notes || ''}
                     disabled={isFutureDate}
-                    onChange={(e) => {
-                      setSupportStaffDuty(prev => ({ ...prev, supervisor_note: e.target.value }));
-                      setIsDirty(true);
-                    }}
-                    placeholder="Ghi chú bàn giao học sinh / đưa đón cuối giờ..."
+                    onChange={(e) =>
+                      setDailyDuty(prev => ({ ...prev, general_notes: e.target.value }))
+                    }
+                    placeholder="Ghi chú chung ca trực toàn cơ sở trong ngày..."
                     className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 placeholder-slate-500 text-[11px] focus:outline-none focus:border-purple-500/50"
                   />
                 </div>
 
-                {/* CARD 3: Y TẾ TRỰC & CẢNH BÁO DỊ ỨNG / Y TẾ */}
+                {/* CARD 3: Y TẾ TRỰC NGÀY & CẢNH BÁO DỊ ỨNG / Y TẾ */}
                 <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5 flex flex-col justify-between">
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-extrabold text-emerald-300 flex items-center gap-1.5">
-                        <span>🩺 Y Tế Trực Ca Học</span>
+                        <span>🩺 Y Tế Trực ({dailyDuty.medical_staff.filter(p => p.name.trim()).length})</span>
                       </span>
-                      <span className="text-[10px] text-slate-400">Phòng Y tế &amp; Sơ cứu</span>
+                      <button
+                        type="button"
+                        disabled={isFutureDate}
+                        onClick={() => handleAddDutyPerson('medical_staff')}
+                        className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 disabled:opacity-40"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        <span>Thêm</span>
+                      </button>
                     </div>
 
-                    <input
-                      type="text"
-                      value={supportStaffDuty.medical_staff_name}
-                      disabled={isFutureDate}
-                      onChange={(e) => {
-                        setSupportStaffDuty(prev => ({ ...prev, medical_staff_name: e.target.value }));
-                        setIsDirty(true);
-                      }}
-                      placeholder="Nhập tên nhân viên y tế trực..."
-                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-emerald-500"
-                    />
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {(dailyDuty.medical_staff.length > 0
+                        ? dailyDuty.medical_staff
+                        : [{ id: 'default_medical', name: '', status: 'present' as const }]
+                      ).map((person, idx) => (
+                        <div key={person.id || idx} className="p-2 rounded-lg bg-slate-950/80 border border-slate-800/90 space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={person.name}
+                              disabled={isFutureDate}
+                              onChange={(e) =>
+                                handleUpdateDutyPerson('medical_staff', person.id, { name: e.target.value })
+                              }
+                              placeholder={`Tên nhân viên y tế ${idx + 1}...`}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-emerald-500"
+                            />
+                            <button
+                              type="button"
+                              disabled={isFutureDate}
+                              onClick={() => handleRemoveDutyPerson('medical_staff', person.id)}
+                              title="Xóa nhân sự này"
+                              className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-800 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
 
-                    <div className="flex items-center gap-1.5 pt-0.5">
-                      {(['present', 'substitute', 'absent'] as const).map(st => {
-                        const isAct = supportStaffDuty.medical_status === st;
-                        const label =
-                          st === 'present'
-                            ? '✓ Có mặt'
-                            : st === 'substitute'
-                            ? '🔄 Đổi người'
-                            : '✕ Vắng';
-                        return (
-                          <button
-                            key={st}
-                            type="button"
+                          <div className="flex items-center gap-1">
+                            {(['present', 'replaced', 'absent'] as const).map(st => {
+                              const isAct = person.status === st;
+                              const label =
+                                st === 'present'
+                                  ? '✓ Có mặt'
+                                  : st === 'replaced'
+                                  ? '🔄 Đổi người'
+                                  : '✕ Vắng';
+                              return (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  disabled={isFutureDate}
+                                  onClick={() =>
+                                    handleUpdateDutyPerson('medical_staff', person.id, { status: st })
+                                  }
+                                  className={`flex-1 py-1 px-1.5 rounded-md text-[10px] font-bold border transition-all ${
+                                    isAct
+                                      ? st === 'present'
+                                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
+                                        : st === 'replaced'
+                                        ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
+                                        : 'bg-rose-600 text-white border-rose-400 font-extrabold'
+                                      : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <input
+                            type="text"
+                            value={person.notes || ''}
                             disabled={isFutureDate}
-                            onClick={() => {
-                              setSupportStaffDuty(prev => ({ ...prev, medical_status: st }));
-                              setIsDirty(true);
-                            }}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-all ${
-                              isAct
-                                ? st === 'present'
-                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
-                                  : st === 'substitute'
-                                  ? 'bg-purple-600 text-white border-purple-400 font-extrabold'
-                                  : 'bg-rose-600 text-white border-rose-400 font-extrabold'
-                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
+                            onChange={(e) =>
+                              handleUpdateDutyPerson('medical_staff', person.id, { notes: e.target.value })
+                            }
+                            placeholder="Ghi chú trực y tế / sơ cứu..."
+                            className="w-full px-2.5 py-1 rounded-md bg-slate-900/70 border border-slate-800 text-slate-200 placeholder-slate-500 text-[11px] focus:outline-none focus:border-emerald-500/50"
+                          />
+                        </div>
+                      ))}
                     </div>
                   </div>
 
