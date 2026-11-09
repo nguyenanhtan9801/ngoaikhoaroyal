@@ -3488,38 +3488,86 @@ app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Res
       skipped_reason?: string;
     }> = [];
 
-    // g. Nếu hôm nay giáo viên không có lớp nào: ghi một dòng teacher_checkins với class_id rỗng, status = 'no_class'
-    if (teacherClassesToday.length === 0) {
-      const noClassId = crypto.randomUUID();
-      const noClassCampus = teacher.campus_id || scannerCampusId || null;
-      await supabaseAdmin.from('teacher_checkins').insert({
-        id: noClassId,
-        teacher_id: teacher.id,
-        campus_id: noClassCampus,
-        class_id: null,
-        session_date: todayDate,
-        checked_in_at: nowIso,
-        scheduled_start: null,
-        late_minutes: 0,
-        status: 'no_class',
-        method: 'qr',
-        scanned_by: scannerId,
-        scanner_name: scannerFullName,
-        token_jti: payload.j,
-        note: 'Không có lịch dạy hôm nay',
-      });
+    const checkinRecords: Array<Record<string, any>> = [];
+    let alreadyCheckedInNoClass = false;
+    let primaryCheckedInAt: string | null = nowIso;
 
-      results.push({
-        class_id: null,
-        class_code: 'NO_CLASS',
-        class_name: 'Không có ca dạy hôm nay',
-        start: null,
-        end: null,
-        status: 'no_class',
-        late_minutes: 0,
-        already: false,
-        checked_in_at: nowIso,
-      });
+    // g. Nếu hôm nay giáo viên không có lớp nào: kiểm tra đã có bản ghi status = 'no_class' cùng session_date và campus_id chưa
+    if (teacherClassesToday.length === 0) {
+      const noClassCampus = teacher.campus_id || scannerCampusId || null;
+
+      let existingNoClassQuery = supabaseAdmin
+        .from('teacher_checkins')
+        .select(
+          'id, teacher_id, campus_id, class_id, session_date, checked_in_at, scheduled_start, late_minutes, status, method, scanned_by, scanner_name, token_jti, note'
+        )
+        .eq('teacher_id', teacher.id)
+        .eq('session_date', todayDate)
+        .eq('status', 'no_class');
+
+      if (noClassCampus) {
+        existingNoClassQuery = existingNoClassQuery.eq('campus_id', noClassCampus);
+      } else {
+        existingNoClassQuery = existingNoClassQuery.is('campus_id', null);
+      }
+
+      const { data: existingNoClassRows } = await existingNoClassQuery
+        .order('checked_in_at', { ascending: true })
+        .limit(1);
+      const existingNoClass =
+        Array.isArray(existingNoClassRows) && existingNoClassRows.length > 0
+          ? existingNoClassRows[0]
+          : null;
+
+      if (existingNoClass) {
+        alreadyCheckedInNoClass = true;
+        const oldCheckedInAt = String(existingNoClass.checked_in_at || nowIso);
+        primaryCheckedInAt = oldCheckedInAt;
+        checkinRecords.push(existingNoClass);
+        results.push({
+          class_id: null,
+          class_code: 'NO_CLASS',
+          class_name: 'Không có ca dạy hôm nay',
+          start: null,
+          end: null,
+          status: 'no_class',
+          late_minutes: 0,
+          already: true,
+          checked_in_at: oldCheckedInAt,
+        });
+      } else {
+        const noClassId = crypto.randomUUID();
+        const newNoClassRecord = {
+          id: noClassId,
+          teacher_id: teacher.id,
+          campus_id: noClassCampus,
+          class_id: null,
+          session_date: todayDate,
+          checked_in_at: nowIso,
+          scheduled_start: null,
+          late_minutes: 0,
+          status: 'no_class' as const,
+          method: 'qr' as const,
+          scanned_by: scannerId,
+          scanner_name: scannerFullName,
+          token_jti: payload.j,
+          note: 'Không có lịch dạy hôm nay',
+        };
+        await supabaseAdmin.from('teacher_checkins').insert(newNoClassRecord);
+
+        checkinRecords.push(newNoClassRecord);
+        results.push({
+          class_id: null,
+          class_code: 'NO_CLASS',
+          class_name: 'Không có ca dạy hôm nay',
+          start: null,
+          end: null,
+          status: 'no_class',
+          late_minutes: 0,
+          already: false,
+          checked_in_at: nowIso,
+        });
+      }
     } else {
       for (const cls of teacherClassesToday) {
         const classId = String(cls.id);
@@ -3571,13 +3619,16 @@ app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Res
         // Kiểm tra đã có bản ghi (teacher_id, class_id, session_date) chưa
         const { data: existingRow } = await supabaseAdmin
           .from('teacher_checkins')
-          .select('id, status, late_minutes, checked_in_at, scheduled_start')
+          .select(
+            'id, teacher_id, campus_id, class_id, session_date, status, late_minutes, checked_in_at, scheduled_start, method, scanned_by, scanner_name, note'
+          )
           .eq('teacher_id', teacher.id)
           .eq('class_id', classId)
           .eq('session_date', todayDate)
           .maybeSingle();
 
         if (existingRow) {
+          checkinRecords.push(existingRow);
           results.push({
             class_id: classId,
             class_code: classCode,
@@ -3593,38 +3644,44 @@ app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Res
         }
 
         const newCheckinId = crypto.randomUUID();
+        const newRowPayload = {
+          id: newCheckinId,
+          teacher_id: teacher.id,
+          campus_id: cls.campus_id || teacher.campus_id || null,
+          class_id: classId,
+          session_date: todayDate,
+          checked_in_at: nowIso,
+          scheduled_start: startParsed.formatted,
+          late_minutes: lateMinutes,
+          status,
+          method: 'qr' as const,
+          scanned_by: scannerId,
+          scanner_name: scannerFullName,
+          token_jti: payload.j,
+          note: null,
+        };
         const { data: insertedRow, error: insertErr } = await supabaseAdmin
           .from('teacher_checkins')
-          .insert({
-            id: newCheckinId,
-            teacher_id: teacher.id,
-            campus_id: cls.campus_id || teacher.campus_id || null,
-            class_id: classId,
-            session_date: todayDate,
-            checked_in_at: nowIso,
-            scheduled_start: startParsed.formatted,
-            late_minutes: lateMinutes,
-            status,
-            method: 'qr',
-            scanned_by: scannerId,
-            scanner_name: scannerFullName,
-            token_jti: payload.j,
-            note: null,
-          })
-          .select('id, status, late_minutes, checked_in_at')
+          .insert(newRowPayload)
+          .select(
+            'id, teacher_id, campus_id, class_id, session_date, status, late_minutes, checked_in_at, scheduled_start, method, scanned_by, scanner_name, note'
+          )
           .maybeSingle();
 
         if (insertErr) {
           // Trường hợp race condition chạm unique (teacher_id, class_id, session_date)
           const { data: raceRow } = await supabaseAdmin
             .from('teacher_checkins')
-            .select('id, status, late_minutes, checked_in_at, scheduled_start')
+            .select(
+              'id, teacher_id, campus_id, class_id, session_date, status, late_minutes, checked_in_at, scheduled_start, method, scanned_by, scanner_name, note'
+            )
             .eq('teacher_id', teacher.id)
             .eq('class_id', classId)
             .eq('session_date', todayDate)
             .maybeSingle();
 
           if (raceRow) {
+            checkinRecords.push(raceRow);
             results.push({
               class_id: classId,
               class_code: classCode,
@@ -3640,16 +3697,18 @@ app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Res
           }
         }
 
+        const finalInserted = insertedRow || newRowPayload;
+        checkinRecords.push(finalInserted);
         results.push({
           class_id: classId,
           class_code: classCode,
           class_name: className,
           start: startParsed.formatted,
           end: endParsed.formatted,
-          status: insertedRow?.status === 'late' ? 'late' : status,
-          late_minutes: Number(insertedRow?.late_minutes ?? lateMinutes),
+          status: finalInserted.status === 'late' ? 'late' : status,
+          late_minutes: Number(finalInserted.late_minutes ?? lateMinutes),
           already: false,
-          checked_in_at: String(insertedRow?.checked_in_at || nowIso),
+          checked_in_at: String(finalInserted.checked_in_at || nowIso),
         });
       }
     }
@@ -3676,21 +3735,33 @@ app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Res
         teacher_name: teacher.name,
         session_date: todayDate,
         token_jti: payload.j,
+        already_checked_in: alreadyCheckedInNoClass,
         results,
       },
     });
 
     const checkedInCount = results.filter(r => !r.skipped_reason && r.status !== 'no_class').length;
+    const allResultsAlreadyCheckedIn =
+      results.length > 0 && results.every(r => !r.skipped_reason && r.already);
+    const firstValidCheckedInAt =
+      results.find(r => r.checked_in_at)?.checked_in_at || primaryCheckedInAt || nowIso;
+
     const message =
       teacherClassesToday.length === 0
-        ? `Giáo viên ${teacher.name} không có lịch dạy hôm nay (đã ghi nhận check-in không ca dạy).`
+        ? alreadyCheckedInNoClass
+          ? `Giáo viên ${teacher.name} đã được ghi nhận check-in (không có lịch dạy hôm nay) trước đó.`
+          : `Giáo viên ${teacher.name} không có lịch dạy hôm nay (đã ghi nhận check-in không ca dạy).`
         : checkedInCount > 0
         ? `Đã xác nhận check-in cho giáo viên ${teacher.name} (${checkedInCount} lớp).`
         : `Không có lớp nào được check-in mới cho giáo viên ${teacher.name}.`;
 
     res.json({
+      ok: true,
       teacher,
       server_time: nowIso,
+      checked_in_at: firstValidCheckedInAt,
+      already_checked_in: alreadyCheckedInNoClass || allResultsAlreadyCheckedIn,
+      checkins: checkinRecords,
       results,
       message,
     });

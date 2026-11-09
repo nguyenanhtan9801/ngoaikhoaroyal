@@ -30,7 +30,7 @@ interface TeacherCheckinTabProps {
 }
 
 interface ScanResultCard {
-  variant: 'on_time' | 'late' | 'error';
+  variant: 'on_time' | 'late' | 'no_class' | 'error';
   title: string;
   subtitle: string;
   teacherName?: string;
@@ -216,6 +216,9 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const pauseUntilRef = useRef<number>(0);
   const pauseTimeoutRef = useRef<number | null>(null);
+  const submittedTokensRef = useRef<Map<string, number>>(new Map());
+  const succeededTokensRef = useRef<Set<string>>(new Set());
+  const isSubmittingScanRef = useRef<boolean>(false);
 
   const stopCameraStream = useCallback(() => {
     if (streamRef.current) {
@@ -322,10 +325,26 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
   const handleQrDetected = useCallback(
     async (qrToken: string) => {
       const nowMs = Date.now();
-      if (nowMs < pauseUntilRef.current || isSubmittingScan) return;
+      const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+      // Dọn các token cũ hơn 5 phút khỏi Map để tránh phình bộ nhớ
+      submittedTokensRef.current.forEach((sentAt, tokenKey) => {
+        if (nowMs - sentAt > FIVE_MINUTES_MS) {
+          submittedTokensRef.current.delete(tokenKey);
+          succeededTokensRef.current.delete(tokenKey);
+        }
+      });
+
+      // Nếu qrToken đã có trong submittedTokensRef thì dừng ngay: không gửi, không đổi UI, không phát tiếng
+      if (submittedTokensRef.current.has(qrToken)) {
+        return;
+      }
+
+      if (nowMs < pauseUntilRef.current || isSubmittingScanRef.current || isSubmittingScan) return;
 
       // Pause scanning for 3 seconds
       pauseUntilRef.current = nowMs + 3000;
+      isSubmittingScanRef.current = true;
       setIsScanningPaused(true);
       setIsSubmittingScan(true);
       if (pauseTimeoutRef.current) {
@@ -339,18 +358,34 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
         const sessionRes = supabase ? await supabase.auth.getSession() : null;
         const accessToken = sessionRes?.data?.session?.access_token;
 
-        const response = await fetch('/api/checkin/scan', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-          },
-          body: JSON.stringify({ qr: qrToken }),
-        });
+        // Ghi qrToken vào submittedTokensRef ngay trước khi gọi fetch('/api/checkin/scan')
+        submittedTokensRef.current.set(qrToken, Date.now());
+
+        let response: Response;
+        try {
+          response = await fetch('/api/checkin/scan', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+            },
+            body: JSON.stringify({ qr: qrToken }),
+          });
+        } catch (networkErr: any) {
+          // Chỉ xóa qrToken khỏi submittedTokensRef khi lỗi là lỗi mạng (fetch bị throw) để cho phép thử lại
+          submittedTokensRef.current.delete(qrToken);
+          throw networkErr;
+        }
 
         const payload = await response.json().catch(() => ({}));
 
-        if (!response.ok || !payload.ok) {
+        // Nếu máy chủ trả 409 "Mã QR này đã được dùng" cho một token mà phiên làm việc này vừa gửi thành công trước đó:
+        // tuyệt đối không hiển thị thẻ lỗi và không xóa thẻ kết quả thành công đang hiển thị
+        if (response.status === 409 && succeededTokensRef.current.has(qrToken)) {
+          return;
+        }
+
+        if (!response.ok || payload.ok === false) {
           playFeedbackBeep('error');
           setScanResult({
             variant: 'error',
@@ -360,7 +395,12 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
           return;
         }
 
+        succeededTokensRef.current.add(qrToken);
+
         const checkins: TeacherCheckin[] = Array.isArray(payload.checkins) ? payload.checkins : [];
+        const rawResults: Array<Record<string, any>> = Array.isArray(payload.results)
+          ? payload.results
+          : [];
         const teacherInfo = payload.teacher || {};
         const teacherObj = store.teachers.find(t => t.id === teacherInfo.id);
         const teacherName = teacherInfo.name || teacherObj?.name || 'Giáo viên';
@@ -382,24 +422,51 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
           });
         }
 
-        // Check if no_class or skipped due to campus scope
+        // Kiểm tra trường hợp giáo viên không có lịch dạy hôm nay (status = 'no_class' hoặc không có class_id)
         const hasNoClassOnly =
-          checkins.length > 0 && checkins.every(c => c.status === 'no_class' || !c.class_id);
+          (checkins.length > 0 && checkins.every(c => c.status === 'no_class' || !c.class_id)) ||
+          (rawResults.length > 0 &&
+            rawResults.every(r => r.status === 'no_class' || !r.class_id));
 
-        if (hasNoClassOnly || checkins.length === 0) {
-          playFeedbackBeep('error');
+        if (hasNoClassOnly) {
+          playFeedbackBeep('warning');
           const reasonMsg =
             payload.skipped_reason ||
             'Giáo viên không có lịch dạy lớp ngoại khóa nào tại cơ sở này trong ngày hôm nay.';
+          const checkedInTimeStr = formatVietnamTimeFromIso(
+            checkins[0]?.checked_in_at ||
+              rawResults[0]?.checked_in_at ||
+              payload.checked_in_at ||
+              payload.server_time
+          );
+          const isAlreadyNoClass = Boolean(
+            payload.already_checked_in || rawResults[0]?.already
+          );
           setScanResult({
-            variant: 'error',
-            title: 'Không có lớp dạy hôm nay',
+            variant: 'no_class',
+            title: isAlreadyNoClass
+              ? `Đã check-in lúc ${checkedInTimeStr}`
+              : 'Đã ghi nhận — không có lịch dạy hôm nay',
             subtitle: reasonMsg,
             teacherName,
             teacherCode,
-            checkedInTimeStr: formatVietnamTimeFromIso(
-              checkins[0]?.checked_in_at || payload.checked_in_at
-            ),
+            checkedInTimeStr,
+          });
+          return;
+        }
+
+        if (checkins.length === 0) {
+          playFeedbackBeep('error');
+          const skippedReason =
+            payload.skipped_reason ||
+            rawResults.find(r => r.skipped_reason)?.skipped_reason ||
+            'Không thể ghi nhận check-in cho ca dạy hôm nay.';
+          setScanResult({
+            variant: 'error',
+            title: 'Check in không thành công',
+            subtitle: skippedReason,
+            teacherName,
+            teacherCode,
           });
           return;
         }
@@ -421,7 +488,7 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
         const anyLate = classItems.some(item => item.status === 'late' || item.lateMinutes > 0);
         const maxLate = classItems.reduce((max, item) => Math.max(max, item.lateMinutes), 0);
         const checkedInTimeStr = formatVietnamTimeFromIso(
-          checkins[0]?.checked_in_at || payload.checked_in_at
+          checkins[0]?.checked_in_at || payload.checked_in_at || payload.server_time
         );
 
         if (anyLate) {
@@ -457,6 +524,7 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
           subtitle: err?.message || 'Không thể gửi yêu cầu xác thực QR tới máy chủ.',
         });
       } finally {
+        isSubmittingScanRef.current = false;
         setIsSubmittingScan(false);
       }
     },
@@ -1010,7 +1078,7 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
               className={`rounded-3xl p-5 border-2 shadow-2xl transition-all ${
                 scanResult.variant === 'on_time'
                   ? 'bg-emerald-950/60 border-emerald-400 text-emerald-100 shadow-emerald-500/15'
-                  : scanResult.variant === 'late'
+                  : scanResult.variant === 'late' || scanResult.variant === 'no_class'
                   ? 'bg-amber-950/60 border-amber-400 text-amber-100 shadow-amber-500/15'
                   : 'bg-rose-950/60 border-rose-500 text-rose-100 shadow-rose-500/15'
               }`}
@@ -1021,7 +1089,7 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
                     className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
                       scanResult.variant === 'on_time'
                         ? 'bg-emerald-500 text-slate-950'
-                        : scanResult.variant === 'late'
+                        : scanResult.variant === 'late' || scanResult.variant === 'no_class'
                         ? 'bg-amber-400 text-slate-950'
                         : 'bg-rose-500 text-white'
                     }`}
@@ -1030,6 +1098,8 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
                       <CheckCircle2 className="w-7 h-7" />
                     ) : scanResult.variant === 'late' ? (
                       <Clock className="w-7 h-7" />
+                    ) : scanResult.variant === 'no_class' ? (
+                      <AlertTriangle className="w-7 h-7" />
                     ) : (
                       <XCircle className="w-7 h-7" />
                     )}
