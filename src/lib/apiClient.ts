@@ -8,6 +8,7 @@ export interface ApiFetchJsonResult<T = any> {
 export interface ServerHealthReport {
   ok: boolean;
   build?: string;
+  startedAt?: string;
   node?: string;
   env?: string;
   supabaseProjectRef?: string;

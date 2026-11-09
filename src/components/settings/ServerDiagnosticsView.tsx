@@ -303,6 +303,11 @@ export const ServerDiagnosticsView: React.FC = () => {
                     <div>
                       Build: <strong className="text-amber-300">{health.build}</strong>
                     </div>
+                    {health.startedAt && (
+                      <div className="text-[11px] text-cyan-300">
+                        Khởi động lúc: {health.startedAt}
+                      </div>
+                    )}
                     <div className="text-[11px] text-slate-400">
                       Node: {health.node || 'N/A'} &bull; Env: {health.env || 'N/A'}
                     </div>

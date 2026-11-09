@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
@@ -14,6 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.disable('x-powered-by');
 
 function getPort(): number {
   for (let i = 0; i < process.argv.length; i++) {
@@ -32,26 +34,49 @@ function getPort(): number {
 
 const PORT = getPort();
 
-// Internal Data Directory (cho nhật ký kiểm toán nội bộ)
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const DATA_DIR = path.join(__dirname, 'data');
+// Internal Data & Uploads Directory (Mọi bản ghi lâu dài đều lưu ở Supabase; thư mục cục bộ chỉ là tùy chọn)
+// Trên Vercel (serverless) hệ tệp của dự án là chỉ đọc; chỉ /tmp là ghi được (và tạm thời).
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const WRITABLE_BASE_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'royal-school') : __dirname;
+const UPLOADS_DIR = path.join(WRITABLE_BASE_DIR, 'uploads');
+const DATA_DIR = path.join(WRITABLE_BASE_DIR, 'data');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (err: any) {
+  console.warn(
+    '[Royal School Server] Cảnh báo: Không thể tạo thư mục data cục bộ (hệ tệp chỉ đọc). Mọi bản ghi kiểm toán vẫn được ghi trực tiếp lên Supabase:',
+    err?.message || err
+  );
+}
+
+try {
+  if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+} catch (err: any) {
+  console.warn(
+    '[Royal School Server] Cảnh báo: Không thể tạo thư mục uploads cục bộ (hệ tệp chỉ đọc). Tệp tải lên được lưu trực tiếp trên Supabase Storage:',
+    err?.message || err
+  );
+}
 
 const ADMIN_AUDIT_LOG_FILE = path.join(DATA_DIR, 'admin_audit.log');
 
-// Di chuyển và xóa file admin_audit.log cũ trong thư mục uploads (nếu có) để không bao giờ tồn tại trong uploads
-const legacyUploadsAuditLog = path.join(UPLOADS_DIR, 'admin_audit.log');
-if (fs.existsSync(legacyUploadsAuditLog)) {
-  try {
+// Di chuyển và xóa file admin_audit.log cũ trong thư mục uploads (nếu có)
+try {
+  const legacyUploadsAuditLog = path.join(UPLOADS_DIR, 'admin_audit.log');
+  if (fs.existsSync(legacyUploadsAuditLog)) {
     const legacyContent = fs.readFileSync(legacyUploadsAuditLog, 'utf8');
     if (legacyContent) {
       fs.appendFileSync(ADMIN_AUDIT_LOG_FILE, legacyContent, 'utf8');
     }
     fs.unlinkSync(legacyUploadsAuditLog);
-  } catch {
-    // ignore cleanup error
   }
+} catch {
+  // ignore cleanup error on read-only filesystem
 }
 
 app.set('trust proxy', 1);
@@ -187,6 +212,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
   res.json({
     ok: true,
     build: process.env.APP_BUILD_ID || SERVER_STARTED_AT_ISO,
+    startedAt: SERVER_STARTED_AT_ISO,
     node: process.version,
     env: process.env.NODE_ENV || 'development',
     supabaseProjectRef: getSupabaseProjectRefFromUrl(activeUrl),
@@ -4172,7 +4198,12 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// Trên Vercel, hàm serverless api/index.ts nạp `app` và Vercel tự gọi nó cho từng yêu cầu: KHÔNG listen/phục vụ giao diện ở đây.
+if (!IS_VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
+
+export default app;
