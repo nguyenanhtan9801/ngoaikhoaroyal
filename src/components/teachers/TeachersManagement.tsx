@@ -599,18 +599,19 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       });
 
       if (accountErrorMessage) {
-        showToast(
-          `Đã lưu hồ sơ giáo viên ${teacherRecord.name} (${teacherRecord.code}) nhưng CHƯA tạo được tài khoản đăng nhập: ${accountErrorMessage}`,
-          'error'
-        );
-      } else {
-        showToast(
-          `${editingTeacher ? 'Đã cập nhật' : 'Đã thêm mới'} giáo viên ${teacherRecord.name} (${teacherRecord.code})${
-            createdUserAccount ? ' và cấp tài khoản đăng nhập' : ''
-          } thành công!`,
-          'success'
-        );
+        const fullDiagMsg = `Đã lưu hồ sơ giáo viên ${teacherRecord.name} (${teacherRecord.code}) nhưng CHƯA tạo được tài khoản đăng nhập: ${accountErrorMessage}`;
+        setFormError(fullDiagMsg);
+        showToast(fullDiagMsg, 'error');
+        setEditingTeacher(teacherRecord);
+        return;
       }
+
+      showToast(
+        `${editingTeacher ? 'Đã cập nhật' : 'Đã thêm mới'} giáo viên ${teacherRecord.name} (${teacherRecord.code})${
+          createdUserAccount ? ' và cấp tài khoản đăng nhập' : ''
+        } thành công!`,
+        'success'
+      );
       setIsAddEditModalOpen(false);
       setEditingTeacher(null);
     } catch (err: any) {

@@ -45,6 +45,43 @@ export interface AppDataSafeResult {
 
 let hasShownOfflineFallbackToast = false;
 
+const STUDENTS_PAGE_SIZE = 1000;
+
+async function fetchStudentsPaginated(
+  client: SupabaseClient,
+  cols: string,
+  campusVariants?: string[]
+): Promise<{ data: any[]; error: any }> {
+  const allRows: any[] = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + STUDENTS_PAGE_SIZE - 1;
+    let query = client
+      .from('students')
+      .select(cols)
+      .order('id', { ascending: true })
+      .range(from, to);
+
+    if (campusVariants && campusVariants.length > 0) {
+      query = query.in('campus_id', campusVariants);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      return { data: allRows, error };
+    }
+    const pageRows = Array.isArray(data) ? data : [];
+    allRows.push(...pageRows);
+    if (pageRows.length < STUDENTS_PAGE_SIZE) {
+      break;
+    }
+    from += STUDENTS_PAGE_SIZE;
+  }
+
+  return { data: allRows, error: null };
+}
+
 /**
  * Nạp độc lập từng bảng dữ liệu từ Supabase sử dụng Promise.allSettled.
  * Bảng nào có dữ liệu thì nạp, bảng nào lỗi hoặc rỗng thì trả về mảng [],
@@ -52,16 +89,28 @@ let hasShownOfflineFallbackToast = false;
  */
 export async function loadAppDataSafe(customClient?: SupabaseClient | null): Promise<AppDataSafeResult> {
   const client = customClient || getSupabaseClient() || supabase;
+  const legacyLoginActive =
+    String(import.meta.env?.VITE_LEGACY_LOGIN ?? 'false').trim().toLowerCase() === 'true' &&
+    isLegacyLoginEnabled();
 
   const fetchTable = async (tableName: string): Promise<any[]> => {
     if (!client) return [];
+    if (tableName === 'app_users' && !legacyLoginActive) {
+      return [];
+    }
     try {
       const cols = SUPABASE_TABLE_SELECT_COLUMNS[tableName] || '*';
+      if (tableName === 'students') {
+        const { data, error } = await fetchStudentsPaginated(client, cols);
+        if (error) {
+          console.warn(`Lỗi khi đọc bảng ${tableName}:`, error.message);
+          return [];
+        }
+        return data;
+      }
       let query = client.from(tableName).select(cols);
       if (tableName === 'academic_terms') {
         query = query.order('start_date', { ascending: true });
-      } else if (tableName === 'students') {
-        query = query.limit(200);
       }
       const { data, error } = await query;
       if (error) {
@@ -85,7 +134,7 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
     fetchTable('enrollments'),
     fetchTable('attendance_records'),
     fetchTable('tuition_invoices'),
-    fetchTable(isLegacyLoginEnabled() ? 'app_users' : 'profiles'),
+    fetchTable(legacyLoginActive ? 'app_users' : 'profiles'),
     fetchTable('parent_registrations'),
     fetchTable('subject_categories'),
     fetchTable('time_slots'),
@@ -382,6 +431,10 @@ export async function loadInitialDataSafely(
         ? 'pl'
         : 'all';
 
+    const legacyLoginActive =
+      String(import.meta.env?.VITE_LEGACY_LOGIN ?? 'false').trim().toLowerCase() === 'true' &&
+      isLegacyLoginEnabled();
+
     // Danh sách các bảng cần nạp từ Supabase được lọc theo vai trò người dùng
     // - Chỉ nạp bảng profiles toàn cục nếu user là super_admin (đã có syncProfilesListForSuperAdmin dùng fetchOnce)
     // - Nếu là teacher: bỏ qua các bảng tài chính/tuyển sinh không cần thiết (tuition_invoices, credit_notes, parent_registrations)
@@ -392,7 +445,7 @@ export async function loadInitialDataSafely(
       })),
       { tableName: 'credit_notes', storeKey: 'makeupCredits' },
       ...(userRole === 'super_admin'
-        ? [{ tableName: isLegacyLoginEnabled() ? 'app_users' : 'profiles', storeKey: 'users' as keyof AppStore }]
+        ? [{ tableName: legacyLoginActive ? 'app_users' : 'profiles', storeKey: 'users' as keyof AppStore }]
         : []),
       { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
       { tableName: 'subject_categories', storeKey: 'subjectCategories' },
@@ -402,7 +455,9 @@ export async function loadInitialDataSafely(
       { tableName: 'teacher_checkins', storeKey: 'teacherCheckins' },
     ];
 
-    const allTableDefinitions = baseTableDefinitions;
+    const allTableDefinitions = baseTableDefinitions.filter(
+      item => !(item.tableName === 'app_users' && !legacyLoginActive)
+    );
 
     // Nạp song song độc lập từng bảng với Promise.allSettled + fetchOnce (TTL 60s)
     const fetchPromises = allTableDefinitions.map(async item => {
@@ -413,6 +468,17 @@ export async function loadInitialDataSafely(
         const { data, error } = await fetchOnce(
           cacheKey,
           async () => {
+            const campusVariants =
+              scopedCampusCode === 'all'
+                ? undefined
+                : scopedCampusCode === 'pmh'
+                ? ['pmh', 'camp_pmh', 'PMH']
+                : ['pl', 'camp_pl', 'PL'];
+
+            if (item.tableName === 'students') {
+              return await fetchStudentsPaginated(client, cols, campusVariants);
+            }
+
             let query = client.from(item.tableName).select(cols);
 
             if (item.tableName === 'academic_terms') {
@@ -420,25 +486,15 @@ export async function loadInitialDataSafely(
             }
 
             // Lọc theo cơ sở (campus_id) cho các bảng có campus_id khi nhân sự chỉ phụ trách 1 cơ sở
-            if (scopedCampusCode !== 'all') {
-              const campusVariants =
-                scopedCampusCode === 'pmh'
-                  ? ['pmh', 'camp_pmh', 'PMH']
-                  : ['pl', 'camp_pl', 'PL'];
+            if (campusVariants) {
               if (
                 item.tableName === 'extracurricular_classes' ||
                 item.tableName === 'teachers' ||
                 item.tableName === 'teacher_work_sessions' ||
-                item.tableName === 'teacher_checkins' ||
-                item.tableName === 'students'
+                item.tableName === 'teacher_checkins'
               ) {
                 query = query.in('campus_id', campusVariants);
               }
-            }
-
-            // Giới hạn tải danh sách học sinh ban đầu (StudentsTab đã phân trang server-side 100 dòng/trang)
-            if (item.tableName === 'students') {
-              query = query.limit(200);
             }
 
             return await query;

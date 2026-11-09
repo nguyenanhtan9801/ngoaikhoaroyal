@@ -5,8 +5,73 @@ export interface ApiFetchJsonResult<T = any> {
   errorMessage: string;
 }
 
-const MISSING_EXPRESS_SERVER_404_MESSAGE =
-  'Không tìm thấy máy chủ API (/api). Ứng dụng đang chạy mà không có máy chủ Express (server.ts) hoặc đang dùng bản cũ. Hãy mở /api/health để kiểm tra và chạy ứng dụng bằng npm run dev (hoặc npm run build rồi npm start).';
+export interface ServerHealthReport {
+  ok: boolean;
+  build?: string;
+  node?: string;
+  env?: string;
+  supabaseProjectRef?: string;
+  serviceRole?: {
+    configured: boolean;
+    valid: boolean;
+  };
+  secrets?: {
+    parentSession: boolean;
+    checkinQr: boolean;
+  };
+  routes?: string[];
+  legacyLogin?: boolean;
+}
+
+export const NO_EXPRESS_SERVER_MESSAGE =
+  'Trang này đang chạy KHÔNG có máy chủ Express, cần phát hành bằng npm run build rồi npm start';
+
+export const SERVICE_ROLE_MISSING_MESSAGE =
+  'Máy chủ thiếu hoặc sai SUPABASE_SERVICE_ROLE_KEY của project mới';
+
+async function diagnoseNonJson404(path: string, method: string): Promise<string> {
+  try {
+    const healthRes = await fetch('/api/health', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const healthText = await healthRes.text();
+    let healthData: ServerHealthReport | null = null;
+    try {
+      const parsed = JSON.parse(healthText.trim());
+      if (parsed && typeof parsed === 'object') {
+        healthData = parsed as ServerHealthReport;
+      }
+    } catch {
+      healthData = null;
+    }
+
+    if (healthRes.status === 404 || !healthData || !healthData.ok) {
+      return NO_EXPRESS_SERVER_MESSAGE;
+    }
+
+    const cleanPath = String(path || '').split('?')[0].trim();
+    const upperMethod = String(method || 'GET').trim().toUpperCase();
+    const expectedRoute = `${upperMethod} ${cleanPath}`.toUpperCase();
+    const routes = Array.isArray(healthData.routes) ? healthData.routes : [];
+    const hasRoute = routes.some(r => {
+      const norm = String(r || '').trim().toUpperCase();
+      return norm === expectedRoute || norm.endsWith(` ${cleanPath.toUpperCase()}`);
+    });
+
+    if (!hasRoute) {
+      return `Máy chủ đang chạy bản cũ (build ${healthData.build || 'unknown'}), hãy phát hành lại`;
+    }
+
+    if (!healthData.serviceRole?.configured || !healthData.serviceRole?.valid) {
+      return SERVICE_ROLE_MISSING_MESSAGE;
+    }
+
+    return `Máy chủ đang chạy bản cũ (build ${healthData.build || 'unknown'}), hãy phát hành lại`;
+  } catch {
+    return NO_EXPRESS_SERVER_MESSAGE;
+  }
+}
 
 export async function apiFetchJson<T = any>(
   path: string,
@@ -46,12 +111,22 @@ export async function apiFetchJson<T = any>(
     }
   }
 
+  if (isJson && parsedData?.code === 'SERVICE_ROLE_MISSING') {
+    return {
+      ok: false,
+      status,
+      data: parsedData as T | null,
+      errorMessage: SERVICE_ROLE_MISSING_MESSAGE,
+    };
+  }
+
   if (status === 404 && !isJson) {
+    const diagnosedMessage = await diagnoseNonJson404(path, init?.method || 'GET');
     return {
       ok: false,
       status,
       data: null,
-      errorMessage: MISSING_EXPRESS_SERVER_404_MESSAGE,
+      errorMessage: diagnosedMessage,
     };
   }
 
@@ -80,3 +155,4 @@ export async function apiFetchJson<T = any>(
     errorMessage: fallbackError,
   };
 }
+
