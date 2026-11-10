@@ -30,7 +30,8 @@ import {
   Eye,
   FileSpreadsheet,
   RefreshCw,
-  Search
+  Search,
+  Edit3
 } from 'lucide-react';
 import {
   AppStore,
@@ -45,6 +46,7 @@ import {
   getTeacherContractAt,
   formatDateVN,
   getCurrentTerm,
+  getEffectivePrice,
 } from '../../lib/storage';
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
 import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
@@ -177,6 +179,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
   const [viewingQrInvoice, setViewingQrInvoice] = useState<TuitionInvoice | null>(null);
   const [verifyingInvoice, setVerifyingInvoice] = useState<TuitionInvoice | null>(null);
+  const [editingInvoice, setEditingInvoice] = useState<TuitionInvoice | null>(null);
 
   // Teacher Payroll & Workload BI Dashboard Filter & Modal States
   const [payrollTermFilter, setPayrollTermFilter] = useState<string>(() => {
@@ -1350,14 +1353,24 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <span className="text-[10px] text-purple-300/90 italic">
                             Tạm hoãn mã QR chờ kết quả buổi thử
                           </span>
-                          <button
-                            onClick={() => handleActivateTrialInvoice(invoice)}
-                            className="px-2.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] transition-colors flex items-center gap-1 shrink-0 shadow-sm shadow-purple-600/20"
-                            title="Chuyển học sinh lên Chính thức và mở mã VietQR thu học phí"
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Lên chính thức & Mở QR</span>
-                          </button>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() => setEditingInvoice(invoice)}
+                              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 font-bold text-[11px] transition-colors flex items-center gap-1"
+                              title="Chỉnh sửa biểu phí hóa đơn"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Sửa</span>
+                            </button>
+                            <button
+                              onClick={() => handleActivateTrialInvoice(invoice)}
+                              className="px-2.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-[11px] transition-colors flex items-center gap-1 shrink-0 shadow-sm shadow-purple-600/20"
+                              title="Chuyển học sinh lên Chính thức và mở mã VietQR thu học phí"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Lên chính thức & Mở QR</span>
+                            </button>
+                          </div>
                         </div>
                       ) : invoice.payment_status === 'cancelled' ? (
                         <span className="text-[11px] text-slate-500 italic">
@@ -1384,14 +1397,25 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             </button>
                           </div>
 
-                          {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
+                          <div className="flex items-center gap-1.5">
                             <button
-                              onClick={() => openVerifyModal(invoice)}
-                              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow-sm shadow-emerald-600/20"
+                              onClick={() => setEditingInvoice(invoice)}
+                              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 font-bold text-xs transition-colors flex items-center gap-1"
+                              title="Chỉnh sửa biểu phí hóa đơn"
                             >
-                              Gạch nợ
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Sửa</span>
                             </button>
-                          )}
+
+                            {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
+                              <button
+                                onClick={() => openVerifyModal(invoice)}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow-sm shadow-emerald-600/20"
+                              >
+                                Gạch nợ
+                              </button>
+                            )}
+                          </div>
                         </>
                       )}
                     </div>
@@ -1561,14 +1585,24 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         <td className="py-3 px-4 text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             {invoice.is_trial_pending ? (
-                              <button
-                                onClick={() => handleActivateTrialInvoice(invoice)}
-                                className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10px] transition-colors inline-flex items-center gap-1"
-                                title="Kích hoạt thu học phí chính thức và mở mã VietQR"
-                              >
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>Lên chính thức</span>
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => setEditingInvoice(invoice)}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 font-bold text-[11px] transition-colors inline-flex items-center gap-1"
+                                  title="Chỉnh sửa biểu phí hóa đơn"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                  <span>Sửa</span>
+                                </button>
+                                <button
+                                  onClick={() => handleActivateTrialInvoice(invoice)}
+                                  className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10px] transition-colors inline-flex items-center gap-1"
+                                  title="Kích hoạt thu học phí chính thức và mở mã VietQR"
+                                >
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>Lên chính thức</span>
+                                </button>
+                              </>
                             ) : invoice.payment_status === 'cancelled' ? (
                               <span className="text-[10px] text-slate-500 italic">Đã hủy</span>
                             ) : (
@@ -1587,6 +1621,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                                   title="In Biên Lai Thu Tiền"
                                 >
                                   <Printer className="w-3.5 h-3.5" />
+                                </button>
+
+                                <button
+                                  onClick={() => setEditingInvoice(invoice)}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 font-bold text-[11px] transition-colors inline-flex items-center gap-1"
+                                  title="Chỉnh sửa biểu phí hóa đơn"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                  <span>Sửa</span>
                                 </button>
 
                                 {invoice.payment_status !== 'paid' && invoice.outstanding_amount > 0 && (
@@ -4302,6 +4345,279 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         />
       )}
 
+      {/* MODAL CHỈNH SỬA HÓA ĐƠN HỌC PHÍ */}
+      {editingInvoice && (
+        <EditInvoiceModal
+          invoice={editingInvoice}
+          onClose={() => setEditingInvoice(null)}
+          onUpdateStore={onUpdateStore}
+          store={store}
+        />
+      )}
+
     </div>
   );
 };
+
+interface EditInvoiceModalProps {
+  invoice: TuitionInvoice | any;
+  onClose: () => void;
+  onUpdateStore: any;
+  store: AppStore;
+}
+
+export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({ invoice, onClose, onUpdateStore, store }) => {
+  const currentClass = (store.classes || []).find(c => c.id === invoice.class_id);
+  const currentStudent = (store.students || []).find(
+    s => s.id === invoice.student_id || s.code === invoice.student_id
+  );
+
+  const [formData, setFormData] = useState({
+    sessions_count: invoice.sessions_count || invoice.registered_sessions || (currentClass?.total_sessions || 16),
+    gross_amount: Number(invoice.gross_amount || 0),
+    discount_amount: Number(invoice.discount_amount || invoice.credit_deduction || invoice.credit_deducted || 0),
+    due_date: invoice.due_date ? invoice.due_date.split('T')[0] : '2026-11-09',
+    notes: invoice.notes || invoice.prorated_note || '',
+  });
+
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Tính tự động
+  const netPayable = Math.max(0, formData.gross_amount - formData.discount_amount);
+  const paidAmount = Number(invoice.paid_amount || 0);
+  const remainingAmount = Math.max(0, netPayable - paidAmount);
+
+  // Nút tiện ích: Tự động tính lại chuẩn xác theo biểu phí cơ sở
+  const handleAutoApplyCampusPrice = () => {
+    if (!currentClass) return;
+    const campusId =
+      String(currentClass.campus_id || '').toLowerCase().includes('pl') ||
+      currentClass.name.toUpperCase().includes('PL')
+        ? 'pl'
+        : 'pmh';
+    const termId = currentClass.term_id || (currentClass as any).primary_term_id || 'KHOA-03';
+
+    // Gọi hàm tính giá kế thừa từ storage.ts
+    const priceConfig = getEffectivePrice(termId, campusId, currentClass.subject_id, store);
+    const totalSessions = Number(currentClass.total_sessions || priceConfig.total_sessions || 16);
+    const standardFee = Number(
+      (currentClass as any).course_fee ||
+        priceConfig.course_fee ||
+        priceConfig.base_course_fee ||
+        currentClass.full_course_fee ||
+        2040000
+    );
+    const ratePerSession = Math.round(standardFee / totalSessions);
+
+    // Tính theo số buổi thực tế đang chọn trong form
+    const calculatedGross =
+      formData.sessions_count === totalSessions
+        ? standardFee
+        : Math.round(formData.sessions_count * ratePerSession);
+
+    setFormData(prev => ({
+      ...prev,
+      gross_amount: calculatedGross,
+    }));
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSaving(true);
+    const client = getSupabaseClient() || supabase;
+
+    const sessionsCount = Math.max(1, Number(formData.sessions_count) || 1);
+    const grossAmount = Number(formData.gross_amount) || 0;
+    const discountAmount = Number(formData.discount_amount) || 0;
+    const sessionRate = Math.round(grossAmount / sessionsCount);
+    const nextPaymentStatus =
+      invoice.payment_status === 'cancelled'
+        ? 'cancelled'
+        : remainingAmount === 0 && netPayable > 0
+        ? 'paid'
+        : paidAmount > 0
+        ? 'partial'
+        : 'unpaid';
+
+    const payload = {
+      sessions_count: sessionsCount,
+      registered_sessions: sessionsCount,
+      session_rate: sessionRate,
+      gross_amount: grossAmount,
+      discount_amount: discountAmount,
+      net_payable: netPayable,
+      remaining_amount: remainingAmount,
+      outstanding_amount: remainingAmount,
+      payment_status: nextPaymentStatus,
+      due_date: formData.due_date,
+      notes: formData.notes,
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      if (client) {
+        const { error } = await client.from('tuition_invoices').update(payload).eq('id', invoice.id);
+        if (error) {
+          await client
+            .from('tuition_invoices')
+            .update({
+              registered_sessions: sessionsCount,
+              session_rate: sessionRate,
+              gross_amount: grossAmount,
+              discount_amount: discountAmount,
+              net_payable: netPayable,
+              outstanding_amount: remainingAmount,
+              payment_status: nextPaymentStatus,
+              due_date: formData.due_date || null,
+              updated_at: payload.updated_at,
+            })
+            .eq('id', invoice.id);
+        }
+      }
+
+      onUpdateStore((prev: AppStore) => ({
+        ...prev,
+        invoices: (prev.invoices || []).map(inv =>
+          inv.id === invoice.id ? { ...inv, ...payload } : inv
+        ),
+      }));
+
+      showToast(`Đã cập nhật biểu phí hóa đơn ${invoice.invoice_code || invoice.id}!`, 'success');
+      onClose();
+    } catch (err: any) {
+      showToast('Lỗi lưu hóa đơn: ' + err.message, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+      <div className="w-full max-w-lg rounded-3xl bg-[#111827] border border-slate-800 p-6 shadow-2xl space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div>
+            <h3 className="text-base font-black text-white flex items-center gap-2">
+              <Edit3 className="w-4 h-4 text-amber-400" />
+              <span>Chỉnh Sửa Biểu Phí Hóa Đơn</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Mã HĐ: <span className="font-mono text-amber-400 font-bold">{invoice.invoice_code || invoice.id}</span> &bull; {currentStudent?.name || invoice.students?.name || invoice.student_name}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
+        </div>
+
+        {/* Thông tin lớp học */}
+        <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between text-xs">
+          <div>
+            <div className="font-bold text-white">{currentClass?.name || invoice.extracurricular_classes?.name || invoice.class_id}</div>
+            <div className="text-[11px] text-cyan-400 mt-0.5">
+              Cơ sở: {String(currentClass?.campus_id || invoice.campus_id || '').toUpperCase().includes('PL') ? 'Phú Lâm (PL)' : 'Phú Mỹ Hưng (PMH)'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleAutoApplyCampusPrice}
+            className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-bold text-[11px] flex items-center gap-1.5 transition-all cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+            <span>⚡ Lấy Biểu Phí Cơ Sở</span>
+          </button>
+        </div>
+
+        <form onSubmit={handleSave} className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">Số Buổi Thực Học</label>
+              <input
+                type="number"
+                min="1"
+                value={formData.sessions_count}
+                onChange={(e) => setFormData({ ...formData, sessions_count: Number(e.target.value) })}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono font-bold text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">Hạn Nộp Học Phí</label>
+              <input
+                type="date"
+                value={formData.due_date}
+                onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono text-xs"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-amber-400 mb-1">Học Phí Gốc (VNĐ) *</label>
+              <input
+                type="number"
+                step="10000"
+                required
+                value={formData.gross_amount}
+                onChange={(e) => setFormData({ ...formData, gross_amount: Number(e.target.value) })}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-amber-300 font-mono font-bold text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">Trừ Bảo Lưu / Giảm Trừ</label>
+              <input
+                type="number"
+                step="10000"
+                value={formData.discount_amount}
+                onChange={(e) => setFormData({ ...formData, discount_amount: Number(e.target.value) })}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-mono text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Khối tóm tắt số tiền */}
+          <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-1.5 text-xs">
+            <div className="flex justify-between text-slate-400">
+              <span>Số tiền phải đóng:</span>
+              <strong className="text-white font-mono">{netPayable.toLocaleString('vi-VN')} đ</strong>
+            </div>
+            <div className="flex justify-between text-slate-400">
+              <span>Đã thanh toán:</span>
+              <span className="text-emerald-400 font-mono">{paidAmount.toLocaleString('vi-VN')} đ</span>
+            </div>
+            <div className="flex justify-between text-rose-400 font-bold border-t border-slate-800/80 pt-1.5">
+              <span>Còn nợ cần thu:</span>
+              <span className="font-mono text-sm">{remainingAmount.toLocaleString('vi-VN')} đ</span>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-bold text-slate-400 mb-1">Ghi Chú Điều Chỉnh</label>
+            <input
+              type="text"
+              placeholder="VD: Cập nhật lại biểu phí riêng cơ sở Phú Lâm..."
+              value={formData.notes}
+              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white text-xs"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2.5 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold"
+            >
+              Hủy
+            </button>
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black shadow-lg shadow-amber-500/20"
+            >
+              {isSaving ? 'Đang lưu...' : 'Lưu Thay Đổi'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
