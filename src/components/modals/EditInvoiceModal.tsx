@@ -38,27 +38,39 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
         campusName: 'PMH',
       };
     }
+
     const cCampus = String(currentClass.campus_id || '').toLowerCase();
     const isPL = cCampus.includes('pl') || currentClass.name.toUpperCase().includes('PL');
     const campusId = isPL ? 'pl' : 'pmh';
     const termId = currentClass.term_id || (currentClass as any).primary_term_id || 'KHOA-03';
 
+    // 1. Lấy cấu hình biểu phí chuẩn theo cơ sở của môn học
     const priceResult = getEffectivePrice(termId, campusId, currentClass.subject_id, store);
+    const currentSubject: any = (store.subjects || []).find(
+      s => s.id === currentClass.subject_id
+    );
+
+    // SỐ BUỔI QUY ĐỊNH CỦA MÔN: Luôn ưu tiên từ Biểu phí cơ sở / Danh mục môn (16 buổi)
     const standardSessions = Number(
-      currentClass.total_sessions || priceResult.total_sessions || 16
+      priceResult.total_sessions ||
+        currentSubject?.default_sessions ||
+        currentSubject?.sessions_count ||
+        currentSubject?.standard_sessions ||
+        16
     );
+
+    // HỌC PHÍ CHUẨN CỦA MÔN: Luôn lấy theo Biểu phí cơ sở (4.000.000 đ)
     const standardFee = Number(
-      (currentClass as any).course_fee ||
-        (currentClass as any).price ||
-        priceResult.course_fee ||
+      priceResult.course_fee ||
         priceResult.base_course_fee ||
-        currentClass.full_course_fee ||
-        2040000
+        currentSubject?.standard_fee ||
+        currentSubject?.standard_course_fee ||
+        4000000
     );
+
+    // ĐƠN GIÁ 1 BUỔI CHUẨN CỦA CƠ SỞ (4.000.000 / 16 = 250.000 đ/buổi)
     const sessionRate = Number(
-      Math.round(standardFee / standardSessions) ||
-        priceResult.session_rate ||
-        currentClass.price_per_session
+      priceResult.session_rate || Math.round(standardFee / standardSessions)
     );
 
     return {
