@@ -120,13 +120,28 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
     }
   };
 
-  // 4. Nút bấm 1 chạm: Áp dụng lại toàn bộ biểu phí chuẩn cơ sở
-  const handleResetToCampusPrice = () => {
-    setSessionsCount(campusPricing.standardSessions);
-    setGrossAmount(campusPricing.standardFee);
+  // 4. Nút bấm 1 chạm: Cập nhật lại biểu phí cơ sở nhưng giữ nguyên số buổi thực học của học sinh
+  const handleApplyCampusPricingKeepSessions = () => {
+    // Giữ nguyên số buổi thực học hiện tại của học sinh
+    const currentActualSessions =
+      Number(sessionsCount) ||
+      Number(invoice.sessions_count || invoice.registered_sessions) ||
+      campusPricing.standardSessions;
+
+    let newGross = 0;
+    if (currentActualSessions === campusPricing.standardSessions) {
+      newGross = campusPricing.standardFee;
+    } else {
+      // Tính theo đơn giá chuẩn của cơ sở * số buổi thực học hiện tại
+      newGross = Math.round(currentActualSessions * campusPricing.sessionRate);
+    }
+
+    // Cập nhật học phí gốc, giữ nguyên sessionsCount
+    setGrossAmount(newGross);
+
     showToast(
-      `Đã áp dụng biểu phí chuẩn ${campusPricing.campusName}: ${campusPricing.standardSessions} buổi - ${campusPricing.standardFee.toLocaleString('vi-VN')} đ!`,
-      'info'
+      `Đã áp biểu phí ${campusPricing.campusName} (Đơn giá: ${campusPricing.sessionRate.toLocaleString('vi-VN')} đ/b) cho ${currentActualSessions} buổi thực học: ${newGross.toLocaleString('vi-VN')} đ!`,
+      'success'
     );
   };
 
@@ -249,11 +264,11 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
             </div>
             <button
               type="button"
-              onClick={handleResetToCampusPrice}
+              onClick={handleApplyCampusPricingKeepSessions}
               className="px-2.5 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Lấy Chuẩn Khóa ({campusPricing.standardSessions}b)</span>
+              <span>⚡ Cập Nhật Lại Biểu Phí Cơ Sở</span>
             </button>
           </div>
 
