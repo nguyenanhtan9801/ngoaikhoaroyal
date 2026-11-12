@@ -1,23 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", -apple-system-font, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-serif: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", -apple-system-font, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --apple-font-stack: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--apple-font-stack);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", -apple-system-font, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  letter-spacing: -0.011em;
+/* Ép toàn bộ thẻ HTML và các class Tailwind (kể cả font-mono, font-serif) dùng chung 1 font duy nhất */
+html,
+body,
+*,
+*::before,
+*::after,
+.font-sans,
+.font-mono,
+.font-serif,
+input,
+select,
+textarea,
+button,
+table,
+th,
+td {
+  font-family: var(--apple-font-stack) !important;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  text-rendering: optimizeLegibility;
+}
+
+/* Giữ các cột số tiền, ngày tháng, mã số thẳng hàng dọc chuẩn như bảng tính Apple Numbers */
+body {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.011em;
 }
 
 /* Apple Human Interface Guidelines: Headings Tracking (-0.02em) */
