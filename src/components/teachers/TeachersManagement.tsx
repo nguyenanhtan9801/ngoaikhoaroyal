@@ -24,6 +24,9 @@ import {
   Sparkles,
   LayoutGrid,
   Table2,
+  CalendarPlus,
+  Clock,
+  Check,
 } from 'lucide-react';
 import {
   AppStore,
@@ -32,6 +35,7 @@ import {
   TeacherPayModel,
   UserRole,
   AppUser,
+  ExtracurricularClass,
 } from '../../types';
 import {
   formatVND,
@@ -136,6 +140,31 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     return normTarget === userScopedCampus;
   };
 
+  // Quyền phân công lớp nhanh (RBAC cho Quản lý đào tạo / Học vụ / Quản lý cơ sở / Super Admin)
+  const canAssignGlobal = useMemo(() => {
+    const role = currentUser?.role || currentRole;
+    if (
+      role === 'super_admin' ||
+      role === 'campus_manager' ||
+      role === 'academic' ||
+      role === 'academic_staff' ||
+      role === 'academic_accountant' ||
+      role === 'academic_admissions'
+    ) {
+      return true;
+    }
+    return Boolean(effectivePerms.can_manage_classes || effectivePerms.can_manage_teachers);
+  }, [currentUser, currentRole, effectivePerms]);
+
+  const canAssignForCampus = (targetCampusId?: string): boolean => {
+    if (!canAssignGlobal) return false;
+    const role = currentUser?.role || currentRole;
+    if (role === 'super_admin') return true;
+    if (userScopedCampus === 'all') return true;
+    const normTarget = normalizeCampusScope(targetCampusId || 'camp_pmh');
+    return normTarget === userScopedCampus;
+  };
+
   // Add / Edit Teacher Modal State
   const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState<Teacher | null>(null);
@@ -235,6 +264,437 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     references: string[];
   } | null>(null);
   const [isDeletingBusy, setIsDeletingBusy] = useState(false);
+
+  // Quick Class Assignment ("Phân Công Lớp Nhanh") Modal State
+  const [quickAssignTeacher, setQuickAssignTeacher] = useState<Teacher | null>(null);
+  const [quickAssignSearch, setQuickAssignSearch] = useState('');
+  const [quickAssignCampusFilter, setQuickAssignCampusFilter] = useState<string>('all');
+  const [quickAssignStatusFilter, setQuickAssignStatusFilter] = useState<
+    'all' | 'unassigned' | 'assigned_to_me'
+  >('all');
+  const [quickAssignRole, setQuickAssignRole] = useState<'primary' | 'secondary'>('primary');
+  const [selectedPrimaryClassIds, setSelectedPrimaryClassIds] = useState<string[]>([]);
+  const [selectedSecondaryClassIds, setSelectedSecondaryClassIds] = useState<string[]>([]);
+  const [isSavingQuickAssign, setIsSavingQuickAssign] = useState(false);
+
+  // Helper: Check if a teacher is assigned as secondary teacher in a class
+  const isTeacherSecondaryInClass = (cls: ExtracurricularClass, teacherId: string): boolean => {
+    if (!teacherId) return false;
+    const td = cls.term_distribution;
+    return (
+      cls.secondary_teacher_1 === teacherId ||
+      cls.secondary_teacher_2 === teacherId ||
+      cls.secondary_teacher_3 === teacherId ||
+      td?.secondary_teacher_1 === teacherId ||
+      td?.secondary_teacher_2 === teacherId ||
+      td?.secondary_teacher_3 === teacherId
+    );
+  };
+
+  // Helper: Get all active classes assigned to a teacher (primary or secondary)
+  const getTeacherAssignedClasses = (
+    teacherId: string
+  ): { cls: ExtracurricularClass; role: 'primary' | 'secondary' }[] => {
+    const result: { cls: ExtracurricularClass; role: 'primary' | 'secondary' }[] = [];
+    for (const c of store.classes || []) {
+      if (c.status === 'canceled') continue;
+      if (c.primary_teacher_id === teacherId) {
+        result.push({ cls: c, role: 'primary' });
+      } else if (isTeacherSecondaryInClass(c, teacherId)) {
+        result.push({ cls: c, role: 'secondary' });
+      }
+    }
+    return result;
+  };
+
+  // Open Quick Assign Class Modal
+  const handleOpenQuickAssignModal = (teacher: Teacher) => {
+    const normTeacherCampus = normalizeCampusScope(teacher.campus_id);
+    const defaultCampus =
+      userScopedCampus !== 'all'
+        ? userScopedCampus
+        : normTeacherCampus !== 'all'
+        ? normTeacherCampus
+        : 'all';
+
+    const activeClasses = (store.classes || []).filter(c => c.status === 'active');
+    const initPrimary = activeClasses
+      .filter(c => c.primary_teacher_id === teacher.id)
+      .map(c => c.id);
+    const initSecondary = activeClasses
+      .filter(c => isTeacherSecondaryInClass(c, teacher.id))
+      .map(c => c.id);
+
+    setQuickAssignTeacher(teacher);
+    setQuickAssignSearch('');
+    setQuickAssignCampusFilter(defaultCampus);
+    setQuickAssignStatusFilter('all');
+    setQuickAssignRole('primary');
+    setSelectedPrimaryClassIds(initPrimary);
+    setSelectedSecondaryClassIds(initSecondary);
+  };
+
+  // Quick Unassign a single class from tag '×' button
+  const handleQuickUnassignClass = async (
+    teacher: Teacher,
+    cls: ExtracurricularClass,
+    role: 'primary' | 'secondary'
+  ) => {
+    if (!canAssignForCampus(cls.campus_id) && !canAssignForCampus(teacher.campus_id)) {
+      showToast('Bạn không có quyền gỡ phân công lớp tại cơ sở này.', 'error');
+      return;
+    }
+
+    let confirmed = true;
+    try {
+      const t0 = performance.now();
+      const ans = window.confirm(
+        `Gỡ giáo viên ${teacher.name} khỏi lớp "${cls.name}" (${cls.code || cls.id})?`
+      );
+      if (!ans && performance.now() - t0 > 25) {
+        confirmed = false;
+      }
+    } catch {
+      confirmed = true;
+    }
+    if (!confirmed) return;
+
+    const updatedClass: ExtracurricularClass = { ...cls };
+    if (role === 'primary' || updatedClass.primary_teacher_id === teacher.id) {
+      updatedClass.primary_teacher_id = '';
+    }
+    if (isTeacherSecondaryInClass(updatedClass, teacher.id)) {
+      if (updatedClass.secondary_teacher_1 === teacher.id) updatedClass.secondary_teacher_1 = '';
+      if (updatedClass.secondary_teacher_2 === teacher.id) updatedClass.secondary_teacher_2 = '';
+      if (updatedClass.secondary_teacher_3 === teacher.id) updatedClass.secondary_teacher_3 = '';
+      if (updatedClass.term_distribution) {
+        updatedClass.term_distribution = {
+          ...updatedClass.term_distribution,
+          secondary_teacher_1:
+            updatedClass.term_distribution.secondary_teacher_1 === teacher.id
+              ? ''
+              : updatedClass.term_distribution.secondary_teacher_1,
+          secondary_teacher_2:
+            updatedClass.term_distribution.secondary_teacher_2 === teacher.id
+              ? ''
+              : updatedClass.term_distribution.secondary_teacher_2,
+          secondary_teacher_3:
+            updatedClass.term_distribution.secondary_teacher_3 === teacher.id
+              ? ''
+              : updatedClass.term_distribution.secondary_teacher_3,
+        };
+      }
+    }
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('extracurricular_classes')
+          .update({
+            primary_teacher_id: updatedClass.primary_teacher_id || null,
+            term_distribution: updatedClass.term_distribution || null,
+          })
+          .eq('id', cls.id);
+      } catch (err) {
+        console.warn('Supabase quick unassign class error:', err);
+      }
+    }
+
+    const operatorName = currentUser?.full_name || currentUser?.username || 'Quản trị viên';
+    onUpdateStore(prev => {
+      const nextClasses = (prev.classes || []).map(c => (c.id === cls.id ? updatedClass : c));
+      const auditLog = createAuditRecord(
+        'TEACHER_ASSIGN_CLASSES',
+        'ACADEMIC',
+        `Gỡ phân công lớp: ${teacher.name} (${teacher.code || teacher.id})`,
+        `${operatorName} đã gỡ giáo viên ${teacher.name} khỏi lớp [${cls.code || cls.id}] ${cls.name}`,
+        currentUser,
+        {
+          target_id: teacher.code || teacher.id,
+          details: {
+            unassigned_class_id: cls.id,
+            unassigned_class_name: cls.name,
+            role,
+          },
+        }
+      );
+      return appendAuditLog({ ...prev, classes: nextClasses }, auditLog);
+    });
+
+    showToast(
+      `Đã gỡ giáo viên ${teacher.name} khỏi lớp ${cls.name}`,
+      'info'
+    );
+  };
+
+  // Detect schedule conflicts among selected classes in QuickAssignClassModal
+  const quickAssignScheduleConflicts = useMemo(() => {
+    if (!quickAssignTeacher) return [];
+    const allSelectedIds = Array.from(
+      new Set([...selectedPrimaryClassIds, ...selectedSecondaryClassIds])
+    );
+    const selectedClasses = (store.classes || []).filter(
+      c => c.status === 'active' && allSelectedIds.includes(c.id)
+    );
+    if (selectedClasses.length < 2) return [];
+
+    const parseMinutes = (timeStr?: string): number | null => {
+      if (!timeStr) return null;
+      const m = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})/);
+      if (!m) return null;
+      return Number(m[1]) * 60 + Number(m[2]);
+    };
+
+    const getSlotWindow = (cls: ExtracurricularClass) => {
+      const slot = (store.timeSlots || []).find(
+        ts => ts.id === cls.time_slot_id || ts.code === cls.time_slot_id
+      );
+      if (slot) {
+        const start = parseMinutes(slot.start_time);
+        const end = parseMinutes(slot.end_time);
+        return {
+          slotId: slot.id,
+          label: `${slot.name} (${slot.start_time} - ${slot.end_time})`,
+          start,
+          end,
+        };
+      }
+      return {
+        slotId: cls.time_slot_id || cls.time_slot || '',
+        label: cls.time_slot || cls.time_slot_id || 'Ca chuẩn',
+        start: null,
+        end: null,
+      };
+    };
+
+    const conflicts: {
+      classA: ExtracurricularClass;
+      classB: ExtracurricularClass;
+      sharedDays: string[];
+      timeLabel: string;
+    }[] = [];
+
+    for (let i = 0; i < selectedClasses.length; i++) {
+      for (let j = i + 1; j < selectedClasses.length; j++) {
+        const a = selectedClasses[i];
+        const b = selectedClasses[j];
+        const daysA = Array.isArray(a.days_of_week) ? a.days_of_week : [];
+        const daysB = Array.isArray(b.days_of_week) ? b.days_of_week : [];
+        const sharedDays = daysA.filter(d => daysB.includes(d));
+        if (sharedDays.length === 0) continue;
+
+        const winA = getSlotWindow(a);
+        const winB = getSlotWindow(b);
+
+        let isTimeOverlap = false;
+        if (winA.slotId && winB.slotId && winA.slotId === winB.slotId) {
+          isTimeOverlap = true;
+        } else if (
+          winA.start !== null &&
+          winA.end !== null &&
+          winB.start !== null &&
+          winB.end !== null
+        ) {
+          isTimeOverlap = winA.start < winB.end && winB.start < winA.end;
+        }
+
+        if (isTimeOverlap) {
+          conflicts.push({
+            classA: a,
+            classB: b,
+            sharedDays,
+            timeLabel: winA.label === winB.label ? winA.label : `${winA.label} ↔ ${winB.label}`,
+          });
+        }
+      }
+    }
+    return conflicts;
+  }, [quickAssignTeacher, selectedPrimaryClassIds, selectedSecondaryClassIds, store.classes, store.timeSlots]);
+
+  // Save Quick Class Assignment
+  const handleSaveQuickAssignClasses = async () => {
+    if (!quickAssignTeacher) return;
+    setIsSavingQuickAssign(true);
+
+    try {
+      const teacherId = quickAssignTeacher.id;
+      const primarySet = new Set(selectedPrimaryClassIds);
+      const secondarySet = new Set(selectedSecondaryClassIds);
+
+      const addedClasses: string[] = [];
+      const removedClasses: string[] = [];
+      const assignedSubjectIds = new Set<string>(quickAssignTeacher.subjects || []);
+      const changedClassRows: ExtracurricularClass[] = [];
+
+      const updatedClasses = (store.classes || []).map(cls => {
+        if (cls.status !== 'active') return cls;
+
+        // If user is scoped to a single campus, do not modify classes outside their campus scope
+        if (!canAssignForCampus(cls.campus_id)) {
+          return cls;
+        }
+
+        const wasPrimary = cls.primary_teacher_id === teacherId;
+        const wasSecondary = isTeacherSecondaryInClass(cls, teacherId);
+        const willBePrimary = primarySet.has(cls.id);
+        const willBeSecondary = !willBePrimary && secondarySet.has(cls.id);
+
+        if (wasPrimary === willBePrimary && wasSecondary === willBeSecondary) {
+          if (willBePrimary || willBeSecondary) {
+            if (cls.subject_id) assignedSubjectIds.add(cls.subject_id);
+          }
+          return cls;
+        }
+
+        const nextCls: ExtracurricularClass = { ...cls };
+
+        // Update Primary
+        if (willBePrimary) {
+          nextCls.primary_teacher_id = teacherId;
+          if (cls.subject_id) assignedSubjectIds.add(cls.subject_id);
+          if (!wasPrimary) {
+            addedClasses.push(`[${cls.code || cls.id}] ${cls.name} (GV chính)`);
+          }
+        } else if (wasPrimary && !willBePrimary) {
+          nextCls.primary_teacher_id = '';
+          removedClasses.push(`[${cls.code || cls.id}] ${cls.name} (GV chính)`);
+        }
+
+        // Update Secondary
+        const baseTd = nextCls.term_distribution || {
+          primary_term_sessions: nextCls.total_sessions || 24,
+          spanning_term_sessions: 0,
+        };
+
+        if (willBeSecondary) {
+          nextCls.secondary_teacher_1 = teacherId;
+          nextCls.term_distribution = {
+            ...baseTd,
+            secondary_teacher_1: teacherId,
+          };
+          if (cls.subject_id) assignedSubjectIds.add(cls.subject_id);
+          if (!wasSecondary) {
+            addedClasses.push(`[${cls.code || cls.id}] ${cls.name} (GV phụ/Trợ giảng)`);
+          }
+        } else if (wasSecondary && !willBeSecondary) {
+          if (nextCls.secondary_teacher_1 === teacherId) nextCls.secondary_teacher_1 = '';
+          if (nextCls.secondary_teacher_2 === teacherId) nextCls.secondary_teacher_2 = '';
+          if (nextCls.secondary_teacher_3 === teacherId) nextCls.secondary_teacher_3 = '';
+          nextCls.term_distribution = {
+            ...baseTd,
+            secondary_teacher_1:
+              baseTd.secondary_teacher_1 === teacherId ? '' : baseTd.secondary_teacher_1,
+            secondary_teacher_2:
+              baseTd.secondary_teacher_2 === teacherId ? '' : baseTd.secondary_teacher_2,
+            secondary_teacher_3:
+              baseTd.secondary_teacher_3 === teacherId ? '' : baseTd.secondary_teacher_3,
+          };
+          removedClasses.push(`[${cls.code || cls.id}] ${cls.name} (GV phụ)`);
+        }
+
+        changedClassRows.push(nextCls);
+        return nextCls;
+      });
+
+      const nextSubjectIds = Array.from(assignedSubjectIds);
+
+      if (supabase) {
+        for (const c of changedClassRows) {
+          try {
+            await supabase
+              .from('extracurricular_classes')
+              .update({
+                primary_teacher_id: c.primary_teacher_id || null,
+                term_distribution: c.term_distribution || null,
+              })
+              .eq('id', c.id);
+          } catch (err) {
+            console.warn('Supabase update class teacher error:', err);
+          }
+        }
+
+        if (
+          JSON.stringify(quickAssignTeacher.subjects || []) !== JSON.stringify(nextSubjectIds)
+        ) {
+          try {
+            await supabase
+              .from('teachers')
+              .update({
+                subjects: nextSubjectIds,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', teacherId);
+          } catch (err) {
+            console.warn('Supabase update teacher subjects error:', err);
+          }
+        }
+      }
+
+      const operatorName = currentUser?.full_name || currentUser?.username || 'Quản trị viên';
+      const summaryParts: string[] = [];
+      if (addedClasses.length > 0) {
+        summaryParts.push(`Gán lớp: ${addedClasses.join(', ')}`);
+      }
+      if (removedClasses.length > 0) {
+        summaryParts.push(`Gỡ lớp: ${removedClasses.join(', ')}`);
+      }
+      const detailDesc =
+        summaryParts.length > 0
+          ? `${operatorName} cập nhật phân công lớp cho GV ${quickAssignTeacher.name} (${quickAssignTeacher.code || quickAssignTeacher.id}) — ${summaryParts.join(' | ')}`
+          : `${operatorName} xác nhận giữ nguyên phân công lớp cho GV ${quickAssignTeacher.name}`;
+
+      onUpdateStore(prev => {
+        const nextTeachers = (prev.teachers || []).map(t =>
+          t.id === teacherId
+            ? {
+                ...t,
+                subjects: nextSubjectIds,
+                updated_at: new Date().toISOString(),
+              }
+            : t
+        );
+
+        const auditLog = createAuditRecord(
+          'TEACHER_ASSIGN_CLASSES',
+          'ACADEMIC',
+          `Phân công lớp: ${quickAssignTeacher.name} (${quickAssignTeacher.code || quickAssignTeacher.id})`,
+          detailDesc,
+          currentUser,
+          {
+            target_id: quickAssignTeacher.code || quickAssignTeacher.id,
+            details: {
+              added_classes: addedClasses,
+              removed_classes: removedClasses,
+              primary_class_ids: Array.from(primarySet),
+              secondary_class_ids: Array.from(secondarySet),
+            },
+          }
+        );
+
+        return appendAuditLog(
+          {
+            ...prev,
+            classes: updatedClasses,
+            teachers: nextTeachers,
+          },
+          auditLog
+        );
+      });
+
+      showToast(
+        `Đã cập nhật phân công lớp cho giáo viên ${quickAssignTeacher.name}!`,
+        'success'
+      );
+      setQuickAssignTeacher(null);
+    } catch (err: any) {
+      showToast(
+        `Lỗi khi lưu phân công lớp: ${err?.message || String(err)}`,
+        'error'
+      );
+    } finally {
+      setIsSavingQuickAssign(false);
+    }
+  };
 
   // Helper: Find linked login account for a teacher
   const getLinkedUserForTeacher = (teacherId: string): AppUser | undefined => {
@@ -1197,9 +1657,9 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                   const isPermanent = activeContract.teacher_type === 'permanent';
                   const isLocked = teacher.status === 'inactive';
                   const canEditThisTeacher = canManageCampus(teacher.campus_id);
-                  const assignedClassesCount = (store.classes || []).filter(
-                    c => c.primary_teacher_id === teacher.id
-                  ).length;
+                  const canAssignThisTeacher = canAssignForCampus(teacher.campus_id);
+                  const assignedClasses = getTeacherAssignedClasses(teacher.id);
+                  const assignedClassesCount = assignedClasses.length;
 
                   return (
                     <tr
@@ -1289,11 +1749,71 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                       </td>
 
                       {/* Môn Dạy & Lớp */}
-                      <td className="py-3 px-3 min-w-[170px]">
-                        <div className="text-[11px] text-slate-300 font-bold mb-1">
-                          Phụ trách:{' '}
-                          <span className="font-mono text-white">{assignedClassesCount} lớp</span>
+                      <td className="py-3 px-3 min-w-[230px] max-w-[300px]">
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <span className="text-[11px] text-slate-300 font-bold">
+                            Phụ trách:{' '}
+                            <span className="font-mono text-white">{assignedClassesCount} lớp</span>
+                          </span>
+                          {canAssignThisTeacher && assignedClassesCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenQuickAssignModal(teacher)}
+                              className="px-2 py-0.5 rounded-md border text-[10px] font-extrabold transition-colors cursor-pointer bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-slate-950 inline-flex items-center gap-0.5"
+                              title="Phân công nhanh lớp ngoại khóa cho giáo viên này"
+                            >
+                              <span>+ Xếp lớp</span>
+                            </button>
+                          )}
                         </div>
+
+                        {assignedClassesCount > 0 ? (
+                          <div className="flex flex-wrap gap-1 mb-1.5">
+                            {assignedClasses.map(({ cls, role }) => (
+                              <span
+                                key={`${cls.id}_${role}`}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 text-[10px] font-semibold max-w-full"
+                                title={`${cls.code || cls.id} - ${cls.name} (${
+                                  role === 'primary' ? 'Giáo viên chính' : 'Trợ giảng / GV phụ'
+                                })`}
+                              >
+                                <span className="font-mono text-amber-300 shrink-0">
+                                  {cls.code || cls.id}
+                                </span>
+                                <span className="truncate max-w-[130px]">{cls.name}</span>
+                                {role === 'secondary' && (
+                                  <span className="text-[9px] px-1 rounded bg-purple-500/30 text-purple-200 shrink-0">
+                                    Phụ
+                                  </span>
+                                )}
+                                {canAssignThisTeacher && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleQuickUnassignClass(teacher, cls, role)}
+                                    className="ml-0.5 text-slate-400 hover:text-rose-400 font-bold leading-none cursor-pointer"
+                                    title={`Gỡ ${teacher.name} khỏi lớp ${cls.name}`}
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          canAssignThisTeacher && (
+                            <div className="mb-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenQuickAssignModal(teacher)}
+                                className="px-2.5 py-1 rounded-lg border text-[10px] font-extrabold transition-colors cursor-pointer bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-slate-950 inline-flex items-center gap-1"
+                              >
+                                <CalendarPlus className="w-3 h-3" />
+                                <span>+ Xếp lớp</span>
+                              </button>
+                            </div>
+                          )
+                        )}
+
                         <div className="flex flex-wrap gap-1">
                           {(teacher.subjects || []).length > 0 ? (
                             (teacher.subjects || []).map(subId => {
@@ -1375,6 +1895,18 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                             <span>Lịch sử</span>
                           </button>
 
+                          {canAssignThisTeacher && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenQuickAssignModal(teacher)}
+                              className="px-2 py-1.5 rounded-lg bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500 hover:text-slate-950 text-[11px] font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Phân công nhanh lớp học cho giáo viên"
+                            >
+                              <CalendarPlus className="w-3.5 h-3.5" />
+                              <span>Xếp lớp</span>
+                            </button>
+                          )}
+
                           {canEditThisTeacher && (
                             <>
                               <button
@@ -1446,9 +1978,9 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             const isPermanent = activeContract.teacher_type === 'permanent';
             const isLocked = teacher.status === 'inactive';
             const canEditThisTeacher = canManageCampus(teacher.campus_id);
-            const assignedClassesCount = (store.classes || []).filter(
-              c => c.primary_teacher_id === teacher.id
-            ).length;
+            const canAssignThisTeacher = canAssignForCampus(teacher.campus_id);
+            const assignedClasses = getTeacherAssignedClasses(teacher.id);
+            const assignedClassesCount = assignedClasses.length;
 
             return (
               <div
@@ -1575,9 +2107,65 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                       )}
                     </div>
 
-                    <div className="flex items-center justify-between text-slate-400">
-                      <span>Lớp đang phụ trách:</span>
-                      <strong className="text-white font-mono">{assignedClassesCount} lớp</strong>
+                    <div className="space-y-1.5 pt-1 border-t border-slate-800/60">
+                      <div className="flex items-center justify-between text-slate-400">
+                        <span>
+                          Phụ trách: <strong className="text-white font-mono">{assignedClassesCount} lớp</strong>
+                        </span>
+                        {canAssignThisTeacher && assignedClassesCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenQuickAssignModal(teacher)}
+                            className="px-2 py-0.5 rounded-md border text-[10px] font-extrabold transition-colors cursor-pointer bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-slate-950"
+                          >
+                            + Xếp lớp
+                          </button>
+                        )}
+                      </div>
+
+                      {assignedClassesCount > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {assignedClasses.map(({ cls, role }) => (
+                            <span
+                              key={`${cls.id}_${role}`}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-cyan-200 text-[10px] font-semibold max-w-full"
+                            >
+                              <span className="font-mono text-amber-300 shrink-0">
+                                {cls.code || cls.id}
+                              </span>
+                              <span className="truncate max-w-[140px]">{cls.name}</span>
+                              {role === 'secondary' && (
+                                <span className="text-[9px] px-1 rounded bg-purple-500/30 text-purple-200 shrink-0">
+                                  Phụ
+                                </span>
+                              )}
+                              {canAssignThisTeacher && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleQuickUnassignClass(teacher, cls, role)}
+                                  className="ml-0.5 text-slate-400 hover:text-rose-400 font-bold leading-none cursor-pointer"
+                                  title={`Gỡ ${teacher.name} khỏi lớp ${cls.name}`}
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        canAssignThisTeacher && (
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenQuickAssignModal(teacher)}
+                              className="px-2.5 py-1 rounded-lg border text-[10px] font-extrabold transition-colors cursor-pointer bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-slate-950 inline-flex items-center gap-1"
+                            >
+                              <CalendarPlus className="w-3 h-3" />
+                              <span>+ Xếp lớp</span>
+                            </button>
+                          </div>
+                        )
+                      )}
                     </div>
 
                     {teacher.bank_account?.account_number && (
@@ -1609,29 +2197,41 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
                 {/* Action Footer */}
                 <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                       type="button"
                       onClick={() => {
                         setHistoryModalTeacher(teacher);
                         setEditingContractNoteId(null);
                       }}
-                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-bold flex items-center gap-1 transition-colors"
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       title="Xem lịch sử chuyển ngạch & thay đổi mức lương"
                     >
                       <History className="w-3.5 h-3.5" />
-                      <span>Lịch sử lương</span>
+                      <span>Lịch sử</span>
                     </button>
+
+                    {canAssignThisTeacher && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenQuickAssignModal(teacher)}
+                        className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500 hover:text-slate-950 text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                        title="Phân công nhanh lớp học cho giáo viên"
+                      >
+                        <CalendarPlus className="w-3.5 h-3.5" />
+                        <span>Xếp lớp</span>
+                      </button>
+                    )}
 
                     {canEditThisTeacher && (
                       <button
                         type="button"
                         onClick={() => handleOpenContractModal(teacher)}
-                        className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors"
+                        className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
                         title="Chuyển ngạch Cơ hữu / Thỉnh giảng hoặc Đổi mức lương theo ngày hiệu lực"
                       >
                         <ArrowRightLeft className="w-3.5 h-3.5" />
-                        <span>Chuyển ngạch / Đổi lương</span>
+                        <span>Đổi lương</span>
                       </button>
                     )}
                   </div>
@@ -2739,6 +3339,382 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           </div>
         </div>
       )}
+
+      {/* MODAL 7: PHÂN CÔNG LỚP NHANH (QUICK ASSIGN CLASS MODAL) */}
+      {quickAssignTeacher && (() => {
+        const activeContract = getTeacherContractAt(quickAssignTeacher, todayIso, store);
+        const isPermanent = activeContract.teacher_type === 'permanent';
+        const teacherCampusObj = (store.campuses || []).find(
+          c => c.id === quickAssignTeacher.campus_id
+        );
+        const q = quickAssignSearch.trim().toLowerCase();
+
+        const modalClasses = (store.classes || []).filter(cls => {
+          if (cls.status !== 'active') return false;
+          if (!canAssignForCampus(cls.campus_id)) return false;
+
+          if (quickAssignCampusFilter !== 'all') {
+            const normClsCampus = normalizeCampusScope(cls.campus_id);
+            if (normClsCampus !== quickAssignCampusFilter) return false;
+          }
+
+          const isSelectedForMe =
+            selectedPrimaryClassIds.includes(cls.id) ||
+            selectedSecondaryClassIds.includes(cls.id);
+
+          if (quickAssignStatusFilter === 'unassigned') {
+            if (cls.primary_teacher_id && cls.primary_teacher_id !== quickAssignTeacher.id) {
+              return false;
+            }
+          } else if (quickAssignStatusFilter === 'assigned_to_me') {
+            if (
+              !isSelectedForMe &&
+              cls.primary_teacher_id !== quickAssignTeacher.id &&
+              !isTeacherSecondaryInClass(cls, quickAssignTeacher.id)
+            ) {
+              return false;
+            }
+          }
+
+          if (q) {
+            const subj = (store.subjects || []).find(
+              s => s.id === cls.subject_id || s.code === cls.subject_id
+            );
+            const hay = `${cls.code || ''} ${cls.name || ''} ${subj?.name || ''} ${subj?.code || ''}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          return true;
+        });
+
+        const toggleSelectClass = (classId: string) => {
+          if (quickAssignRole === 'primary') {
+            setSelectedPrimaryClassIds(prev => {
+              const exists = prev.includes(classId);
+              if (exists) return prev.filter(id => id !== classId);
+              setSelectedSecondaryClassIds(sec => sec.filter(id => id !== classId));
+              return [...prev, classId];
+            });
+          } else {
+            setSelectedSecondaryClassIds(prev => {
+              const exists = prev.includes(classId);
+              if (exists) return prev.filter(id => id !== classId);
+              setSelectedPrimaryClassIds(pri => pri.filter(id => id !== classId));
+              return [...prev, classId];
+            });
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-4xl w-full p-6 space-y-5 shadow-2xl my-8 max-h-[92vh] flex flex-col">
+              {/* Header Modal */}
+              <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-800 shrink-0">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                      <CalendarPlus className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-extrabold text-white flex items-center gap-2 flex-wrap">
+                        <span>Phân Công Lớp Nhanh — {quickAssignTeacher.name}</span>
+                        <span className="px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 font-mono text-xs text-amber-400">
+                          {quickAssignTeacher.code}
+                        </span>
+                      </h3>
+                      <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5 flex-wrap">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            isPermanent
+                              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                              : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                          }`}
+                        >
+                          {isPermanent ? 'Giáo viên Cơ hữu' : 'Giáo viên Thỉnh giảng'}
+                        </span>
+                        <span>•</span>
+                        <span className="inline-flex items-center gap-1 text-slate-300 font-semibold">
+                          <Building2 className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>
+                            Cơ sở công tác:{' '}
+                            {teacherCampusObj?.name ||
+                              (quickAssignTeacher.campus_id === 'camp_pl'
+                                ? 'Phú Lâm (PL)'
+                                : 'Phú Mỹ Hưng (PMH)')}
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setQuickAssignTeacher(null)}
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Bộ lọc & Chọn vai trò phân công */}
+              <div className="space-y-3 shrink-0">
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs">
+                  {/* Search input */}
+                  <div className="sm:col-span-5 relative">
+                    <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={quickAssignSearch}
+                      onChange={e => setQuickAssignSearch(e.target.value)}
+                      placeholder="Tìm theo Tên lớp, Mã lớp, hoặc Môn học..."
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  {/* Campus Filter */}
+                  <div className="sm:col-span-3">
+                    <select
+                      value={quickAssignCampusFilter}
+                      onChange={e => setQuickAssignCampusFilter(e.target.value)}
+                      disabled={userScopedCampus !== 'all'}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="all">Tất cả cơ sở</option>
+                      <option value="camp_pmh">Cơ sở Phú Mỹ Hưng (PMH)</option>
+                      <option value="camp_pl">Cơ sở Phú Lâm (PL)</option>
+                    </select>
+                  </div>
+
+                  {/* Class Status Filter */}
+                  <div className="sm:col-span-4">
+                    <select
+                      value={quickAssignStatusFilter}
+                      onChange={e =>
+                        setQuickAssignStatusFilter(
+                          e.target.value as 'all' | 'unassigned' | 'assigned_to_me'
+                        )
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="all">Tất cả lớp đang mở ({store.classes.filter(c => c.status === 'active').length})</option>
+                      <option value="unassigned">Lớp chưa có GV chính</option>
+                      <option value="assigned_to_me">Lớp GV đang phụ trách</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Role Switcher */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 rounded-2xl bg-slate-950/90 border border-slate-800 text-xs">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-slate-400 font-bold">Vai trò phân công khi tích chọn:</span>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAssignRole('primary')}
+                      className={`px-3 py-1.5 rounded-xl font-extrabold transition-colors cursor-pointer ${
+                        quickAssignRole === 'primary'
+                          ? 'bg-amber-500 text-slate-950 shadow'
+                          : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
+                      }`}
+                    >
+                      Giáo viên chính (Primary) ({selectedPrimaryClassIds.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickAssignRole('secondary')}
+                      className={`px-3 py-1.5 rounded-xl font-extrabold transition-colors cursor-pointer ${
+                        quickAssignRole === 'secondary'
+                          ? 'bg-purple-500 text-white shadow'
+                          : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
+                      }`}
+                    >
+                      Trợ giảng / GV phụ (Secondary) ({selectedSecondaryClassIds.length})
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono">
+                    Tổng chọn:{' '}
+                    <strong className="text-amber-400">
+                      {selectedPrimaryClassIds.length + selectedSecondaryClassIds.length} lớp
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Cảnh báo trùng lịch (Schedule Conflict Warning Banner) */}
+              {quickAssignScheduleConflicts.length > 0 && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-xs space-y-1.5 shrink-0">
+                  <div className="flex items-center gap-2 text-amber-300 font-extrabold">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>
+                      Cảnh báo trùng lịch giảng dạy ({quickAssignScheduleConflicts.length} cặp lớp trùng ca)!
+                    </span>
+                  </div>
+                  <ul className="list-disc list-inside space-y-1 text-[11px] text-amber-200/90">
+                    {quickAssignScheduleConflicts.map((conf, idx) => (
+                      <li key={idx}>
+                        Lớp <strong className="text-white">[{conf.classA.code || conf.classA.id}] {conf.classA.name}</strong> trùng lịch với{' '}
+                        <strong className="text-white">[{conf.classB.code || conf.classB.id}] {conf.classB.name}</strong> vào{' '}
+                        <span className="font-mono font-bold text-amber-300">
+                          {conf.sharedDays.join(', ')}
+                        </span>{' '}
+                        ({conf.timeLabel})
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Danh sách Lớp học Multi-select */}
+              <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950/70 divide-y divide-slate-800/70 min-h-[240px]">
+                {modalClasses.length === 0 ? (
+                  <div className="p-10 text-center space-y-1.5 text-xs text-slate-400">
+                    <BookOpen className="w-8 h-8 text-slate-600 mx-auto" />
+                    <div className="font-bold text-slate-300">
+                      Không tìm thấy lớp học đang mở phù hợp với bộ lọc
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Hãy thử chuyển bộ lọc Cơ sở sang &quot;Tất cả cơ sở&quot; hoặc xóa từ khóa tìm kiếm.
+                    </p>
+                  </div>
+                ) : (
+                  modalClasses.map(cls => {
+                    const isCheckedPrimary = selectedPrimaryClassIds.includes(cls.id);
+                    const isCheckedSecondary = selectedSecondaryClassIds.includes(cls.id);
+                    const isChecked =
+                      quickAssignRole === 'primary' ? isCheckedPrimary : isCheckedSecondary;
+
+                    const subjectObj = (store.subjects || []).find(
+                      s => s.id === cls.subject_id || s.code === cls.subject_id
+                    );
+                    const slotObj = (store.timeSlots || []).find(
+                      ts => ts.id === cls.time_slot_id || ts.code === cls.time_slot_id
+                    );
+                    const clsCampusObj = (store.campuses || []).find(c => c.id === cls.campus_id);
+                    const currentPrimaryTeacher = (store.teachers || []).find(
+                      t => t.id === cls.primary_teacher_id
+                    );
+                    const daysLabel = Array.isArray(cls.days_of_week)
+                      ? cls.days_of_week.join(', ')
+                      : '';
+                    const timeSlotLabel = slotObj
+                      ? `${slotObj.start_time} - ${slotObj.end_time}`
+                      : cls.time_slot || '16:15 - 17:45';
+
+                    return (
+                      <label
+                        key={cls.id}
+                        onClick={() => toggleSelectClass(cls.id)}
+                        className={`flex items-center justify-between gap-3 p-3.5 text-xs transition-colors cursor-pointer select-none ${
+                          isCheckedPrimary
+                            ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                            : isCheckedSecondary
+                            ? 'bg-purple-500/10 hover:bg-purple-500/15'
+                            : 'hover:bg-slate-900/80'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div
+                            className={`mt-0.5 w-5 h-5 rounded-lg border flex items-center justify-center shrink-0 transition-colors ${
+                              isChecked
+                                ? quickAssignRole === 'primary'
+                                  ? 'bg-amber-500 border-amber-400 text-slate-950'
+                                  : 'bg-purple-500 border-purple-400 text-white'
+                                : 'bg-slate-900 border-slate-700 text-transparent'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 stroke-[3]" />
+                          </div>
+
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono font-extrabold text-amber-400">
+                                {cls.code || cls.id}
+                              </span>
+                              <span className="font-bold text-white text-sm">{cls.name}</span>
+                              <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800 text-[10px] font-mono font-bold text-slate-300">
+                                {clsCampusObj?.code ||
+                                  (String(cls.campus_id).includes('pl') ? 'PL' : 'PMH')}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-3 text-[11px] text-slate-400 flex-wrap">
+                              <span className="inline-flex items-center gap-1 text-cyan-300 font-semibold">
+                                <BookOpen className="w-3.5 h-3.5" />
+                                <span>{subjectObj?.name || cls.subject_id}</span>
+                              </span>
+                              <span>•</span>
+                              <span className="inline-flex items-center gap-1 font-mono text-slate-300">
+                                <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                                <span>{daysLabel || 'T2, T4'}</span>
+                              </span>
+                              <span>•</span>
+                              <span className="inline-flex items-center gap-1 font-mono text-slate-300">
+                                <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>{timeSlotLabel}</span>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right Status Badges */}
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          {isCheckedPrimary && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-extrabold">
+                              ✓ Chọn làm GV Chính
+                            </span>
+                          )}
+                          {isCheckedSecondary && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-extrabold">
+                              ✓ Chọn làm Trợ giảng / GV Phụ
+                            </span>
+                          )}
+
+                          {!cls.primary_teacher_id ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                              Chưa có GV
+                            </span>
+                          ) : cls.primary_teacher_id === quickAssignTeacher.id ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold">
+                              Đang phụ trách (GV chính)
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
+                              Đang giao: {currentPrimaryTeacher?.name || cls.primary_teacher_id}
+                            </span>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Footer Modal */}
+              <div className="flex items-center justify-between gap-3 pt-3 border-t border-slate-800 shrink-0 text-xs">
+                <div className="text-slate-400">
+                  Môn dạy của GV sẽ được tự động cập nhật theo các lớp được phân công.
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setQuickAssignTeacher(null)}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold cursor-pointer"
+                  >
+                    Hủy Bỏ
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingQuickAssign}
+                    onClick={handleSaveQuickAssignClasses}
+                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold cursor-pointer inline-flex items-center gap-1.5 shadow-lg shadow-amber-500/20"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{isSavingQuickAssign ? 'Đang lưu...' : 'Lưu Phân Công'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

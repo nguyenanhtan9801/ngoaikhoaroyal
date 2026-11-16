@@ -743,6 +743,7 @@ export type LogActionType =
   | 'TEACHER_UNLOCK'          // Mở khóa hồ sơ & tài khoản giáo viên
   | 'TEACHER_DELETE'          // Xóa hồ sơ giáo viên
   | 'TEACHER_CONTRACT_CHANGE' // Chuyển ngạch / Đổi mức lương giáo viên
+  | 'TEACHER_ASSIGN_CLASSES'  // Phân công / Gỡ lớp giảng dạy cho giáo viên
   | 'TIME_SLOT_CREATE'        // Thêm khung giờ học
   | 'TIME_SLOT_UPDATE'        // Cập nhật khung giờ học
   | 'TIME_SLOT_DELETE'        // Xóa khung giờ học
