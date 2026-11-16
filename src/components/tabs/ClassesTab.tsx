@@ -1422,7 +1422,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       <User className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
                       <div>
                         <div className="text-amber-300 font-medium">
-                          GV Chính: {teacher?.name || 'Chưa phân công'} ({teacher?.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                          GV Chính: {teacher?.name || 'Chưa phân công'} ({(teacher?.type || teacher?.teacher_type) === 'partner' ? 'Đối tác' : (teacher?.type || teacher?.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
                         </div>
                         {[cls.secondary_teacher_1, cls.secondary_teacher_2, cls.secondary_teacher_3].filter(Boolean).length > 0 && (
                           <div className="text-[11px] text-slate-300 mt-0.5">

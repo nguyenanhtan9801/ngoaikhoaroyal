@@ -44,6 +44,8 @@ import {
   getTeacherEffectivePeriodRate,
   calculateTeacherSessionPayAtDate,
   getTeacherContractAt,
+  getTeacherTypeLabel,
+  isPayable,
   formatDateVN,
   getCurrentTerm,
   getEffectivePrice,
@@ -623,6 +625,19 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
   // Settle Payroll for a Teacher & Class
   const handleSettlePayroll = (teacher: Teacher, cls: ExtracurricularClass) => {
+    const activeContract = getTeacherContractAt(
+      teacher,
+      new Date().toISOString().split('T')[0],
+      store
+    );
+    if (!isPayable(teacher, activeContract)) {
+      showToast(
+        `Giáo viên ${teacher.name} thuộc diện Đối tác (Không tính lương), không thực hiện quyết toán thù lao.`,
+        'info'
+      );
+      return;
+    }
+
     // Count taught sessions
     const sessions = store.sessions.filter(
       s => s.class_id === cls.id && s.actual_teacher_id === teacher.id && s.status === 'completed'
@@ -633,7 +648,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     let totalPayroll = 0;
     if (teacher.teacher_type === 'permanent') {
       totalPayroll = taughtCount * teacher.fixed_rate_per_session;
-    } else {
+    } else if (teacher.teacher_type === 'visiting') {
       // Visiting: % of class revenue (after discounts)
       const classEnrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
       const grossRevenue = classEnrollments.length * cls.full_course_fee;
@@ -1795,8 +1810,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         const todayIso = new Date().toISOString().split('T')[0];
 
         // Compute per-teacher workload & payroll summary rows by summing each session's contract payout at session_date
+        // Loại bỏ hoàn toàn giáo viên đối tác (partner / pay_model = 'none') khỏi bảng lương và tổng chi phí lương
         const teacherPayrollRows = store.teachers
           .filter(teacher => {
+            const currentContract = getTeacherContractAt(teacher, todayIso, store);
+            if (!isPayable(teacher, currentContract)) return false;
+
             if (payrollCampusFilter === 'all') return true;
             const teacherPrimaryCampus = teacher.campus_id || 'camp_pmh';
             const hasSessionInCampus = effectiveTeacherRecords.some(
@@ -1872,7 +1891,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               const sessionEarned = calc.earnedAmount;
               summedPayout += sessionEarned;
 
-              const typeText = calc.contract.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng';
+              const typeText = getTeacherTypeLabel(calc.contract.teacher_type);
               const key = `${calc.contract.id}_${calc.contract.pay_model}_${calc.sessionRate}_${calc.contract.percentage_rate}`;
               const existingGroup = milestoneGroupMap.get(key);
               if (existingGroup) {
@@ -1880,7 +1899,9 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 existingGroup.subtotal += sessionEarned;
               } else {
                 const label =
-                  calc.contract.pay_model === 'revenue_share'
+                  calc.contract.pay_model === 'none'
+                    ? `${typeText} (Không tính lương)`
+                    : calc.contract.pay_model === 'revenue_share'
                     ? `${typeText} ${calc.contract.percentage_rate}%`
                     : `${typeText} (${formatVND(calc.sessionRate)}/b)`;
                 milestoneGroupMap.set(key, {
@@ -1952,7 +1973,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         // 4 Top KPI Metrics
         const totalTermPayout = teacherPayrollRows.reduce((sum, r) => sum + r.totalPayout, 0);
         const totalTermSessions = teacherPayrollRows.reduce((sum, r) => sum + r.taughtSessionsCount, 0);
-        const totalSubstituteSessions = effectiveTeacherRecords.filter(r => r.is_substitute).length;
+        const totalSubstituteSessions = teacherPayrollRows.reduce(
+          (sum, r) => sum + r.substituteSessionsAdded,
+          0
+        );
         const settledTeachersCount = teacherPayrollRows.filter(r => r.isSettled).length;
         const pendingTeachersCount = Math.max(0, teacherPayrollRows.length - settledTeachersCount);
 

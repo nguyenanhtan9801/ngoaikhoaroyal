@@ -97,24 +97,30 @@ export async function syncStoreToSupabase(
 
     // 3. Teachers
     onProgress?.({ currentTable: 'teachers', progressPercent: 40 });
-    const teacherRows = (store.teachers || []).map(t => ({
-      id: t.id,
-      code: t.code || `GV-${t.id}`,
-      name: t.name,
-      phone: t.phone,
-      email: t.email || null,
-      campus_id: t.campus_id || 'camp_pmh',
-      type: t.type || t.teacher_type || 'permanent',
-      default_rate_per_period: t.default_rate_per_period || 150000,
-      periods_per_session: t.periods_per_session || 2,
-      fixed_rate_per_session: t.fixed_rate_per_session || 300000,
-      weekend_multiplier: t.weekend_multiplier || 1.0,
-      custom_subject_rates: t.custom_subject_rates || [],
-      bank_name: t.bank_account?.bank_name || null,
-      bank_account: t.bank_account?.account_number || null,
-      bank_owner: t.bank_account?.account_holder || null,
-      is_active: t.status === 'active',
-    }));
+    const teacherRows = (store.teachers || []).map(t => {
+      const effType = t.type || t.teacher_type || 'permanent';
+      const isPartner = effType === 'partner';
+      return {
+        id: t.id,
+        code: t.code || `GV-${t.id}`,
+        name: t.name,
+        phone: t.phone,
+        email: t.email || null,
+        campus_id: t.campus_id || 'camp_pmh',
+        type: effType,
+        teacher_type: effType,
+        default_rate_per_period: isPartner ? 0 : (t.default_rate_per_period || 150000),
+        periods_per_session: t.periods_per_session || 2,
+        fixed_rate_per_session: isPartner ? 0 : (t.fixed_rate_per_session || 300000),
+        percentage_rate: isPartner ? 0 : (t.percentage_rate ?? 60),
+        weekend_multiplier: isPartner ? 1.0 : (t.weekend_multiplier || 1.0),
+        custom_subject_rates: isPartner ? [] : (t.custom_subject_rates || []),
+        bank_name: t.bank_account?.bank_name || null,
+        bank_account: t.bank_account?.account_number || null,
+        bank_owner: t.bank_account?.account_holder || null,
+        is_active: t.status === 'active',
+      };
+    });
     if (teacherRows.length > 0) {
       const { error } = await client.from('teachers').upsert(teacherRows, { onConflict: 'id' });
       if (error) console.warn('Supabase sync teachers error:', error);

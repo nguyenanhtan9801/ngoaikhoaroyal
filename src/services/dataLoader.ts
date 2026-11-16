@@ -60,8 +60,8 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
       let query = client.from(tableName).select(cols);
       if (tableName === 'academic_terms') {
         query = query.order('start_date', { ascending: true });
-      } else if (tableName === 'students') {
-        query = query.limit(200);
+      } else if (tableName === 'students' || tableName === 'enrollments') {
+        query = query.range(0, 4999);
       }
       const { data, error } = await query;
       if (error) {
@@ -365,14 +365,8 @@ export async function loadInitialDataSafely(
     let totalRecordsLoaded = 0;
 
     const userRole = activeUser?.role || 'super_admin';
-    if (userRole === 'teacher') {
-      return {
-        store: fallbackStore,
-        isOfflineFallback: false,
-        loadedFromCloud: false,
-        totalRecordsLoaded: 0,
-      };
-    }
+    const isClassroomRole =
+      userRole === 'teacher' || userRole === 'nanny' || userRole === 'supervisor';
 
     const rawCampus = String(activeUser?.campus_id || 'all').toLowerCase().trim();
     const scopedCampusCode =
@@ -384,21 +378,31 @@ export async function loadInitialDataSafely(
 
     // Danh sách các bảng cần nạp từ Supabase được lọc theo vai trò người dùng
     // - Chỉ nạp bảng profiles toàn cục nếu user là super_admin (đã có syncProfilesListForSuperAdmin dùng fetchOnce)
-    // - Nếu là teacher: bỏ qua các bảng tài chính/tuyển sinh không cần thiết (tuition_invoices, credit_notes, parent_registrations)
+    // - Nếu là teacher/nanny/supervisor: chỉ nạp các bảng vận hành lớp học & điểm danh, bỏ qua các bảng tài chính/tuyển sinh
     const baseTableDefinitions: Array<{ tableName: string; storeKey: keyof AppStore }> = [
-      ...ROYAL_STANDARDIZED_10_TABLES.map(t => ({
+      ...ROYAL_STANDARDIZED_10_TABLES.filter(t => {
+        if (!isClassroomRole) return true;
+        return (
+          t.tableName !== 'tuition_invoices' &&
+          t.tableName !== 'teacher_payroll_settlements'
+        );
+      }).map(t => ({
         tableName: sanitizeSupabaseTableName(t.tableName),
         storeKey: t.storeKey,
       })),
-      { tableName: 'credit_notes', storeKey: 'makeupCredits' },
+      ...(!isClassroomRole
+        ? [
+            { tableName: 'credit_notes', storeKey: 'makeupCredits' as keyof AppStore },
+            { tableName: 'parent_registrations', storeKey: 'parentRegistrations' as keyof AppStore },
+            { tableName: 'teacher_contracts', storeKey: 'teacherContracts' as keyof AppStore },
+          ]
+        : []),
       ...(userRole === 'super_admin'
         ? [{ tableName: isLegacyLoginEnabled() ? 'app_users' : 'profiles', storeKey: 'users' as keyof AppStore }]
         : []),
-      { tableName: 'parent_registrations', storeKey: 'parentRegistrations' },
       { tableName: 'subject_categories', storeKey: 'subjectCategories' },
       { tableName: 'time_slots', storeKey: 'timeSlots' },
       { tableName: 'term_subjects', storeKey: 'termSubjects' },
-      { tableName: 'teacher_contracts', storeKey: 'teacherContracts' },
       { tableName: 'teacher_checkins', storeKey: 'teacherCheckins' },
     ];
 
@@ -436,9 +440,9 @@ export async function loadInitialDataSafely(
               }
             }
 
-            // Giới hạn tải danh sách học sinh ban đầu (StudentsTab đã phân trang server-side 100 dòng/trang)
-            if (item.tableName === 'students') {
-              query = query.limit(200);
+            // Tải đầy đủ danh sách học sinh và ghi danh để điểm danh chính xác
+            if (item.tableName === 'students' || item.tableName === 'enrollments') {
+              query = query.range(0, 4999);
             }
 
             return await query;

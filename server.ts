@@ -130,6 +130,8 @@ const VALID_USER_ROLES = new Set<string>([
   'admissions',
   'accountant',
   'teacher',
+  'nanny',
+  'supervisor',
   'academic_accountant',
   'academic_admissions',
   'academic_staff',
@@ -826,15 +828,15 @@ app.post('/api/admin/create-user', async (req: Request, res: Response) => {
 
     if (callerRole === 'campus_manager') {
       const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
-      if (cleanRole !== 'teacher') {
+      if (cleanRole !== 'teacher' && cleanRole !== 'nanny' && cleanRole !== 'supervisor') {
         res.status(403).json({
-          error: 'Quản lý cơ sở chỉ được phép tạo tài khoản đăng nhập cho Giáo viên thuộc cơ sở của mình.',
+          error: 'Quản lý cơ sở chỉ được phép tạo tài khoản đăng nhập cho Giáo viên, Bảo mẫu hoặc Quản sinh thuộc cơ sở của mình.',
         });
         return;
       }
       if (callerNormCampus !== 'all' && normalizedCampus !== callerNormCampus) {
         res.status(403).json({
-          error: 'Quản lý cơ sở chỉ được phép tạo tài khoản cho giáo viên thuộc cơ sở của mình.',
+          error: 'Quản lý cơ sở chỉ được phép tạo tài khoản cho nhân sự thuộc cơ sở của mình.',
         });
         return;
       }
@@ -1048,13 +1050,14 @@ app.post('/api/admin/reset-password', async (req: Request, res: Response) => {
         .maybeSingle();
       const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
       const targetNormCampus = normalizeCampusCodeForServer(targetProfile?.campus_id);
+      const allowedTargetRoles = new Set(['teacher', 'nanny', 'supervisor']);
       if (
         !targetProfile ||
-        targetProfile.role !== 'teacher' ||
+        !allowedTargetRoles.has(String(targetProfile.role || '')) ||
         (callerNormCampus !== 'all' && targetNormCampus !== callerNormCampus)
       ) {
         res.status(403).json({
-          error: 'Quản lý cơ sở chỉ được đặt lại mật khẩu cho tài khoản Giáo viên thuộc cơ sở của mình.',
+          error: 'Quản lý cơ sở chỉ được đặt lại mật khẩu cho tài khoản Giáo viên, Bảo mẫu hoặc Quản sinh thuộc cơ sở của mình.',
         });
         return;
       }
@@ -1208,13 +1211,14 @@ app.post('/api/admin/update-user', async (req: Request, res: Response) => {
     if (callerRole === 'campus_manager') {
       const callerNormCampus = normalizeCampusCodeForServer(callerCampusId);
       const targetNormCampus = normalizeCampusCodeForServer(targetProfile.campus_id);
+      const allowedTargetRoles = new Set(['teacher', 'nanny', 'supervisor']);
       if (
-        targetProfile.role !== 'teacher' ||
-        nextRole !== 'teacher' ||
+        !allowedTargetRoles.has(String(targetProfile.role || '')) ||
+        !allowedTargetRoles.has(nextRole) ||
         (callerNormCampus !== 'all' && targetNormCampus !== callerNormCampus)
       ) {
         res.status(403).json({
-          error: 'Quản lý cơ sở chỉ được phép cập nhật tài khoản Giáo viên thuộc cơ sở của mình.',
+          error: 'Quản lý cơ sở chỉ được phép cập nhật tài khoản Giáo viên, Bảo mẫu hoặc Quản sinh thuộc cơ sở của mình.',
         });
         return;
       }
@@ -3059,45 +3063,102 @@ async function requireTeacher(
     return;
   }
 
-  if (profile.role !== 'teacher') {
-    res.status(403).json({ error: 'Chỉ tài khoản Giáo viên mới được sử dụng chức năng này.' });
-    return;
-  }
-
+  const profileRole = String(profile.role || '').trim();
   const linkedTeacherId = String(profile.linked_teacher_id || '').trim();
-  if (!linkedTeacherId) {
+  const allowedPortalRoles = new Set(['teacher', 'nanny', 'supervisor', 'academic_staff']);
+
+  if (!allowedPortalRoles.has(profileRole) && !linkedTeacherId) {
     res.status(403).json({
-      error: 'Tài khoản giáo viên chưa được liên kết với hồ sơ giáo viên (linked_teacher_id).',
+      error: 'Chỉ tài khoản Giáo viên, Bảo mẫu hoặc Quản sinh mới được sử dụng chức năng này.',
     });
     return;
   }
 
-  const { data: teacherRow, error: teacherError } = await supabaseAdmin
-    .from('teachers')
-    .select('id, code, name, campus_id, status')
-    .eq('id', linkedTeacherId)
-    .single();
+  let resolvedTeacher: {
+    id: string;
+    name: string;
+    code: string;
+    campus_id: string;
+  } | null = null;
 
-  if (teacherError || !teacherRow || teacherRow.status !== 'active') {
-    res.status(403).json({
-      error: 'Hồ sơ giáo viên không tồn tại hoặc đang ngưng hoạt động.',
-    });
-    return;
+  if (linkedTeacherId) {
+    const { data: teacherRow, error: teacherError } = await supabaseAdmin
+      .from('teachers')
+      .select('id, code, name, campus_id, status')
+      .eq('id', linkedTeacherId)
+      .maybeSingle();
+
+    if (!teacherError && teacherRow && teacherRow.status === 'active') {
+      resolvedTeacher = {
+        id: String(teacherRow.id),
+        name: String(teacherRow.name || profile.full_name || ''),
+        code: String(teacherRow.code || teacherRow.id),
+        campus_id: String(teacherRow.campus_id || profile.campus_id || 'camp_pmh'),
+      };
+    } else if (profileRole === 'teacher') {
+      res.status(403).json({
+        error: 'Hồ sơ giáo viên không tồn tại hoặc đang ngưng hoạt động.',
+      });
+      return;
+    }
+  }
+
+  if (!resolvedTeacher) {
+    // Nếu là nanny / supervisor hoặc chưa gắn linked_teacher_id, thử tìm trên bảng teachers theo code/username hoặc họ tên
+    const cleanUname = String(profile.username || '').trim();
+    const cleanName = String(profile.full_name || '').trim();
+    if (cleanUname || cleanName) {
+      const { data: matchedRows } = await supabaseAdmin
+        .from('teachers')
+        .select('id, code, name, campus_id, status')
+        .eq('status', 'active')
+        .or(
+          [
+            cleanUname ? `code.ilike.${cleanUname}` : '',
+            cleanName ? `name.ilike.${cleanName}` : '',
+          ]
+            .filter(Boolean)
+            .join(',')
+        )
+        .limit(1);
+
+      if (Array.isArray(matchedRows) && matchedRows[0]) {
+        const tr = matchedRows[0];
+        resolvedTeacher = {
+          id: String(tr.id),
+          name: String(tr.name || profile.full_name || ''),
+          code: String(tr.code || tr.id),
+          campus_id: String(tr.campus_id || profile.campus_id || 'camp_pmh'),
+        };
+      }
+    }
+  }
+
+  if (!resolvedTeacher) {
+    if (profileRole === 'teacher') {
+      res.status(403).json({
+        error: 'Tài khoản giáo viên chưa được liên kết với hồ sơ giáo viên (linked_teacher_id).',
+      });
+      return;
+    }
+
+    // Cho phép tài khoản Bảo mẫu / Quản sinh lấy mã QR định danh cá nhân từ hồ sơ profile
+    resolvedTeacher = {
+      id: String(profile.id),
+      name: String(profile.full_name || profile.username || 'Nhân sự Lớp học'),
+      code: String(profile.username || profile.id).toUpperCase(),
+      campus_id: String(profile.campus_id || 'camp_pmh'),
+    };
   }
 
   (req as TeacherAuthenticatedRequest).teacherAuth = {
     supabaseAdmin,
     callerId: userData.user.id,
-    callerUsername: String(profile.username || userData.user.email || 'teacher'),
-    callerFullName: String(profile.full_name || teacherRow.name || 'Giáo viên'),
-    callerCampusId: String(profile.campus_id || teacherRow.campus_id || 'all'),
+    callerUsername: String(profile.username || userData.user.email || 'staff'),
+    callerFullName: String(profile.full_name || resolvedTeacher.name || 'Nhân sự'),
+    callerCampusId: String(profile.campus_id || resolvedTeacher.campus_id || 'all'),
     clientIp,
-    teacher: {
-      id: String(teacherRow.id),
-      name: String(teacherRow.name || profile.full_name || ''),
-      code: String(teacherRow.code || teacherRow.id),
-      campus_id: String(teacherRow.campus_id || profile.campus_id || 'camp_pmh'),
-    },
+    teacher: resolvedTeacher,
   };
 
   next();
@@ -3332,19 +3393,46 @@ app.post('/api/checkin/scan', requireCheckinStaff, async (req: Request, res: Res
       .from('teachers')
       .select('id, code, name, campus_id, status')
       .eq('id', payload.t)
-      .single();
+      .maybeSingle();
 
-    if (teacherErr || !teacherRow || teacherRow.status !== 'active') {
+    let resolvedScanTarget: {
+      id: string;
+      name: string;
+      code: string;
+      campus_id: string;
+    } | null = null;
+
+    if (!teacherErr && teacherRow && teacherRow.status === 'active') {
+      resolvedScanTarget = {
+        id: String(teacherRow.id),
+        name: String(teacherRow.name || ''),
+        code: String(teacherRow.code || teacherRow.id),
+        campus_id: String(teacherRow.campus_id || 'camp_pmh'),
+      };
+    } else {
+      // Hỗ trợ quét QR của Bảo mẫu / Quản sinh dùng ID từ bảng profiles
+      const { data: staffProfile } = await supabaseAdmin
+        .from('profiles')
+        .select('id, username, full_name, campus_id, status, linked_teacher_id')
+        .eq('id', payload.t)
+        .maybeSingle();
+
+      if (staffProfile && staffProfile.status === 'active') {
+        resolvedScanTarget = {
+          id: String(staffProfile.linked_teacher_id || staffProfile.id),
+          name: String(staffProfile.full_name || staffProfile.username || ''),
+          code: String(staffProfile.username || staffProfile.id).toUpperCase(),
+          campus_id: String(staffProfile.campus_id || 'camp_pmh'),
+        };
+      }
+    }
+
+    if (!resolvedScanTarget) {
       res.status(400).json({ error: 'Mã QR không hợp lệ' });
       return;
     }
 
-    const teacher = {
-      id: String(teacherRow.id),
-      name: String(teacherRow.name || ''),
-      code: String(teacherRow.code || teacherRow.id),
-      campus_id: String(teacherRow.campus_id || 'camp_pmh'),
-    };
+    const teacher = resolvedScanTarget;
 
     const now = new Date();
     const nowIso = now.toISOString();

@@ -1,5 +1,88 @@
-import { AppUser, UserPermissionMatrix } from '../types';
+import { AppUser, Teacher, UserPermissionMatrix } from '../types';
 import { getUserPermissions } from './storage';
+
+export type ClassroomStaffKind = 'teacher' | 'nanny' | 'supervisor';
+
+/**
+ * Xác định phân loại nhân sự vận hành lớp học (Giáo viên / Bảo mẫu / Quản sinh)
+ * dựa trên `user.role`, `user.department`, hoặc hồ sơ `teachers` liên kết.
+ */
+export function getClassroomStaffKind(
+  user?: Partial<AppUser> | null,
+  teachers?: Teacher[]
+): ClassroomStaffKind | null {
+  if (!user || !user.role) return null;
+  const role = String(user.role).trim().toLowerCase();
+
+  if (role === 'nanny') return 'nanny';
+  if (role === 'supervisor') return 'supervisor';
+
+  const linkedId = user.linked_teacher_id || user.teacher_id;
+  const linkedTeacher =
+    linkedId && Array.isArray(teachers)
+      ? teachers.find(t => t.id === linkedId || t.code === linkedId)
+      : undefined;
+
+  const metaParts = [
+    user.department || '',
+    user.full_name || '',
+    linkedTeacher?.notes || '',
+    linkedTeacher?.name || '',
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  const isNannyMeta =
+    metaParts.includes('bảo mẫu') ||
+    metaParts.includes('bao mau') ||
+    metaParts.includes('nanny') ||
+    /\bnvnd\b/i.test(metaParts);
+
+  const isSupervisorMeta =
+    metaParts.includes('quản sinh') ||
+    metaParts.includes('quan sinh') ||
+    metaParts.includes('supervisor');
+
+  const rawPerms =
+    user.permissions && !Array.isArray(user.permissions) ? user.permissions : null;
+
+  if (
+    role === 'teacher' ||
+    role === 'academic_staff' ||
+    Boolean(linkedId)
+  ) {
+    if (isNannyMeta) return 'nanny';
+    if (isSupervisorMeta) return 'supervisor';
+    if (rawPerms?.can_attend_all_classes) return 'supervisor';
+  }
+
+  if (role === 'teacher') {
+    return 'teacher';
+  }
+
+  return null;
+}
+
+/**
+ * Kiểm tra tài khoản đăng nhập có thuộc đối tượng vận hành lớp học (Giáo viên, Bảo mẫu, Quản sinh) hay không.
+ */
+export function isClassroomPortalUser(
+  user?: Partial<AppUser> | null,
+  teachers?: Teacher[]
+): boolean {
+  return getClassroomStaffKind(user, teachers) !== null;
+}
+
+export const isOperationalClassStaff = isClassroomPortalUser;
+
+/**
+ * Lấy nhãn hiển thị vai trò trên thẻ QR & Header Cổng Nhân Sự Lớp Học
+ */
+export function getClassroomStaffRoleLabel(kind: ClassroomStaffKind): string {
+  if (kind === 'nanny') return 'BẢO MẪU';
+  if (kind === 'supervisor') return 'QUẢN SINH';
+  return 'GIÁO VIÊN ĐỨNG LỚP';
+}
 
 /**
  * Kiểm tra người dùng hiện tại có phải là Super Admin hay không.
@@ -21,22 +104,40 @@ export function getEffectivePermissions(user?: Partial<AppUser> | null): UserPer
 /**
  * Kiểm tra tài khoản đăng nhập có quyền truy cập routeId hay không
  */
-export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null): boolean {
+export function isRouteAllowed(
+  routeId: string,
+  user?: Partial<AppUser> | null,
+  teachers?: Teacher[]
+): boolean {
   if (!user || !user.role) return false;
   if (isUserSuperAdmin(user)) {
     return true;
   }
 
-  // Giáo viên (role === 'teacher') chỉ được truy cập Cổng Giáo Viên ('teacher_portal')
-  if (user.role === 'teacher') {
-    return routeId === 'teacher_portal';
-  }
-
   const perms = getEffectivePermissions(user);
+
+  // Nhân sự vận hành lớp học (Giáo viên, Bảo mẫu, Quản sinh):
+  // - Chặn tuyệt đối màn hình Tổng Quan Hiệu Suất & Thống Kê ('sub_kpi') dưới mọi hình thức
+  // - Chỉ cho phép truy cập các route thuộc phạm vi Cổng Check-in & Điểm danh theo phân quyền
+  if (isOperationalClassStaff(user, teachers)) {
+    if (routeId === 'sub_kpi') {
+      return false;
+    }
+    if (routeId === 'teacher_portal') {
+      return true;
+    }
+    if (routeId === 'sub_attendance') {
+      return Boolean(perms.can_take_attendance ?? true);
+    }
+    if (routeId === 'sub_teacher_checkin') {
+      return Boolean(perms.can_scan_teacher_checkin);
+    }
+    return false;
+  }
 
   switch (routeId) {
     case 'sub_kpi':
-      return true;
+      return perms.can_view_kpi !== false;
     case 'sub_parents':
     case 'sub_students':
     case 'sub_students_health':
@@ -110,10 +211,21 @@ export function isRouteAllowed(routeId: string, user?: Partial<AppUser> | null):
 /**
  * Lấy route mặc định phù hợp với vai trò của người dùng
  */
-export function getDefaultRouteForUser(user?: Partial<AppUser> | null): string {
+export function getDefaultRouteForUser(
+  user?: Partial<AppUser> | null,
+  teachers?: Teacher[]
+): string {
   if (!user || !user.role) return 'sub_kpi';
-  if (user.role === 'teacher') return 'teacher_portal';
+  if (
+    user.role === 'teacher' ||
+    user.role === 'nanny' ||
+    user.role === 'supervisor' ||
+    isOperationalClassStaff(user, teachers)
+  ) {
+    return 'teacher_portal';
+  }
   if (user.role === 'admissions') return 'sub_parents';
   if (user.role === 'accountant') return 'sub_finance_invoices';
   return 'sub_kpi';
 }
+

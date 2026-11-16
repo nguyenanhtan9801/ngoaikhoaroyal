@@ -1425,54 +1425,65 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
       });
 
     case 'teachers':
-      return (store.teachers || []).map(t => ({
-        id: t.id,
-        code: t.code || t.id,
-        name: t.name,
-        phone: t.phone || '',
-        email: t.email || '',
-        campus_id: t.campus_id && t.campus_id !== 'all' ? t.campus_id : (store.campuses[0]?.id || 'camp_pmh'),
-        type: t.type || t.teacher_type || 'permanent',
-        teacher_type: t.teacher_type || t.type || 'permanent',
-        fixed_rate_per_session: Number(t.fixed_rate_per_session) || 300000,
-        default_rate_per_period: Number(t.default_rate_per_period) || 150000,
-        periods_per_session: Number(t.periods_per_session) || 2,
-        bank_account: t.bank_account || {},
-        subjects: Array.isArray(t.subjects) ? t.subjects : [],
-        status: t.status || 'active',
-        updated_at: t.updated_at || new Date().toISOString(),
-        percentage_rate: Number(t.percentage_rate) || 60,
-        weekend_multiplier: Number(t.weekend_multiplier) > 0 ? Number(t.weekend_multiplier) : 1,
-        custom_subject_rates: t.custom_subject_rates && typeof t.custom_subject_rates === 'object' ? t.custom_subject_rates : {},
-        duration_rates:
-          t.duration_rates && typeof t.duration_rates === 'object' && !Array.isArray(t.duration_rates)
-            ? t.duration_rates
-            : {},
-        hire_date: t.hire_date || null,
-        notes: t.notes || '',
-      }));
+      return (store.teachers || []).map(t => {
+        const effType = t.teacher_type || t.type || 'permanent';
+        const isPartner = effType === 'partner';
+        return {
+          id: t.id,
+          code: t.code || t.id,
+          name: t.name,
+          phone: t.phone || '',
+          email: t.email || '',
+          campus_id: t.campus_id && t.campus_id !== 'all' ? t.campus_id : (store.campuses[0]?.id || 'camp_pmh'),
+          type: effType,
+          teacher_type: effType,
+          fixed_rate_per_session: isPartner ? 0 : (Number(t.fixed_rate_per_session) || 300000),
+          default_rate_per_period: isPartner ? 0 : (Number(t.default_rate_per_period) || 150000),
+          periods_per_session: Number(t.periods_per_session) || 2,
+          bank_account: t.bank_account || {},
+          subjects: Array.isArray(t.subjects) ? t.subjects : [],
+          status: t.status || 'active',
+          updated_at: t.updated_at || new Date().toISOString(),
+          percentage_rate: isPartner ? 0 : (Number(t.percentage_rate) ?? 60),
+          weekend_multiplier: isPartner ? 1 : (Number(t.weekend_multiplier) > 0 ? Number(t.weekend_multiplier) : 1),
+          custom_subject_rates: t.custom_subject_rates && typeof t.custom_subject_rates === 'object' ? t.custom_subject_rates : {},
+          duration_rates:
+            t.duration_rates && typeof t.duration_rates === 'object' && !Array.isArray(t.duration_rates)
+              ? t.duration_rates
+              : {},
+          hire_date: t.hire_date || null,
+          notes: t.notes || '',
+        };
+      });
 
     case 'teacher_contracts':
-      return (store.teacherContracts || []).map(c => ({
-        id: c.id,
-        teacher_id: c.teacher_id,
-        teacher_type: c.teacher_type === 'visiting' ? 'visiting' : 'permanent',
-        pay_model: c.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session',
-        effective_from: c.effective_from,
-        rate_per_period: Number(c.rate_per_period) || 150000,
-        periods_per_session: Number(c.periods_per_session) || 2,
-        session_rate: Number(c.session_rate) || (Number(c.rate_per_period || 150000) * Number(c.periods_per_session || 2)),
-        percentage_rate: Number(c.percentage_rate) || 0,
-        weekend_multiplier: Number(c.weekend_multiplier) > 0 ? Number(c.weekend_multiplier) : 1,
-        custom_subject_rates: c.custom_subject_rates && typeof c.custom_subject_rates === 'object' ? c.custom_subject_rates : {},
-        duration_rates:
-          c.duration_rates && typeof c.duration_rates === 'object' && !Array.isArray(c.duration_rates)
-            ? c.duration_rates
-            : {},
-        note: c.note || '',
-        created_by: c.created_by || null,
-        created_at: c.created_at || new Date().toISOString(),
-      }));
+      return (store.teacherContracts || []).map(c => {
+        const isPartner = c.teacher_type === 'partner' || c.pay_model === 'none';
+        const effType = isPartner ? 'partner' : c.teacher_type === 'visiting' ? 'visiting' : 'permanent';
+        const effPayModel = isPartner ? 'none' : c.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session';
+        return {
+          id: c.id,
+          teacher_id: c.teacher_id,
+          teacher_type: effType,
+          pay_model: effPayModel,
+          effective_from: c.effective_from,
+          rate_per_period: isPartner ? 0 : (Number(c.rate_per_period) || 150000),
+          periods_per_session: Number(c.periods_per_session) || 2,
+          session_rate: isPartner
+            ? 0
+            : (Number(c.session_rate) || (Number(c.rate_per_period || 150000) * Number(c.periods_per_session || 2))),
+          percentage_rate: isPartner ? 0 : (Number(c.percentage_rate) || 0),
+          weekend_multiplier: isPartner ? 1 : (Number(c.weekend_multiplier) > 0 ? Number(c.weekend_multiplier) : 1),
+          custom_subject_rates: c.custom_subject_rates && typeof c.custom_subject_rates === 'object' ? c.custom_subject_rates : {},
+          duration_rates:
+            c.duration_rates && typeof c.duration_rates === 'object' && !Array.isArray(c.duration_rates)
+              ? c.duration_rates
+              : {},
+          note: c.note || '',
+          created_by: c.created_by || null,
+          created_at: c.created_at || new Date().toISOString(),
+        };
+      });
 
     case 'extracurricular_classes':
       return (store.classes || []).map(c => ({
@@ -1555,7 +1566,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
     }
 
     case 'attendance_records':
-      return (store.attendance || []).map(a => ({
+      return (store.attendance || store.attendanceRecords || []).map(a => ({
         id: a.id,
         session_id: a.session_id || '',
         class_id: a.class_id,
@@ -1565,7 +1576,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         note: a.note || '',
         proof_file_name: a.proof_file_name || null,
         proof_url: a.proof_url && !a.proof_url.startsWith('data:') ? a.proof_url : null,
-        uploaded_by: a.uploaded_by || null,
+        uploaded_by: a.uploaded_by || a.recorded_by || null,
         uploaded_at: a.uploaded_at || null,
       }));
 
@@ -2464,6 +2475,8 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         proof_url: r.proof_url || undefined,
         uploaded_by: r.uploaded_by || undefined,
         uploaded_at: r.uploaded_at || undefined,
+        recorded_by: r.recorded_by || r.uploaded_by || undefined,
+        recorded_by_role: r.recorded_by_role || undefined,
       };
 
     case 'teacher_work_sessions':
@@ -2698,7 +2711,14 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
       };
     }
 
-    case 'teachers':
+    case 'teachers': {
+      const effType =
+        r.teacher_type === 'partner' || r.type === 'partner'
+          ? 'partner'
+          : r.teacher_type === 'visiting' || r.type === 'visiting'
+          ? 'visiting'
+          : 'permanent';
+      const isPartner = effType === 'partner';
       return {
         id: r.id,
         code: r.code || r.id,
@@ -2706,15 +2726,15 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         phone: r.phone || '',
         email: r.email || '',
         campus_id: r.campus_id || 'camp_pmh',
-        type: r.type || r.teacher_type || 'permanent',
-        teacher_type: r.teacher_type || r.type || 'permanent',
-        fixed_rate_per_session: Number(r.fixed_rate_per_session) || 300000,
-        default_rate_per_period: Number(r.default_rate_per_period) || 150000,
+        type: effType,
+        teacher_type: effType,
+        fixed_rate_per_session: isPartner ? 0 : (Number(r.fixed_rate_per_session) || 300000),
+        default_rate_per_period: isPartner ? 0 : (Number(r.default_rate_per_period) || 150000),
         periods_per_session: Number(r.periods_per_session) || 2,
         bank_account: r.bank_account && typeof r.bank_account === 'object' ? r.bank_account : undefined,
         subjects: Array.isArray(r.subjects) ? r.subjects : [],
-        percentage_rate: Number(r.percentage_rate) > 0 ? Number(r.percentage_rate) : 60,
-        weekend_multiplier: Number(r.weekend_multiplier) > 0 ? Number(r.weekend_multiplier) : 1,
+        percentage_rate: isPartner ? 0 : (Number(r.percentage_rate) > 0 ? Number(r.percentage_rate) : 60),
+        weekend_multiplier: isPartner ? 1 : (Number(r.weekend_multiplier) > 0 ? Number(r.weekend_multiplier) : 1),
         custom_subject_rates:
           r.custom_subject_rates && typeof r.custom_subject_rates === 'object'
             ? r.custom_subject_rates
@@ -2728,22 +2748,27 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         status: r.status === 'inactive' ? 'inactive' : 'active',
         updated_at: r.updated_at || undefined,
       };
+    }
 
-    case 'teacher_contracts':
+    case 'teacher_contracts': {
+      const isPartner = r.teacher_type === 'partner' || r.pay_model === 'none';
+      const effType = isPartner ? 'partner' : r.teacher_type === 'visiting' ? 'visiting' : 'permanent';
+      const effPayModel = isPartner ? 'none' : r.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session';
       return {
         id: r.id,
         teacher_id: r.teacher_id,
-        teacher_type: r.teacher_type === 'visiting' ? 'visiting' : 'permanent',
-        pay_model: r.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session',
+        teacher_type: effType,
+        pay_model: effPayModel,
         effective_from: r.effective_from,
-        rate_per_period: Number(r.rate_per_period) || 150000,
+        rate_per_period: isPartner ? 0 : (Number(r.rate_per_period) || 150000),
         periods_per_session: Number(r.periods_per_session) || 2,
-        session_rate:
-          Number(r.session_rate) > 0
-            ? Number(r.session_rate)
-            : Number(r.rate_per_period || 150000) * Number(r.periods_per_session || 2),
-        percentage_rate: Number(r.percentage_rate) || 0,
-        weekend_multiplier: Number(r.weekend_multiplier) > 0 ? Number(r.weekend_multiplier) : 1,
+        session_rate: isPartner
+          ? 0
+          : Number(r.session_rate) > 0
+          ? Number(r.session_rate)
+          : Number(r.rate_per_period || 150000) * Number(r.periods_per_session || 2),
+        percentage_rate: isPartner ? 0 : (Number(r.percentage_rate) || 0),
+        weekend_multiplier: isPartner ? 1 : (Number(r.weekend_multiplier) > 0 ? Number(r.weekend_multiplier) : 1),
         custom_subject_rates:
           r.custom_subject_rates && typeof r.custom_subject_rates === 'object'
             ? r.custom_subject_rates
@@ -2756,6 +2781,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         created_by: r.created_by || undefined,
         created_at: r.created_at || undefined,
       };
+    }
 
     default:
       return r;

@@ -729,10 +729,10 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
               phone: tObj.phone || '',
               email: tObj.email || '',
               campus_id: cleanCampusId,
-              type: tObj.type || 'permanent',
-              teacher_type: tObj.teacher_type || 'permanent',
-              fixed_rate_per_session: tObj.fixed_rate_per_session || 300000,
-              default_rate_per_period: tObj.default_rate_per_period || 150000,
+              type: tObj.type || tObj.teacher_type || 'permanent',
+              teacher_type: tObj.teacher_type || tObj.type || 'permanent',
+              fixed_rate_per_session: (tObj.type || tObj.teacher_type) === 'partner' ? 0 : (tObj.fixed_rate_per_session ?? 300000),
+              default_rate_per_period: (tObj.type || tObj.teacher_type) === 'partner' ? 0 : (tObj.default_rate_per_period ?? 150000),
               periods_per_session: tObj.periods_per_session || 2,
               status: tObj.status || 'active',
               updated_at: new Date().toISOString()
@@ -1425,7 +1425,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                     .filter(t => t.status !== 'inactive' || t.id === editingClass?.primary_teacher_id)
                     .map(t => (
                       <option key={t.id} value={t.id}>
-                        {t.name} ({(t.type || t.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                        {t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
                       </option>
                     ))}
                 </select>

@@ -72,7 +72,9 @@ import {
   createAuditRecord,
   appendAuditLog,
   recalculatePastSessions,
-  resolveSubjectCategoryCode
+  resolveSubjectCategoryCode,
+  getTeacherTypeLabel,
+  isPayable,
 } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { isUserSuperAdmin } from '../../lib/permissions';
@@ -110,6 +112,7 @@ import {
   DiscountType,
   CloudStorageConfig,
   Teacher,
+  TeacherType,
   PayrollRateConfig,
 } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -175,7 +178,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   }, [store.payrollRateConfig]);
 
   const [teacherCampusFilter, setTeacherCampusFilter] = useState<string>('all');
-  const [teacherTypeFilter, setTeacherTypeFilter] = useState<'all' | 'permanent' | 'visiting'>('all');
+  const [teacherTypeFilter, setTeacherTypeFilter] = useState<'all' | TeacherType>('all');
   const [inlineEditingTeacherId, setInlineEditingTeacherId] = useState<string | null>(null);
   const [inlinePeriodRate, setInlinePeriodRate] = useState<number>(150000);
   const [inlinePeriodsPerSession, setInlinePeriodsPerSession] = useState<number>(2);
@@ -187,7 +190,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
     phone: string;
     email: string;
     campus_id: string;
-    teacher_type: 'permanent' | 'visiting';
+    teacher_type: TeacherType;
     default_rate_per_period: number;
     periods_per_session: number;
     weekend_multiplier: number;
@@ -216,21 +219,24 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
   const handleOpenEditTeacherRateModal = (teacher: Teacher) => {
     setIsCreatingTeacher(false);
     setEditingTeacherModal(teacher);
+    const effType: TeacherType = teacher.type || teacher.teacher_type || 'permanent';
+    const isPartner = effType === 'partner';
     const periods = teacher.periods_per_session || 2;
-    const ratePerPeriod =
-      teacher.default_rate_per_period ||
-      Math.round((teacher.fixed_rate_per_session || 300000) / periods);
+    const ratePerPeriod = isPartner
+      ? 0
+      : teacher.default_rate_per_period ||
+        Math.round((teacher.fixed_rate_per_session || 300000) / periods);
     setTeacherForm({
       code: teacher.code || `GV-PMH-001`,
       name: teacher.name,
       phone: teacher.phone,
       email: teacher.email,
       campus_id: teacher.campus_id || 'camp_pmh',
-      teacher_type: teacher.type || teacher.teacher_type || 'permanent',
+      teacher_type: effType,
       default_rate_per_period: ratePerPeriod,
       periods_per_session: periods,
       weekend_multiplier: teacher.weekend_multiplier ?? 1.0,
-      custom_subject_rates: teacher.custom_subject_rates ? [...teacher.custom_subject_rates] : [],
+      custom_subject_rates: isPartner ? [] : teacher.custom_subject_rates ? [...teacher.custom_subject_rates] : [],
       bank_name: teacher.bank_account?.bank_name || 'Vietcombank',
       account_number: teacher.bank_account?.account_number || '',
       account_holder: teacher.bank_account?.account_holder || teacher.name.toUpperCase(),
@@ -389,9 +395,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
       return;
     }
 
-    const validRate = Math.max(10000, Number(teacherForm.default_rate_per_period) || 150000);
+    const isPartner = teacherForm.teacher_type === 'partner';
+    const validRate = isPartner
+      ? 0
+      : Math.max(10000, Number(teacherForm.default_rate_per_period) || 150000);
     const validPeriods = Math.max(1, Math.min(6, Number(teacherForm.periods_per_session) || 2));
-    const newSessionRate = validRate * validPeriods;
+    const newSessionRate = isPartner ? 0 : validRate * validPeriods;
 
     onUpdateStore(prev => {
       if (isCreatingTeacher) {
@@ -407,14 +416,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           default_rate_per_period: validRate,
           periods_per_session: validPeriods,
           weekend_multiplier: Number(teacherForm.weekend_multiplier) || 1.0,
-          custom_subject_rates: teacherForm.custom_subject_rates.filter(cr => cr.rate_per_period > 0),
+          custom_subject_rates: isPartner
+            ? []
+            : teacherForm.custom_subject_rates.filter(cr => cr.rate_per_period > 0),
           bank_account: {
             bank_name: teacherForm.bank_name.trim() || 'Vietcombank',
             account_number: teacherForm.account_number.trim() || '0181001122334',
             account_holder: teacherForm.account_holder.trim().toUpperCase() || teacherForm.name.trim().toUpperCase(),
           },
           fixed_rate_per_session: newSessionRate,
-          percentage_rate: 60,
+          percentage_rate: isPartner ? 0 : 60,
           status: 'active',
           subjects: teacherForm.subjects.length > 0 ? teacherForm.subjects : ['sub_swim'],
         };
@@ -423,7 +434,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           'TEACHER_RATE_UPDATE',
           'FINANCE',
           `Giáo viên mới ${newTeacher.name} (${newTeacher.code})`,
-          `Thêm mới hồ sơ & thiết lập định mức thù lao cho ${newTeacher.name}: ${formatVND(validRate)}/tiết (${validPeriods} tiết/buổi = ${formatVND(newSessionRate)}/buổi)`,
+          isPartner
+            ? `Thêm mới hồ sơ giáo viên đối tác ${newTeacher.name} (Không tính lương)`
+            : `Thêm mới hồ sơ & thiết lập định mức thù lao cho ${newTeacher.name}: ${formatVND(validRate)}/tiết (${validPeriods} tiết/buổi = ${formatVND(newSessionRate)}/buổi)`,
           null,
           {
             target_id: newTeacher.code,
@@ -432,6 +445,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               after: {
                 code: newTeacher.code,
                 name: newTeacher.name,
+                teacher_type: newTeacher.teacher_type,
                 default_rate_per_period: validRate,
                 periods_per_session: validPeriods,
                 fixed_rate_per_session: newSessionRate,
@@ -447,7 +461,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         };
       } else if (editingTeacherModal) {
         const oldRate =
-          editingTeacherModal.default_rate_per_period ||
+          editingTeacherModal.default_rate_per_period ??
           Math.round((editingTeacherModal.fixed_rate_per_session || 300000) / (editingTeacherModal.periods_per_session || 2));
         const oldPeriods = editingTeacherModal.periods_per_session || 2;
 
@@ -465,13 +479,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 default_rate_per_period: validRate,
                 periods_per_session: validPeriods,
                 weekend_multiplier: Number(teacherForm.weekend_multiplier) || 1.0,
-                custom_subject_rates: teacherForm.custom_subject_rates.filter(cr => cr.rate_per_period > 0),
+                custom_subject_rates: isPartner
+                  ? []
+                  : teacherForm.custom_subject_rates.filter(cr => cr.rate_per_period > 0),
                 bank_account: {
                   bank_name: teacherForm.bank_name.trim() || 'Vietcombank',
                   account_number: teacherForm.account_number.trim(),
                   account_holder: teacherForm.account_holder.trim().toUpperCase() || teacherForm.name.trim().toUpperCase(),
                 },
                 fixed_rate_per_session: newSessionRate,
+                percentage_rate: isPartner ? 0 : t.percentage_rate,
                 subjects: teacherForm.subjects.length > 0 ? teacherForm.subjects : t.subjects,
               }
             : t
@@ -2127,21 +2144,26 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
           // 4. Đẩy hồ sơ giáo viên nếu có
           if (result.data.teachers && result.data.teachers.length > 0) {
-            const teachersPayload = result.data.teachers.map((t: any) => ({
-              id: t.id,
-              code: t.code || t.id,
-              name: t.name,
-              phone: t.phone || '',
-              email: t.email || '',
-              campus_id: t.campus_id || 'camp_pmh',
-              type: t.type || t.teacher_type || 'permanent',
-              teacher_type: t.teacher_type || t.type || 'permanent',
-              fixed_rate_per_session: t.fixed_rate_per_session || 300000,
-              default_rate_per_period: t.default_rate_per_period || 150000,
-              periods_per_session: t.periods_per_session || 2,
-              bank_account: t.bank_account || null,
-              status: t.status || 'active'
-            }));
+            const teachersPayload = result.data.teachers.map((t: any) => {
+              const effType = t.type || t.teacher_type || 'permanent';
+              const isPartner = effType === 'partner';
+              return {
+                id: t.id,
+                code: t.code || t.id,
+                name: t.name,
+                phone: t.phone || '',
+                email: t.email || '',
+                campus_id: t.campus_id || 'camp_pmh',
+                type: effType,
+                teacher_type: effType,
+                fixed_rate_per_session: isPartner ? 0 : t.fixed_rate_per_session ?? 300000,
+                default_rate_per_period: isPartner ? 0 : t.default_rate_per_period ?? 150000,
+                periods_per_session: t.periods_per_session || 2,
+                percentage_rate: isPartner ? 0 : t.percentage_rate ?? 60,
+                bank_account: t.bank_account || null,
+                status: t.status || 'active',
+              };
+            });
             await client.from('teachers').upsert(teachersPayload, { onConflict: 'id' });
           }
 
@@ -7074,6 +7096,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
         const permanentTeachersCount = store.teachers.filter(t => (t.type || t.teacher_type) === 'permanent').length;
         const visitingTeachersCount = store.teachers.filter(t => (t.type || t.teacher_type) === 'visiting').length;
+        const partnerTeachersCount = store.teachers.filter(t => (t.type || t.teacher_type) === 'partner').length;
 
         const rateAuditLogs = (store.auditLogs || []).filter(
           log => log.action === 'TEACHER_RATE_UPDATE' || log.action === 'TEACHER_PAYROLL_SETTLE'
@@ -7430,12 +7453,13 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     <Filter className="w-3.5 h-3.5 text-amber-400" />
                     <select
                       value={teacherTypeFilter}
-                      onChange={e => setTeacherTypeFilter(e.target.value as any)}
+                      onChange={e => setTeacherTypeFilter(e.target.value as 'all' | TeacherType)}
                       className="bg-transparent font-bold text-white focus:outline-none cursor-pointer"
                     >
-                      <option value="all" className="bg-slate-900">Tất cả phân loại</option>
+                      <option value="all" className="bg-slate-900">Tất cả phân loại ({store.teachers.length})</option>
                       <option value="permanent" className="bg-slate-900">Cơ hữu ({permanentTeachersCount})</option>
                       <option value="visiting" className="bg-slate-900">Thỉnh giảng ({visitingTeachersCount})</option>
+                      <option value="partner" className="bg-slate-900">Đối tác ({partnerTeachersCount})</option>
                     </select>
                   </div>
 
@@ -7466,10 +7490,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-800/70">
                     {filteredTeachers.map((teacher, idx) => {
-                      const isPerm = (teacher.type || teacher.teacher_type) === 'permanent';
+                      const effType: TeacherType = teacher.type || teacher.teacher_type || 'permanent';
+                      const isPerm = effType === 'permanent';
+                      const isPartner = effType === 'partner';
                       const periods = periodsPerSessionInput || 2;
-                      const appliedSessionRate = isPerm ? permanentSessionRateInput : visitingSessionRateInput;
-                      const appliedRatePerPeriod = Math.round(appliedSessionRate / periods);
+                      const appliedSessionRate = isPartner
+                        ? 0
+                        : isPerm
+                        ? permanentSessionRateInput
+                        : visitingSessionRateInput;
+                      const appliedRatePerPeriod = isPartner ? 0 : Math.round(appliedSessionRate / periods);
                       const campusObj = store.campuses.find(c => c.id === (teacher.campus_id || 'camp_pmh'));
 
                       return (
@@ -7478,7 +7508,9 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                           <td className="py-3.5 px-4">
                             <div className="flex items-center gap-2.5">
                               <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-extrabold text-xs shrink-0 ${
-                                isPerm
+                                isPartner
+                                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                                  : isPerm
                                   ? 'bg-cyan-500/15 border border-cyan-500/30 text-cyan-300'
                                   : 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
                               }`}>
@@ -7504,11 +7536,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                           {/* 3. Phân loại */}
                           <td className="py-3.5 px-4">
                             <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 ${
-                              isPerm
+                              isPartner
+                                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                : isPerm
                                 ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
                                 : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                             }`}>
-                              {isPerm ? '🏛 Giáo viên Cơ hữu' : '⚡ Giáo viên Thỉnh giảng'}
+                              {isPartner
+                                ? '🤝 Giáo viên Đối tác'
+                                : isPerm
+                                ? '🏛 Giáo viên Cơ hữu'
+                                : '⚡ Giáo viên Thỉnh giảng'}
                             </span>
                           </td>
 
@@ -7521,21 +7559,35 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
 
                           {/* 5. Đơn giá/buổi */}
                           <td className="py-3.5 px-4 font-mono">
-                            <div className={`font-extrabold text-sm ${isPerm ? 'text-cyan-300' : 'text-amber-300'}`}>
-                              {formatVND(appliedSessionRate)}
-                              <span className="text-[10px] text-slate-400 font-normal"> / buổi</span>
-                            </div>
+                            {isPartner ? (
+                              <div className="font-extrabold text-xs text-amber-400">
+                                Không tính lương
+                              </div>
+                            ) : (
+                              <div className={`font-extrabold text-sm ${isPerm ? 'text-cyan-300' : 'text-amber-300'}`}>
+                                {formatVND(appliedSessionRate)}
+                                <span className="text-[10px] text-slate-400 font-normal"> / buổi</span>
+                              </div>
+                            )}
                           </td>
 
                           {/* 6. Quy đổi tham chiếu */}
                           <td className="py-3.5 px-4 font-mono">
-                            <div className="font-extrabold text-emerald-400 text-sm">
-                              {formatVND(appliedSessionRate)}
-                              <span className="text-[10px] text-slate-400 font-normal"> / ca dạy</span>
-                            </div>
-                            <div className="text-[10px] text-slate-500">
-                              ({formatVND(appliedRatePerPeriod)}/tiết &times; {periods} tiết)
-                            </div>
+                            {isPartner ? (
+                              <div className="text-[11px] text-slate-400 font-semibold">
+                                Không tính lương
+                              </div>
+                            ) : (
+                              <>
+                                <div className="font-extrabold text-emerald-400 text-sm">
+                                  {formatVND(appliedSessionRate)}
+                                  <span className="text-[10px] text-slate-400 font-normal"> / ca dạy</span>
+                                </div>
+                                <div className="text-[10px] text-slate-500">
+                                  ({formatVND(appliedRatePerPeriod)}/tiết &times; {periods} tiết)
+                                </div>
+                              </>
+                            )}
                           </td>
 
                           {/* 7. Tài khoản nhận lương */}
@@ -7678,11 +7730,27 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <label className="block text-slate-300 font-semibold mb-1">Phân loại nhân sự</label>
                   <select
                     value={teacherForm.teacher_type}
-                    onChange={(e) => setTeacherForm(prev => ({ ...prev, teacher_type: e.target.value as 'permanent' | 'visiting' }))}
+                    onChange={(e) => {
+                      const nextType = e.target.value as TeacherType;
+                      setTeacherForm(prev => ({
+                        ...prev,
+                        teacher_type: nextType,
+                        default_rate_per_period:
+                          nextType === 'partner'
+                            ? 0
+                            : prev.default_rate_per_period > 0
+                            ? prev.default_rate_per_period
+                            : nextType === 'permanent'
+                            ? 225000
+                            : 150000,
+                        custom_subject_rates: nextType === 'partner' ? [] : prev.custom_subject_rates,
+                      }));
+                    }}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
                     <option value="permanent">Giáo viên Cơ hữu (Permanent)</option>
                     <option value="visiting">Giáo viên Thỉnh giảng (Visiting)</option>
+                    <option value="partner">Giáo viên Đối tác (Partner — Không tính lương)</option>
                   </select>
                 </div>
 
@@ -7710,117 +7778,126 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 </div>
               </div>
 
-              {/* Khối 2: Cấu hình Đơn giá Tiết & Quy đổi Buổi */}
-              <div className="p-4 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-amber-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                    <DollarSign className="w-4 h-4" />
-                    <span>Định Mức Thù Lao Chuẩn Theo Tiết (Hourly / Period Rate)</span>
-                  </span>
-                  <span className="font-mono text-xs font-extrabold text-emerald-400">
-                    Quy đổi: {formatVND(teacherForm.default_rate_per_period * teacherForm.periods_per_session)} / buổi ({teacherForm.periods_per_session} tiết)
-                  </span>
+              {teacherForm.teacher_type === 'partner' ? (
+                <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/30 flex items-center gap-3 text-amber-300 text-xs font-bold">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Giáo viên đối tác không được tính lương (đơn giá = 0đ).</span>
                 </div>
+              ) : (
+                <>
+                  {/* Khối 2: Cấu hình Đơn giá Tiết & Quy đổi Buổi */}
+                  <div className="p-4 rounded-2xl bg-slate-900/90 border border-amber-500/30 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-amber-400 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <DollarSign className="w-4 h-4" />
+                        <span>Định Mức Thù Lao Chuẩn Theo Tiết (Hourly / Period Rate)</span>
+                      </span>
+                      <span className="font-mono text-xs font-extrabold text-emerald-400">
+                        Quy đổi: {formatVND(teacherForm.default_rate_per_period * teacherForm.periods_per_session)} / buổi ({teacherForm.periods_per_session} tiết)
+                      </span>
+                    </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">Đơn giá chuẩn 1 tiết (VNĐ) *</label>
-                    <input
-                      type="number"
-                      step={5000}
-                      min={10000}
-                      value={teacherForm.default_rate_per_period}
-                      onChange={(e) => setTeacherForm(prev => ({ ...prev, default_rate_per_period: Number(e.target.value) }))}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-amber-500/60 text-amber-300 font-mono text-sm font-extrabold focus:outline-none focus:border-amber-400"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">Số tiết / buổi chuẩn *</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={6}
-                      value={teacherForm.periods_per_session}
-                      onChange={(e) => setTeacherForm(prev => ({ ...prev, periods_per_session: Math.max(1, Number(e.target.value)) }))}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm font-bold focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">Hệ số phụ cấp Cuối tuần (T7/CN)</label>
-                    <select
-                      value={teacherForm.weekend_multiplier}
-                      onChange={(e) => setTeacherForm(prev => ({ ...prev, weekend_multiplier: Number(e.target.value) }))}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-cyan-300 font-mono font-bold focus:outline-none focus:border-cyan-500"
-                    >
-                      <option value={1.0}>x1.0 (Không phụ cấp)</option>
-                      <option value={1.1}>x1.1 (+10% ca cuối tuần)</option>
-                      <option value={1.2}>x1.2 (+20% ca cuối tuần)</option>
-                      <option value={1.5}>x1.5 (+50% ca cuối tuần)</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Quick Rate Presets */}
-                <div className="flex items-center gap-2 flex-wrap pt-1">
-                  <span className="text-[11px] text-slate-400">Chọn nhanh mức chuẩn:</span>
-                  {[120000, 150000, 200000, 250000].map(preset => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => setTeacherForm(prev => ({ ...prev, default_rate_per_period: preset }))}
-                      className={`px-2.5 py-1 rounded-lg font-mono text-[11px] border transition-all ${
-                        teacherForm.default_rate_per_period === preset
-                          ? 'bg-amber-500 text-slate-950 font-extrabold border-amber-400'
-                          : 'bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/40'
-                      }`}
-                    >
-                      {formatVND(preset)}/tiết ({formatVND(preset * teacherForm.periods_per_session)}/buổi)
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Khối 3: Đơn giá tiết riêng theo đặc thù môn học */}
-              <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-purple-300 text-xs">
-                    Đơn Giá Tiết Riêng Theo Đặc Thù Môn Học (Tùy chọn)
-                  </span>
-                  <span className="text-[10px] text-slate-400">Nếu để trống = Áp dụng đơn giá chuẩn ở trên</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  {store.subjects.map(sub => {
-                    const existing = teacherForm.custom_subject_rates.find(r => r.subject_id === sub.id);
-                    return (
-                      <div key={sub.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
-                        <div className="font-bold text-slate-200 text-[11px] truncate">{sub.name}</div>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            step={5000}
-                            placeholder={`${teacherForm.default_rate_per_period}`}
-                            value={existing?.rate_per_period || ''}
-                            onChange={(e) => {
-                              const val = Number(e.target.value);
-                              setTeacherForm(prev => {
-                                const others = prev.custom_subject_rates.filter(r => r.subject_id !== sub.id);
-                                if (val > 0) {
-                                  return { ...prev, custom_subject_rates: [...others, { subject_id: sub.id, rate_per_period: val }] };
-                                }
-                                return { ...prev, custom_subject_rates: others };
-                              });
-                            }}
-                            className="w-full px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-purple-300 font-mono text-xs focus:outline-none focus:border-purple-500"
-                          />
-                          <span className="text-[10px] text-slate-500 shrink-0">đ/tiết</span>
-                        </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">Đơn giá chuẩn 1 tiết (VNĐ) *</label>
+                        <input
+                          type="number"
+                          step={5000}
+                          min={10000}
+                          value={teacherForm.default_rate_per_period}
+                          onChange={(e) => setTeacherForm(prev => ({ ...prev, default_rate_per_period: Number(e.target.value) }))}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-amber-500/60 text-amber-300 font-mono text-sm font-extrabold focus:outline-none focus:border-amber-400"
+                        />
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">Số tiết / buổi chuẩn *</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={6}
+                          value={teacherForm.periods_per_session}
+                          onChange={(e) => setTeacherForm(prev => ({ ...prev, periods_per_session: Math.max(1, Number(e.target.value)) }))}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-sm font-bold focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-300 font-semibold mb-1">Hệ số phụ cấp Cuối tuần (T7/CN)</label>
+                        <select
+                          value={teacherForm.weekend_multiplier}
+                          onChange={(e) => setTeacherForm(prev => ({ ...prev, weekend_multiplier: Number(e.target.value) }))}
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-cyan-300 font-mono font-bold focus:outline-none focus:border-cyan-500"
+                        >
+                          <option value={1.0}>x1.0 (Không phụ cấp)</option>
+                          <option value={1.1}>x1.1 (+10% ca cuối tuần)</option>
+                          <option value={1.2}>x1.2 (+20% ca cuối tuần)</option>
+                          <option value={1.5}>x1.5 (+50% ca cuối tuần)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Quick Rate Presets */}
+                    <div className="flex items-center gap-2 flex-wrap pt-1">
+                      <span className="text-[11px] text-slate-400">Chọn nhanh mức chuẩn:</span>
+                      {[120000, 150000, 200000, 250000].map(preset => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setTeacherForm(prev => ({ ...prev, default_rate_per_period: preset }))}
+                          className={`px-2.5 py-1 rounded-lg font-mono text-[11px] border transition-all ${
+                            teacherForm.default_rate_per_period === preset
+                              ? 'bg-amber-500 text-slate-950 font-extrabold border-amber-400'
+                              : 'bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/40'
+                          }`}
+                        >
+                          {formatVND(preset)}/tiết ({formatVND(preset * teacherForm.periods_per_session)}/buổi)
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Khối 3: Đơn giá tiết riêng theo đặc thù môn học */}
+                  <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-purple-300 text-xs">
+                        Đơn Giá Tiết Riêng Theo Đặc Thù Môn Học (Tùy chọn)
+                      </span>
+                      <span className="text-[10px] text-slate-400">Nếu để trống = Áp dụng đơn giá chuẩn ở trên</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      {store.subjects.map(sub => {
+                        const existing = teacherForm.custom_subject_rates.find(r => r.subject_id === sub.id);
+                        return (
+                          <div key={sub.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                            <div className="font-bold text-slate-200 text-[11px] truncate">{sub.name}</div>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                step={5000}
+                                placeholder={`${teacherForm.default_rate_per_period}`}
+                                value={existing?.rate_per_period || ''}
+                                onChange={(e) => {
+                                  const val = Number(e.target.value);
+                                  setTeacherForm(prev => {
+                                    const others = prev.custom_subject_rates.filter(r => r.subject_id !== sub.id);
+                                    if (val > 0) {
+                                      return { ...prev, custom_subject_rates: [...others, { subject_id: sub.id, rate_per_period: val }] };
+                                    }
+                                    return { ...prev, custom_subject_rates: others };
+                                  });
+                                }}
+                                className="w-full px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-purple-300 font-mono text-xs focus:outline-none focus:border-purple-500"
+                              />
+                              <span className="text-[10px] text-slate-500 shrink-0">đ/tiết</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              )}
 
               {/* Khối 4: Tài khoản Ngân hàng nhận thù lao VietQR */}
               <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2.5">

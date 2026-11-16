@@ -58,9 +58,14 @@ export function exportMasterExcelTemplate(state: AppState): void {
     'Họ Và Tên': t.name,
     'Số Điện Thoại': t.phone,
     'Email': t.email,
-    'Phân Loại': t.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng / Đối tác',
-    'Thù Lao Cố Định / Buổi (đ)': t.fixed_rate_per_session,
-    'Tỷ Lệ % Doanh Thu': t.percentage_rate,
+    'Phân Loại':
+      t.teacher_type === 'partner'
+        ? 'Đối tác'
+        : t.teacher_type === 'visiting'
+        ? 'Thỉnh giảng'
+        : 'Cơ hữu',
+    'Thù Lao Cố Định / Buổi (đ)': t.teacher_type === 'partner' ? 0 : t.fixed_rate_per_session,
+    'Tỷ Lệ % Doanh Thu': t.teacher_type === 'partner' ? 0 : t.percentage_rate,
     'Trạng Thái': t.status
   }));
   const ws5 = XLSX.utils.json_to_sheet(s5Data);

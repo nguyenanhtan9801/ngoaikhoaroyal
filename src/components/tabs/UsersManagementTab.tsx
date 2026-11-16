@@ -912,7 +912,7 @@ export const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                     <option value="">-- Chọn hồ sơ giáo viên tương ứng --</option>
                     {store.teachers.map(t => (
                       <option key={t.id} value={t.id}>
-                        {t.name} ({t.phone} - {t.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                        {t.name} ({t.phone} - {(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
                       </option>
                     ))}
                   </select>

@@ -402,11 +402,6 @@ export function useSupabaseRealtime({
       return;
     }
 
-    if (currentUser.role === 'teacher') {
-      loadedAuthenticatedUserIdRef.current = currentUser.id;
-      return;
-    }
-
     if (loadedAuthenticatedUserIdRef.current === currentUser.id) return;
     loadedAuthenticatedUserIdRef.current = currentUser.id;
 
@@ -443,7 +438,7 @@ export function useSupabaseRealtime({
   // Theo dõi thay đổi trên store cục bộ để tự động đẩy (Upsert/Delete) lên Supabase & phát qua BroadcastChannel
   // Chỉ đồng bộ khi đã có nhân sự đăng nhập (currentUser !== null)
   useEffect(() => {
-    if (!currentUser || currentUser.role === 'teacher') {
+    if (!currentUser) {
       prevStoreRef.current = store;
       return;
     }

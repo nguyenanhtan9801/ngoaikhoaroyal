@@ -261,7 +261,7 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
             >
               {store.teachers.map(t => (
                 <option key={t.id} value={t.id}>
-                  {t.name} ({t.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                  {t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
                 </option>
               ))}
             </select>

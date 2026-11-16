@@ -44,7 +44,7 @@ import {
   getConfiguredSupabaseClient,
   APP_USERS_SQL_DDL,
 } from '../../lib/storage';
-import { isUserSuperAdmin } from '../../lib/permissions';
+import { isUserSuperAdmin, isOperationalClassStaff, getClassroomStaffKind } from '../../lib/permissions';
 import { showToast } from '../../lib/toast';
 import { supabase } from '../../supabaseClient';
 import { apiFetchJson, apiFetchJsonOrThrow } from '../../lib/apiClient';
@@ -95,6 +95,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   const [matrixPerms, setMatrixPerms] = useState<UserPermissionMatrix>(() =>
     getDefaultPermissionsForRole('academic')
   );
+  const [matrixOperationalMode, setMatrixOperationalMode] = useState<boolean>(false);
 
   const currentPerms = useMemo(
     () => getUserPermissions(currentUser),
@@ -139,6 +140,12 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return u.role === 'accountant' || u.role === 'academic_accountant';
     }
     if (filter === 'teacher') return u.role === 'teacher';
+    if (filter === 'nanny') {
+      return u.role === 'nanny' || getClassroomStaffKind(u, store.teachers) === 'nanny';
+    }
+    if (filter === 'supervisor') {
+      return u.role === 'supervisor' || getClassroomStaffKind(u, store.teachers) === 'supervisor';
+    }
     return u.role === filter;
   };
 
@@ -244,6 +251,10 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       setFormDepartment('Phòng Tài Chính - Kế Toán');
     } else if (newRole === 'teacher') {
       setFormDepartment('Tổ Giáo Viên Ngoại Khóa');
+    } else if (newRole === 'nanny') {
+      setFormDepartment('Tổ Bảo Mẫu Lớp Học');
+    } else if (newRole === 'supervisor') {
+      setFormDepartment('Tổ Quản Sinh Ngoại Khóa');
     }
   };
 
@@ -308,15 +319,19 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       try {
         const normalizedCampus =
           formCampusId === 'camp_pmh' ? 'pmh' : formCampusId === 'camp_pl' ? 'pl' : formCampusId || 'pmh';
-        const effectivePermissions: UserPermissionMatrix =
-          formRole === 'teacher'
-            ? {
-                ...formPermissions,
-                can_take_attendance: true,
-                view_assigned_classes: true,
-                view_own_payroll: true,
-              }
-            : formPermissions;
+        const isClassStaffRole =
+          formRole === 'teacher' || formRole === 'nanny' || formRole === 'supervisor';
+        const effectivePermissions: UserPermissionMatrix = isClassStaffRole
+          ? {
+              ...formPermissions,
+              can_take_attendance: true,
+              can_view_classes: true,
+              can_view_kpi: false,
+              can_attend_all_classes: formRole === 'nanny' || formRole === 'supervisor',
+              view_assigned_classes: true,
+              view_own_payroll: formRole === 'teacher',
+            }
+          : formPermissions;
 
         const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
         const accessToken = sessionRes?.data?.session?.access_token || '';
@@ -441,15 +456,19 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
       const normalizedCampus =
         formCampusId === 'camp_pmh' ? 'pmh' : formCampusId === 'camp_pl' ? 'pl' : formCampusId || 'pmh';
-      const effectivePermissions: UserPermissionMatrix =
-        formRole === 'teacher'
-          ? {
-              ...formPermissions,
-              can_take_attendance: true,
-              view_assigned_classes: true,
-              view_own_payroll: true,
-            }
-          : formPermissions;
+      const isClassStaffRole =
+        formRole === 'teacher' || formRole === 'nanny' || formRole === 'supervisor';
+      const effectivePermissions: UserPermissionMatrix = isClassStaffRole
+        ? {
+            ...formPermissions,
+            can_take_attendance: true,
+            can_view_classes: true,
+            can_view_kpi: false,
+            can_attend_all_classes: formRole === 'nanny' || formRole === 'supervisor',
+            view_assigned_classes: true,
+            view_own_payroll: formRole === 'teacher',
+          }
+        : formPermissions;
 
       const cleanLinkedTeacherId =
         formRole === 'teacher' ? formLinkedTeacherId.trim() : formLinkedTeacherId.trim() || undefined;
@@ -683,12 +702,41 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
   // Open RolePermissionModal
   const handleOpenPermissionModal = (u: AppUser) => {
     setPermissionModalUser(u);
-    setMatrixPerms(getUserPermissions(u));
+    const basePerms = getUserPermissions(u);
+    const isOpStaff = isOperationalClassStaff(u, store.teachers);
+    const staffKind = getClassroomStaffKind(u, store.teachers);
+    setMatrixOperationalMode(isOpStaff);
+    if (isOpStaff) {
+      setMatrixPerms({
+        ...basePerms,
+        can_view_kpi: false,
+        can_take_attendance: basePerms.can_take_attendance ?? true,
+        can_view_classes: basePerms.can_view_classes ?? true,
+        can_attend_all_classes:
+          staffKind === 'nanny' || staffKind === 'supervisor'
+            ? true
+            : Boolean(basePerms.can_attend_all_classes),
+      });
+    } else {
+      setMatrixPerms({
+        ...basePerms,
+        can_view_kpi: basePerms.can_view_kpi ?? true,
+      });
+    }
   };
 
   // Save RolePermissionModal
   const handleSavePermissionMatrix = async () => {
     if (!permissionModalUser) return;
+
+    const isOpStaff =
+      isOperationalClassStaff(permissionModalUser, store.teachers) || matrixOperationalMode;
+    const sanitizedPerms: UserPermissionMatrix = isOpStaff
+      ? {
+          ...matrixPerms,
+          can_view_kpi: false,
+        }
+      : matrixPerms;
 
     try {
       const sessionRes = supabase?.auth ? await supabase.auth.getSession() : null;
@@ -708,7 +756,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
           id: permissionModalUser.id,
           username: permissionModalUser.username,
           email: permissionModalUser.email,
-          permissions: matrixPerms,
+          permissions: sanitizedPerms,
         }),
       });
       if (!result?.success) {
@@ -719,7 +767,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
       const updatedUser: AppUser = {
         ...permissionModalUser,
-        permissions: matrixPerms,
+        permissions: sanitizedPerms,
       };
 
       const nowStr = new Date().toLocaleString('vi-VN');
@@ -968,6 +1016,8 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
             <option value="admissions">Tuyển sinh</option>
             <option value="accountant">Kế toán</option>
             <option value="teacher">Giáo viên</option>
+            <option value="nanny">Bảo mẫu</option>
+            <option value="supervisor">Quản sinh</option>
           </select>
 
           {/* Bộ lọc Cơ sở */}
@@ -1446,13 +1496,15 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                       <option value="academic">Giáo vụ / Học vụ (Lớp học &amp; Điểm danh)</option>
                       <option value="admissions">Tuyển sinh (Tiếp nhận đơn &amp; Xếp lớp)</option>
                       <option value="accountant">Kế toán (Học phí, Bảo lưu &amp; Thù lao GV)</option>
-                      <option value="teacher">Giáo viên (Chỉ xem lịch dạy &amp; Điểm danh)</option>
+                      <option value="teacher">Giáo viên (Check-in QR &amp; Điểm danh lớp phụ trách)</option>
+                      <option value="nanny">Bảo mẫu (Check-in QR &amp; Điểm danh lớp cơ sở)</option>
+                      <option value="supervisor">Quản sinh (Check-in QR &amp; Điểm danh toàn cơ sở)</option>
                     </select>
                   </div>
                 </div>
 
-                {/* Liên kết hồ sơ Giáo viên nếu vai trò là Giáo viên */}
-                {formRole === 'teacher' && (
+                {/* Liên kết hồ sơ Giáo viên / Nhân sự nếu vai trò là Giáo viên, Bảo mẫu hoặc Quản sinh */}
+                {(formRole === 'teacher' || formRole === 'nanny' || formRole === 'supervisor') && (
                   <div className="pt-2 border-t border-slate-800/80">
                     <label className="block font-bold text-purple-300 mb-1">
                       Liên kết hồ sơ Giáo viên giảng dạy (Chỉ nhìn thấy lớp học của chính mình):
@@ -1475,7 +1527,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                       {store.teachers.map(tc => (
                         <option key={tc.id} value={tc.id}>
                           {tc.code} - {tc.name} (
-                          {tc.type === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'} •{' '}
+                          {(tc.type || tc.teacher_type) === 'partner' ? 'Đối tác' : (tc.type || tc.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'} •{' '}
                           {tc.campus_id === 'camp_pl' ? 'Phú Lâm' : 'PMH'})
                         </option>
                       ))}
@@ -1580,43 +1632,154 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
 
             {/* Body: 4 Permission Groups */}
             <div className="p-6 overflow-y-auto space-y-4 text-xs">
-              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900/90 border border-slate-800">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 rounded-xl bg-slate-900/90 border border-slate-800">
                 <span className="text-slate-300 font-semibold">
                   Áp dụng nhanh bộ quyền chuẩn theo vai trò:
                 </span>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => setMatrixPerms(getDefaultPermissionsForRole('super_admin'))}
+                    onClick={() => {
+                      const isLockedStaff = isOperationalClassStaff(
+                        permissionModalUser,
+                        store.teachers
+                      );
+                      setMatrixOperationalMode(isLockedStaff);
+                      setMatrixPerms({
+                        ...getDefaultPermissionsForRole('super_admin'),
+                        can_view_kpi: !isLockedStaff,
+                      });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-[11px]"
                   >
                     Toàn quyền (*)
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      setMatrixPerms(getDefaultPermissionsForRole('academic_accountant'))
-                    }
+                    onClick={() => {
+                      const isLockedStaff = isOperationalClassStaff(
+                        permissionModalUser,
+                        store.teachers
+                      );
+                      setMatrixOperationalMode(isLockedStaff);
+                      setMatrixPerms({
+                        ...getDefaultPermissionsForRole('academic_accountant'),
+                        can_view_kpi: !isLockedStaff,
+                      });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-bold text-[11px]"
                   >
                     Học vụ &amp; Kế toán
                   </button>
                   <button
                     type="button"
-                    onClick={() => setMatrixPerms(getDefaultPermissionsForRole('admissions'))}
+                    onClick={() => {
+                      const isLockedStaff = isOperationalClassStaff(
+                        permissionModalUser,
+                        store.teachers
+                      );
+                      setMatrixOperationalMode(isLockedStaff);
+                      setMatrixPerms({
+                        ...getDefaultPermissionsForRole('admissions'),
+                        can_view_kpi: !isLockedStaff,
+                      });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-bold text-[11px]"
                   >
                     Tuyển sinh
                   </button>
                   <button
                     type="button"
-                    onClick={() => setMatrixPerms(getDefaultPermissionsForRole('teacher'))}
+                    onClick={() => {
+                      setMatrixOperationalMode(true);
+                      setMatrixPerms({
+                        ...getDefaultPermissionsForRole('teacher'),
+                        can_view_kpi: false,
+                        can_take_attendance: true,
+                        can_view_classes: true,
+                        can_attend_all_classes: false,
+                      });
+                    }}
                     className="px-2.5 py-1 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 font-bold text-[11px]"
                   >
                     Giáo viên
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMatrixOperationalMode(true);
+                      setMatrixPerms({
+                        ...getDefaultPermissionsForRole('supervisor'),
+                        can_view_kpi: false,
+                        can_take_attendance: true,
+                        can_view_classes: true,
+                        can_attend_all_classes: true,
+                      });
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/30 font-bold text-[11px]"
+                  >
+                    Bảo mẫu / Quản sinh
+                  </button>
                 </div>
               </div>
+
+              {/* Cảnh báo / Khóa quyền Tổng Quan Hiệu Suất & Thống Kê (KPI) cho nhóm Giáo viên / Bảo mẫu / Quản sinh */}
+              {(() => {
+                const isOpAccount =
+                  isOperationalClassStaff(permissionModalUser, store.teachers) ||
+                  matrixOperationalMode;
+                return (
+                  <div
+                    className={`p-3.5 rounded-2xl border space-y-2 ${
+                      isOpAccount
+                        ? 'bg-amber-500/10 border-amber-500/35'
+                        : 'bg-slate-900/70 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <label
+                        className={`flex items-center gap-2.5 ${
+                          isOpAccount ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          disabled={isOpAccount}
+                          checked={isOpAccount ? false : matrixPerms.can_view_kpi !== false}
+                          onChange={e =>
+                            setMatrixPerms(prev => ({
+                              ...prev,
+                              can_view_kpi: e.target.checked,
+                            }))
+                          }
+                          className="w-4 h-4 rounded accent-amber-500"
+                        />
+                        <span className="font-bold text-slate-200">
+                          Tổng Quan Hiệu Suất &amp; Thống Kê (KPI)
+                        </span>
+                      </label>
+
+                      {isOpAccount && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-slate-800/90 text-amber-300 border border-amber-500/40 text-[10px] font-extrabold uppercase tracking-wider">
+                          <Lock className="w-3 h-3 text-amber-400" />
+                          <span>Đã khóa theo vai trò vận hành</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {isOpAccount && (
+                      <div className="flex items-start gap-2 text-[11px] text-amber-200/90 bg-slate-950/60 border border-slate-800/90 rounded-xl px-3 py-2 leading-relaxed">
+                        <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <span>
+                          Nhóm Giáo viên / Bảo mẫu / Quản sinh được cấu hình mặc định chỉ sử dụng
+                          Cổng Check-in QR &amp; Điểm danh, không xem màn hình Tổng quan &amp; Thống
+                          kê doanh thu.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* 1. Nhóm Đào Tạo */}
@@ -1669,6 +1832,24 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                     />
                     <span className="text-slate-200 font-medium">
                       Điểm danh học sinh &amp; tải minh chứng
+                    </span>
+                  </label>
+
+                  <label className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-slate-800/60 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(matrixPerms.can_attend_all_classes)}
+                      onChange={e =>
+                        setMatrixPerms(prev => ({
+                          ...prev,
+                          can_attend_all_classes: e.target.checked,
+                          can_take_attendance: e.target.checked ? true : prev.can_take_attendance,
+                        }))
+                      }
+                      className="w-4 h-4 rounded accent-teal-500"
+                    />
+                    <span className="text-teal-300 font-semibold">
+                      Điểm danh toàn bộ lớp trong buổi (Bảo mẫu / Quản sinh)
                     </span>
                   </label>
                 </div>

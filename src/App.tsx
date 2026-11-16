@@ -43,7 +43,12 @@ import {
   isLegacyLoginEnabled,
   syncTeachersCurrentFieldsFromContracts,
 } from './lib/storage';
-import { isRouteAllowed, getDefaultRouteForUser } from './lib/permissions';
+import {
+  isRouteAllowed,
+  getDefaultRouteForUser,
+  isClassroomPortalUser,
+  isOperationalClassStaff,
+} from './lib/permissions';
 import { exportMasterWorkbook } from './lib/excel';
 import { UserRole, ExtracurricularClass, Student, TuitionInvoice, MakeupCredit, AppUser, ClassTransfer } from './types';
 import { useSupabaseRealtime } from './hooks/useSupabaseRealtime';
@@ -82,35 +87,62 @@ const ROUTE_HASH_MAP: Record<string, string> = {
 };
 
 // Hàm đọc route từ Hash URL hoặc Session khi khởi tạo
-const getInitialRouteFromUrl = (): string => {
-  if (typeof window === 'undefined') return 'sub_kpi';
+const getInitialRouteFromUrl = (initialUser?: AppUser | null): string => {
+  const isStaffPortal = isOperationalClassStaff(initialUser);
+  if (typeof window === 'undefined') {
+    return isStaffPortal ? 'teacher_portal' : 'sub_kpi';
+  }
+
+  let resolvedRoute = '';
 
   // 1. Kiểm tra Hash trên URL (#pricing, #students...)
   const hash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
   if (hash) {
     for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
-      if (hash === hashName || hash === routeId) return routeId;
+      if (hash === hashName || hash === routeId) {
+        resolvedRoute = routeId;
+        break;
+      }
     }
   }
 
   // 2. Kiểm tra query param (?tab=pricing...)
-  const params = new URLSearchParams(window.location.search);
-  const tab = (params.get('tab') || params.get('view') || '').trim().toLowerCase();
-  if (tab) {
-    for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
-      if (tab === hashName || tab === routeId) return routeId;
+  if (!resolvedRoute) {
+    const params = new URLSearchParams(window.location.search);
+    const tab = (params.get('tab') || params.get('view') || '').trim().toLowerCase();
+    if (tab) {
+      for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
+        if (tab === hashName || tab === routeId) {
+          resolvedRoute = routeId;
+          break;
+        }
+      }
     }
   }
 
   // 3. Kiểm tra sessionStorage lưu gần nhất
-  try {
-    const saved = sessionStorage.getItem('royal_last_active_route') || localStorage.getItem('royal_last_active_route');
-    if (saved && ROUTE_HASH_MAP[saved]) return saved;
-  } catch {
-    // ignore
+  if (!resolvedRoute) {
+    try {
+      const saved =
+        sessionStorage.getItem('royal_last_active_route') ||
+        localStorage.getItem('royal_last_active_route');
+      if (saved && ROUTE_HASH_MAP[saved]) {
+        resolvedRoute = saved;
+      }
+    } catch {
+      // ignore
+    }
   }
 
-  return 'sub_kpi';
+  // Nếu thuộc nhóm Giáo viên / Bảo mẫu / Quản sinh: chặn tuyệt đối sub_kpi và điều hướng thẳng về teacher_portal
+  if (isStaffPortal) {
+    if (!resolvedRoute || resolvedRoute === 'sub_kpi' || !isRouteAllowed(resolvedRoute, initialUser)) {
+      return 'teacher_portal';
+    }
+    return resolvedRoute;
+  }
+
+  return resolvedRoute || 'sub_kpi';
 };
 
 export default function App() {
@@ -215,8 +247,9 @@ export default function App() {
     setCurrentUser(cleanUser);
     setIsAuthenticated(true);
     setIsLoginModalOpen(false);
-    if (cleanUser.role !== 'teacher') {
-      syncAcademicTermsFromSupabase(setStore);
+    const isPortalStaff = isClassroomPortalUser(cleanUser, store.teachers);
+    syncAcademicTermsFromSupabase(setStore);
+    if (!isPortalStaff) {
       syncProfilesListForSuperAdmin(cleanUser);
     }
 
@@ -225,7 +258,7 @@ export default function App() {
     setSelectedCampusId(scopedCampus);
 
     // Điều hướng thông minh sau đăng nhập theo vai trò (Role-based Routing)
-    if (cleanUser.role === 'teacher') {
+    if (isPortalStaff) {
       setFocusedClass(null);
       setCurrentRoute('teacher_portal');
     } else {
@@ -283,7 +316,9 @@ export default function App() {
   };
   
   // Current active navigation route (handled via top navbar dropdowns, direct links, and URL Hash)
-  const [currentRoute, setCurrentRoute] = useState<string>(() => getInitialRouteFromUrl());
+  const [currentRoute, setCurrentRoute] = useState<string>(() =>
+    getInitialRouteFromUrl(isLegacyLoginEnabled() ? getActiveSessionUser() : null)
+  );
 
   // Filter states (respect campus scope if user is restricted to PMH or PL)
   const [selectedCampusId, setSelectedCampusId] = useState<string>(() =>
@@ -368,8 +403,9 @@ export default function App() {
             });
             setIsAuthenticated(true);
             setSelectedCampusId(normalizeCampusScope(profileUser.campus_id));
-            if (profileUser.role === 'teacher') {
+            if (isClassroomPortalUser(profileUser, store.teachers)) {
               setCurrentRoute('teacher_portal');
+              syncAcademicTermsFromSupabase(setStore);
             } else {
               syncAcademicTermsFromSupabase(setStore);
               if (profileUser.role === 'super_admin') {
@@ -545,21 +581,42 @@ export default function App() {
 
   const [isStandalonePortal, setIsStandalonePortal] = useState<boolean>(() => checkIsStandalonePortal());
 
+  // Tự động chặn và chuyển hướng nếu nhóm Giáo viên / Bảo mẫu / Quản sinh đang ở route 'sub_kpi' hoặc URL '#kpi' / '#sub_kpi'
+  useEffect(() => {
+    if (!currentUser || checkIsStandalonePortal()) return;
+    if (isOperationalClassStaff(currentUser, store.teachers)) {
+      if (
+        currentRoute === 'sub_kpi' ||
+        !isRouteAllowed(currentRoute, currentUser, store.teachers)
+      ) {
+        setCurrentRoute('teacher_portal');
+        if (typeof window !== 'undefined') {
+          window.history.replaceState(null, '', '#teacher-portal');
+        }
+      }
+    }
+  }, [currentRoute, currentUser, store.teachers]);
+
   // Đồng bộ 2 chiều: Khi currentRoute thay đổi -> Cập nhật URL Hash & lưu sessionStorage/localStorage
   useEffect(() => {
     if (typeof window === 'undefined' || checkIsStandalonePortal()) return;
-    const targetHash = ROUTE_HASH_MAP[currentRoute] || 'kpi';
+    const isStaffPortal = isOperationalClassStaff(currentUser, store.teachers);
+    const effectiveRoute =
+      isStaffPortal && (currentRoute === 'sub_kpi' || !isRouteAllowed(currentRoute, currentUser, store.teachers))
+        ? 'teacher_portal'
+        : currentRoute;
+    const targetHash = ROUTE_HASH_MAP[effectiveRoute] || (isStaffPortal ? 'teacher-portal' : 'kpi');
     const currentCleanHash = window.location.hash.replace(/^#\/?/, '').trim().toLowerCase();
     if (currentCleanHash !== targetHash) {
       window.history.replaceState(null, '', `#${targetHash}`);
     }
     try {
-      sessionStorage.setItem('royal_last_active_route', currentRoute);
-      localStorage.setItem('royal_last_active_route', currentRoute);
+      sessionStorage.setItem('royal_last_active_route', effectiveRoute);
+      localStorage.setItem('royal_last_active_route', effectiveRoute);
     } catch {
       // ignore
     }
-  }, [currentRoute]);
+  }, [currentRoute, currentUser, store.teachers]);
 
   useEffect(() => {
     const handleUrlChange = () => {
@@ -570,7 +627,15 @@ export default function App() {
         if (hash) {
           for (const [routeId, hashName] of Object.entries(ROUTE_HASH_MAP)) {
             if (hash === hashName || hash === routeId) {
-              setCurrentRoute(routeId);
+              if (
+                isOperationalClassStaff(currentUser, store.teachers) &&
+                (routeId === 'sub_kpi' || !isRouteAllowed(routeId, currentUser, store.teachers))
+              ) {
+                setCurrentRoute('teacher_portal');
+                window.history.replaceState(null, '', '#teacher-portal');
+              } else {
+                setCurrentRoute(routeId);
+              }
               break;
             }
           }
@@ -583,7 +648,7 @@ export default function App() {
       window.removeEventListener('popstate', handleUrlChange);
       window.removeEventListener('hashchange', handleUrlChange);
     };
-  }, []);
+  }, [currentUser, store.teachers]);
 
   // Synchronize localStorage with event listener (chỉ khi đã có nhân sự đăng nhập)
   useEffect(() => {
@@ -942,12 +1007,14 @@ export default function App() {
     );
   }
 
-  // 2.5. CỔNG GIÁO VIÊN ĐỘC LẬP: Nếu tài khoản có vai trò 'teacher', CHỈ hiển thị TeacherPortal, không có Navbar nghiệp vụ
-  if (currentUser.role === 'teacher') {
+  // 2.5. CỔNG NHÂN SỰ LỚP HỌC ĐỘC LẬP: Nếu tài khoản thuộc nhóm Giáo viên, Bảo mẫu hoặc Quản sinh, CHỈ hiển thị TeacherPortal
+  if (isClassroomPortalUser(currentUser, store.teachers)) {
     return (
       <>
         <TeacherPortal
           currentUser={currentUser}
+          store={store}
+          onUpdateStore={updateStore}
           onLogout={handleLogout}
           onOpenChangePassword={() => {
             setNewPasswordInput('');
@@ -1057,7 +1124,7 @@ export default function App() {
     );
   }
 
-  const routeAllowed = isRouteAllowed(currentRoute, currentUser);
+  const routeAllowed = isRouteAllowed(currentRoute, currentUser, store.teachers);
 
   // 3. ADMIN DASHBOARD: User is authenticated as staff
   return (
@@ -1115,7 +1182,7 @@ export default function App() {
               <div className="pt-2">
                 <button
                   type="button"
-                  onClick={() => setCurrentRoute(getDefaultRouteForUser(currentUser))}
+                  onClick={() => setCurrentRoute(getDefaultRouteForUser(currentUser, store.teachers))}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition-all shadow-lg shadow-amber-500/20"
                 >
                   <ArrowLeft className="w-4 h-4" />
@@ -1125,8 +1192,8 @@ export default function App() {
             </div>
           ) : (
             <>
-              {/* Nhóm 1: TỔNG QUAN & BÁO CÁO */}
-              {currentRoute === 'sub_kpi' && (
+              {/* Nhóm 1: TỔNG QUAN & BÁO CÁO (Chặn tuyệt đối nếu thuộc nhóm Giáo viên / Bảo mẫu / Quản sinh) */}
+              {currentRoute === 'sub_kpi' && !isOperationalClassStaff(currentUser, store.teachers) && (
                 <OverviewKpiTab
                   store={store}
                   selectedCampusId={selectedCampusId}

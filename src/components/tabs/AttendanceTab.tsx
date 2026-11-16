@@ -2297,7 +2297,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                               <div className="text-xs font-bold text-white flex items-center gap-2">
                                 <span>{secItem.assignedTeacherObj?.name || 'Giáo viên phụ'}</span>
                                 <span className="text-[10px] text-slate-400 font-normal">
-                                  ({(secItem.assignedTeacherObj?.type || secItem.assignedTeacherObj?.teacher_type) === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})
+                                  ({(secItem.assignedTeacherObj?.type || secItem.assignedTeacherObj?.teacher_type) === 'partner' ? 'Đối tác' : (secItem.assignedTeacherObj?.type || secItem.assignedTeacherObj?.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
                                 </span>
                               </div>
                               <div className="text-[10px] text-slate-400 font-mono">

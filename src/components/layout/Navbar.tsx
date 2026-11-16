@@ -45,7 +45,9 @@ export const Navbar: React.FC<NavbarProps> = ({
     academic_staff: { title: 'Nhân viên Học vụ', color: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },
     admissions_staff: { title: 'Nhân viên Tuyển sinh', color: 'bg-purple-500/20 text-purple-400 border-purple-500/40' },
     admissions: { title: 'Tổ Tuyển sinh', color: 'bg-purple-500/20 text-purple-400 border-purple-500/40' },
-    teacher: { title: 'Giáo viên Giảng dạy', color: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40' }
+    teacher: { title: 'Giáo viên Giảng dạy', color: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40' },
+    nanny: { title: 'Bảo mẫu Lớp học', color: 'bg-pink-500/20 text-pink-400 border-pink-500/40' },
+    supervisor: { title: 'Quản sinh Ngoại khóa', color: 'bg-teal-500/20 text-teal-400 border-teal-500/40' }
   };
 
   const navMenuItems = [

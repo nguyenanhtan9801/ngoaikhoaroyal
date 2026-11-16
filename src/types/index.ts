@@ -5,6 +5,8 @@ export type SystemRole =
   | 'admissions'          // Tuyển sinh (Tiếp nhận đơn, Ghi danh, Xếp lớp)
   | 'accountant'          // Kế toán (Học phí, VietQR, Phiếu bảo lưu, Quyết toán thù lao)
   | 'teacher'             // Giáo viên (Chỉ xem lịch dạy và điểm danh lớp của mình)
+  | 'nanny'               // Bảo mẫu (Check-in QR & Điểm danh các lớp trong buổi tại cơ sở)
+  | 'supervisor'          // Quản sinh (Check-in QR & Điểm danh các lớp trong buổi tại cơ sở)
   | 'academic_accountant' // Học vụ kiêm Kế toán
   | 'academic_admissions' // Học vụ kiêm Tuyển sinh
   | 'academic_staff'
@@ -28,6 +30,8 @@ export interface UserPermissionMatrix {
   can_config_payroll_rates?: boolean; // Cài đặt mức thù lao cơ hữu/thỉnh giảng
   can_manage_teachers?: boolean;      // Quản lý hồ sơ giáo viên, chuyển ngạch & hợp đồng
   can_scan_teacher_checkin?: boolean; // Quét mã QR check-in giáo viên & theo dõi ca dạy hôm nay
+  can_view_kpi?: boolean;             // Xem màn hình Tổng Quan Hiệu Suất & Thống Kê (KPI)
+  can_attend_all_classes?: boolean;   // Điểm danh toàn bộ lớp học trong buổi tại cơ sở (Bảo mẫu / Quản sinh)
   view_assigned_classes?: boolean;    // Giáo viên xem các lớp được phân công
   view_own_payroll?: boolean;         // Giáo viên xem thù lao của mình
 }
@@ -242,12 +246,14 @@ export interface TimeSlot {
   slot_type?: 'after_school' | 'weekend' | string;
 }
 
-export type TeacherPayModel = 'per_session' | 'revenue_share';
+export type TeacherType = 'permanent' | 'visiting' | 'partner';
+
+export type TeacherPayModel = 'per_session' | 'revenue_share' | 'none';
 
 export interface TeacherContract {
   id: string; // uuid
   teacher_id: string;
-  teacher_type: 'permanent' | 'visiting';
+  teacher_type: TeacherType;
   pay_model: TeacherPayModel;
   effective_from: string; // YYYY-MM-DD
   rate_per_period?: number;
@@ -274,8 +280,8 @@ export interface Teacher {
   phone: string;
   email: string;
   campus_id?: string; // Cơ sở hoạt động chính ('camp_pmh' | 'camp_pl' | 'all')
-  type?: 'permanent' | 'visiting'; // Cơ hữu (Permanent) | Thỉnh giảng (Visiting)
-  teacher_type: 'permanent' | 'visiting';
+  type?: TeacherType; // Cơ hữu (Permanent) | Thỉnh giảng (Visiting) | Đối tác (Partner)
+  teacher_type: TeacherType;
   default_rate_per_period?: number; // Định mức thù lao chuẩn 1 tiết (VD: 150,000 VNĐ/tiết)
   periods_per_session?: number; // Số tiết quy đổi trên 1 buổi học chuẩn (Mặc định: 2 tiết = 90 phút)
   weekend_multiplier?: number; // Hệ số phụ cấp ca cuối tuần T7/CN (Mặc định: 1.0, ví dụ 1.2 = +20%)
@@ -498,6 +504,9 @@ export interface ClassSession {
   snacks_consumed: number; // Present Royal + Absent Unexcused Royal
   snacks_returned: number; // Absent Excused Royal
   status: 'scheduled' | 'completed' | 'canceled';
+  recorded_by?: string;
+  recorded_by_role?: string;
+  session_note?: string;
   support_staff_duty?: {
     nanny_name?: string;
     nanny_status?: 'present' | 'absent' | 'substitute';
@@ -524,6 +533,8 @@ export interface AttendanceRecord {
   proof_base64?: string;        // Dữ liệu ảnh nén base64 lưu dự phòng nội bộ
   uploaded_at?: string;         // Thời gian upload
   uploaded_by?: string;         // Giáo viên/Nhân viên thực hiện
+  recorded_by?: string;         // ID người thực hiện điểm danh
+  recorded_by_role?: string;    // Vai trò người thực hiện điểm danh (teacher | nanny | supervisor...)
 }
 
 export interface CreditRedeemedInfo {
@@ -818,6 +829,7 @@ export interface AppStore {
   teacherAttendance?: TeacherAttendanceRecord[];
   teacherCheckins?: TeacherCheckin[];
   attendance: AttendanceRecord[];
+  attendanceRecords?: AttendanceRecord[];
   makeupCredits: MakeupCredit[];
   transfers: ClassTransfer[];
   payrollSettlements: TeacherPayrollSettlement[];

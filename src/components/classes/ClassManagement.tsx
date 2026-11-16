@@ -345,7 +345,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setPrimaryTeacherId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name} ({t.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'})</option>)}
+                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})</option>)}
                   </select>
                 </div>
 

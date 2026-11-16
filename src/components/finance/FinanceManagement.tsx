@@ -62,42 +62,48 @@ export const FinanceManagement: React.FC<FinanceManagementProps> = ({
   const totalOutstanding = invoices.reduce((sum, inv) => sum + inv.outstanding_amount, 0);
   const totalCreditsApplied = invoices.reduce((sum, inv) => sum + inv.credit_deducted, 0);
 
-  // Payroll calculation preview for each class & teacher
-  const payrollSummaries = classes.map(cl => {
-    const teacher = teachers.find(t => t.id === cl.primary_teacher_id);
-    const classSessions = sessions.filter(s => s.class_id === cl.id && s.status === 'completed');
-    
-    // Check sessions taught by primary vs substitute
-    const primaryTaught = classSessions.filter(s => s.actual_teacher_id === cl.primary_teacher_id).length;
-    const substituteSessions = classSessions.length - primaryTaught;
+  // Payroll calculation preview for each class & teacher (loại bỏ giáo viên đối tác không tính lương)
+  const payrollSummaries = classes
+    .filter(cl => {
+      const teacher = teachers.find(t => t.id === cl.primary_teacher_id);
+      const effType = teacher?.teacher_type || teacher?.type || 'permanent';
+      return effType !== 'partner';
+    })
+    .map(cl => {
+      const teacher = teachers.find(t => t.id === cl.primary_teacher_id);
+      const classSessions = sessions.filter(s => s.class_id === cl.id && s.status === 'completed');
+      
+      // Check sessions taught by primary vs substitute
+      const primaryTaught = classSessions.filter(s => s.actual_teacher_id === cl.primary_teacher_id).length;
+      const substituteSessions = classSessions.length - primaryTaught;
 
-    // Total gross class revenue
-    const classInvoices = invoices.filter(i => i.class_id === cl.id);
-    const grossRevenue = classInvoices.reduce((sum, i) => sum + i.gross_amount, 0);
+      // Total gross class revenue
+      const classInvoices = invoices.filter(i => i.class_id === cl.id);
+      const grossRevenue = classInvoices.reduce((sum, i) => sum + i.gross_amount, 0);
 
-    let calculatedSalary = 0;
-    if (teacher?.teacher_type === 'permanent') {
-      calculatedSalary = primaryTaught * (teacher.fixed_rate_per_session || 0);
-    } else if (teacher?.teacher_type === 'visiting') {
-      calculatedSalary = (grossRevenue * (teacher.percentage_rate || 0)) / 100;
-    }
+      let calculatedSalary = 0;
+      if (teacher?.teacher_type === 'permanent') {
+        calculatedSalary = primaryTaught * (teacher.fixed_rate_per_session || 0);
+      } else if (teacher?.teacher_type === 'visiting') {
+        calculatedSalary = (grossRevenue * (teacher.percentage_rate || 0)) / 100;
+      }
 
-    return {
-      classId: cl.id,
-      className: cl.name,
-      teacherId: teacher?.id || '',
-      teacherName: teacher?.name || 'Chưa phân công',
-      teacherType: teacher?.teacher_type || 'permanent',
-      rateDisplay: teacher?.teacher_type === 'permanent' 
-        ? `${(teacher.fixed_rate_per_session || 0).toLocaleString('vi-VN')} đ / buổi` 
-        : `${teacher?.percentage_rate || 0}% doanh thu`,
-      totalCompletedSessions: classSessions.length,
-      primaryTaught,
-      substituteSessions,
-      grossRevenue,
-      calculatedSalary
-    };
-  });
+      return {
+        classId: cl.id,
+        className: cl.name,
+        teacherId: teacher?.id || '',
+        teacherName: teacher?.name || 'Chưa phân công',
+        teacherType: teacher?.teacher_type || 'permanent',
+        rateDisplay: teacher?.teacher_type === 'permanent' 
+          ? `${(teacher.fixed_rate_per_session || 0).toLocaleString('vi-VN')} đ / buổi` 
+          : `${teacher?.percentage_rate || 0}% doanh thu`,
+        totalCompletedSessions: classSessions.length,
+        primaryTaught,
+        substituteSessions,
+        grossRevenue,
+        calculatedSalary
+      };
+    });
 
   const handleCopySyntax = (text: string) => {
     navigator.clipboard.writeText(text);

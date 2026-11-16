@@ -12,6 +12,7 @@ import {
   Facility,
   TimeSlot,
   Teacher,
+  TeacherType,
   TeacherContract,
   TeacherPayModel,
   TeacherAttendanceRecord,
@@ -2305,6 +2306,38 @@ export function generateTeacherCode(
 }
 
 /**
+ * Nhãn hiển thị tiếng Việt cho phân loại giáo viên
+ */
+export function getTeacherTypeLabel(type?: string | null): string {
+  if (type === 'partner') return 'Đối tác';
+  if (type === 'visiting') return 'Thỉnh giảng';
+  return 'Cơ hữu';
+}
+
+/**
+ * Kiểm tra giáo viên / hợp đồng có được tính lương hay không.
+ * Giáo viên đối tác (`teacher_type === 'partner'`) hoặc hợp đồng `pay_model === 'none'`
+ * KHÔNG được tính lương (luôn nhận 0đ và loại khỏi bảng lương).
+ */
+export function isPayable(
+  teacher?: Partial<Teacher> | null,
+  contract?: Partial<TeacherContract> | null
+): boolean {
+  if (!teacher && !contract) return false;
+  if (contract) {
+    if (contract.teacher_type === 'partner' || contract.pay_model === 'none') {
+      return false;
+    }
+    if (contract.teacher_type === 'permanent' || contract.teacher_type === 'visiting') {
+      return true;
+    }
+  }
+  const tType = teacher?.teacher_type || teacher?.type;
+  if (tType === 'partner') return false;
+  return true;
+}
+
+/**
  * Truy vấn mốc hợp đồng (teacher_contracts) có hiệu lực của giáo viên tại ngày `date` (YYYY-MM-DD):
  * - Lấy mốc có effective_from <= date lớn nhất.
  * - Nếu giáo viên chưa có mốc <= date (hoặc chưa có dòng nào trong teacher_contracts),
@@ -2359,7 +2392,28 @@ export function getTeacherContractAt(
     Boolean(dr && typeof dr === 'object' && !Array.isArray(dr) && Object.keys(dr).length > 0);
 
   if (matched) {
-    const tType = matched.teacher_type === 'visiting' ? 'visiting' : 'permanent';
+    const isPartnerContract =
+      matched.teacher_type === 'partner' ||
+      matched.pay_model === 'none' ||
+      ((teacher.teacher_type || teacher.type) === 'partner' && !matched.teacher_type);
+
+    if (isPartnerContract) {
+      const periods = Number(matched.periods_per_session) || Number(teacher.periods_per_session) || defaultPeriods;
+      return {
+        ...matched,
+        teacher_type: 'partner',
+        pay_model: 'none',
+        periods_per_session: periods,
+        session_rate: 0,
+        rate_per_period: 0,
+        percentage_rate: 0,
+        weekend_multiplier: 1,
+        custom_subject_rates: [],
+        duration_rates: undefined,
+      };
+    }
+
+    const tType: TeacherType = matched.teacher_type === 'visiting' ? 'visiting' : 'permanent';
     const periods = Number(matched.periods_per_session) || Number(teacher.periods_per_session) || defaultPeriods;
     const fallbackSession = tType === 'visiting' ? defaultVisRate : defaultPermRate;
     const sessionRate =
@@ -2395,8 +2449,28 @@ export function getTeacherContractAt(
   }
 
   // Suy ra từ thông tin hiện tại của giáo viên nếu chưa có bản ghi trong teacher_contracts
-  const isVisiting = (teacher.teacher_type || teacher.type) === 'visiting';
+  const rawTeacherType = teacher.teacher_type || teacher.type || 'permanent';
   const periods = Number(teacher.periods_per_session) || defaultPeriods;
+
+  if (rawTeacherType === 'partner') {
+    return {
+      id: `derived_${teacher.id}`,
+      teacher_id: teacher.id,
+      teacher_type: 'partner',
+      pay_model: 'none',
+      effective_from: teacher.hire_date || '2026-01-01',
+      rate_per_period: 0,
+      periods_per_session: periods,
+      session_rate: 0,
+      percentage_rate: 0,
+      weekend_multiplier: 1,
+      custom_subject_rates: [],
+      duration_rates: undefined,
+      note: 'Giáo viên đối tác (Không tính lương)',
+    };
+  }
+
+  const isVisiting = rawTeacherType === 'visiting';
   const fallbackSession = isVisiting ? defaultVisRate : defaultPermRate;
   const sessionRate =
     Number(teacher.fixed_rate_per_session) > 0
@@ -2476,7 +2550,7 @@ export function resolveClassDurationMinutes(
 
 export interface SessionPayCalculationResult {
   contract: TeacherContract;
-  teacherType: 'permanent' | 'visiting';
+  teacherType: TeacherType;
   payModel: TeacherPayModel;
   periodsCount: number;
   ratePerPeriod: number;
@@ -2494,9 +2568,10 @@ export interface SessionPayCalculationResult {
 /**
  * Tính thù lao 1 buổi dạy tại ngày `sessionDate` theo đúng hợp đồng có hiệu lực tại `sessionDate`.
  * - Nếu dạy thay: truyền `teacher = actualTeacher` (giáo viên thực tế đứng lớp).
- * - Hỗ trợ cả 2 mô hình:
+ * - Hỗ trợ cả 3 mô hình:
+ *   0. `none` (hoặc `teacher_type === 'partner'`): Không tính lương -> tất cả đơn giá và thù lao = 0.
  *   1. `per_session`: `earned = Math.round(sessionRate * (isWeekend ? weekend_multiplier : 1))`
- *      (có xét `custom_subject_rates` nếu môn học có đơn giá riêng).
+ *      (có xét `custom_subject_rates` và `duration_rates`).
  *   2. `revenue_share`: `earned = Math.round(((classRevenue / totalClassSessions) * percentage_rate) / 100)`
  *      trong đó `classRevenue = activeStudentsCount * cls.full_course_fee`.
  */
@@ -2527,13 +2602,40 @@ export function calculateTeacherSessionPayAtDate(params: {
   const totalClassSessions = Math.max(1, Number(cls?.total_sessions) || 24);
   const classRevenue = activeStudentsCount * (Number(cls?.full_course_fee) || 0);
 
+  // Giáo viên đối tác hoặc hợp đồng pay_model === 'none' KHÔNG được tính lương
+  if (!isPayable(teacher, contract)) {
+    return {
+      contract: {
+        ...contract,
+        teacher_type: 'partner',
+        pay_model: 'none',
+        session_rate: 0,
+        rate_per_period: 0,
+        percentage_rate: 0,
+      },
+      teacherType: 'partner',
+      payModel: 'none',
+      periodsCount: isAbsent ? 0 : periods,
+      ratePerPeriod: 0,
+      rateApplied: 0,
+      sessionRate: 0,
+      earnedAmount: 0,
+      classRevenue,
+      activeStudentsCount,
+      totalClassSessions,
+      percentageRate: 0,
+      milestoneKey: `${contract.id}_partner_none`,
+      milestoneLabel: 'Đối tác: Không tính lương',
+    };
+  }
+
   if (contract.pay_model === 'revenue_share') {
     const pct = Number(contract.percentage_rate ?? teacher?.percentage_rate ?? 45);
     const rawSessionShare = ((classRevenue / totalClassSessions) * pct) / 100;
     const unitEarned = Math.round(rawSessionShare);
     const earnedAmount = isAbsent || periods <= 0 ? 0 : unitEarned;
     const ratePerPeriod = Math.round(unitEarned / Math.max(1, periods || 2));
-    const typeText = contract.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng';
+    const typeText = getTeacherTypeLabel(contract.teacher_type);
 
     return {
       contract,
@@ -2583,7 +2685,7 @@ export function calculateTeacherSessionPayAtDate(params: {
   const rateApplied = Math.round(baseSessionRate * weekendMult);
   const ratePerPeriod = Math.round(rateApplied / Math.max(1, periods || defaultPeriods));
   const earnedAmount = isAbsent || periods <= 0 ? 0 : rateApplied;
-  const typeText = contract.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng';
+  const typeText = getTeacherTypeLabel(contract.teacher_type);
 
   return {
     contract,
@@ -2696,37 +2798,51 @@ export function syncTeachersCurrentFieldsFromContracts(
     if (teacherMilestones.length === 0) return teacher;
 
     const activeContract = getTeacherContractAt(teacher, today, store);
-    const nextType: 'permanent' | 'visiting' =
-      activeContract.teacher_type === 'visiting' ? 'visiting' : 'permanent';
+    const isPartner =
+      activeContract.teacher_type === 'partner' || activeContract.pay_model === 'none';
+
+    const nextType: TeacherType = isPartner
+      ? 'partner'
+      : activeContract.teacher_type === 'visiting'
+      ? 'visiting'
+      : 'permanent';
     const nextPeriods = Number(activeContract.periods_per_session) || teacher.periods_per_session || 2;
-    const nextSessionRate =
-      activeContract.pay_model === 'per_session'
-        ? Number(activeContract.session_rate) || teacher.fixed_rate_per_session || (nextType === 'visiting' ? 270000 : 300000)
-        : teacher.fixed_rate_per_session || (nextType === 'visiting' ? 270000 : 300000);
-    const nextPeriodRate =
-      activeContract.pay_model === 'per_session'
-        ? Number(activeContract.rate_per_period) || Math.round(nextSessionRate / Math.max(1, nextPeriods))
-        : teacher.default_rate_per_period || Math.round(nextSessionRate / Math.max(1, nextPeriods));
-    const nextPct =
-      activeContract.pay_model === 'revenue_share'
-        ? Number(activeContract.percentage_rate ?? teacher.percentage_rate ?? 45)
-        : Number(activeContract.percentage_rate ?? teacher.percentage_rate ?? 0);
-    const nextWeekend = Number(activeContract.weekend_multiplier ?? teacher.weekend_multiplier ?? 1) || 1;
-    const nextCustomRates = Array.isArray(activeContract.custom_subject_rates)
+    const nextSessionRate = isPartner
+      ? 0
+      : activeContract.pay_model === 'per_session'
+      ? Number(activeContract.session_rate) || teacher.fixed_rate_per_session || (nextType === 'visiting' ? 270000 : 300000)
+      : teacher.fixed_rate_per_session || (nextType === 'visiting' ? 270000 : 300000);
+    const nextPeriodRate = isPartner
+      ? 0
+      : activeContract.pay_model === 'per_session'
+      ? Number(activeContract.rate_per_period) || Math.round(nextSessionRate / Math.max(1, nextPeriods))
+      : teacher.default_rate_per_period || Math.round(nextSessionRate / Math.max(1, nextPeriods));
+    const nextPct = isPartner
+      ? 0
+      : activeContract.pay_model === 'revenue_share'
+      ? Number(activeContract.percentage_rate ?? teacher.percentage_rate ?? 45)
+      : Number(activeContract.percentage_rate ?? teacher.percentage_rate ?? 0);
+    const nextWeekend = isPartner
+      ? 1
+      : Number(activeContract.weekend_multiplier ?? teacher.weekend_multiplier ?? 1) || 1;
+    const nextCustomRates = isPartner
+      ? []
+      : Array.isArray(activeContract.custom_subject_rates)
       ? activeContract.custom_subject_rates
       : teacher.custom_subject_rates || [];
-    const nextDurationRates =
-      activeContract.duration_rates &&
-      typeof activeContract.duration_rates === 'object' &&
-      !Array.isArray(activeContract.duration_rates) &&
-      Object.keys(activeContract.duration_rates).length > 0
-        ? activeContract.duration_rates
-        : teacher.duration_rates &&
-          typeof teacher.duration_rates === 'object' &&
-          !Array.isArray(teacher.duration_rates) &&
-          Object.keys(teacher.duration_rates).length > 0
-        ? teacher.duration_rates
-        : undefined;
+    const nextDurationRates = isPartner
+      ? undefined
+      : activeContract.duration_rates &&
+        typeof activeContract.duration_rates === 'object' &&
+        !Array.isArray(activeContract.duration_rates) &&
+        Object.keys(activeContract.duration_rates).length > 0
+      ? activeContract.duration_rates
+      : teacher.duration_rates &&
+        typeof teacher.duration_rates === 'object' &&
+        !Array.isArray(teacher.duration_rates) &&
+        Object.keys(teacher.duration_rates).length > 0
+      ? teacher.duration_rates
+      : undefined;
 
     if (
       teacher.type !== nextType ||
@@ -2774,6 +2890,7 @@ export function getTeacherEffectiveSessionRate(
   cls?: ExtracurricularClass
 ): number {
   if (!teacher) return payrollConfig?.permanent_session_rate ?? 300000;
+  if (!isPayable(teacher)) return 0;
   if (store || sessionDate || cls) {
     const calc = calculateTeacherSessionPayAtDate({
       teacher,
@@ -2811,6 +2928,7 @@ export function getTeacherEffectivePeriodRate(
   store?: Partial<AppStore> | null,
   cls?: ExtracurricularClass
 ): number {
+  if (teacher && !isPayable(teacher)) return 0;
   if (teacher && (store || sessionDate || cls)) {
     const calc = calculateTeacherSessionPayAtDate({
       teacher,
@@ -2860,7 +2978,19 @@ export function recalculatePastSessions(
   const updatedTeachers: Teacher[] = (store.teachers || []).map(t => {
     const hasContracts = (store.teacherContracts || []).some(c => c.teacher_id === t.id);
     if (hasContracts) return t;
-    const isVisiting = (t.type || t.teacher_type) === 'visiting';
+    const rawType = t.type || t.teacher_type || 'permanent';
+    if (rawType === 'partner') {
+      return {
+        ...t,
+        type: 'partner',
+        teacher_type: 'partner',
+        default_rate_per_period: 0,
+        periods_per_session: periods,
+        fixed_rate_per_session: 0,
+        percentage_rate: 0,
+      };
+    }
+    const isVisiting = rawType === 'visiting';
     const sessionRate = isVisiting ? visitingSessionRate : permanentSessionRate;
     const periodRate = isVisiting ? visPeriodRate : permPeriodRate;
     return {
@@ -2970,6 +3100,8 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: true,
         can_config_payroll_rates: true,
         can_manage_teachers: true,
+        can_view_kpi: true,
+        can_attend_all_classes: true,
       };
     case 'campus_manager':
       return {
@@ -2987,6 +3119,8 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: true,
         can_config_payroll_rates: false,
         can_manage_teachers: true,
+        can_view_kpi: true,
+        can_attend_all_classes: true,
       };
     case 'academic_accountant':
       return {
@@ -3004,6 +3138,8 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: true,
         can_config_payroll_rates: false,
         can_manage_teachers: false,
+        can_view_kpi: true,
+        can_attend_all_classes: true,
       };
     case 'academic_admissions':
     case 'academic_staff':
@@ -3023,6 +3159,8 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: true,
         can_config_payroll_rates: false,
         can_manage_teachers: false,
+        can_view_kpi: true,
+        can_attend_all_classes: true,
       };
     case 'admissions':
       return {
@@ -3040,6 +3178,8 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: true,
         can_config_payroll_rates: false,
         can_manage_teachers: false,
+        can_view_kpi: true,
+        can_attend_all_classes: false,
       };
     case 'accountant':
       return {
@@ -3057,6 +3197,28 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: false,
         can_config_payroll_rates: true,
         can_manage_teachers: false,
+        can_view_kpi: true,
+        can_attend_all_classes: false,
+      };
+    case 'nanny':
+    case 'supervisor':
+      return {
+        can_manage_classes: false,
+        can_take_attendance: true,
+        can_scan_teacher_checkin: false,
+        can_manage_enrollment: false,
+        can_manage_finance: false,
+        can_manage_credits: false,
+        can_settle_payroll: false,
+        can_config_system: false,
+        can_manage_users: false,
+        can_view_classes: true,
+        can_view_registrations: false,
+        can_manage_trial: false,
+        can_config_payroll_rates: false,
+        can_manage_teachers: false,
+        can_view_kpi: false,
+        can_attend_all_classes: true,
       };
     case 'teacher':
     default:
@@ -3075,6 +3237,8 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_manage_trial: false,
         can_config_payroll_rates: false,
         can_manage_teachers: false,
+        can_view_kpi: false,
+        can_attend_all_classes: false,
       };
   }
 }
@@ -3089,17 +3253,52 @@ export function getUserPermissions(user?: AppUser | null, fallbackRole: UserRole
         ...getDefaultPermissionsForRole('super_admin'),
         ...user.permissions,
         can_manage_users: true,
+        can_view_kpi: true,
       };
     }
     return getDefaultPermissionsForRole('super_admin');
   }
+
+  const deptAndName = `${user.department || ''} ${user.full_name || ''}`.toLowerCase();
+  const isNannyOrSupervisorMeta =
+    deptAndName.includes('bảo mẫu') ||
+    deptAndName.includes('bao mau') ||
+    deptAndName.includes('nanny') ||
+    deptAndName.includes('quản sinh') ||
+    deptAndName.includes('quan sinh') ||
+    deptAndName.includes('supervisor');
+  const isClassOperationalRole =
+    user.role === 'teacher' ||
+    user.role === 'nanny' ||
+    user.role === 'supervisor' ||
+    ((user.role === 'academic_staff' || Boolean(user.linked_teacher_id || user.teacher_id)) && isNannyOrSupervisorMeta);
+
   if (user.permissions && !Array.isArray(user.permissions)) {
-    return {
+    const merged: UserPermissionMatrix = {
       ...getDefaultPermissionsForRole(user.role),
       ...user.permissions,
     };
+    if (isClassOperationalRole) {
+      merged.can_view_kpi = false;
+      if (user.role === 'nanny' || user.role === 'supervisor' || isNannyOrSupervisorMeta) {
+        merged.can_attend_all_classes = merged.can_attend_all_classes ?? true;
+      }
+    }
+    return merged;
   }
-  return getDefaultPermissionsForRole(user.role);
+
+  const defaults = getDefaultPermissionsForRole(user.role);
+  if (isClassOperationalRole) {
+    return {
+      ...defaults,
+      can_view_kpi: false,
+      can_attend_all_classes:
+        user.role === 'nanny' || user.role === 'supervisor' || isNannyOrSupervisorMeta
+          ? true
+          : defaults.can_attend_all_classes,
+    };
+  }
+  return defaults;
 }
 
 export const getEffectivePermissions = getUserPermissions;
@@ -3120,7 +3319,17 @@ export function getRoleLabelVN(role: UserRole, user?: AppUser | null): string {
       return 'Chuyên Viên Tuyển Sinh';
     case 'accountant':
       return 'Kế Toán Học Phí & Thù Lao';
+    case 'nanny':
+      return 'Bảo Mẫu Lớp Học';
+    case 'supervisor':
+      return 'Quản Sinh Ngoại Khóa';
     case 'teacher':
+      if (user?.department?.toLowerCase().includes('bảo mẫu')) {
+        return 'Bảo Mẫu Lớp Học';
+      }
+      if (user?.department?.toLowerCase().includes('quản sinh')) {
+        return 'Quản Sinh Ngoại Khóa';
+      }
       if (user?.department?.toLowerCase().includes('thỉnh giảng') || user?.username === 'tuan.lq' || user?.username === 'gv_david') {
         return 'Giáo Viên (Thỉnh Giảng)';
       }
@@ -3160,6 +3369,16 @@ export function getPermissionSummaryText(user: AppUser): string {
   }
 
   const perms = getUserPermissions(user);
+  if (
+    (user.role === 'nanny' || user.role === 'supervisor' || perms.can_attend_all_classes) &&
+    !perms.can_manage_classes &&
+    !perms.can_manage_enrollment &&
+    !perms.can_manage_finance &&
+    perms.can_take_attendance
+  ) {
+    return 'Check-in QR & Điểm danh toàn bộ lớp trong buổi';
+  }
+
   if (
     user.role === 'teacher' &&
     !perms.can_manage_classes &&

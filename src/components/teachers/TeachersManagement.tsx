@@ -33,6 +33,7 @@ import {
   Teacher,
   TeacherContract,
   TeacherPayModel,
+  TeacherType,
   UserRole,
   AppUser,
   ExtracurricularClass,
@@ -42,6 +43,8 @@ import {
   formatDateVN,
   generateTeacherCode,
   getTeacherContractAt,
+  getTeacherTypeLabel,
+  isPayable,
   getLatestSettledSessionDateForTeacher,
   syncTeachersCurrentFieldsFromContracts,
   createAuditRecord,
@@ -98,7 +101,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
   const [campusFilter, setCampusFilter] = useState<string>(
     userScopedCampus !== 'all' ? userScopedCampus : selectedCampusId || 'all'
   );
-  const [typeFilter, setTypeFilter] = useState<'all' | 'permanent' | 'visiting'>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | TeacherType>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'cards'>(() => {
     try {
@@ -176,7 +179,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     phone: string;
     email: string;
     campus_id: string;
-    teacher_type: 'permanent' | 'visiting';
+    teacher_type: TeacherType;
     pay_model: TeacherPayModel;
     hire_date: string;
     rate_per_period: number;
@@ -218,7 +221,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
   const [contractError, setContractError] = useState<string | null>(null);
   const [contractForm, setContractForm] = useState<{
     effective_from: string;
-    teacher_type: 'permanent' | 'visiting';
+    teacher_type: TeacherType;
     pay_model: TeacherPayModel;
     rate_per_period: number;
     periods_per_session: number;
@@ -710,6 +713,40 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       .sort((a, b) => (a.effective_from || '').localeCompare(b.effective_from || ''));
   };
 
+  // Summary counts by teacher type (scoped by campus & status/search filters except typeFilter)
+  const teacherTypeCounts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const counts = { all: 0, permanent: 0, visiting: 0, partner: 0 };
+    for (const t of store.teachers || []) {
+      if (userScopedCampus !== 'all') {
+        const tCampus = normalizeCampusScope(t.campus_id);
+        if (tCampus !== userScopedCampus) continue;
+      }
+      if (campusFilter !== 'all') {
+        const tCampus = normalizeCampusScope(t.campus_id);
+        if (tCampus !== campusFilter) continue;
+      }
+      const effStatus = t.status === 'inactive' ? 'inactive' : 'active';
+      if (statusFilter !== 'all' && effStatus !== statusFilter) continue;
+      if (q) {
+        const match =
+          (t.name || '').toLowerCase().includes(q) ||
+          (t.code || '').toLowerCase().includes(q) ||
+          (t.phone || '').toLowerCase().includes(q) ||
+          (t.email || '').toLowerCase().includes(q);
+        if (!match) continue;
+      }
+      const activeContract = getTeacherContractAt(t, todayIso, store);
+      const effType: TeacherType =
+        activeContract.teacher_type || t.teacher_type || t.type || 'permanent';
+      counts.all += 1;
+      if (effType === 'partner') counts.partner += 1;
+      else if (effType === 'visiting') counts.visiting += 1;
+      else counts.permanent += 1;
+    }
+    return counts;
+  }, [store.teachers, store, todayIso, searchQuery, campusFilter, statusFilter, userScopedCampus]);
+
   // Filtered Teachers List
   const filteredTeachers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -722,7 +759,8 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         const tCampus = normalizeCampusScope(t.campus_id);
         if (tCampus !== campusFilter) return false;
       }
-      const effType = t.teacher_type || t.type || 'permanent';
+      const activeContract = getTeacherContractAt(t, todayIso, store);
+      const effType = activeContract.teacher_type || t.teacher_type || t.type || 'permanent';
       if (typeFilter !== 'all' && effType !== typeFilter) return false;
 
       const effStatus = t.status === 'inactive' ? 'inactive' : 'active';
@@ -736,7 +774,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         (t.email || '').toLowerCase().includes(q)
       );
     });
-  }, [store.teachers, searchQuery, campusFilter, typeFilter, statusFilter, userScopedCampus]);
+  }, [store.teachers, store, todayIso, searchQuery, campusFilter, typeFilter, statusFilter, userScopedCampus]);
 
   // Open Add Teacher Modal
   const handleOpenAddModal = () => {
@@ -775,6 +813,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
   // Open Edit Teacher Modal
   const handleOpenEditModal = (teacher: Teacher) => {
     const activeContract = getTeacherContractAt(teacher, todayIso, store);
+    const isPartner = activeContract.teacher_type === 'partner' || activeContract.pay_model === 'none';
     setEditingTeacher(teacher);
     setFormError(null);
     setFormData({
@@ -783,11 +822,11 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       email: teacher.email || '',
       campus_id: normalizeCampusScope(teacher.campus_id) === 'all' ? 'camp_pmh' : normalizeCampusScope(teacher.campus_id),
       teacher_type: activeContract.teacher_type,
-      pay_model: activeContract.pay_model,
+      pay_model: isPartner ? 'none' : activeContract.pay_model,
       hire_date: teacher.hire_date || activeContract.effective_from || todayIso,
-      rate_per_period: activeContract.rate_per_period || teacher.default_rate_per_period || 150000,
+      rate_per_period: isPartner ? 0 : activeContract.rate_per_period || teacher.default_rate_per_period || 150000,
       periods_per_session: activeContract.periods_per_session || teacher.periods_per_session || 2,
-      percentage_rate: activeContract.percentage_rate || teacher.percentage_rate || 60,
+      percentage_rate: isPartner ? 0 : activeContract.percentage_rate || teacher.percentage_rate || 60,
       weekend_multiplier: activeContract.weekend_multiplier || teacher.weekend_multiplier || 1,
       subjects: Array.isArray(teacher.subjects) ? teacher.subjects : [],
       bank_name: teacher.bank_account?.bank_name || 'Vietcombank',
@@ -840,6 +879,25 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       }
     }
 
+    const isPartner = formData.teacher_type === 'partner';
+    const prevContract = editingTeacher ? getTeacherContractAt(editingTeacher, todayIso, store) : null;
+    const wasPartner = prevContract
+      ? prevContract.teacher_type === 'partner' || prevContract.pay_model === 'none'
+      : false;
+    const isNeedsRateInput = !isPartner && (!editingTeacher || wasPartner);
+
+    if (isNeedsRateInput) {
+      const effPayModel = formData.pay_model === 'revenue_share' ? 'revenue_share' : 'per_session';
+      if (effPayModel === 'per_session' && (Number(formData.rate_per_period) || 0) <= 0) {
+        setFormError('Vui lòng nhập đơn giá 1 tiết lớn hơn 0 VNĐ khi chọn giáo viên Cơ hữu hoặc Thỉnh giảng.');
+        return;
+      }
+      if (effPayModel === 'revenue_share' && (Number(formData.percentage_rate) || 0) <= 0) {
+        setFormError('Vui lòng nhập tỷ lệ % chia sẻ doanh thu lớn hơn 0% khi chọn giáo viên Cơ hữu hoặc Thỉnh giảng.');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
       const teacherId = editingTeacher ? editingTeacher.id : `t_${Date.now()}`;
@@ -849,9 +907,24 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           ? editingTeacher.code
           : generateTeacherCode(formData.campus_id, store.teachers);
 
-      const sessionRate =
-        Math.max(1, Number(formData.rate_per_period) || 150000) *
-        Math.max(1, Number(formData.periods_per_session) || 2);
+      const effectivePayModel: TeacherPayModel = isPartner
+        ? 'none'
+        : formData.pay_model === 'revenue_share'
+        ? 'revenue_share'
+        : 'per_session';
+
+      const periodsPerSession = Math.max(1, Number(formData.periods_per_session) || 2);
+      const ratePerPeriod = isPartner
+        ? 0
+        : isNeedsRateInput
+        ? Math.max(1, Number(formData.rate_per_period) || 150000)
+        : editingTeacher?.default_rate_per_period || Math.max(1, Number(formData.rate_per_period) || 150000);
+      const sessionRate = isPartner ? 0 : ratePerPeriod * periodsPerSession;
+      const percentageRate = isPartner
+        ? 0
+        : effectivePayModel === 'revenue_share'
+        ? Math.max(1, Number(formData.percentage_rate) || 60)
+        : 0;
 
       const teacherRecord: Teacher = {
         id: teacherId,
@@ -860,17 +933,11 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         phone: formData.phone.trim(),
         email: (formData.email || formData.login_email).trim(),
         campus_id: formData.campus_id,
-        type: editingTeacher ? editingTeacher.type : formData.teacher_type,
-        teacher_type: editingTeacher ? editingTeacher.teacher_type : formData.teacher_type,
-        fixed_rate_per_session: editingTeacher
-          ? editingTeacher.fixed_rate_per_session
-          : sessionRate,
-        default_rate_per_period: editingTeacher
-          ? editingTeacher.default_rate_per_period
-          : Number(formData.rate_per_period) || 150000,
-        periods_per_session: editingTeacher
-          ? editingTeacher.periods_per_session
-          : Number(formData.periods_per_session) || 2,
+        type: formData.teacher_type,
+        teacher_type: formData.teacher_type,
+        fixed_rate_per_session: isPartner ? 0 : sessionRate,
+        default_rate_per_period: isPartner ? 0 : ratePerPeriod,
+        periods_per_session: periodsPerSession,
         bank_account: {
           bank_name: formData.bank_name.trim() || 'Vietcombank',
           account_number: formData.account_number.trim(),
@@ -879,22 +946,25 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         subjects: formData.subjects,
         status: editingTeacher ? editingTeacher.status : 'active',
         updated_at: new Date().toISOString(),
-        percentage_rate: editingTeacher
-          ? editingTeacher.percentage_rate
-          : Number(formData.percentage_rate) || 60,
+        percentage_rate: isPartner ? 0 : percentageRate,
         weekend_multiplier: editingTeacher
           ? editingTeacher.weekend_multiplier || 1
           : Number(formData.weekend_multiplier) || 1,
-        custom_subject_rates: Array.isArray(editingTeacher?.custom_subject_rates)
+        custom_subject_rates: isPartner
+          ? []
+          : Array.isArray(editingTeacher?.custom_subject_rates)
           ? editingTeacher.custom_subject_rates
           : [],
+        duration_rates: isPartner ? {} : editingTeacher?.duration_rates,
         hire_date: formData.hire_date || todayIso,
         notes: formData.notes.trim(),
       };
 
-      // If creating a new teacher, also create the initial contract milestone in teacher_contracts
+      // If creating a new teacher OR if teacher_type changed during edit, create/update the contract milestone
       const existingContracts = getTeacherMilestonesAsc(teacherId);
       let newInitialContract: TeacherContract | null = null;
+      let updatedActiveContract: TeacherContract | null = null;
+
       if (!editingTeacher || existingContracts.length === 0) {
         newInitialContract = {
           id:
@@ -903,22 +973,43 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
               : `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           teacher_id: teacherId,
           teacher_type: formData.teacher_type,
-          pay_model: formData.pay_model,
+          pay_model: effectivePayModel,
           effective_from: formData.hire_date || todayIso,
-          rate_per_period: Number(formData.rate_per_period) || 150000,
-          periods_per_session: Number(formData.periods_per_session) || 2,
-          session_rate: sessionRate,
-          percentage_rate:
-            formData.pay_model === 'revenue_share' ? Number(formData.percentage_rate) || 45 : 0,
+          rate_per_period: isPartner ? 0 : ratePerPeriod,
+          periods_per_session: periodsPerSession,
+          session_rate: isPartner ? 0 : sessionRate,
+          percentage_rate: isPartner ? 0 : percentageRate,
           weekend_multiplier: Number(formData.weekend_multiplier) || 1,
           custom_subject_rates: [],
-          note: 'Mốc hợp đồng khởi tạo khi tiếp nhận giáo viên',
+          duration_rates: isPartner ? {} : undefined,
+          note: isPartner
+            ? 'Giáo viên đối tác không được tính lương'
+            : 'Mốc hợp đồng khởi tạo khi tiếp nhận giáo viên',
           created_by: currentUser?.full_name || currentUser?.username || 'Hệ thống',
           created_at: new Date().toISOString(),
         };
+      } else if (
+        editingTeacher &&
+        prevContract &&
+        (prevContract.teacher_type !== formData.teacher_type ||
+          (isPartner && prevContract.pay_model !== 'none') ||
+          (wasPartner && !isPartner))
+      ) {
+        const latestMilestone = existingContracts[existingContracts.length - 1];
+        updatedActiveContract = {
+          ...latestMilestone,
+          teacher_type: formData.teacher_type,
+          pay_model: effectivePayModel,
+          rate_per_period: isPartner ? 0 : ratePerPeriod,
+          periods_per_session: periodsPerSession,
+          session_rate: isPartner ? 0 : sessionRate,
+          percentage_rate: isPartner ? 0 : percentageRate,
+          duration_rates: isPartner ? {} : latestMilestone.duration_rates,
+          custom_subject_rates: isPartner ? [] : latestMilestone.custom_subject_rates,
+        };
       }
 
-      // First persist teacher & initial contract to Supabase so server.ts can verify linked_teacher_id on teachers table
+      // First persist teacher & contract to Supabase so server.ts can verify linked_teacher_id on teachers table
       if (supabase) {
         const dbTeacherRow = {
           id: teacherRecord.id,
@@ -936,15 +1027,18 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           subjects: teacherRecord.subjects || [],
           status: teacherRecord.status,
           updated_at: teacherRecord.updated_at,
-          percentage_rate: teacherRecord.percentage_rate || 60,
+          percentage_rate: isPartner ? 0 : teacherRecord.percentage_rate || 0,
           weekend_multiplier: teacherRecord.weekend_multiplier || 1,
-          custom_subject_rates: teacherRecord.custom_subject_rates || {},
+          custom_subject_rates: teacherRecord.custom_subject_rates || [],
+          duration_rates: isPartner ? {} : teacherRecord.duration_rates || {},
           hire_date: teacherRecord.hire_date || null,
           notes: teacherRecord.notes || '',
         };
         await supabase.from('teachers').upsert(dbTeacherRow, { onConflict: 'id' });
         if (newInitialContract) {
           await supabase.from('teacher_contracts').upsert(newInitialContract, { onConflict: 'id' });
+        } else if (updatedActiveContract) {
+          await supabase.from('teacher_contracts').upsert(updatedActiveContract, { onConflict: 'id' });
         }
       }
 
@@ -1028,6 +1122,10 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
         const updatedContracts = newInitialContract
           ? [...(prev.teacherContracts || []), newInitialContract]
+          : updatedActiveContract
+          ? (prev.teacherContracts || []).map(c =>
+              c.id === updatedActiveContract!.id ? updatedActiveContract! : c
+            )
           : prev.teacherContracts || [];
 
         const updatedUsers = createdUserAccount
@@ -1101,25 +1199,31 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       ).padStart(2, '0')}`;
     }
 
+    const isPartner =
+      currentContract.teacher_type === 'partner' || currentContract.pay_model === 'none';
+
     setContractModalTeacher(teacher);
     setContractError(null);
     setContractForm({
       effective_from: defaultEffectiveDate,
       teacher_type: currentContract.teacher_type,
-      pay_model: currentContract.pay_model,
-      rate_per_period: currentContract.rate_per_period || 150000,
+      pay_model: isPartner ? 'none' : currentContract.pay_model,
+      rate_per_period: isPartner ? 0 : currentContract.rate_per_period || 150000,
       periods_per_session: currentContract.periods_per_session || 2,
-      percentage_rate: currentContract.percentage_rate || 45,
+      percentage_rate: isPartner ? 0 : currentContract.percentage_rate || 45,
       weekend_multiplier: currentContract.weekend_multiplier || 1,
-      custom_subject_rates: Array.isArray(currentContract.custom_subject_rates)
+      custom_subject_rates: isPartner
+        ? []
+        : Array.isArray(currentContract.custom_subject_rates)
         ? [...currentContract.custom_subject_rates]
         : [],
-      duration_rates:
-        currentContract.duration_rates &&
-        typeof currentContract.duration_rates === 'object' &&
-        !Array.isArray(currentContract.duration_rates)
-          ? { ...currentContract.duration_rates }
-          : undefined,
+      duration_rates: isPartner
+        ? {}
+        : currentContract.duration_rates &&
+          typeof currentContract.duration_rates === 'object' &&
+          !Array.isArray(currentContract.duration_rates)
+        ? { ...currentContract.duration_rates }
+        : undefined,
       note: '',
     });
   };
@@ -1165,16 +1269,25 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       return;
     }
 
-    const ratePerPeriod = Math.max(0, Number(contractForm.rate_per_period) || 0);
-    const periodsPerSession = Math.max(1, Number(contractForm.periods_per_session) || 2);
-    const sessionRate = ratePerPeriod * periodsPerSession;
-    const percentageRate = Math.max(0, Math.min(100, Number(contractForm.percentage_rate) || 0));
+    const isPartner = contractForm.teacher_type === 'partner';
+    const effectivePayModel: TeacherPayModel = isPartner
+      ? 'none'
+      : contractForm.pay_model === 'revenue_share'
+      ? 'revenue_share'
+      : 'per_session';
 
-    if (contractForm.pay_model === 'per_session' && sessionRate <= 0) {
+    const ratePerPeriod = isPartner ? 0 : Math.max(0, Number(contractForm.rate_per_period) || 0);
+    const periodsPerSession = Math.max(1, Number(contractForm.periods_per_session) || 2);
+    const sessionRate = isPartner ? 0 : ratePerPeriod * periodsPerSession;
+    const percentageRate = isPartner
+      ? 0
+      : Math.max(0, Math.min(100, Number(contractForm.percentage_rate) || 0));
+
+    if (!isPartner && effectivePayModel === 'per_session' && sessionRate <= 0) {
       setContractError('Đơn giá theo buổi phải lớn hơn 0 VNĐ.');
       return;
     }
-    if (contractForm.pay_model === 'revenue_share' && percentageRate <= 0) {
+    if (!isPartner && effectivePayModel === 'revenue_share' && percentageRate <= 0) {
       setContractError('Tỷ lệ % chia sẻ doanh thu phải lớn hơn 0%.');
       return;
     }
@@ -1186,23 +1299,25 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           : `tc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       teacher_id: contractModalTeacher.id,
       teacher_type: contractForm.teacher_type,
-      pay_model: contractForm.pay_model,
+      pay_model: effectivePayModel,
       effective_from: effDate,
-      rate_per_period: ratePerPeriod,
+      rate_per_period: isPartner ? 0 : ratePerPeriod,
       periods_per_session: periodsPerSession,
-      session_rate: sessionRate,
-      percentage_rate: contractForm.pay_model === 'revenue_share' ? percentageRate : 0,
+      session_rate: isPartner ? 0 : sessionRate,
+      percentage_rate: !isPartner && effectivePayModel === 'revenue_share' ? percentageRate : 0,
       weekend_multiplier: Math.max(1, Number(contractForm.weekend_multiplier) || 1),
-      custom_subject_rates: Array.isArray(contractForm.custom_subject_rates)
+      custom_subject_rates: isPartner
+        ? []
+        : Array.isArray(contractForm.custom_subject_rates)
         ? contractForm.custom_subject_rates
         : [],
-      duration_rates: contractForm.duration_rates,
+      duration_rates: isPartner ? {} : contractForm.duration_rates,
       note:
         contractForm.note.trim() ||
-        `Chuyển ngạch sang ${
-          contractForm.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'
-        } (${
-          contractForm.pay_model === 'revenue_share'
+        `Chuyển ngạch sang ${getTeacherTypeLabel(contractForm.teacher_type)} (${
+          isPartner
+            ? 'Không tính lương'
+            : effectivePayModel === 'revenue_share'
             ? `Chia sẻ ${percentageRate}% doanh thu`
             : `${formatVND(sessionRate)}/buổi`
         }) từ ${formatDateVN(effDate)}`,
@@ -1212,6 +1327,22 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
     if (supabase) {
       await supabase.from('teacher_contracts').insert(newContract);
+      if (effDate <= todayIso) {
+        await supabase
+          .from('teachers')
+          .update({
+            type: newContract.teacher_type,
+            teacher_type: newContract.teacher_type,
+            fixed_rate_per_session: isPartner ? 0 : newContract.session_rate,
+            default_rate_per_period: isPartner ? 0 : newContract.rate_per_period,
+            periods_per_session: newContract.periods_per_session,
+            percentage_rate: isPartner ? 0 : newContract.percentage_rate,
+            weekend_multiplier: newContract.weekend_multiplier,
+            duration_rates: isPartner ? {} : newContract.duration_rates || {},
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', contractModalTeacher.id);
+      }
     }
 
     onUpdateStore(prev => {
@@ -1240,8 +1371,10 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
         `Chuyển ngạch / Đổi mức lương: ${contractModalTeacher.name}`,
         `Thêm mốc hợp đồng mới cho ${contractModalTeacher.name} áp dụng từ ${formatDateVN(
           effDate
-        )}: ${contractForm.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'} - ${
-          contractForm.pay_model === 'revenue_share'
+        )}: ${getTeacherTypeLabel(contractForm.teacher_type)} - ${
+          isPartner
+            ? 'Không tính lương'
+            : contractForm.pay_model === 'revenue_share'
             ? `${percentageRate}% doanh thu`
             : `${formatVND(sessionRate)}/buổi`
         }`,
@@ -1511,16 +1644,30 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     <div className="space-y-4">
       {/* Header & Filter Bar */}
       <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 backdrop-blur-md shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <h3 className="text-base font-extrabold text-white flex items-center gap-2">
-            <UserCheck className="w-5 h-5 text-amber-400" />
-            <span>Quản Lý Hồ Sơ Giáo Viên, Tài Khoản &amp; Lịch Sử Mức Lương ({filteredTeachers.length} GV)</span>
-          </h3>
-          <p className="text-xs text-slate-400 mt-1">
-            Quản lý định danh nhân sự theo cơ sở (<code className="text-amber-300">GV-PMH-xxx</code> /{' '}
-            <code className="text-cyan-300">GV-PL-xxx</code>), chuyển ngạch Cơ hữu ⇄ Thỉnh giảng và tính lương chính xác theo ngày từng buổi dạy.
-          </p>
-        </div>
+          <div>
+            <h3 className="text-base font-extrabold text-white flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-amber-400" />
+              <span>Quản Lý Hồ Sơ Giáo Viên, Tài Khoản &amp; Lịch Sử Mức Lương ({filteredTeachers.length} GV)</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Quản lý định danh nhân sự theo cơ sở (<code className="text-amber-300">GV-PMH-xxx</code> /{' '}
+              <code className="text-cyan-300">GV-PL-xxx</code>), chuyển ngạch Cơ hữu ⇄ Thỉnh giảng ⇄ Đối tác và tính lương chính xác theo ngày từng buổi dạy.
+            </p>
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-[11px]">
+              <span className="px-2.5 py-0.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 font-bold">
+                Tổng: <strong className="text-white font-mono">{teacherTypeCounts.all}</strong>
+              </span>
+              <span className="px-2.5 py-0.5 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-bold">
+                Cơ hữu: <strong className="font-mono">{teacherTypeCounts.permanent}</strong>
+              </span>
+              <span className="px-2.5 py-0.5 rounded-lg bg-purple-500/15 border border-purple-500/30 text-purple-300 font-bold">
+                Thỉnh giảng: <strong className="font-mono">{teacherTypeCounts.visiting}</strong>
+              </span>
+              <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold">
+                Đối tác: <strong className="font-mono">{teacherTypeCounts.partner}</strong>
+              </span>
+            </div>
+          </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Search */}
@@ -1550,12 +1697,13 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
           {/* Teacher Type Filter */}
           <select
             value={typeFilter}
-            onChange={e => setTypeFilter(e.target.value as any)}
+            onChange={e => setTypeFilter(e.target.value as 'all' | TeacherType)}
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500"
           >
-            <option value="all">Tất cả phân loại</option>
-            <option value="permanent">Cơ hữu (Permanent)</option>
-            <option value="visiting">Thỉnh giảng (Visiting)</option>
+            <option value="all">Tất cả phân loại ({teacherTypeCounts.all})</option>
+            <option value="permanent">Cơ hữu ({teacherTypeCounts.permanent})</option>
+            <option value="visiting">Thỉnh giảng ({teacherTypeCounts.visiting})</option>
+            <option value="partner">Đối tác ({teacherTypeCounts.partner})</option>
           </select>
 
           {/* Status Filter */}
@@ -1709,18 +1857,29 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                       <td className="py-3 px-3 whitespace-nowrap">
                         <span
                           className={`px-2.5 py-1 rounded-full text-[10px] font-bold inline-block ${
-                            isPermanent
+                            activeContract.teacher_type === 'partner'
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : isPermanent
                               ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
                               : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                           }`}
                         >
-                          {isPermanent ? 'Cơ hữu' : 'Thỉnh giảng'}
+                          {getTeacherTypeLabel(activeContract.teacher_type)}
                         </span>
                       </td>
 
                       {/* Chế Độ & Đơn Giá Hiện Hành */}
                       <td className="py-3 px-3 whitespace-nowrap">
-                        {activeContract.pay_model === 'revenue_share' ? (
+                        {!isPayable(teacher, activeContract) ? (
+                          <div>
+                            <div className="font-mono font-extrabold text-amber-400 text-xs">
+                              Không tính lương
+                            </div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              Đơn vị / Giáo viên đối tác
+                            </div>
+                          </div>
+                        ) : activeContract.pay_model === 'revenue_share' ? (
                           <div>
                             <div className="font-mono font-extrabold text-purple-400 text-xs">
                               Chia sẻ {activeContract.percentage_rate}% doanh thu
@@ -2016,12 +2175,14 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
                     <span
                       className={`px-2.5 py-1 rounded-full text-[10px] font-bold shrink-0 ${
-                        isPermanent
+                        activeContract.teacher_type === 'partner'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          : isPermanent
                           ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
                           : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                       }`}
                     >
-                      {isPermanent ? 'Cơ hữu' : 'Thỉnh giảng'}
+                      {getTeacherTypeLabel(activeContract.teacher_type)}
                     </span>
                   </div>
 
@@ -2030,13 +2191,22 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Hình thức trả lương hiện hành:</span>
                       <span className="font-bold text-slate-200">
-                        {activeContract.pay_model === 'revenue_share'
+                        {!isPayable(teacher, activeContract)
+                          ? 'Không tính lương'
+                          : activeContract.pay_model === 'revenue_share'
                           ? 'Chia sẻ % doanh thu'
                           : 'Theo buổi / tiết'}
                       </span>
                     </div>
 
-                    {activeContract.pay_model === 'revenue_share' ? (
+                    {!isPayable(teacher, activeContract) ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400">Chế độ quyết toán:</span>
+                        <strong className="font-mono font-extrabold text-amber-400">
+                          Giáo viên đối tác — Không tính lương
+                        </strong>
+                      </div>
+                    ) : activeContract.pay_model === 'revenue_share' ? (
                       <div className="flex items-center justify-between">
                         <span className="text-slate-400">Tỷ lệ hưởng doanh thu lớp:</span>
                         <strong className="font-mono font-extrabold text-purple-400">
@@ -2389,121 +2559,148 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                   />
                 </div>
 
-                {!editingTeacher && (
-                  <div>
-                    <label className="block text-slate-300 font-bold mb-1">Ngạch hợp đồng ban đầu *</label>
-                    <select
-                      value={formData.teacher_type}
-                      onChange={e => {
-                        const nextType = e.target.value as 'permanent' | 'visiting';
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">Loại giáo viên *</label>
+                  <select
+                    value={formData.teacher_type}
+                    onChange={e => {
+                      const nextType = e.target.value as TeacherType;
+                      if (nextType === 'partner') {
+                        setFormData({
+                          ...formData,
+                          teacher_type: 'partner',
+                          pay_model: 'none',
+                          rate_per_period: 0,
+                          percentage_rate: 0,
+                        });
+                      } else {
                         setFormData({
                           ...formData,
                           teacher_type: nextType,
-                          rate_per_period: nextType === 'permanent' ? 150000 : 135000,
+                          pay_model:
+                            formData.pay_model === 'none' ? 'per_session' : formData.pay_model,
+                          rate_per_period:
+                            formData.rate_per_period > 0
+                              ? formData.rate_per_period
+                              : nextType === 'permanent'
+                              ? 225000
+                              : 150000,
+                          percentage_rate:
+                            formData.percentage_rate > 0 ? formData.percentage_rate : 60,
                         });
-                      }}
-                      className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-semibold focus:outline-none focus:border-amber-500"
-                    >
-                      <option value="permanent">Giáo viên Cơ hữu (Permanent)</option>
-                      <option value="visiting">Giáo viên Thỉnh giảng (Visiting)</option>
-                    </select>
-                  </div>
-                )}
+                      }
+                    }}
+                    className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-semibold focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="permanent">Cơ hữu (Permanent)</option>
+                    <option value="visiting">Thỉnh giảng (Visiting)</option>
+                    <option value="partner">Đối tác (Partner — Không tính lương)</option>
+                  </select>
+                </div>
               </div>
 
-              {/* Initial Contract Configuration when creating a new teacher */}
-              {!editingTeacher && (
-                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-400">
-                      Cấu Hình Mốc Lương Khởi Tạo (Áp dụng từ ngày nhận việc)
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setFormData({ ...formData, pay_model: 'per_session' })}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
-                          formData.pay_model === 'per_session'
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : 'bg-slate-900 text-slate-400 border-slate-800'
-                        }`}
-                      >
-                        Theo buổi / tiết
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData({ ...formData, pay_model: 'revenue_share' })}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
-                          formData.pay_model === 'revenue_share'
-                            ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                            : 'bg-slate-900 text-slate-400 border-slate-800'
-                        }`}
-                      >
-                        Chia sẻ % doanh thu
-                      </button>
-                    </div>
-                  </div>
-
-                  {formData.pay_model === 'per_session' ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-slate-400 mb-1">Đơn giá 1 tiết (VNĐ)</label>
-                        <input
-                          type="number"
-                          step={5000}
-                          value={formData.rate_per_period}
-                          onChange={e =>
-                            setFormData({ ...formData, rate_per_period: Number(e.target.value) })
-                          }
-                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-amber-300 font-mono font-bold"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 mb-1">Số tiết / buổi</label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={6}
-                          value={formData.periods_per_session}
-                          onChange={e =>
-                            setFormData({ ...formData, periods_per_session: Number(e.target.value) })
-                          }
-                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white font-mono font-bold"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 mb-1">Thành tiền / buổi</label>
-                        <div className="px-3 py-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-400 font-mono font-extrabold">
-                          {formatVND(
-                            (Number(formData.rate_per_period) || 0) *
-                              (Number(formData.periods_per_session) || 2)
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-slate-400 mb-1">Tỷ lệ % chia sẻ doanh thu lớp</label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={formData.percentage_rate}
-                          onChange={e =>
-                            setFormData({ ...formData, percentage_rate: Number(e.target.value) })
-                          }
-                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-purple-300 font-mono font-bold"
-                        />
-                      </div>
-                      <div className="flex items-end">
-                        <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-[11px] text-slate-400">
-                          Thù lao mỗi buổi = <strong className="text-white">(Doanh thu lớp / Tổng buổi lớp) × {formData.percentage_rate}%</strong>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+              {/* Contract / Salary Configuration */}
+              {formData.teacher_type === 'partner' ? (
+                <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/30 flex items-center gap-3 text-amber-300 text-xs font-bold">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Giáo viên đối tác không được tính lương (pay_model = none, đơn giá = 0đ).</span>
                 </div>
+              ) : (
+                (!editingTeacher ||
+                  getTeacherContractAt(editingTeacher, todayIso, store).teacher_type === 'partner') && (
+                  <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-400">
+                        Cấu Hình Mức Lương (Áp dụng cho ngạch {getTeacherTypeLabel(formData.teacher_type)})
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setFormData({ ...formData, pay_model: 'per_session' })}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                            formData.pay_model === 'per_session'
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : 'bg-slate-900 text-slate-400 border-slate-800'
+                          }`}
+                        >
+                          Theo buổi / tiết
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormData({ ...formData, pay_model: 'revenue_share' })}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
+                            formData.pay_model === 'revenue_share'
+                              ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                              : 'bg-slate-900 text-slate-400 border-slate-800'
+                          }`}
+                        >
+                          Chia sẻ % doanh thu
+                        </button>
+                      </div>
+                    </div>
+
+                    {formData.pay_model === 'per_session' ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-slate-400 mb-1">Đơn giá 1 tiết (VNĐ)</label>
+                          <input
+                            type="number"
+                            step={5000}
+                            min={1000}
+                            value={formData.rate_per_period}
+                            onChange={e =>
+                              setFormData({ ...formData, rate_per_period: Number(e.target.value) })
+                            }
+                            className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-amber-300 font-mono font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-slate-400 mb-1">Số tiết / buổi</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={6}
+                            value={formData.periods_per_session}
+                            onChange={e =>
+                              setFormData({ ...formData, periods_per_session: Number(e.target.value) })
+                            }
+                            className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white font-mono font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-slate-400 mb-1">Thành tiền / buổi</label>
+                          <div className="px-3 py-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-400 font-mono font-extrabold">
+                            {formatVND(
+                              (Number(formData.rate_per_period) || 0) *
+                                (Number(formData.periods_per_session) || 2)
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-slate-400 mb-1">Tỷ lệ % chia sẻ doanh thu lớp</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={formData.percentage_rate}
+                            onChange={e =>
+                              setFormData({ ...formData, percentage_rate: Number(e.target.value) })
+                            }
+                            className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-purple-300 font-mono font-bold"
+                          />
+                        </div>
+                        <div className="flex items-end">
+                          <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-[11px] text-slate-400">
+                            Thù lao mỗi buổi = <strong className="text-white">(Doanh thu lớp / Tổng buổi lớp) × {formData.percentage_rate}%</strong>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
               )}
 
               {/* Bank Account */}
@@ -2770,154 +2967,191 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                   </label>
                   <select
                     value={contractForm.teacher_type}
-                    onChange={e =>
-                      setContractForm({
-                        ...contractForm,
-                        teacher_type: e.target.value as 'permanent' | 'visiting',
-                      })
-                    }
+                    onChange={e => {
+                      const nextType = e.target.value as TeacherType;
+                      if (nextType === 'partner') {
+                        setContractForm({
+                          ...contractForm,
+                          teacher_type: 'partner',
+                          pay_model: 'none',
+                          rate_per_period: 0,
+                          percentage_rate: 0,
+                          custom_subject_rates: [],
+                          duration_rates: {},
+                        });
+                      } else {
+                        setContractForm({
+                          ...contractForm,
+                          teacher_type: nextType,
+                          pay_model:
+                            contractForm.pay_model === 'none'
+                              ? 'per_session'
+                              : contractForm.pay_model,
+                          rate_per_period:
+                            contractForm.rate_per_period > 0
+                              ? contractForm.rate_per_period
+                              : nextType === 'permanent'
+                              ? 225000
+                              : 150000,
+                          percentage_rate:
+                            contractForm.percentage_rate > 0 ? contractForm.percentage_rate : 45,
+                        });
+                      }
+                    }}
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-bold focus:outline-none focus:border-amber-500"
                   >
                     <option value="permanent">Cơ hữu (Permanent)</option>
                     <option value="visiting">Thỉnh giảng (Visiting)</option>
+                    <option value="partner">Đối tác (Partner — Không tính lương)</option>
                   </select>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-300 font-bold mb-1.5">
-                  Hình thức trả lương (pay_model) *
-                </label>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setContractForm({ ...contractForm, pay_model: 'per_session' })}
-                    className={`p-3 rounded-xl border text-left transition-all ${
-                      contractForm.pay_model === 'per_session'
-                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <div className="font-extrabold text-xs">Theo buổi / tiết (per_session)</div>
-                    <div className="text-[10px] opacity-80 mt-0.5">
-                      Đơn giá tiết × Số tiết / buổi
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setContractForm({ ...contractForm, pay_model: 'revenue_share' })}
-                    className={`p-3 rounded-xl border text-left transition-all ${
-                      contractForm.pay_model === 'revenue_share'
-                        ? 'bg-purple-500/15 border-purple-500/40 text-purple-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <div className="font-extrabold text-xs">Chia sẻ % doanh thu (revenue_share)</div>
-                    <div className="text-[10px] opacity-80 mt-0.5">
-                      Tính theo % doanh thu thực tế của lớp
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {contractForm.pay_model === 'per_session' ? (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-slate-950 border border-slate-800">
-                  <div>
-                    <label className="block text-slate-400 mb-1">Đơn giá / tiết (VNĐ)</label>
-                    <input
-                      type="number"
-                      step={5000}
-                      value={contractForm.rate_per_period}
-                      onChange={e =>
-                        setContractForm({
-                          ...contractForm,
-                          rate_per_period: Number(e.target.value),
-                        })
-                      }
-                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-amber-300 font-mono font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-400 mb-1">Số tiết / buổi</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={6}
-                      value={contractForm.periods_per_session}
-                      onChange={e =>
-                        setContractForm({
-                          ...contractForm,
-                          periods_per_session: Number(e.target.value),
-                        })
-                      }
-                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white font-mono font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-400 mb-1">Đơn giá / buổi (session_rate)</label>
-                    <div className="px-3 py-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-400 font-mono font-extrabold">
-                      {formatVND(
-                        (Number(contractForm.rate_per_period) || 0) *
-                          (Number(contractForm.periods_per_session) || 2)
-                      )}
-                    </div>
-                  </div>
+              {contractForm.teacher_type === 'partner' ? (
+                <div className="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/30 flex items-center gap-3 text-amber-300 text-xs font-bold">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Giáo viên đối tác không được tính lương (pay_model = none, đơn giá = 0đ).</span>
                 </div>
               ) : (
-                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-                  <label className="block text-slate-300 font-bold">
-                    Tỷ lệ % chia sẻ doanh thu (percentage_rate) *
-                  </label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={contractForm.percentage_rate}
-                      onChange={e =>
-                        setContractForm({
-                          ...contractForm,
-                          percentage_rate: Number(e.target.value),
-                        })
-                      }
-                      className="w-32 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-purple-300 font-mono font-extrabold text-sm"
-                    />
-                    <span className="text-slate-400 text-[11px]">
-                      % doanh thu lớp chia đều cho tổng số buổi của lớp học (làm tròn đồng gần nhất)
-                    </span>
+                <>
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-1.5">
+                      Hình thức trả lương (pay_model) *
+                    </label>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setContractForm({ ...contractForm, pay_model: 'per_session' })}
+                        className={`p-3 rounded-xl border text-left transition-all ${
+                          contractForm.pay_model === 'per_session'
+                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400'
+                        }`}
+                      >
+                        <div className="font-extrabold text-xs">Theo buổi / tiết (per_session)</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">
+                          Đơn giá tiết × Số tiết / buổi
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setContractForm({ ...contractForm, pay_model: 'revenue_share' })}
+                        className={`p-3 rounded-xl border text-left transition-all ${
+                          contractForm.pay_model === 'revenue_share'
+                            ? 'bg-purple-500/15 border-purple-500/40 text-purple-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400'
+                        }`}
+                      >
+                        <div className="font-extrabold text-xs">Chia sẻ % doanh thu (revenue_share)</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">
+                          Tính theo % doanh thu thực tế của lớp
+                        </div>
+                      </button>
+                    </div>
                   </div>
-                </div>
+
+                  {contractForm.pay_model === 'per_session' ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-slate-950 border border-slate-800">
+                      <div>
+                        <label className="block text-slate-400 mb-1">Đơn giá / tiết (VNĐ)</label>
+                        <input
+                          type="number"
+                          step={5000}
+                          value={contractForm.rate_per_period}
+                          onChange={e =>
+                            setContractForm({
+                              ...contractForm,
+                              rate_per_period: Number(e.target.value),
+                            })
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-amber-300 font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1">Số tiết / buổi</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={6}
+                          value={contractForm.periods_per_session}
+                          onChange={e =>
+                            setContractForm({
+                              ...contractForm,
+                              periods_per_session: Number(e.target.value),
+                            })
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1">Đơn giá / buổi (session_rate)</label>
+                        <div className="px-3 py-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 text-emerald-400 font-mono font-extrabold">
+                          {formatVND(
+                            (Number(contractForm.rate_per_period) || 0) *
+                              (Number(contractForm.periods_per_session) || 2)
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+                      <label className="block text-slate-300 font-bold">
+                        Tỷ lệ % chia sẻ doanh thu (percentage_rate) *
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={contractForm.percentage_rate}
+                          onChange={e =>
+                            setContractForm({
+                              ...contractForm,
+                              percentage_rate: Number(e.target.value),
+                            })
+                          }
+                          className="w-32 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 text-purple-300 font-mono font-extrabold text-sm"
+                        />
+                        <span className="text-slate-400 text-[11px]">
+                          % doanh thu lớp chia đều cho tổng số buổi của lớp học (làm tròn đồng gần nhất)
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">
-                    Hệ số ca cuối tuần (weekend_multiplier)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="1"
-                    max="3"
-                    value={contractForm.weekend_multiplier}
-                    onChange={e =>
-                      setContractForm({
-                        ...contractForm,
-                        weekend_multiplier: Number(e.target.value),
-                      })
-                    }
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono"
-                  />
-                </div>
+                {contractForm.teacher_type !== 'partner' && (
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-1">
+                      Hệ số ca cuối tuần (weekend_multiplier)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="1"
+                      max="3"
+                      value={contractForm.weekend_multiplier}
+                      onChange={e =>
+                        setContractForm({
+                          ...contractForm,
+                          weekend_multiplier: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono"
+                    />
+                  </div>
+                )}
 
-                <div>
+                <div className={contractForm.teacher_type === 'partner' ? 'sm:col-span-2' : ''}>
                   <label className="block text-slate-300 font-bold mb-1">Ghi chú quyết định (note)</label>
                   <input
                     type="text"
                     value={contractForm.note}
                     onChange={e => setContractForm({ ...contractForm, note: e.target.value })}
-                    placeholder="VD: Quyết định chuyển sang thỉnh giảng 45% từ 15/10..."
+                    placeholder="VD: Quyết định chuyển ngạch / cập nhật hợp đồng..."
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white"
                   />
                 </div>
@@ -3007,12 +3241,14 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                           </span>
                           <span
                             className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
-                              m.teacher_type === 'permanent'
+                              m.teacher_type === 'partner'
+                                ? 'bg-amber-500/20 text-amber-300'
+                                : m.teacher_type === 'permanent'
                                 ? 'bg-cyan-500/20 text-cyan-300'
                                 : 'bg-purple-500/20 text-purple-300'
                             }`}
                           >
-                            {m.teacher_type === 'permanent' ? 'Cơ hữu' : 'Thỉnh giảng'}
+                            {getTeacherTypeLabel(m.teacher_type)}
                           </span>
                           {isCurrentActive && (
                             <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
@@ -3028,7 +3264,11 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                         <div>
-                          {m.pay_model === 'revenue_share' ? (
+                          {m.teacher_type === 'partner' || m.pay_model === 'none' ? (
+                            <span className="font-mono font-extrabold text-amber-400 text-sm">
+                              Không tính lương (Giáo viên đối tác)
+                            </span>
+                          ) : m.pay_model === 'revenue_share' ? (
                             <span className="font-mono font-extrabold text-purple-300 text-sm">
                               Chia sẻ {m.percentage_rate}% doanh thu lớp
                             </span>
@@ -3424,12 +3664,14 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                       <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5 flex-wrap">
                         <span
                           className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            isPermanent
+                            activeContract.teacher_type === 'partner'
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                              : isPermanent
                               ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
                               : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                           }`}
                         >
-                          {isPermanent ? 'Giáo viên Cơ hữu' : 'Giáo viên Thỉnh giảng'}
+                          Giáo viên {getTeacherTypeLabel(activeContract.teacher_type)}
                         </span>
                         <span>•</span>
                         <span className="inline-flex items-center gap-1 text-slate-300 font-semibold">

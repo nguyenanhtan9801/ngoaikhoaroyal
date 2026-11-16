@@ -38,7 +38,7 @@ import {
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 import { getRoleLabelVN, getCampusLabelVN, SupabaseSyncStatus } from '../lib/storage';
-import { isRouteAllowed as checkRouteAllowed, isUserSuperAdmin } from '../lib/permissions';
+import { isRouteAllowed as checkRouteAllowed, isUserSuperAdmin, isOperationalClassStaff } from '../lib/permissions';
 
 interface SubMenuItem {
   id: string;
@@ -111,6 +111,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const currentRoleLabel = currentUser
     ? getRoleLabelVN(currentUser.role, currentUser)
     : 'Chưa đăng nhập';
+
+  const isOperationalStaff = isOperationalClassStaff(currentUser);
 
   // Danh mục phân hệ điều hướng hệ thống
   const allMenuGroups: MenuGroup[] = [
@@ -290,10 +292,12 @@ export const Navbar: React.FC<NavbarProps> = ({
   ];
 
   const isRouteAllowed = (routeId: string): boolean => {
+    if (isOperationalStaff && routeId === 'sub_kpi') return false;
     return checkRouteAllowed(routeId, currentUser);
   };
 
   const menuGroups: MenuGroup[] = allMenuGroups
+    .filter(group => !(isOperationalStaff && group.id === 'group_bi'))
     .map(group => ({
       ...group,
       items: group.items.filter(item => isRouteAllowed(item.id)),
@@ -301,6 +305,11 @@ export const Navbar: React.FC<NavbarProps> = ({
     .filter(group => group.items.length > 0);
 
   const handleItemClick = (routeId: string) => {
+    if (isOperationalStaff && routeId === 'sub_kpi') {
+      onNavigate('teacher_portal');
+      setIsDrawerOpen(false);
+      return;
+    }
     onNavigate(routeId);
     setIsDrawerOpen(false);
   };
@@ -326,8 +335,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               {/* Logo Royal School (Không có chữ INSPIRE) */}
               <div 
                 className="flex items-center gap-2.5 cursor-pointer shrink-0" 
-                onClick={() => onNavigate('sub_kpi')}
-                title="Về Trang chủ / KPI"
+                onClick={() => onNavigate(isOperationalStaff ? 'teacher_portal' : 'sub_kpi')}
+                title={isOperationalStaff ? 'Về Cổng Check-in & Điểm danh' : 'Về Trang chủ / KPI'}
               >
                 <RoyalLogo size="sm" />
                 <div className="hidden md:block">

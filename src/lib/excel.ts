@@ -1,5 +1,12 @@
 import * as XLSX from 'xlsx';
-import { AppStore, resolveStudentCampusId, resolveSubjectCategoryCode } from './storage';
+import {
+  AppStore,
+  resolveStudentCampusId,
+  resolveSubjectCategoryCode,
+  getTeacherTypeLabel,
+  getTeacherContractAt,
+  isPayable,
+} from './storage';
 import { formatCapitalizedName } from './formatters';
 import {
   Campus,
@@ -8,6 +15,7 @@ import {
   TermSubjectConfig,
   CampusTermPricing,
   Teacher,
+  TeacherType,
   ExtracurricularClass,
   Student,
   Enrollment,
@@ -135,7 +143,9 @@ export function exportMasterWorkbook(
   ];
   const ws4Data = (store.teachers || []).map(tc => {
     const campus = (store.campuses || []).find(c => c.id === tc.campus_id);
-    const isVisiting = (tc.type || tc.teacher_type) === 'visiting';
+    const effType: TeacherType = tc.teacher_type || tc.type || 'permanent';
+    const isPartner = effType === 'partner';
+    const isVisiting = effType === 'visiting';
     return {
       'ID Giáo Viên': tc.id,
       'Mã Giáo Viên': tc.code || tc.id,
@@ -143,10 +153,14 @@ export function exportMasterWorkbook(
       'Số Điện Thoại': tc.phone,
       'Email Công Vụ': tc.email,
       'Mã Cơ Sở Chính': campus?.code || tc.campus_id || 'PMH',
-      'Phân Loại Nhân Sự': isVisiting ? 'Thỉnh giảng' : 'Cơ hữu',
-      'Đơn Giá Thù Lao / Buổi (VNĐ)': tc.fixed_rate_per_session || (isVisiting ? 270000 : 300000),
+      'Phân Loại Nhân Sự': getTeacherTypeLabel(effType),
+      'Đơn Giá Thù Lao / Buổi (VNĐ)': isPartner
+        ? 0
+        : tc.fixed_rate_per_session ?? (isVisiting ? 300000 : 450000),
       'Số Tiết / Buổi': tc.periods_per_session || 2,
-      'Đơn Giá / Tiết (VNĐ)': tc.default_rate_per_period || (isVisiting ? 135000 : 150000),
+      'Đơn Giá / Tiết (VNĐ)': isPartner
+        ? 0
+        : tc.default_rate_per_period ?? (isVisiting ? 150000 : 225000),
       'Ngân Hàng Nhận Lương': tc.bank_account?.bank_name || '',
       'Số Tài Khoản NH': tc.bank_account?.account_number || '',
       'Chủ Tài Khoản NH': tc.bank_account?.account_holder || '',
@@ -866,36 +880,114 @@ export async function parseMasterExcelFile(
     if (s4) {
       const rows = XLSX.utils.sheet_to_json<any>(wb.Sheets[s4]);
       if (rows.length > 0) {
+        const nonTeacherRegex = /\b(gvmn|nvnd|y\s*tế|y\s*te|qs)\b/i;
         importedData.teachers = rows
-          .filter(r => r['Họ Tên Giáo Viên'] || r['name'])
+          .filter(r => {
+            const hasName = Boolean(r['Họ Tên Giáo Viên'] || r['Họ Và Tên'] || r['name']);
+            if (!hasName) return false;
+            const roleOrNoteText = [
+              r['Phân Loại Nhân Sự'],
+              r['Hình Thức Hợp Đồng'],
+              r['Chức Vụ'],
+              r['Vị Trí'],
+              r['Ghi Chú'],
+              r['Mã Giáo Viên'],
+              r['type'],
+              r['role'],
+              r['position'],
+              r['notes'],
+            ]
+              .filter(Boolean)
+              .join(' ');
+            if (nonTeacherRegex.test(roleOrNoteText)) return false;
+            return true;
+          })
           .map((r, idx): Teacher => {
-            const rawType = String(r['Phân Loại Nhân Sự'] || r['Hình Thức Hợp Đồng'] || r['type'] || 'Cơ hữu').toLowerCase();
-            const isVisiting = rawType.includes('thỉnh') || rawType.includes('visiting');
-            const sessionRate = Number(r['Đơn Giá Thù Lao / Buổi (VNĐ)'] || r['Thù Lao Cố Định Buổi (VND)']) || (isVisiting ? 270000 : 300000);
+            const classificationText = [
+              r['Phân Loại Nhân Sự'],
+              r['Hình Thức Hợp Đồng'],
+              r['Chức Vụ'],
+              r['Vị Trí'],
+              r['Ghi Chú'],
+              r['type'],
+              r['notes'],
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase();
+
+            let teacherType: TeacherType = 'permanent';
+            if (
+              classificationText.includes('đối tác') ||
+              classificationText.includes('doi tac') ||
+              classificationText.includes('đơn vị đối tác') ||
+              classificationText.includes('partner')
+            ) {
+              teacherType = 'partner';
+            } else if (
+              classificationText.includes('thỉnh giảng') ||
+              classificationText.includes('thinh giang') ||
+              classificationText.includes('thỉnh') ||
+              classificationText.includes('visiting')
+            ) {
+              teacherType = 'visiting';
+            } else if (
+              classificationText.includes('cơ hữu') ||
+              classificationText.includes('co huu') ||
+              classificationText.includes('gvch') ||
+              classificationText.includes('permanent')
+            ) {
+              teacherType = 'permanent';
+            }
+
+            const isPartner = teacherType === 'partner';
+            const isVisiting = teacherType === 'visiting';
             const periods = Number(r['Số Tiết / Buổi']) || 2;
-            const periodRate = Number(r['Đơn Giá / Tiết (VNĐ)']) || Math.round(sessionRate / periods);
+            const rawSessionRate = Number(
+              r['Đơn Giá Thù Lao / Buổi (VNĐ)'] ?? r['Thù Lao Cố Định Buổi (VND)']
+            );
+            const sessionRate = isPartner
+              ? 0
+              : rawSessionRate > 0
+              ? rawSessionRate
+              : isVisiting
+              ? 300000
+              : 450000;
+            const rawPeriodRate = Number(r['Đơn Giá / Tiết (VNĐ)']);
+            const periodRate = isPartner
+              ? 0
+              : rawPeriodRate > 0
+              ? rawPeriodRate
+              : Math.round(sessionRate / periods);
             const rawCampus = String(r['Mã Cơ Sở Chính'] || 'PMH').trim().toUpperCase();
-            const matchedCampus = activeCampuses.find(c => c.code.toUpperCase() === rawCampus || c.id === rawCampus);
-            const name = formatCapitalizedName(String(r['Họ Tên Giáo Viên'] || r['name']).trim());
+            const matchedCampus = activeCampuses.find(
+              c => c.code.toUpperCase() === rawCampus || c.id === rawCampus
+            );
+            const name = formatCapitalizedName(
+              String(r['Họ Tên Giáo Viên'] || r['Họ Và Tên'] || r['name']).trim()
+            );
 
             return {
               id: String(r['ID Giáo Viên'] || r['id'] || `tea_imp_${idx + 1}`).trim(),
-              code: String(r['Mã Giáo Viên'] || r['code'] || `GV-${rawCampus}-${String(idx + 1).padStart(3, '0')}`).trim(),
+              code: String(
+                r['Mã Giáo Viên'] || r['code'] || `GV-${rawCampus}-${String(idx + 1).padStart(3, '0')}`
+              ).trim(),
               name,
               phone: String(r['Số Điện Thoại'] || r['phone'] || '').trim(),
               email: String(r['Email Công Vụ'] || r['Email'] || r['email'] || '').trim(),
               campus_id: matchedCampus?.id || 'camp_pmh',
-              type: isVisiting ? 'visiting' : 'permanent',
-              teacher_type: isVisiting ? 'visiting' : 'permanent',
-              fixed_rate_per_session: sessionRate,
-              default_rate_per_period: periodRate,
+              type: teacherType,
+              teacher_type: teacherType,
+              fixed_rate_per_session: isPartner ? 0 : sessionRate,
+              default_rate_per_period: isPartner ? 0 : periodRate,
               periods_per_session: periods,
-              percentage_rate: 60,
+              percentage_rate: isPartner ? 0 : 60,
               bank_account: {
                 bank_name: String(r['Ngân Hàng Nhận Lương'] || 'Vietcombank').trim(),
                 account_number: String(r['Số Tài Khoản NH'] || '').trim(),
                 account_holder: String(r['Chủ Tài Khoản NH'] || name.toUpperCase()).trim(),
               },
+              notes: String(r['Ghi Chú'] || r['notes'] || '').trim(),
               status: 'active',
             };
           });
@@ -1214,8 +1306,20 @@ export function exportTeacherPayrollWorkbook(
   const termName = store.terms.find(t => t.id === termId)?.name || 'Toàn khóa';
   const campusName = campusId === 'all' ? 'Toàn hệ thống (PMH & PL)' : (store.campuses.find(c => c.id === campusId)?.name || campusId);
 
-  // Sheet 1: Tổng hợp thù lao
-  const sheet1Data = summaryRows.map((r, idx) => ({
+  const todayIso = new Date().toISOString().split('T')[0];
+
+  // Sheet 1: Tổng hợp thù lao (loại bỏ giáo viên đối tác không tính lương)
+  const payableSummaryRows = summaryRows.filter(r => {
+    if ((r.typeLabel || '').toLowerCase().includes('đối tác')) return false;
+    const matchedTeacher = (store.teachers || []).find(t => t.code === r.code || t.name === r.name);
+    if (matchedTeacher) {
+      const activeContract = getTeacherContractAt(matchedTeacher, todayIso, store);
+      if (!isPayable(matchedTeacher, activeContract)) return false;
+    }
+    return true;
+  });
+
+  const sheet1Data = payableSummaryRows.map((r, idx) => ({
     'STT': idx + 1,
     'Khóa Học': termName,
     'Phạm Vi Cơ Sở': campusName,
@@ -1236,11 +1340,18 @@ export function exportTeacherPayrollWorkbook(
   const ws1 = XLSX.utils.json_to_sheet(sheet1Data);
   XLSX.utils.book_append_sheet(wb, ws1, 'Tong_Hop_Thu_Lao');
 
-  // Sheet 2: Chi tiết ca dạy
+  // Sheet 2: Chi tiết ca dạy (loại bỏ các buổi của giáo viên đối tác không tính lương)
   const allRecords = (store.teacherAttendance || []).filter(rec => {
     const matchTerm = termId === 'all' || rec.term_id === termId;
     const matchCampus = campusId === 'all' || rec.campus_id === campusId;
-    return matchTerm && matchCampus;
+    if (!matchTerm || !matchCampus) return false;
+    const actualId = rec.actual_teacher_id || rec.assigned_teacher_id;
+    const actualTeacher = (store.teachers || []).find(t => t.id === actualId);
+    if (actualTeacher) {
+      const contractAtSession = getTeacherContractAt(actualTeacher, rec.session_date || todayIso, store);
+      if (!isPayable(actualTeacher, contractAtSession)) return false;
+    }
+    return true;
   }).sort((a, b) => a.session_date.localeCompare(b.session_date));
 
   const sheet2Data = allRecords.map((rec, idx) => {
