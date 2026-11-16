@@ -259,6 +259,7 @@ export interface TeacherContract {
     subject_id: string;
     rate_per_period: number;
   }[];
+  duration_rates?: Record<string, number>;
   note?: string;
   created_by?: string;
   created_at?: string;
@@ -282,6 +283,7 @@ export interface Teacher {
     subject_id: string;
     rate_per_period: number; // Đơn giá tiết riêng nếu dạy môn đặc thù (VD: STEM/Robotics)
   }[];
+  duration_rates?: Record<string, number>;
   bank_account?: {
     bank_name: string;
     account_number: string;

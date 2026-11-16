@@ -196,6 +196,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     percentage_rate: number;
     weekend_multiplier: number;
     custom_subject_rates: { subject_id: string; rate_per_period: number }[];
+    duration_rates?: Record<string, number>;
     note: string;
   }>({
     effective_from: todayIso,
@@ -206,6 +207,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
     percentage_rate: 60,
     weekend_multiplier: 1,
     custom_subject_rates: [],
+    duration_rates: undefined,
     note: '',
   });
 
@@ -652,6 +654,12 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       custom_subject_rates: Array.isArray(currentContract.custom_subject_rates)
         ? [...currentContract.custom_subject_rates]
         : [],
+      duration_rates:
+        currentContract.duration_rates &&
+        typeof currentContract.duration_rates === 'object' &&
+        !Array.isArray(currentContract.duration_rates)
+          ? { ...currentContract.duration_rates }
+          : undefined,
       note: '',
     });
   };
@@ -728,6 +736,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
       custom_subject_rates: Array.isArray(contractForm.custom_subject_rates)
         ? contractForm.custom_subject_rates
         : [],
+      duration_rates: contractForm.duration_rates,
       note:
         contractForm.note.trim() ||
         `Chuyển ngạch sang ${

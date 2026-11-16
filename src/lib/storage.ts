@@ -2355,6 +2355,9 @@ export function getTeacherContractAt(
     matched = allContracts[0];
   }
 
+  const hasDurationRates = (dr?: Record<string, number> | null): dr is Record<string, number> =>
+    Boolean(dr && typeof dr === 'object' && !Array.isArray(dr) && Object.keys(dr).length > 0);
+
   if (matched) {
     const tType = matched.teacher_type === 'visiting' ? 'visiting' : 'permanent';
     const periods = Number(matched.periods_per_session) || Number(teacher.periods_per_session) || defaultPeriods;
@@ -2383,6 +2386,11 @@ export function getTeacherContractAt(
         : Array.isArray(teacher.custom_subject_rates)
         ? teacher.custom_subject_rates
         : [],
+      duration_rates: hasDurationRates(matched.duration_rates)
+        ? matched.duration_rates
+        : hasDurationRates(teacher.duration_rates)
+        ? teacher.duration_rates
+        : undefined,
     };
   }
 
@@ -2419,8 +2427,51 @@ export function getTeacherContractAt(
     percentage_rate: Number(teacher.percentage_rate) || 0,
     weekend_multiplier: Number(teacher.weekend_multiplier) || 1,
     custom_subject_rates: Array.isArray(teacher.custom_subject_rates) ? teacher.custom_subject_rates : [],
+    duration_rates: hasDurationRates(teacher.duration_rates) ? teacher.duration_rates : undefined,
     note: 'Mốc khởi tạo mặc định từ hồ sơ giáo viên',
   };
+}
+
+/**
+ * Xác định thời lượng buổi học (phút) của một lớp theo thứ tự ưu tiên:
+ * 1. Tham số `override` (`durationMinutes`) truyền vào (nếu > 0)
+ * 2. Thời lượng chuẩn của môn học (`subject.duration_minutes`, hoặc trích số từ `subject.standard_duration`, VD: "60 phút" -> 60)
+ * 3. Thời lượng của khung giờ (`time_slot.duration_minutes`)
+ * 4. Mặc định 90 phút
+ */
+export function resolveClassDurationMinutes(
+  cls: ExtracurricularClass | null | undefined,
+  store?: Partial<AppStore> | null,
+  override?: number
+): number {
+  if (override !== undefined && Number(override) > 0) {
+    return Number(override);
+  }
+  if (cls?.subject_id && Array.isArray(store?.subjects)) {
+    const subject = store.subjects.find(
+      s => s.id === cls.subject_id || s.code === cls.subject_id
+    );
+    if (subject) {
+      if (Number(subject.duration_minutes) > 0) {
+        return Number(subject.duration_minutes);
+      }
+      if (subject.standard_duration) {
+        const match = String(subject.standard_duration).match(/(\d+)/);
+        if (match && Number(match[1]) > 0) {
+          return Number(match[1]);
+        }
+      }
+    }
+  }
+  if (cls?.time_slot_id && Array.isArray(store?.timeSlots)) {
+    const slot = store.timeSlots.find(
+      ts => ts.id === cls.time_slot_id || ts.code === cls.time_slot_id
+    );
+    if (slot && Number(slot.duration_minutes) > 0) {
+      return Number(slot.duration_minutes);
+    }
+  }
+  return 90;
 }
 
 export interface SessionPayCalculationResult {
@@ -2454,6 +2505,7 @@ export function calculateTeacherSessionPayAtDate(params: {
   cls?: ExtracurricularClass | null | undefined;
   sessionDate: string;
   periodsCount?: number;
+  durationMinutes?: number;
   isWeekend?: boolean;
   isWeekendOverride?: boolean;
   isAbsent?: boolean;
@@ -2505,6 +2557,19 @@ export function calculateTeacherSessionPayAtDate(params: {
   const defaultPeriods = Number(contract.periods_per_session) || 2;
   let baseSessionRate = Number(contract.session_rate) || 300000;
   let basePeriodRate = Number(contract.rate_per_period) || Math.round(baseSessionRate / defaultPeriods);
+
+  const durationMinutes = resolveClassDurationMinutes(cls, store, params.durationMinutes);
+  if (
+    contract.duration_rates &&
+    typeof contract.duration_rates === 'object' &&
+    !Array.isArray(contract.duration_rates)
+  ) {
+    const durationRate = Number(contract.duration_rates[String(durationMinutes)]);
+    if (durationRate > 0) {
+      baseSessionRate = durationRate;
+      basePeriodRate = Math.round(baseSessionRate / defaultPeriods);
+    }
+  }
 
   if (cls?.subject_id && Array.isArray(contract.custom_subject_rates)) {
     const customSubj = contract.custom_subject_rates.find(csr => csr.subject_id === cls.subject_id);
@@ -2650,6 +2715,18 @@ export function syncTeachersCurrentFieldsFromContracts(
     const nextCustomRates = Array.isArray(activeContract.custom_subject_rates)
       ? activeContract.custom_subject_rates
       : teacher.custom_subject_rates || [];
+    const nextDurationRates =
+      activeContract.duration_rates &&
+      typeof activeContract.duration_rates === 'object' &&
+      !Array.isArray(activeContract.duration_rates) &&
+      Object.keys(activeContract.duration_rates).length > 0
+        ? activeContract.duration_rates
+        : teacher.duration_rates &&
+          typeof teacher.duration_rates === 'object' &&
+          !Array.isArray(teacher.duration_rates) &&
+          Object.keys(teacher.duration_rates).length > 0
+        ? teacher.duration_rates
+        : undefined;
 
     if (
       teacher.type !== nextType ||
@@ -2659,7 +2736,8 @@ export function syncTeachersCurrentFieldsFromContracts(
       teacher.periods_per_session !== nextPeriods ||
       teacher.percentage_rate !== nextPct ||
       teacher.weekend_multiplier !== nextWeekend ||
-      JSON.stringify(teacher.custom_subject_rates || []) !== JSON.stringify(nextCustomRates)
+      JSON.stringify(teacher.custom_subject_rates || []) !== JSON.stringify(nextCustomRates) ||
+      JSON.stringify(teacher.duration_rates || {}) !== JSON.stringify(nextDurationRates || {})
     ) {
       changed = true;
       return {
@@ -2672,6 +2750,7 @@ export function syncTeachersCurrentFieldsFromContracts(
         percentage_rate: nextPct,
         weekend_multiplier: nextWeekend,
         custom_subject_rates: nextCustomRates,
+        duration_rates: nextDurationRates,
       };
     }
     return teacher;

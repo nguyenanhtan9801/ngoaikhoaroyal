@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS teachers (
   fixed_rate_per_session NUMERIC(12, 2) DEFAULT 300000,
   weekend_multiplier NUMERIC(3, 2) DEFAULT 1.0,
   custom_subject_rates JSONB DEFAULT '[]'::jsonb,
+  duration_rates JSONB NOT NULL DEFAULT '{}'::jsonb,
   bank_name TEXT,
   bank_account TEXT,
   bank_owner TEXT,

@@ -53,9 +53,9 @@ export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
   time_slots:
     'id,code,name,start_time,end_time,duration_minutes,days_of_week,campus_id,status,notes,slot_type',
   teachers:
-    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,status,updated_at,percentage_rate,weekend_multiplier,custom_subject_rates,hire_date,notes',
+    'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,status,updated_at,percentage_rate,weekend_multiplier,custom_subject_rates,duration_rates,hire_date,notes',
   teacher_contracts:
-    'id,teacher_id,teacher_type,pay_model,effective_from,rate_per_period,periods_per_session,session_rate,percentage_rate,weekend_multiplier,custom_subject_rates,note,created_by,created_at',
+    'id,teacher_id,teacher_type,pay_model,effective_from,rate_per_period,periods_per_session,session_rate,percentage_rate,weekend_multiplier,custom_subject_rates,duration_rates,note,created_by,created_at',
   extracurricular_classes:
     'id,code,name,term_id,spanning_term_id,is_cross_term,term_distribution,campus_id,subject_id,facility_id,time_slot_id,days_of_week,start_date,end_date,primary_teacher_id,max_students,total_sessions,full_course_fee,price_per_session,status,allow_over_quota',
   students:
@@ -1444,6 +1444,10 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         percentage_rate: Number(t.percentage_rate) || 60,
         weekend_multiplier: Number(t.weekend_multiplier) > 0 ? Number(t.weekend_multiplier) : 1,
         custom_subject_rates: t.custom_subject_rates && typeof t.custom_subject_rates === 'object' ? t.custom_subject_rates : {},
+        duration_rates:
+          t.duration_rates && typeof t.duration_rates === 'object' && !Array.isArray(t.duration_rates)
+            ? t.duration_rates
+            : {},
         hire_date: t.hire_date || null,
         notes: t.notes || '',
       }));
@@ -1461,6 +1465,10 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         percentage_rate: Number(c.percentage_rate) || 0,
         weekend_multiplier: Number(c.weekend_multiplier) > 0 ? Number(c.weekend_multiplier) : 1,
         custom_subject_rates: c.custom_subject_rates && typeof c.custom_subject_rates === 'object' ? c.custom_subject_rates : {},
+        duration_rates:
+          c.duration_rates && typeof c.duration_rates === 'object' && !Array.isArray(c.duration_rates)
+            ? c.duration_rates
+            : {},
         note: c.note || '',
         created_by: c.created_by || null,
         created_at: c.created_at || new Date().toISOString(),
@@ -2711,6 +2719,10 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
           r.custom_subject_rates && typeof r.custom_subject_rates === 'object'
             ? r.custom_subject_rates
             : {},
+        duration_rates:
+          r.duration_rates && typeof r.duration_rates === 'object' && !Array.isArray(r.duration_rates)
+            ? r.duration_rates
+            : undefined,
         hire_date: r.hire_date || undefined,
         notes: r.notes || '',
         status: r.status === 'inactive' ? 'inactive' : 'active',
@@ -2736,6 +2748,10 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
           r.custom_subject_rates && typeof r.custom_subject_rates === 'object'
             ? r.custom_subject_rates
             : {},
+        duration_rates:
+          r.duration_rates && typeof r.duration_rates === 'object' && !Array.isArray(r.duration_rates)
+            ? r.duration_rates
+            : undefined,
         note: r.note || '',
         created_by: r.created_by || undefined,
         created_at: r.created_at || undefined,
