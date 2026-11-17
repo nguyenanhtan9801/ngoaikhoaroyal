@@ -33,7 +33,8 @@ import {
   RefreshCw,
   AlertTriangle,
   KeyRound,
-  QrCode
+  QrCode,
+  ArrowUpRight
 } from 'lucide-react';
 import { UserRole, SystemNotification, Student, AppUser } from '../types';
 import { RoyalLogo } from './RoyalLogo';
@@ -180,6 +181,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           label: 'Lớp Học Ngoại Khóa', 
           icon: Calendar, 
           desc: 'Phòng học, sân bãi, khung giờ, giáo viên và kiểm tra trùng lịch' 
+        },
+        { 
+          id: 'sub_class_promotion', 
+          label: 'Lên Lớp', 
+          icon: ArrowUpRight, 
+          desc: 'Chuyển học sinh từ lớp đã kết thúc sang khóa mới và tính học phí theo số buổi thực học' 
         },
         { 
           id: 'sub_teachers', 

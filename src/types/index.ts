@@ -9,6 +9,7 @@ export type SystemRole =
   | 'supervisor'          // Quản sinh (Check-in QR & Điểm danh các lớp trong buổi tại cơ sở)
   | 'academic_accountant' // Học vụ kiêm Kế toán
   | 'academic_admissions' // Học vụ kiêm Tuyển sinh
+  | 'academic_affairs'    // Giáo vụ / Học vụ
   | 'academic_staff'
   | 'admissions_staff';
 
@@ -446,6 +447,7 @@ export interface Enrollment {
   trial_completed_action?: 'promoted' | 'dropped'; // Kết quả xử lý sau buổi thử
   trial_outcome?: 'promoted' | 'dropped'; // Kết quả sau buổi thử (tương thích ngược)
   trial_notes?: string;                 // Ghi chú đánh giá sau buổi học thử
+  enrollment_type?: 'trial' | 'official';
 }
 
 export interface InvoicePaymentRecord {
@@ -489,6 +491,10 @@ export interface TuitionInvoice {
   is_partial_schedule?: boolean;    // Đánh dấu học bán phần theo tuần
   is_prorated?: boolean;      // Đánh dấu hóa đơn tính theo số buổi còn lại hoặc lịch riêng
   prorated_note?: string;     // Ghi chú minh bạch trên hóa đơn
+  prepaid_deducted?: number;  // Số tiền trả trước được khấu trừ khi lên lớp
+  is_manual_override?: boolean; // Đánh dấu chỉnh tay học phí / số buổi
+  manual_override_reason?: string; // Lý do chỉnh tay học phí
+  promotion_batch_id?: string; // Mã đợt lên lớp
   payment_history?: InvoicePaymentRecord[]; // Lịch sử các lần đóng tiền
 }
 
@@ -760,7 +766,66 @@ export type LogActionType =
   | 'TIME_SLOT_DELETE'        // Xóa khung giờ học
   | 'TEACHER_CHECKIN_SCAN'    // Quét mã QR check-in giáo viên
   | 'TEACHER_CHECKIN_MANUAL'  // Check-in thủ công giáo viên
+  | 'CLASS_PROMOTION'         // Lên lớp / Chuyển học sinh sang khóa mới
+  | 'TUITION_MANUAL_OVERRIDE' // Sửa tay số buổi / học phí khi lên lớp
   | 'BACKUP_EXPORT';          // Sao lưu dữ liệu hệ thống
+
+export interface ClassPromotionStudentItem {
+  student_id: string;
+  student_code: string;
+  student_name: string;
+  source_enrollment_id: string;
+  new_enrollment_id?: string;
+  invoice_id?: string;
+  invoice_code?: string;
+  action_status: 'promoted' | 'already_enrolled' | 'skipped_already_enrolled' | 'pending' | 'dropped';
+  selected_days: string[];
+  is_partial_schedule: boolean;
+  start_date: string;
+  end_date: string;
+  calculated_sessions: number;
+  final_sessions: number;
+  session_rate: number;
+  is_full_course_fee: boolean;
+  calculated_gross_amount: number;
+  final_gross_amount: number;
+  discount_amount: number;
+  credit_deducted: number;
+  applied_credit_note_id?: string;
+  prepaid_deducted: number;
+  net_payable: number;
+  is_manual_override: boolean;
+  manual_override_reason?: string;
+  old_term_debt_amount: number;
+  has_active_reserve: boolean;
+  formula_label: string;
+}
+
+export interface ClassPromotionHistoryRecord {
+  id: string;
+  batch_code: string;
+  campus_id: string;
+  source_term_id: string;
+  source_class_id: string;
+  source_class_name: string;
+  target_term_id: string;
+  target_class_id: string;
+  target_class_name: string;
+  subject_id: string;
+  promoted_count: number;
+  dropped_count: number;
+  skipped_count: number;
+  total_gross_amount: number;
+  total_discount_amount: number;
+  total_credit_deducted: number;
+  total_prepaid_deducted: number;
+  total_net_payable: number;
+  items: ClassPromotionStudentItem[];
+  created_by: string;
+  created_by_name: string;
+  created_by_role?: string;
+  created_at: string;
+}
 
 export interface AuditLogRecord {
   id: string;
@@ -832,6 +897,7 @@ export interface AppStore {
   attendanceRecords?: AttendanceRecord[];
   makeupCredits: MakeupCredit[];
   transfers: ClassTransfer[];
+  promotionHistories?: ClassPromotionHistoryRecord[];
   payrollSettlements: TeacherPayrollSettlement[];
   payrollRateConfig?: PayrollRateConfig;
   parentRegistrations: ParentRegistration[];

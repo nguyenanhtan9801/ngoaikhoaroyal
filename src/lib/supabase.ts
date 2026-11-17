@@ -1559,7 +1559,14 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
           enrollment_type: isTrial ? 'trial' : 'official',
           trial_session_date: e.trial_session_date || null,
           trial_attended: Boolean(e.trial_attended),
-          status: isTrial ? 'trial' : (e.status === 'dropped' || e.status === 'trial_dropped' ? e.status : 'active'),
+          status: isTrial
+            ? 'trial'
+            : e.status === 'dropped' ||
+              e.status === 'trial_dropped' ||
+              e.status === 'completed' ||
+              e.status === 'transferred'
+            ? e.status
+            : 'active',
         });
       });
       return Array.from(dedupMap.values());
@@ -2457,7 +2464,14 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         is_trial: isTrial,
         trial_session_date: r.trial_session_date || r.start_date || undefined,
         trial_attended: Boolean(r.trial_attended),
-        status: isTrial ? 'trial' : (r.status === 'dropped' || r.status === 'trial_dropped' ? r.status : 'active'),
+        status: isTrial
+          ? 'trial'
+          : r.status === 'dropped' ||
+            r.status === 'trial_dropped' ||
+            r.status === 'completed' ||
+            r.status === 'transferred'
+          ? r.status
+          : 'active',
         ...({ enrollment_type: isTrial ? 'trial' : 'official' } as any),
       };
     }

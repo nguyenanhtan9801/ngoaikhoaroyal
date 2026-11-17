@@ -161,6 +161,19 @@ export function isRouteAllowed(
           perms.can_view_classes ||
           perms.can_take_attendance
       );
+    case 'sub_class_promotion':
+      if (
+        user.role === 'super_admin' ||
+        user.role === 'campus_manager' ||
+        user.role === 'academic_affairs' ||
+        user.role === 'academic' ||
+        user.role === 'academic_admissions' ||
+        user.role === 'academic_accountant' ||
+        user.role === 'academic_staff'
+      ) {
+        return true;
+      }
+      return Boolean(perms.can_manage_enrollment);
     case 'sub_teachers':
       // super_admin, campus_manager có quyền quản lý; academic & accountant được xem danh sách và lịch sử hợp đồng
       if (

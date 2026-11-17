@@ -17,6 +17,7 @@ import { TeachersManagement } from './components/teachers/TeachersManagement';
 import { HolidayManagementView } from './components/settings/HolidayManagementView';
 import { TeacherPortal } from './components/teacher/TeacherPortal';
 import { TeacherCheckinTab } from './components/tabs/TeacherCheckinTab';
+import { ClassPromotionTab } from './components/tabs/ClassPromotionTab';
 import { TeacherAppModal } from './components/TeacherAppModal';
 import { PrintModal, PrintDocumentType } from './components/PrintModal';
 import { NotificationModal } from './components/NotificationModal';
@@ -69,6 +70,7 @@ const ROUTE_HASH_MAP: Record<string, string> = {
   sub_term_subjects: 'term-subjects',
   sub_pricing: 'pricing',
   sub_classes: 'classes',
+  sub_class_promotion: 'class-promotion',
   sub_teachers: 'teachers',
   sub_schedule: 'schedule',
   sub_attendance: 'attendance',
@@ -1292,6 +1294,16 @@ export default function App() {
                 setFocusedClass(cls);
                 setCurrentRoute('sub_attendance');
               }}
+            />
+          )}
+
+          {currentRoute === 'sub_class_promotion' && (
+            <ClassPromotionTab
+              store={store}
+              currentUser={currentUser}
+              selectedCampusId={selectedCampusId}
+              onUpdateStore={updateStore}
+              onNavigateTab={(routeId) => setCurrentRoute(routeId)}
             />
           )}
 

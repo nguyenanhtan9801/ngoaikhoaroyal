@@ -305,6 +305,7 @@ export function getInitialStore(): AppStore {
     parentRegistrations: [],
     notifications: [],
     auditLogs: [],
+    promotionHistories: [],
     telecomConfig: {
       zaloZnsEnabled: true,
       smsBrandnameEnabled: true,
@@ -723,6 +724,7 @@ export function loadStore(): AppStore {
       parentRegistrations: Array.isArray(parsed.parentRegistrations) ? parsed.parentRegistrations : [],
       notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
       auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+      promotionHistories: Array.isArray(parsed.promotionHistories) ? parsed.promotionHistories : [],
       supabaseConfig,
     };
 
@@ -829,6 +831,7 @@ function prepareStoreForStorage(store: AppStore, aggressiveLevel = 0): AppStore 
     invoices: sanitizedInvoices,
     parentRegistrations: sanitizedRegistrations,
     notifications: sanitizedNotifications,
+    promotionHistories: (store.promotionHistories || []).slice(0, aggressiveLevel === 0 ? 100 : 30),
   };
 }
 
@@ -1592,8 +1595,12 @@ export function createAuditRecord(
 
   const roleLabels: Record<string, string> = {
     super_admin: 'Super Admin',
+    campus_manager: 'Quản lý Cơ sở',
     academic_accountant: 'Học vụ kiêm Kế toán',
     academic_admissions: 'Học vụ kiêm Tuyển sinh',
+    academic_affairs: 'Giáo vụ / Học vụ',
+    academic: 'Giáo vụ / Học vụ',
+    academic_staff: 'Học vụ',
     admissions: 'Tuyển sinh',
     teacher: 'Giáo viên bộ môn',
   };
@@ -3142,6 +3149,7 @@ export function getDefaultPermissionsForRole(role: UserRole | SystemRole): UserP
         can_attend_all_classes: true,
       };
     case 'academic_admissions':
+    case 'academic_affairs':
     case 'academic_staff':
     case 'academic':
       return {
@@ -3313,6 +3321,7 @@ export function getRoleLabelVN(role: UserRole, user?: AppUser | null): string {
       return 'Học Vụ & Kế Toán';
     case 'academic_admissions':
       return 'Học Vụ & Tuyển Sinh';
+    case 'academic_affairs':
     case 'academic':
       return 'Giáo Vụ / Học Vụ';
     case 'admissions':
