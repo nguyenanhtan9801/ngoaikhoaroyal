@@ -228,7 +228,6 @@ export function exportMasterWorkbook(
     'Lớp Chính Khóa',
     'Họ Tên Phụ Huynh',
     'SĐT Phụ Huynh',
-    'Lưu Ý Y Tế & Thực Phẩm',
     'Trạng Thái',
     'Ngày Tạo Hồ Sơ',
   ];
@@ -245,7 +244,6 @@ export function exportMasterWorkbook(
     'Lớp Chính Khóa': st.regular_class || '',
     'Họ Tên Phụ Huynh': st.parent_name,
     'SĐT Phụ Huynh': st.parent_phone,
-    'Lưu Ý Y Tế & Thực Phẩm': st.medical_notes || '',
     'Trạng Thái': st.status,
     'Ngày Tạo Hồ Sơ': st.created_at || '',
   }));

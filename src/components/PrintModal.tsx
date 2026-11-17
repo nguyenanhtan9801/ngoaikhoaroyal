@@ -490,12 +490,6 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                 </div>
               </div>
 
-              {document.student.medical_notes && (
-                <div className="p-2 rounded-xl bg-rose-100 text-rose-800 text-[10px] font-semibold">
-                  Lưu ý sức khỏe: {document.student.medical_notes}
-                </div>
-              )}
-
               <div className="pt-2 border-t border-amber-200 text-center text-[10px] text-slate-500 font-mono">
                 Thẻ có giá trị vào lớp và nhận suất ăn nhẹ sau giờ học
               </div>

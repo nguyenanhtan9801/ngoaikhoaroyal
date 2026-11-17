@@ -49,7 +49,8 @@ import {
   calculateClassProratedPricing,
   getCampusPricingForClass,
   resolveStudentCampusId,
-  checkIsRoyalStudent
+  checkIsRoyalStudent,
+  getCurrentTerm
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
@@ -328,7 +329,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const [search, setSearch] = useState(initialSearch || '');
   const [selectedCampus, setSelectedCampus] = useState<'all' | 'pmh' | 'pl'>('all');
   const [filterType, setFilterType] = useState<'all' | 'royal' | 'outside'>('all');
-  const [onlyHealth, setOnlyHealth] = useState(focusHealth);
+  const [startDateSort, setStartDateSort] = useState<'none' | 'asc' | 'desc'>('none');
+  const [startDateFrom, setStartDateFrom] = useState<string>('');
+  const [startDateTo, setStartDateTo] = useState<string>('');
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number | 'all'>(50); // Mặc định 50 học sinh/trang
 
@@ -369,9 +372,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   } | null>(null);
   const [trialNotes, setTrialNotes] = useState('');
 
-  React.useEffect(() => {
-    setOnlyHealth(focusHealth);
-  }, [focusHealth]);
+  const currentActiveTerm = useMemo(() => getCurrentTerm(store.terms), [store.terms]);
 
   React.useEffect(() => {
     if (initialSearch !== undefined) {
@@ -404,12 +405,25 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             id,
             class_id,
             enrollment_type,
+            is_trial,
+            trial_session_date,
+            joined_date,
+            registered_sessions,
+            enrolled_days_of_week,
+            is_partial_schedule,
             status,
             extracurricular_classes (
               id,
               name,
+              code,
+              term_id,
+              campus_id,
+              subject_id,
               schedule_days,
-              days_of_week
+              days_of_week,
+              start_date,
+              end_date,
+              total_sessions
             )
           )
         `)
@@ -547,6 +561,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           const enrolledDays = Array.isArray(raw.enrolled_days_of_week)
             ? raw.enrolled_days_of_week
             : existing?.enrolled_days_of_week;
+          const rawStart =
+            raw.joined_date ||
+            raw.start_date ||
+            (isTrial ? raw.trial_session_date : '') ||
+            existing?.joined_date ||
+            '';
+          const normalizedJoinedDate = rawStart ? String(rawStart).split('T')[0] : '';
 
           enrMap.set(key, {
             ...(existing || {}),
@@ -554,7 +575,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             student_id: sid,
             class_id: raw.class_id,
             registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || raw.total_sessions || existing?.registered_sessions || 24),
-            joined_date: raw.joined_date || raw.start_date || existing?.joined_date || new Date().toISOString().split('T')[0],
+            joined_date: normalizedJoinedDate,
             enrolled_days_of_week: enrolledDays,
             is_partial_schedule: Boolean(raw.is_partial_schedule ?? existing?.is_partial_schedule),
             status: isTrial ? 'trial' : (raw.status === 'dropped' || raw.status === 'trial_dropped' ? raw.status : 'active'),
@@ -693,17 +714,26 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         raw.status !== 'active'
       );
       const existing = combinedMap.get(raw.class_id);
-      if (!existing || (!isTrial && existing.is_trial)) {
+      const rawStart =
+        raw.joined_date ||
+        raw.start_date ||
+        (isTrial ? raw.trial_session_date : '') ||
+        existing?.joined_date ||
+        '';
+      const normalizedJoinedDate = rawStart ? String(rawStart).split('T')[0] : '';
+
+      if (!existing || (!isTrial && existing.is_trial) || (!existing.joined_date && normalizedJoinedDate)) {
         combinedMap.set(raw.class_id, {
           ...(existing || {}),
           id: raw.id || existing?.id || `enr_${student.id}_${raw.class_id}`,
           student_id: student.id,
           class_id: raw.class_id,
           registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || existing?.registered_sessions || 24),
-          joined_date: raw.joined_date || raw.start_date || existing?.joined_date || new Date().toISOString().split('T')[0],
+          joined_date: normalizedJoinedDate,
           enrolled_days_of_week: Array.isArray(raw.enrolled_days_of_week) ? raw.enrolled_days_of_week : existing?.enrolled_days_of_week,
           status: isTrial ? 'trial' : 'active',
           is_trial: isTrial,
+          trial_session_date: raw.trial_session_date || raw.start_date || existing?.trial_session_date,
           ...( {
             enrollment_type: isTrial ? 'trial' : 'official',
             extracurricular_classes: raw.extracurricular_classes || (existing as any)?.extracurricular_classes,
@@ -712,7 +742,32 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
       }
     });
 
-    return Array.from(combinedMap.values());
+    const list = Array.from(combinedMap.values());
+    if (currentActiveTerm?.id) {
+      list.sort((a, b) => {
+        const clsA = store.classes.find(c => c.id === a.class_id);
+        const clsB = store.classes.find(c => c.id === b.class_id);
+        const isCurrentA = clsA?.term_id === currentActiveTerm.id ? 0 : 1;
+        const isCurrentB = clsB?.term_id === currentActiveTerm.id ? 0 : 1;
+        return isCurrentA - isCurrentB;
+      });
+    }
+    return list;
+  };
+
+  // Lấy ngày bắt đầu học thực tế của học sinh đối với 1 bản ghi danh (ưu tiên joined_date / start_date / trial_session_date)
+  const getEnrollmentStartDate = (enr: Enrollment): string => {
+    const isTrial = Boolean(
+      (enr.is_trial === true || (enr as any).enrollment_type === 'trial') &&
+      enr.status !== 'active'
+    );
+    const raw = (
+      enr.joined_date ||
+      (enr as any).start_date ||
+      (isTrial ? enr.trial_session_date : '') ||
+      ''
+    ).trim();
+    return raw ? raw.split('T')[0] : '';
   };
 
   // Cloud Storage destination folder config
@@ -813,9 +868,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   };
 
 
-  // Filter students combining Campus ('all' | 'pmh' | 'pl'), Type, Medical & Search Query
+  // Filter & Sort students combining Campus ('all' | 'pmh' | 'pl'), Type, Start Date & Search Query
   const filteredStudents = useMemo(() => {
-    return store.students.filter((student) => {
+    const list = store.students.filter((student) => {
       const studentCampus = resolveStudentCampusId(student);
       const matchCampus = selectedCampus === 'all' || studentCampus === selectedCampus;
 
@@ -824,10 +879,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         filterType === 'all' ? true :
         filterType === 'royal' ? isRoyal :
         !isRoyal;
-
-      const matchHealth = onlyHealth
-        ? Boolean(student.medical_notes && student.medical_notes.trim().length > 0 && student.medical_notes !== 'Bình thường')
-        : true;
 
       const query = search.trim().toLowerCase();
       const matchSearch =
@@ -838,12 +889,53 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         Boolean((student as any).student_id_official && String((student as any).student_id_official).toLowerCase().includes(query)) ||
         student.parent_phone.includes(query) ||
         Boolean(student.email && student.email.toLowerCase().includes(query)) ||
-        Boolean(student.parent_email && student.parent_email.toLowerCase().includes(query)) ||
-        Boolean(student.medical_notes && student.medical_notes.toLowerCase().includes(query));
+        Boolean(student.parent_email && student.parent_email.toLowerCase().includes(query));
 
-      return matchCampus && matchType && matchHealth && matchSearch;
+      let matchStartDate = true;
+      if (startDateFrom || startDateTo) {
+        const enrollments = getStudentEnrollmentsList(student);
+        const startDates = enrollments
+          .map(enr => getEnrollmentStartDate(enr))
+          .filter(Boolean);
+        if (startDates.length === 0) {
+          matchStartDate = false;
+        } else {
+          matchStartDate = startDates.some(d => {
+            if (startDateFrom && d < startDateFrom) return false;
+            if (startDateTo && d > startDateTo) return false;
+            return true;
+          });
+        }
+      }
+
+      return matchCampus && matchType && matchSearch && matchStartDate;
     });
-  }, [store.students, selectedCampus, filterType, onlyHealth, search]);
+
+    if (startDateSort !== 'none') {
+      const getComparableDate = (student: Student): string | null => {
+        const enrollments = getStudentEnrollmentsList(student);
+        const dates = enrollments
+          .map(enr => getEnrollmentStartDate(enr))
+          .filter(Boolean)
+          .sort();
+        if (dates.length === 0) return null;
+        return startDateSort === 'asc' ? dates[0] : dates[dates.length - 1];
+      };
+
+      return [...list].sort((a, b) => {
+        const dateA = getComparableDate(a);
+        const dateB = getComparableDate(b);
+        if (!dateA && !dateB) return 0;
+        if (!dateA) return 1;
+        if (!dateB) return -1;
+        return startDateSort === 'asc'
+          ? dateA.localeCompare(dateB)
+          : dateB.localeCompare(dateA);
+      });
+    }
+
+    return list;
+  }, [store.students, store.enrollments, store.classes, selectedCampus, filterType, search, startDateFrom, startDateTo, startDateSort, currentActiveTerm]);
 
   const paginatedStudents = useMemo(() => {
     if (pageSize === 'all') return filteredStudents;
@@ -856,7 +948,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   // Tự động reset về trang 1 khi đổi bộ lọc tìm kiếm hoặc cơ sở
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedCampus, filterType, search, onlyHealth]);
+  }, [selectedCampus, filterType, search, startDateFrom, startDateTo, startDateSort]);
 
   // Convert Outside Student to Royal Student
   const handleConfirmConvert = async (student: Student) => {
@@ -1843,16 +1935,55 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           >
             Học sinh ngoài trường ({store.students.filter(s => !checkIsRoyalStudent(s)).length})
           </button>
-          <button
-            onClick={() => setOnlyHealth(!onlyHealth)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
-              onlyHealth
-                ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/20'
-                : 'bg-slate-900 text-rose-400 hover:text-rose-300 border border-rose-500/30'
-            }`}
-          >
-            <span>Có lưu ý y tế ({store.students.filter(s => Boolean(s.medical_notes && s.medical_notes !== 'Bình thường')).length})</span>
-          </button>
+
+          <div className="h-5 w-px bg-slate-800 hidden lg:block" />
+
+          {/* Bộ lọc & Sắp xếp theo Ngày bắt đầu học */}
+          <div className="flex flex-wrap items-center gap-1.5 bg-slate-900/90 p-1 rounded-xl border border-slate-800">
+            <div className="flex items-center gap-1 px-2 text-[11px] font-semibold text-slate-400">
+              <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Ngày bắt đầu:</span>
+            </div>
+            <select
+              value={startDateSort}
+              onChange={(e) => setStartDateSort(e.target.value as 'none' | 'asc' | 'desc')}
+              className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 font-semibold focus:outline-none focus:border-amber-500/50 cursor-pointer"
+              title="Sắp xếp theo ngày bắt đầu học"
+            >
+              <option value="none">Sắp xếp: Mặc định</option>
+              <option value="desc">Mới nhất → Cũ nhất</option>
+              <option value="asc">Cũ nhất → Mới nhất</option>
+            </select>
+            <input
+              type="date"
+              value={startDateFrom}
+              onChange={(e) => setStartDateFrom(e.target.value)}
+              className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 focus:outline-none focus:border-amber-500/50"
+              title="Lọc từ ngày bắt đầu"
+            />
+            <span className="text-slate-500 text-[10px]">→</span>
+            <input
+              type="date"
+              value={startDateTo}
+              onChange={(e) => setStartDateTo(e.target.value)}
+              className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 focus:outline-none focus:border-amber-500/50"
+              title="Lọc đến ngày bắt đầu"
+            />
+            {(startDateSort !== 'none' || startDateFrom || startDateTo) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStartDateSort('none');
+                  setStartDateFrom('');
+                  setStartDateTo('');
+                }}
+                className="px-2 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[10px] font-bold transition-colors cursor-pointer"
+                title="Xóa lọc ngày bắt đầu"
+              >
+                Xóa lọc
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
@@ -1862,7 +1993,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Tìm theo tên, mã HV, SĐT, dị ứng..."
+              placeholder="Tìm theo tên, mã HV, SĐT..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9 pr-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 w-56"
@@ -1956,15 +2087,14 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               <thead className="bg-slate-900/90 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                 <tr>
                   <th className="py-3 px-3 text-center w-14">Hình Thẻ</th>
-                  <th className="py-3 px-3 whitespace-nowrap">Mã HV</th>
-                  <th className="py-3 px-3">Mã Chính Khóa</th>
-                  <th className="py-3 px-4">Họ và Tên</th>
-                  <th className="py-3 px-3">Ngày Sinh & Giới Tính</th>
-                  <th className="py-3 px-3">Phân Loại / Bánh Sữa</th>
-                  <th className="py-3 px-3">Trường & Lớp</th>
-                  <th className="py-3 px-3">Phụ Huynh & SĐT</th>
-                  <th className="py-3 px-3 w-40 max-w-[160px]">Lưu Ý Y Tế & Dị Ứng</th>
-                  <th className="py-3 px-4">Lớp Đang Học</th>
+                  <th className="py-3 px-3.5 whitespace-nowrap">Mã HV</th>
+                  <th className="py-3 px-3.5 whitespace-nowrap">Mã Chính Khóa</th>
+                  <th className="py-3 px-4 min-w-[160px]">Họ và Tên</th>
+                  <th className="py-3 px-3.5 whitespace-nowrap">Ngày Sinh & Giới Tính</th>
+                  <th className="py-3 px-3.5 whitespace-nowrap">Phân Loại / Bánh Sữa</th>
+                  <th className="py-3 px-4 min-w-[160px]">Trường & Lớp</th>
+                  <th className="py-3 px-4 min-w-[140px]">Phụ Huynh & SĐT</th>
+                  <th className="py-3 px-4 min-w-[250px]">Lớp Đang Học</th>
                   <th className="py-3 px-4 text-right whitespace-nowrap">Thao Tác</th>
                 </tr>
               </thead>
@@ -2057,7 +2187,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         )}
                       </td>
 
-                      <td className="py-3 px-3 text-slate-300">
+                      <td className="py-3 px-4 text-slate-300">
                         <div className="font-medium text-white">{getDisplaySchoolName(student)}</div>
                         <div className="flex items-center gap-1.5 mt-1">
                           {resolveStudentCampusId(student) === 'pl' ? (
@@ -2075,24 +2205,13 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                         </div>
                       </td>
 
-                      <td className="py-3 px-3">
+                      <td className="py-3 px-4">
                         <div className="text-white font-medium">{student.parent_name}</div>
                         <div className="text-amber-400 font-mono text-[11px] whitespace-nowrap">{student.parent_phone}</div>
                       </td>
 
-                      <td className="py-3 px-3 w-40 max-w-[160px]">
-                        {student.medical_notes ? (
-                          <div className="flex items-start gap-1.5 p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-300">
-                            <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                            <span className="whitespace-normal break-words leading-snug">{student.medical_notes}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 text-[11px] italic">Bình thường</span>
-                        )}
-                      </td>
-
                       <td className="py-3 px-4">
-                        <div className="flex flex-col gap-1.5 max-w-xs">
+                        <div className="flex flex-col gap-2 max-w-sm">
                           {studentEnrollments.length > 0 ? (
                             studentEnrollments.map(enr => {
                               const nestedClsRaw = (enr as any).extracurricular_classes;
@@ -2126,6 +2245,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                      a.class_id === c.id &&
                                      a.status === 'present'
                               ).length;
+                              const startDateStr = getEnrollmentStartDate(enr);
 
                               return (
                                 <div key={enr.id} className="flex flex-col gap-1">
@@ -2161,6 +2281,22 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                     }`}>
                                       Lịch: {scheduleLabelText} ({attendedCount}/{regSess}b)
                                     </span>
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5 text-[10px] pl-0.5">
+                                    <Calendar className="w-3 h-3 text-amber-400/80 shrink-0" />
+                                    {startDateStr ? (
+                                      <span className="text-slate-300">
+                                        Bắt đầu: <strong className="font-mono text-amber-300">{formatDateVN(startDateStr)}</strong>
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-500 italic">Chưa có ngày bắt đầu</span>
+                                    )}
+                                    {isTrial && (
+                                      <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[9px] font-bold leading-none">
+                                        Học thử
+                                      </span>
+                                    )}
                                   </div>
 
                                   {isTrial && (
@@ -2409,16 +2545,6 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     </div>
                   )}
 
-                  {student.medical_notes && (
-                    <div className="mt-3 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                      <div className="text-[11px] text-rose-200 leading-tight">
-                        <span className="font-bold">Lưu ý y tế/thực phẩm: </span>
-                        {student.medical_notes}
-                      </div>
-                    </div>
-                  )}
-
                   <div className="mt-3">
                     <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
                       Lớp đang theo học:
@@ -2457,6 +2583,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                  a.class_id === c.id &&
                                  a.status === 'present'
                           ).length;
+                          const startDateStr = getEnrollmentStartDate(enr);
 
                           return (
                             <div key={enr.id} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
@@ -2494,6 +2621,22 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                 }`}>
                                   Lịch: {scheduleLabelText} ({attendedCount}/{regSess} buổi)
                                 </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 text-[10.5px] pt-1 border-t border-slate-800/70">
+                                <Calendar className="w-3 h-3 text-amber-400/80 shrink-0" />
+                                {startDateStr ? (
+                                  <span className="text-slate-300">
+                                    Bắt đầu: <strong className="font-mono text-amber-300">{formatDateVN(startDateStr)}</strong>
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 italic">Chưa có ngày bắt đầu</span>
+                                )}
+                                {isTrial && (
+                                  <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[9.5px] font-bold leading-none">
+                                    Học thử
+                                  </span>
+                                )}
                               </div>
 
                               {isTrial && (
