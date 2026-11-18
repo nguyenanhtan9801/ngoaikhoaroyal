@@ -1321,11 +1321,43 @@ export function getClassPhase(
   return 'active';
 }
 
+export function normalizeDateStr(value?: string | null): string {
+  if (!value) return '';
+  const clean = String(value).trim();
+  if (!clean) return '';
+  return clean.split('T')[0].split(' ')[0];
+}
+
 /**
- * Xác định giai đoạn hiệu lực của một enrollment theo lớp và joined_date
+ * Ngày bắt đầu học thực tế của enrollment: ưu tiên enr.start_date -> enr.joined_date -> cls.start_date
+ */
+export function getEnrollmentStartDate(
+  enr?: Pick<Enrollment, 'start_date' | 'joined_date'> | null,
+  cls?: Pick<ExtracurricularClass, 'start_date'> | null
+): string {
+  return (
+    normalizeDateStr(enr?.start_date) ||
+    normalizeDateStr(enr?.joined_date) ||
+    normalizeDateStr(cls?.start_date) ||
+    ''
+  );
+}
+
+export function getEnrollmentDropDate(enr?: Enrollment | null): string {
+  if (!enr) return '';
+  const raw =
+    (enr as any).dropped_date ||
+    (enr as any).left_date ||
+    (enr as any).withdrawn_date ||
+    (enr as any).end_date;
+  return normalizeDateStr(raw);
+}
+
+/**
+ * Xác định giai đoạn hiệu lực của một enrollment theo lớp và ngày bắt đầu học thực tế
  */
 export function getEnrollmentPhase(
-  enr: Pick<Enrollment, 'joined_date' | 'status'> | undefined,
+  enr: Pick<Enrollment, 'joined_date' | 'start_date' | 'status'> | undefined,
   cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
   todayStr?: string,
   terms: AcademicTerm[] = []
@@ -1333,10 +1365,8 @@ export function getEnrollmentPhase(
   const refDate = getTodayStrHoChiMinh(todayStr || new Date());
   const classPhase = getClassPhase(cls, refDate, terms);
   if (classPhase === 'upcoming') return 'upcoming';
-  if (enr?.joined_date) {
-    const joined = String(enr.joined_date).split('T')[0];
-    if (joined && refDate < joined) return 'upcoming';
-  }
+  const startDate = getEnrollmentStartDate(enr, cls);
+  if (startDate && refDate < startDate) return 'upcoming';
   if (enr?.status === 'completed' || classPhase === 'ended') return 'ended';
   return 'active';
 }
@@ -1346,7 +1376,7 @@ export function getEnrollmentPhase(
  * (status active/trial và đang nằm trong hiệu lực ngày học, không ở trạng thái upcoming/ended)
  */
 export function isEnrollmentEffectiveActive(
-  enr: Pick<Enrollment, 'status' | 'joined_date'> | undefined,
+  enr: Pick<Enrollment, 'status' | 'joined_date' | 'start_date'> | undefined,
   cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
   todayStr?: string,
   terms: AcademicTerm[] = []
@@ -1387,7 +1417,7 @@ export function getPromotedTargetInfo(
       return {
         targetEnrollment: targetEnr,
         targetClass: targetCls,
-        startDate: targetEnr.joined_date || targetCls.start_date || '',
+        startDate: getEnrollmentStartDate(targetEnr, targetCls),
       };
     }
   }
@@ -1415,7 +1445,11 @@ export function getPromotedTargetInfo(
           return {
             targetEnrollment: linkedEnr,
             targetClass: targetCls,
-            startDate: linkedEnr.joined_date || item.start_date || targetCls.start_date || '',
+            startDate:
+              normalizeDateStr(linkedEnr.start_date) ||
+              normalizeDateStr(linkedEnr.joined_date) ||
+              normalizeDateStr(item.start_date) ||
+              normalizeDateStr(targetCls.start_date),
           };
         }
       }
@@ -1516,8 +1550,21 @@ export type EnrollmentDisplayTone =
   | 'transferred'
   | 'upcoming';
 
+export type SessionExclusionReason =
+  | 'weekday_mismatch'
+  | 'not_started'
+  | 'dropped'
+  | 'out_of_class_bounds'
+  | 'cancelled';
+
+export interface StudentSessionEligibilityResult {
+  eligible: boolean;
+  reason?: SessionExclusionReason;
+  startDate?: string;
+}
+
 export function getEnrollmentStatusDisplay(
-  enr: Pick<Enrollment, 'status' | 'joined_date'> | undefined,
+  enr: Pick<Enrollment, 'status' | 'joined_date' | 'start_date'> | undefined,
   cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
   todayStr?: string,
   terms: AcademicTerm[] = []
@@ -1540,11 +1587,9 @@ export function getEnrollmentStatusDisplay(
   if (clsPhase === 'upcoming') {
     return { label: 'Sắp bắt đầu', tone: 'upcoming' };
   }
-  if (enr?.joined_date) {
-    const joined = String(enr.joined_date).split('T')[0];
-    if (joined && refDate < joined) {
-      return { label: 'Sắp bắt đầu', tone: 'upcoming' };
-    }
+  const enrStart = getEnrollmentStartDate(enr, cls);
+  if (enrStart && refDate < enrStart) {
+    return { label: 'Sắp bắt đầu', tone: 'upcoming' };
   }
   if (clsPhase === 'ended') {
     return { label: 'Đã hoàn thành', tone: 'completed' };
@@ -1552,31 +1597,44 @@ export function getEnrollmentStatusDisplay(
   return { label: 'Đang học', tone: 'active' };
 }
 
-export function isStudentScheduledForDate(
+export function evaluateStudentSessionEligibility(
   enrollment: Enrollment | undefined,
   sessionDate: string,
   classDays?: string[],
   cls?: ExtracurricularClass,
-  terms: AcademicTerm[] = []
-): boolean {
-  if (!enrollment) return true;
+  terms: AcademicTerm[] = [],
+  hasSavedAttendance = false
+): StudentSessionEligibilityResult {
+  const cleanSessionDate = normalizeDateStr(sessionDate);
+  if (hasSavedAttendance) {
+    return { eligible: true, startDate: getEnrollmentStartDate(enrollment, cls) };
+  }
+  if (!enrollment) {
+    return { eligible: true };
+  }
   const statusStr = String(enrollment.status || '');
+  if (statusStr === 'cancelled' || statusStr === 'canceled') {
+    return { eligible: false, reason: 'cancelled' };
+  }
   if (
     statusStr === 'dropped' ||
     statusStr === 'trial_dropped' ||
-    statusStr === 'cancelled' ||
-    statusStr === 'canceled' ||
     statusStr === 'transferred'
   ) {
-    return false;
+    const dropDate = getEnrollmentDropDate(enrollment);
+    if (!dropDate || cleanSessionDate > dropDate) {
+      return { eligible: false, reason: 'dropped' };
+    }
   }
   if (cls) {
     const { startDate, endDate } = getClassEffectiveBounds(cls, terms);
-    if (startDate && sessionDate < startDate) return false;
-    if (endDate && sessionDate > endDate) return false;
+    if ((startDate && cleanSessionDate < startDate) || (endDate && cleanSessionDate > endDate)) {
+      return { eligible: false, reason: 'out_of_class_bounds' };
+    }
   }
-  if (enrollment.joined_date && sessionDate < String(enrollment.joined_date).split('T')[0]) {
-    return false;
+  const enrStartDate = getEnrollmentStartDate(enrollment, cls);
+  if (enrStartDate && cleanSessionDate < enrStartDate) {
+    return { eligible: false, reason: 'not_started', startDate: enrStartDate };
   }
   const effectiveStudentDays =
     enrollment.enrolled_days_of_week && enrollment.enrolled_days_of_week.length > 0
@@ -1584,9 +1642,31 @@ export function isStudentScheduledForDate(
       : classDays && classDays.length > 0
       ? classDays
       : [];
-  if (effectiveStudentDays.length === 0) return true;
-  const dayCode = getDayCodeFromDate(sessionDate);
-  return effectiveStudentDays.includes(dayCode);
+  if (effectiveStudentDays.length > 0) {
+    const dayCode = getDayCodeFromDate(cleanSessionDate);
+    if (!effectiveStudentDays.includes(dayCode)) {
+      return { eligible: false, reason: 'weekday_mismatch', startDate: enrStartDate };
+    }
+  }
+  return { eligible: true, startDate: enrStartDate };
+}
+
+export function isStudentScheduledForDate(
+  enrollment: Enrollment | undefined,
+  sessionDate: string,
+  classDays?: string[],
+  cls?: ExtracurricularClass,
+  terms: AcademicTerm[] = [],
+  hasSavedAttendance = false
+): boolean {
+  return evaluateStudentSessionEligibility(
+    enrollment,
+    sessionDate,
+    classDays,
+    cls,
+    terms,
+    hasSavedAttendance
+  ).eligible;
 }
 
 export function formatDateVN(dateStr?: string): string {

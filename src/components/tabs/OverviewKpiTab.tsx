@@ -279,7 +279,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
           async () => {
             const [resStudents, resEnrollments] = await Promise.all([
               sbClient.from('students').select('*', { count: 'exact', head: true }),
-              sbClient.from('enrollments').select('student_id, class_id, joined_date, status').eq('status', 'active'),
+              sbClient.from('enrollments').select('student_id, class_id, joined_date, start_date, status').eq('status', 'active'),
             ]);
             return [resStudents, resEnrollments] as const;
           },
@@ -327,7 +327,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     // Lấy danh sách ghi danh đang hoạt động (active & hiệu lực theo ngày học)
     const activeEnrs = (store.enrollments || []).filter(e =>
       (e.status === 'active' || !e.status) &&
-      isEnrollmentEffectiveActive({ status: e.status || 'active', joined_date: e.joined_date }, classMap.get(String(e.class_id)), todayStr, store.terms)
+      isEnrollmentEffectiveActive({ status: e.status || 'active', joined_date: e.joined_date, start_date: e.start_date }, classMap.get(String(e.class_id)), todayStr, store.terms)
     );
 
     // Tạo map tra cứu cơ sở của từng lớp
@@ -393,7 +393,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const detailedStats = useMemo(() => {
     const activeEnrs = (store.enrollments || []).filter(e =>
       (e.status === 'active' || !e.status) &&
-      isEnrollmentEffectiveActive({ status: e.status || 'active', joined_date: e.joined_date }, classMap.get(String(e.class_id)), todayStr, store.terms)
+      isEnrollmentEffectiveActive({ status: e.status || 'active', joined_date: e.joined_date, start_date: e.start_date }, classMap.get(String(e.class_id)), todayStr, store.terms)
     );
     const classes = store.classes || [];
     const subjects = store.subjects || [];

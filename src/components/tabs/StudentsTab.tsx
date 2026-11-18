@@ -52,6 +52,7 @@ import {
   checkIsRoyalStudent,
   getCurrentTerm,
   getTodayStrHoChiMinh,
+  getEnrollmentStartDate as getCanonicalEnrollmentStartDate,
   getEnrollmentPhase,
   getClassEffectiveBounds,
   getPromotedTargetInfo
@@ -581,6 +582,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             class_id: raw.class_id,
             registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || raw.total_sessions || existing?.registered_sessions || 24),
             joined_date: normalizedJoinedDate,
+            start_date: raw.start_date ? String(raw.start_date).split('T')[0] : existing?.start_date,
+            dropped_date: (raw.dropped_date || raw.left_date || raw.withdrawn_date) ? String(raw.dropped_date || raw.left_date || raw.withdrawn_date).split('T')[0] : existing?.dropped_date,
+            end_date: raw.end_date ? String(raw.end_date).split('T')[0] : existing?.end_date,
             enrolled_days_of_week: enrolledDays,
             is_partial_schedule: Boolean(raw.is_partial_schedule ?? existing?.is_partial_schedule),
             status: isTrial
@@ -745,6 +749,9 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           class_id: raw.class_id,
           registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || existing?.registered_sessions || 24),
           joined_date: normalizedJoinedDate,
+          start_date: raw.start_date ? String(raw.start_date).split('T')[0] : existing?.start_date,
+          dropped_date: (raw.dropped_date || raw.left_date || raw.withdrawn_date) ? String(raw.dropped_date || raw.left_date || raw.withdrawn_date).split('T')[0] : existing?.dropped_date,
+          end_date: raw.end_date ? String(raw.end_date).split('T')[0] : existing?.end_date,
           enrolled_days_of_week: Array.isArray(raw.enrolled_days_of_week) ? raw.enrolled_days_of_week : existing?.enrolled_days_of_week,
           status: isTrial
             ? 'trial'
@@ -780,19 +787,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
     return list;
   };
 
-  // Lấy ngày bắt đầu học thực tế của học sinh đối với 1 bản ghi danh (ưu tiên joined_date / start_date / trial_session_date)
+  // Lấy ngày bắt đầu học thực tế của học sinh đối với 1 bản ghi danh (ưu tiên start_date -> joined_date -> trial_session_date)
   const getEnrollmentStartDate = (enr: Enrollment): string => {
+    const cls = store.classes.find(c => c.id === enr.class_id);
+    const canonical = getCanonicalEnrollmentStartDate(enr, cls);
+    if (canonical) return canonical;
     const isTrial = Boolean(
       (enr.is_trial === true || (enr as any).enrollment_type === 'trial') &&
       enr.status !== 'active'
     );
-    const raw = (
-      enr.joined_date ||
-      (enr as any).start_date ||
-      (isTrial ? enr.trial_session_date : '') ||
-      ''
-    ).trim();
-    return raw ? raw.split('T')[0] : '';
+    const raw = (isTrial ? enr.trial_session_date : '') || '';
+    return raw ? String(raw).trim().split('T')[0] : '';
   };
 
   // Cloud Storage destination folder config

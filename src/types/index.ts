@@ -438,6 +438,9 @@ export interface Enrollment {
   class_id: string;
   registered_sessions: number;
   joined_date: string;
+  start_date?: string | null;
+  dropped_date?: string | null;
+  end_date?: string | null;
   enrolled_days_of_week?: string[];     // Mảng các thứ bé thực học (VD: ['T2'] thay vì ['T2', 'T4'])
   is_partial_schedule?: boolean;        // Đánh dấu học bán phần theo tuần (1 phần buổi trong tuần)
   status: 'trial' | 'active' | 'trial_dropped' | 'transferred' | 'completed' | 'dropped';

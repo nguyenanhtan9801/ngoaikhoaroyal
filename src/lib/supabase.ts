@@ -41,6 +41,8 @@ import {
   cacheOfflinePassword,
   getOfflineExpectedPassword,
   emitSupabaseSyncStatus,
+  getTodayStrHoChiMinh,
+  normalizeDateStr,
 } from './storage';
 import { fetchOnce } from './fetchOnce';
 
@@ -60,8 +62,7 @@ export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
     'id,code,name,term_id,spanning_term_id,is_cross_term,term_distribution,campus_id,subject_id,facility_id,time_slot_id,days_of_week,start_date,end_date,primary_teacher_id,max_students,total_sessions,full_course_fee,price_per_session,status,allow_over_quota',
   students:
     'id,code,previous_student_code,name,dob,gender,is_royal_student,campus_id,school_name,regular_class,parent_name,parent_phone,medical_notes,avatar_url,status,created_at',
-  enrollments:
-    'id,student_id,class_id,registered_sessions,joined_date,enrolled_days_of_week,is_partial_schedule,is_trial,trial_session_date,trial_attended,status,enrollment_type',
+  enrollments: '*',
   attendance_records:
     'id,session_id,class_id,student_id,session_date,status,note,proof_file_name,proof_url,uploaded_by,uploaded_at',
   teacher_work_sessions:
@@ -1582,7 +1583,8 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
           student_id: e.student_id,
           class_id: e.class_id,
           registered_sessions: e.registered_sessions || 24,
-          joined_date: e.joined_date || new Date().toISOString().split('T')[0],
+          joined_date: normalizeDateStr(e.joined_date) || getTodayStrHoChiMinh(),
+          ...(e.start_date !== undefined ? { start_date: normalizeDateStr(e.start_date) || null } : {}),
           enrolled_days_of_week: e.enrolled_days_of_week || [],
           is_partial_schedule: Boolean(e.is_partial_schedule),
           is_trial: isTrial,
@@ -2100,7 +2102,14 @@ export async function pullAllTablesFromSupabase(
               student_id: r.student_id,
               class_id: r.class_id,
               registered_sessions: Number(r.registered_sessions) || 24,
-              joined_date: r.joined_date || new Date().toISOString().split('T')[0],
+              joined_date:
+                normalizeDateStr(r.joined_date) ||
+                normalizeDateStr(r.start_date) ||
+                getTodayStrHoChiMinh(),
+              start_date: normalizeDateStr(r.start_date) || undefined,
+              dropped_date:
+                normalizeDateStr(r.dropped_date || r.left_date || r.withdrawn_date) || undefined,
+              end_date: normalizeDateStr(r.end_date) || undefined,
               enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : undefined,
               is_partial_schedule: Boolean(r.is_partial_schedule),
               is_trial: isTrial,
@@ -2505,7 +2514,14 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         student_id: r.student_id,
         class_id: r.class_id,
         registered_sessions: Number(r.registered_sessions || r.total_sessions) || 24,
-        joined_date: r.joined_date || r.start_date || new Date().toISOString().split('T')[0],
+        joined_date:
+          normalizeDateStr(r.joined_date) ||
+          normalizeDateStr(r.start_date) ||
+          getTodayStrHoChiMinh(),
+        start_date: normalizeDateStr(r.start_date) || undefined,
+        dropped_date:
+          normalizeDateStr(r.dropped_date || r.left_date || r.withdrawn_date) || undefined,
+        end_date: normalizeDateStr(r.end_date) || undefined,
         enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : undefined,
         is_partial_schedule: Boolean(r.is_partial_schedule),
         is_trial: isTrial,

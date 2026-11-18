@@ -48,9 +48,10 @@ import {
   getClassDaysOfWeek,
   getClassEffectiveBounds,
   getClassPhase,
+  getEnrollmentStartDate,
   getEnrollmentStatusDisplay,
   getPromotedTargetInfo,
-  isStudentScheduledForDate,
+  evaluateStudentSessionEligibility,
   loadStore,
   normalizeCampusScope,
 } from '../../lib/storage';
@@ -792,7 +793,15 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const isSelectedClassUpcoming = selectedClassPhase === 'upcoming';
   const isSelectedClassEnded = selectedClassPhase === 'ended';
   const isSelectedFutureDate = sessionDate > todayStr;
-  const isAttendanceLocked = isSelectedClassUpcoming || isSelectedClassEnded || isSelectedFutureDate;
+  const isSelectedOutsideClassBoundsForEnded =
+    isSelectedClassEnded &&
+    Boolean(
+      selectedClassBounds &&
+        ((selectedClassBounds.startDate && sessionDate < selectedClassBounds.startDate) ||
+          (selectedClassBounds.endDate && sessionDate > selectedClassBounds.endDate))
+    );
+  const isAttendanceLocked =
+    isSelectedClassUpcoming || isSelectedFutureDate || isSelectedOutsideClassBoundsForEnded;
 
   const allAttendanceRecords = useMemo(
     () => activeStore.attendance || activeStore.attendanceRecords || [],
@@ -823,17 +832,12 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     }
   }, [selectedClass?.id, isSelectedClassEnded, selectedClassBounds?.startDate, selectedClassBounds?.endDate]);
 
-  // Lấy danh sách học sinh của một lớp trong ngày sessionDate (bao gồm completed/dropped cho lớp đã kết thúc ở chế độ chỉ xem)
+  // Lấy danh sách học sinh của một lớp trong ngày targetDate theo evaluateStudentSessionEligibility
   const getClassEnrolledStudentsForDate = useCallback(
     (cls: ExtracurricularClass | null, targetDate: string): Student[] => {
       if (!cls) return [];
       const classDays = getClassDaysOfWeek(cls, activeStore.timeSlots);
       const clsPhase = getClassPhase(cls, todayStr, activeStore.terms);
-      const clsBounds = getClassEffectiveBounds(cls, activeStore.terms);
-      const effectiveDateForEnded =
-        clsPhase === 'ended' && clsBounds.endDate && targetDate > clsBounds.endDate
-          ? clsBounds.endDate
-          : targetDate;
 
       const savedAttOnDate = new Set(
         allAttendanceRecords
@@ -854,10 +858,6 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         if (e.class_id !== cls.id) continue;
         const st = String(e.status || 'active');
         if (st === 'cancelled' || st === 'canceled') continue;
-        if (clsPhase !== 'ended') {
-          const isCurrent = st === 'active' || st === 'trial';
-          if (!isCurrent && !savedAttOnDate.has(String(e.student_id))) continue;
-        }
         const key = String(e.student_id);
         const existing = dedupByStudent.get(key);
         if (!existing || (PRIORITY[st] || 0) >= (PRIORITY[String(existing.status || 'active')] || 0)) {
@@ -866,19 +866,24 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       }
 
       const enrollments = Array.from(dedupByStudent.values()).filter(e => {
-        if (savedAttOnDate.has(String(e.student_id))) return true;
+        const hasSaved = savedAttOnDate.has(String(e.student_id));
+        if (hasSaved) return true;
         if (clsPhase === 'upcoming') return true;
-        if (clsPhase === 'ended') {
-          return isStudentScheduledForDate(e, effectiveDateForEnded, classDays, cls, activeStore.terms);
-        }
-        return isStudentScheduledForDate(e, targetDate, classDays, cls, activeStore.terms);
+        return evaluateStudentSessionEligibility(
+          e,
+          targetDate,
+          classDays,
+          cls,
+          activeStore.terms,
+          hasSaved
+        ).eligible;
       });
 
       const studentMap = new Map((activeStore.students || []).map(s => [s.id, s]));
       const result: Student[] = [];
       for (const enr of enrollments) {
         const st = studentMap.get(enr.student_id);
-        if (st && (clsPhase === 'ended' || st.status !== 'dropped' || savedAttOnDate.has(String(enr.student_id)))) {
+        if (st) {
           result.push(st);
         }
       }
@@ -994,9 +999,9 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       );
       return;
     }
-    if (isSelectedClassEnded) {
+    if (isSelectedOutsideClassBoundsForEnded) {
       showToast(
-        `Lớp đã kết thúc (${formatDateVN(selectedClassBounds?.endDate)}), chỉ xem lịch sử.`,
+        `Ngày ${formatDateVN(sessionDate)} nằm ngoài thời gian khóa học (${formatDateVN(selectedClassBounds?.startDate)} - ${formatDateVN(selectedClassBounds?.endDate)}).`,
         'warning'
       );
       return;
@@ -1090,15 +1095,48 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         };
       });
 
+      const prevSessionRows = allAttendanceRecords.filter(
+        a => a.class_id === selectedClass.id && a.session_date === sessionDate
+      );
+      const formatStatusVi = (st?: string) =>
+        st === 'present'
+          ? 'Có mặt'
+          : st === 'absent_excused'
+          ? 'Vắng CP'
+          : st === 'absent_unexcused'
+          ? 'Vắng KP'
+          : 'Chưa ĐD';
+      const studentChanges = selectedClassStudents
+        .map(st => {
+          const oldRec = prevSessionRows.find(a => a.student_id === st.id);
+          const newRec = newAttendanceRows.find(a => a.student_id === st.id);
+          const oldSt = oldRec?.status || 'none';
+          const newSt = newRec?.status || 'present';
+          const oldNote = oldRec?.note || '';
+          const newNote = newRec?.note || '';
+          if (oldSt === newSt && oldNote === newNote) return null;
+          return {
+            student_id: st.id,
+            student_code: st.code,
+            student_name: st.name,
+            old_status: oldSt,
+            new_status: newSt,
+            old_note: oldNote,
+            new_note: newNote,
+            summary: `${st.name} (${st.code}): ${formatStatusVi(oldRec?.status)} -> ${formatStatusVi(newSt)}`,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
       const auditLog = createAuditRecord(
         'ATTENDANCE_SAVE',
         'ACADEMIC',
         `Điểm Danh Lớp Học (${roleBadgeLabel})`,
-        `${currentUser.full_name} (${roleBadgeLabel}) đã điểm danh lớp ${selectedClass.name} ngày ${formatDateYmdToVnShort(
+        `${isSelectedClassEnded ? '[Sửa lịch sử lớp đã kết thúc] ' : ''}${currentUser.full_name} (${roleBadgeLabel}) đã điểm danh lớp ${selectedClass.name} ngày ${formatDateYmdToVnShort(
           sessionDate
         )}: Có mặt ${attendanceCounts.present}/${attendanceCounts.total} HS (Có phép: ${
           attendanceCounts.excused
-        }, Không phép: ${attendanceCounts.absent}).`,
+        }, Không phép: ${attendanceCounts.absent}).${isSelectedClassEnded && studentChanges.length > 0 ? ` Thay đổi: ${studentChanges.slice(0, 5).map(c => c.summary).join('; ')}` : ''}`,
         currentUser,
         {
           target_id: selectedClass.code || selectedClass.id,
@@ -1107,10 +1145,30 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             class_id: selectedClass.id,
             class_name: selectedClass.name,
             session_date: sessionDate,
+            is_ended_class_edit: isSelectedClassEnded,
             recorded_by: currentUser.id,
             recorded_by_role: staffKind,
             summary: attendanceCounts,
             session_note: sessionGeneralNote.trim() || undefined,
+            student_changes: studentChanges,
+            ...(isSelectedClassEnded
+              ? {
+                  before: {
+                    attendance: prevSessionRows.map(a => ({
+                      student_id: a.student_id,
+                      status: a.status,
+                      note: a.note || '',
+                    })),
+                  },
+                  after: {
+                    attendance: newAttendanceRows.map(a => ({
+                      student_id: a.student_id,
+                      status: a.status,
+                      note: a.note || '',
+                    })),
+                  },
+                }
+              : {}),
           },
         }
       );
@@ -1934,15 +1992,24 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                 )}
 
                 {!isSelectedClassUpcoming && isSelectedClassEnded && (
-                  <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-slate-300 shrink-0" />
+                  <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs font-semibold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
                     <span>
-                      Lớp đã kết thúc, chỉ xem lịch sử ({formatDateVN(selectedClassBounds?.endDate)}).
+                      Lớp đã kết thúc – bạn đang chỉnh sửa điểm danh lịch sử ({formatDateVN(selectedClassBounds?.startDate)} &rarr; {formatDateVN(selectedClassBounds?.endDate)}).
                     </span>
                   </div>
                 )}
 
-                {!isSelectedClassUpcoming && !isSelectedClassEnded && isSelectedFutureDate && (
+                {!isSelectedClassUpcoming && isSelectedOutsideClassBoundsForEnded && (
+                  <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs font-bold flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>
+                      Ngày {formatDateVN(sessionDate)} nằm ngoài thời gian khóa học ({formatDateVN(selectedClassBounds?.startDate)} &rarr; {formatDateVN(selectedClassBounds?.endDate)}).
+                    </span>
+                  </div>
+                )}
+
+                {!isSelectedClassUpcoming && isSelectedFutureDate && (
                   <div className="p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs font-bold flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                     <span>
@@ -2043,7 +2110,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                                     : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                                 }`}>
                                   {statusDisplay.tone === 'upcoming'
-                                    ? `${statusDisplay.label} – ${formatDateVN(enr?.joined_date || selectedClassBounds?.startDate)}`
+                                    ? `${statusDisplay.label} – ${formatDateVN(getEnrollmentStartDate(enr, selectedClass) || selectedClassBounds?.startDate)}`
                                     : statusDisplay.label}
                                 </span>
 
@@ -2196,8 +2263,8 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     <span>
                       {isSelectedClassUpcoming
                         ? `Chưa thể điểm danh (Bắt đầu ${formatDateVN(selectedClassBounds?.startDate)})`
-                        : isSelectedClassEnded
-                        ? 'Đã kết thúc (Chỉ xem)'
+                        : isSelectedOutsideClassBoundsForEnded
+                        ? 'Ngày nằm ngoài thời gian khóa học'
                         : isSelectedFutureDate
                         ? 'Khóa điểm danh ngày tương lai'
                         : isSavingAttendance

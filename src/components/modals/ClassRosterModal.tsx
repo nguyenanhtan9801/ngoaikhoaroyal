@@ -23,6 +23,7 @@ import {
   getClassEffectiveBounds,
   getClassEnrollmentStatsMap,
   getClassPhase,
+  getEnrollmentStartDate,
   getEnrollmentStatusDisplay,
   getPromotedTargetInfo,
   getTodayStrHoChiMinh,
@@ -104,10 +105,16 @@ export const ClassRosterModal: React.FC<ClassRosterModalProps> = ({
                 existing?.registered_sessions ||
                 24,
               joined_date:
-                r.joined_date ||
-                r.start_date ||
+                (r.joined_date ? String(r.joined_date).split('T')[0] : '') ||
+                (r.start_date ? String(r.start_date).split('T')[0] : '') ||
                 existing?.joined_date ||
                 todayStr,
+              start_date: r.start_date ? String(r.start_date).split('T')[0] : existing?.start_date,
+              dropped_date:
+                (r.dropped_date || r.left_date || r.withdrawn_date)
+                  ? String(r.dropped_date || r.left_date || r.withdrawn_date).split('T')[0]
+                  : existing?.dropped_date,
+              end_date: r.end_date ? String(r.end_date).split('T')[0] : existing?.end_date,
               enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week)
                 ? r.enrolled_days_of_week
                 : existing?.enrolled_days_of_week,
@@ -296,7 +303,7 @@ export const ClassRosterModal: React.FC<ClassRosterModalProps> = ({
         'SĐT Phụ Huynh': row.student?.parent_phone || '',
         'Lịch Học': formatDaysListLabel(row.studentDays),
         'Số Buổi ĐK': row.enrollment.registered_sessions || classItem.total_sessions || 0,
-        'Ngày Bắt Đầu': formatDateVN(row.enrollment.joined_date || classBounds.startDate),
+        'Ngày Bắt Đầu': formatDateVN(getEnrollmentStartDate(row.enrollment, classItem)),
         'Trạng Thái': row.statusDisplay.label,
         'Lớp Đã Xếp Tiếp': row.promotedInfo
           ? `${row.promotedInfo.targetClass.name} (${row.promotedInfo.targetClass.code || row.promotedInfo.targetClass.id})`
@@ -582,9 +589,9 @@ export const ClassRosterModal: React.FC<ClassRosterModalProps> = ({
                       <div className="font-semibold text-slate-200">
                         {formatDaysListLabel(row.studentDays)} ({row.enrollment.registered_sessions || classItem.total_sessions || 0} buổi)
                       </div>
-                      {row.enrollment.joined_date && (
+                      {getEnrollmentStartDate(row.enrollment, classItem) && (
                         <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                          Từ ngày {formatDateVN(row.enrollment.joined_date)}
+                          Từ ngày {formatDateVN(getEnrollmentStartDate(row.enrollment, classItem))}
                         </div>
                       )}
                     </td>

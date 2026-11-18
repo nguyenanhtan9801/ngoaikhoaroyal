@@ -14,7 +14,21 @@ import {
   Lock,
   Coffee
 } from 'lucide-react';
-import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek, getTodayStrHoChiMinh, getClassPhase, getClassEffectiveBounds, formatDateVN, formatDateShortVN, getEnrollmentStatusDisplay, getPromotedTargetInfo } from '../lib/storage';
+import {
+  AppStore,
+  evaluateStudentSessionEligibility,
+  getClassDaysOfWeek,
+  getTodayStrHoChiMinh,
+  getClassPhase,
+  getClassEffectiveBounds,
+  formatDateVN,
+  formatDateShortVN,
+  getEnrollmentStartDate,
+  getEnrollmentStatusDisplay,
+  getPromotedTargetInfo,
+  createAuditRecord,
+  appendAuditLog,
+} from '../lib/storage';
 import { Teacher, ExtracurricularClass, Student, AttendanceRecord, ClassSession } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 import { DatePickerVN } from './common/DatePickerVN';
@@ -80,18 +94,22 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
       .map(a => String(a.student_id))
   );
 
-  // Enrolled students in this class scheduled for sessionDate (or full historical roster if ended/upcoming)
+  // Enrolled students in this class scheduled for sessionDate
   const classEnrollments = store.enrollments.filter(e => {
     if (e.class_id !== currentClass?.id) return false;
     const st = String(e.status || 'active');
     if (st === 'cancelled' || st === 'canceled') return false;
-    if (!isEndedClass) {
-      if (st !== 'active' && st !== 'trial' && !savedAttOnDate.has(String(e.student_id))) return false;
-    }
-    if (savedAttOnDate.has(String(e.student_id))) return true;
+    const hasSaved = savedAttOnDate.has(String(e.student_id));
+    if (hasSaved) return true;
     if (isUpcomingClass) return true;
-    const effectiveDate = isEndedClass && classBounds?.endDate && sessionDate > classBounds.endDate ? classBounds.endDate : sessionDate;
-    return isStudentScheduledForDate(e, effectiveDate, classDays, currentClass, store.terms);
+    return evaluateStudentSessionEligibility(
+      e,
+      sessionDate,
+      classDays,
+      currentClass,
+      store.terms,
+      hasSaved
+    ).eligible;
   });
   const enrolledStudents = Array.from(
     new Map(
@@ -129,7 +147,14 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
 
   // Is future date or locked lifecycle check
   const isFutureDate = sessionDate > todayStr;
-  const isAttendanceLocked = isFutureDate || isUpcomingClass || isEndedClass;
+  const isOutsideClassBoundsForEnded =
+    isEndedClass &&
+    Boolean(
+      classBounds &&
+        ((classBounds.startDate && sessionDate < classBounds.startDate) ||
+          (classBounds.endDate && sessionDate > classBounds.endDate))
+    );
+  const isAttendanceLocked = isFutureDate || isUpcomingClass || isOutsideClassBoundsForEnded;
 
   const handleStatusChange = (studentId: string, status: 'present' | 'absent_excused' | 'absent_unexcused') => {
     if (isAttendanceLocked) return;
@@ -244,14 +269,87 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
         });
       }
 
-      return {
-        ...prev,
-        sessions: updatedSessions,
-        attendance: [...remainingAttendance, ...newRecords],
-        enrollments: updatedEnrollments,
-        invoices: updatedInvoices,
-        notifications: newNotifications,
-      };
+      const prevSessionAttendance = prev.attendance.filter(
+        a => a.class_id === currentClass.id && a.session_date === sessionDate
+      );
+      const formatStatusVi = (st?: string) =>
+        st === 'present'
+          ? 'Có mặt'
+          : st === 'absent_excused'
+          ? 'Vắng CP'
+          : st === 'absent_unexcused'
+          ? 'Vắng KP'
+          : 'Chưa ĐD';
+      const studentChanges = enrolledStudents
+        .map(s => {
+          const oldRec = prevSessionAttendance.find(a => a.student_id === s.id);
+          const newRec = newRecords.find(a => a.student_id === s.id);
+          const oldSt = oldRec?.status || 'none';
+          const newSt = newRec?.status || 'present';
+          const oldNote = oldRec?.note || '';
+          const newNote = newRec?.note || '';
+          if (oldSt === newSt && oldNote === newNote) return null;
+          return {
+            student_id: s.id,
+            student_code: s.code,
+            student_name: s.name,
+            old_status: oldSt,
+            new_status: newSt,
+            old_note: oldNote,
+            new_note: newNote,
+            summary: `${s.name} (${s.code}): ${formatStatusVi(oldRec?.status)} -> ${formatStatusVi(newSt)}`,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
+      const auditLog = createAuditRecord(
+        'ATTENDANCE_SAVE',
+        'ACADEMIC',
+        `Sổ Điểm danh Lớp ${currentClass.name}`,
+        `${isEndedClass ? '[Sửa lịch sử lớp đã kết thúc] ' : ''}Giáo viên ${teacher?.name || ''} lưu điểm danh ngày ${sessionDate} lớp ${currentClass.name}${isEndedClass && studentChanges.length > 0 ? ` | Thay đổi: ${studentChanges.slice(0, 5).map(c => c.summary).join('; ')}` : ''}`,
+        undefined,
+        {
+          target_id: currentClass.code || currentClass.id,
+          details: {
+            class_id: currentClass.id,
+            class_name: currentClass.name,
+            session_date: sessionDate,
+            is_ended_class_edit: isEndedClass,
+            student_changes: studentChanges,
+            ...(isEndedClass
+              ? {
+                  before: {
+                    attendance: prevSessionAttendance.map(a => ({
+                      student_id: a.student_id,
+                      status: a.status,
+                      note: a.note || '',
+                    })),
+                  },
+                  after: {
+                    attendance: newRecords.map(a => ({
+                      student_id: a.student_id,
+                      status: a.status,
+                      note: a.note || '',
+                    })),
+                  },
+                }
+              : {}),
+            status: 'success',
+          },
+        }
+      );
+
+      return appendAuditLog(
+        {
+          ...prev,
+          sessions: updatedSessions,
+          attendance: [...remainingAttendance, ...newRecords],
+          enrollments: updatedEnrollments,
+          invoices: updatedInvoices,
+          notifications: newNotifications,
+        },
+        auditLog
+      );
     });
 
     setSavedBanner(true);
@@ -357,13 +455,22 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
         )}
 
         {!isUpcomingClass && isEndedClass && (
-          <div className="mx-6 mt-4 p-3 rounded-2xl bg-slate-800 border border-slate-700 text-slate-200 text-xs flex items-center gap-2">
-            <Lock className="w-4 h-4 text-slate-300 shrink-0" />
-            <span>Lớp đã kết thúc, chỉ xem lịch sử ({formatDateVN(classBounds?.endDate)}).</span>
+          <div className="mx-6 mt-4 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              Lớp đã kết thúc – bạn đang chỉnh sửa điểm danh lịch sử ({formatDateVN(classBounds?.startDate)} &rarr; {formatDateVN(classBounds?.endDate)}).
+            </span>
           </div>
         )}
 
-        {!isUpcomingClass && !isEndedClass && isFutureDate && (
+        {!isUpcomingClass && isOutsideClassBoundsForEnded && (
+          <div className="mx-6 mt-4 p-3 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
+            <Lock className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>Ngày này nằm ngoài thời gian khóa học ({formatDateVN(classBounds?.startDate)} &rarr; {formatDateVN(classBounds?.endDate)}).</span>
+          </div>
+        )}
+
+        {!isUpcomingClass && isFutureDate && (
           <div className="mx-6 mt-4 p-3 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
             <Lock className="w-4 h-4 text-rose-400 shrink-0" />
             <span>Khóa điểm danh: Ngày này trong tương lai! Vui lòng chọn buổi học hôm nay hoặc trước đó.</span>
@@ -416,7 +523,9 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
                         ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
                         : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                     }`}>
-                      {statusDisplay.label}
+                      {statusDisplay.tone === 'upcoming'
+                        ? `${statusDisplay.label} – ${formatDateVN(getEnrollmentStartDate(enr, currentClass) || classBounds?.startDate)}`
+                        : statusDisplay.label}
                     </span>
 
                     {promotedTarget && (

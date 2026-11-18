@@ -244,7 +244,17 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   id: r.id,
                   student_id: r.student_id,
                   class_id: r.class_id,
-                  joined_date: r.joined_date || r.enrolled_at || existing?.joined_date || '',
+                  joined_date:
+                    (r.joined_date ? String(r.joined_date).split('T')[0] : '') ||
+                    r.enrolled_at ||
+                    existing?.joined_date ||
+                    '',
+                  start_date: r.start_date ? String(r.start_date).split('T')[0] : existing?.start_date,
+                  dropped_date:
+                    (r.dropped_date || r.left_date || r.withdrawn_date)
+                      ? String(r.dropped_date || r.left_date || r.withdrawn_date).split('T')[0]
+                      : existing?.dropped_date,
+                  end_date: r.end_date ? String(r.end_date).split('T')[0] : existing?.end_date,
                   enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : existing?.enrolled_days_of_week,
                   registered_sessions: Number(r.registered_sessions ?? existing?.registered_sessions ?? 0),
                   status: isTrial ? 'trial' : (r.status || existing?.status || 'active'),

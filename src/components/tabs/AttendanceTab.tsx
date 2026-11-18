@@ -47,7 +47,6 @@ import {
   getDateDayCode,
   getDayLabel,
   formatDaysListLabel,
-  isStudentScheduledForDate,
   formatStudentScheduleLabel,
   formatDateVN,
   formatDateShortVN,
@@ -58,6 +57,8 @@ import {
   getTodayStrHoChiMinh,
   getClassEffectiveBounds,
   getClassPhase,
+  getEnrollmentStartDate,
+  evaluateStudentSessionEligibility,
   getEnrollmentPhase,
   getEnrollmentStatusDisplay,
   getPromotedTargetInfo,
@@ -341,21 +342,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     [store.terms, selectedTermId, defaultActiveTerm]
   );
 
-  const termWeeks = useMemo(
-    () => buildTermWeeks(activeFilterTerm?.start_date, activeFilterTerm?.total_weeks || 16),
-    [activeFilterTerm]
-  );
-
-  const timeSlot = store.timeSlots.find(t => t.id === currentClass?.time_slot_id);
-
-  // Class scheduled days of week (Default: T2, T4)
-  const classDays = useMemo(() => {
-    if (!currentClass) return ['T2', 'T4'];
-    return (currentClass.days_of_week && currentClass.days_of_week.length > 0)
-      ? currentClass.days_of_week
-      : (timeSlot?.days_of_week || ['T2', 'T4']);
-  }, [currentClass, timeSlot]);
-
   // Current real-world date (Asia/Ho_Chi_Minh YYYY-MM-DD)
   const today = useMemo(() => getTodayStrHoChiMinh(), []);
 
@@ -370,6 +356,34 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   );
   const isUpcomingClass = currentClassPhase === 'upcoming';
   const isEndedClass = currentClassPhase === 'ended';
+
+  const termWeeks = useMemo(() => {
+    const termStart = (activeFilterTerm?.start_date || '2026-08-31').split('T')[0];
+    const clsStart = currentClassBounds?.startDate || '';
+    const effectiveStart = clsStart && clsStart < termStart ? clsStart : termStart;
+    const baseWeeks = activeFilterTerm?.total_weeks || 16;
+    const clsEnd = currentClassBounds?.endDate || '';
+    let neededWeeks = baseWeeks;
+    if (clsEnd && effectiveStart) {
+      const startMs = new Date(`${effectiveStart}T12:00:00`).getTime();
+      const endMs = new Date(`${clsEnd}T12:00:00`).getTime();
+      if (!isNaN(startMs) && !isNaN(endMs) && endMs >= startMs) {
+        const spanWeeks = Math.ceil((endMs - startMs) / (7 * 86400000)) + 1;
+        neededWeeks = Math.min(30, Math.max(baseWeeks, spanWeeks));
+      }
+    }
+    return buildTermWeeks(effectiveStart, neededWeeks);
+  }, [activeFilterTerm, currentClassBounds?.startDate, currentClassBounds?.endDate]);
+
+  const timeSlot = store.timeSlots.find(t => t.id === currentClass?.time_slot_id);
+
+  // Class scheduled days of week (Default: T2, T4)
+  const classDays = useMemo(() => {
+    if (!currentClass) return ['T2', 'T4'];
+    return (currentClass.days_of_week && currentClass.days_of_week.length > 0)
+      ? currentClass.days_of_week
+      : (timeSlot?.days_of_week || ['T2', 'T4']);
+  }, [currentClass, timeSlot]);
 
   // Selected week (Default: current week or week 8 for active term, week 1 for other terms)
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(() => {
@@ -509,7 +523,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   }, [scheduledSessionsForWeek, selectedDate, isEndedClass, currentClass?.id, currentClassBounds?.startDate, currentClassBounds?.endDate]);
 
   const isFutureDate = selectedDate > today;
-  const isAttendanceLocked = isFutureDate || isUpcomingClass || isEndedClass;
+  const isOutsideClassBoundsForEnded =
+    isEndedClass &&
+    Boolean(
+      currentClassBounds &&
+        ((currentClassBounds.startDate && selectedDate < currentClassBounds.startDate) ||
+          (currentClassBounds.endDate && selectedDate > currentClassBounds.endDate))
+    );
+  const isAttendanceLocked = isFutureDate || isUpcomingClass || isOutsideClassBoundsForEnded;
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
     currentClass?.primary_teacher_id || store.teachers[0]?.id || ''
@@ -585,9 +606,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     );
   }, [currentClass, selectedDate, store.attendance]);
 
-  // Deduplicated enrollments for this class:
-  // - If class is ended: load ALL historical statuses (active, completed, dropped, trial, trial_dropped, transferred)
-  // - Otherwise: load active/trial enrollments + any student who already has saved attendance on selectedDate
+  // Deduplicated enrollments for this class (tất cả trạng thái trừ cancelled/canceled)
   const allClassEnrollments = useMemo(() => {
     if (!currentClass) return [] as Enrollment[];
     const PRIORITY: Record<string, number> = {
@@ -603,11 +622,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       if (enr.class_id !== currentClass.id) continue;
       const st = String(enr.status || 'active');
       if (st === 'cancelled' || st === 'canceled') continue;
-      if (!isEndedClass) {
-        const isCurrentActive = st === 'active' || st === 'trial';
-        const hasSavedOnDate = savedAttStudentIdsOnDate.has(String(enr.student_id));
-        if (!isCurrentActive && !hasSavedOnDate) continue;
-      }
       const key = String(enr.student_id);
       const existing = byStudent.get(key);
       if (!existing || (PRIORITY[st] || 0) >= (PRIORITY[String(existing.status || 'active')] || 0)) {
@@ -615,38 +629,77 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       }
     }
     return Array.from(byStudent.values());
-  }, [currentClass, store.enrollments, isEndedClass, savedAttStudentIdsOnDate]);
+  }, [currentClass, store.enrollments]);
 
   // Split enrollments into:
   // 1) Scheduled for selectedDate (or already has saved attendance record on selectedDate)
-  // 2) Off-schedule / dropped for selectedDate
+  // 2) Excluded with exact reason ('weekday_mismatch' | 'not_started' | 'dropped' | 'out_of_class_bounds')
   // If class is upcoming, keep full roster visible in view-only mode
-  const classEnrollments = isUpcomingClass
-    ? allClassEnrollments
-    : allClassEnrollments.filter(
-        e =>
-          savedAttStudentIdsOnDate.has(String(e.student_id)) ||
-          isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
+  const sessionEligibilityEvaluations = useMemo(() => {
+    return allClassEnrollments.map(enr => {
+      const hasSaved = savedAttStudentIdsOnDate.has(String(enr.student_id));
+      if (isUpcomingClass) {
+        return {
+          enrollment: enr,
+          eligible: true,
+          reason: undefined,
+          startDate: getEnrollmentStartDate(enr, currentClass || undefined),
+        };
+      }
+      const res = evaluateStudentSessionEligibility(
+        enr,
+        selectedDate,
+        classDays,
+        currentClass || undefined,
+        store.terms,
+        hasSaved
       );
+      return {
+        enrollment: enr,
+        eligible: res.eligible,
+        reason: res.reason,
+        startDate: res.startDate || getEnrollmentStartDate(enr, currentClass || undefined),
+      };
+    });
+  }, [allClassEnrollments, savedAttStudentIdsOnDate, isUpcomingClass, selectedDate, classDays, currentClass, store.terms]);
 
-  const offScheduleEnrollments = isUpcomingClass
-    ? []
-    : allClassEnrollments.filter(
-        e =>
-          !savedAttStudentIdsOnDate.has(String(e.student_id)) &&
-          !isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
-      );
+  const classEnrollments = sessionEligibilityEvaluations
+    .filter(item => item.eligible)
+    .map(item => item.enrollment);
+
+  const offScheduleStudents = sessionEligibilityEvaluations
+    .filter(item => !item.eligible)
+    .map(item => {
+      const student = store.students.find(s => s.id === item.enrollment.student_id);
+      return student
+        ? {
+            student,
+            enrollment: item.enrollment,
+            reason: item.reason,
+            startDate: item.startDate,
+          }
+        : null;
+    })
+    .filter(Boolean) as {
+    student: Student;
+    enrollment: Enrollment;
+    reason?: string;
+    startDate?: string;
+  }[];
+
+  const weekdayMismatchStudentsCount = offScheduleStudents.filter(
+    item => item.reason === 'weekday_mismatch'
+  ).length;
+  const notStartedStudentsCount = offScheduleStudents.filter(
+    item => item.reason === 'not_started'
+  ).length;
+  const droppedExcludedStudentsCount = offScheduleStudents.filter(
+    item => item.reason === 'dropped'
+  ).length;
 
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
     .filter(Boolean) as Student[];
-
-  const offScheduleStudents = offScheduleEnrollments
-    .map(e => {
-      const student = store.students.find(s => s.id === e.student_id);
-      return student ? { student, enrollment: e } : null;
-    })
-    .filter(Boolean) as { student: Student; enrollment: Enrollment }[];
 
   // Existing session for this date
   const currentSession = currentClass
@@ -1048,10 +1101,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
   }, [classSecondaryTeacherIds, secondaryTeacherStates, store, currentClass, selectedDate, isWeekendSlot]);
 
-  const totalAllTeachersPayout = useMemo(() => {
-    const secSum = secondaryTeachersLiveList.reduce((acc, item) => acc + item.payout, 0);
-    return liveTeacherTotalPayout + secSum;
-  }, [liveTeacherTotalPayout, secondaryTeachersLiveList]);
 
   // Danh sách học sinh trong lớp có lưu ý y tế / dị ứng cần nhân viên y tế theo dõi
   const studentsWithMedicalNotes = useMemo(() => {
@@ -1082,16 +1131,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
     setAttendanceState(newMap);
     setIsDirty(false);
-  }, [selectedDate, currentClass?.id, store.attendance, store.enrollments, isEndedClass]);
+  }, [selectedDate, currentClass?.id, store.attendance, store.enrollments, store.students, enrolledStudents.length]);
 
-  // Royal Snacks live calculation for this session (0 if class has not started or has already ended)
-  const royalStudents = (isUpcomingClass || isEndedClass) ? [] : enrolledStudents.filter(s => s.is_royal_student);
-  const totalRoyalCount = (isUpcomingClass || isEndedClass) ? 0 : royalStudents.length;
+  // Royal Snacks live calculation for this session (0 only if class has not started yet)
+  const royalStudents = isUpcomingClass ? [] : enrolledStudents.filter(s => s.is_royal_student);
+  const totalRoyalCount = isUpcomingClass ? 0 : royalStudents.length;
 
   let liveConsumed = 0;
   let liveReturned = 0;
 
-  if (!isUpcomingClass && !isEndedClass) {
+  if (!isUpcomingClass) {
     royalStudents.forEach(s => {
       const st = attendanceState[s.id]?.status || 'present';
       if (st === 'present' || st === 'absent_unexcused') {
@@ -1344,11 +1393,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       );
       return;
     }
-    if (isEndedClass) {
+    if (isOutsideClassBoundsForEnded) {
       showToast(
-        `Lớp đã kết thúc (${formatDateVN(currentClassBounds?.endDate)}) — chỉ xem lịch sử điểm danh.`,
+        `Ngày ${formatDateVN(selectedDate)} nằm ngoài khoảng thời gian khóa học (${formatDateVN(currentClassBounds?.startDate)} - ${formatDateVN(currentClassBounds?.endDate)}). Vui lòng chọn đúng buổi học trong khóa.`,
         'warning',
-        { title: 'Lớp đã kết thúc' }
+        { title: 'Ngoài thời gian khóa học' }
       );
       return;
     }
@@ -1533,51 +1582,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         }
       });
 
-      // 5. Audit Logging for attendance save and proofs
-      const newAuditLogs = [...(prev.auditLogs || [])];
-      
-      const attendanceLog = createAuditRecord(
-        'ATTENDANCE_SAVE',
-        'ACADEMIC',
-        `Sổ Điểm danh Lớp ${currentClass.name}`,
-        `Lưu điểm danh ngày ${selectedDate} lớp ${currentClass.name} (Có mặt: ${enrolledStudents.filter(s => attendanceState[s.id]?.status === 'present').length}, Vắng CP: ${liveReturned}, Suất bánh sữa hoàn: ${liveReturned}${newlyPromoted.length > 0 ? `, Tự động lên chính thức: ${newlyPromoted.join(', ')}` : ''})`,
-        currentUser,
-        {
-          details: {
-            session_date: selectedDate,
-            class_id: currentClass.id,
-            snacks_allocated: totalRoyalCount,
-            snacks_consumed: liveConsumed,
-            snacks_returned: liveReturned,
-            newly_promoted_trials: newlyPromoted,
-            status: 'success',
-          }
-        }
+      // 5. Audit Logging for attendance save, proofs & historical ended-class diffs
+      const prevSessionAttendance = prev.attendance.filter(
+        a => a.class_id === currentClass.id && a.session_date === selectedDate
       );
-      newAuditLogs.unshift(attendanceLog);
-
-      // Explicit audit log for excused absences with Drive proof
-      enrolledStudents.forEach(s => {
-        const rec = attendanceState[s.id];
-        if (rec?.status === 'absent_excused' && rec.proof_url) {
-          newAuditLogs.unshift(createAuditRecord(
-            'ATTENDANCE_SAVE',
-            'ACADEMIC',
-            `Học sinh ${s.name} (${s.code})`,
-            `Ghi nhận vắng có phép kèm minh chứng Drive cho học sinh ${s.name} ngày ${selectedDate}`,
-            currentUser,
-            {
-              details: {
-                proof_url: rec.proof_url,
-                proof_file_name: rec.proof_file_name,
-                note: rec.note,
-                session_date: selectedDate,
-                class_id: currentClass.id,
-              }
-            }
-          ));
-        }
-      });
+      const newAuditLogs = [...(prev.auditLogs || [])];
 
       // 1B. TeacherAttendanceRecord persistence (Chấm công giáo viên buổi học cho 1 - 4 GV)
       const existingSessionTeacherAtts = (prev.teacherAttendance || []).filter(
@@ -1639,7 +1648,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         notes:
           teacherSessionNote.trim() ||
           (teacherMode === 'substitute'
-            ? `${assignedTeacherObj?.name || 'GV chính'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay 1 buổi (${formatVND(liveTeacherTotalPayout)})`
+            ? `${assignedTeacherObj?.name || 'GV chính'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay 1 buổi`
             : teacherMode === 'late'
             ? `Vào lớp lúc ${teacherCheckInTime} (muộn ${teacherLateMinutes} phút)`
             : teacherMode === 'absent'
@@ -1693,9 +1702,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           notes:
             secItem.state.note.trim() ||
             (isSub
-              ? `GV phụ ${secItem.assignedTeacherObj?.name || ''} nghỉ, ${secItem.actualTeacherObj?.name || ''} dạy thay (${formatVND(secItem.payout)})`
+              ? `GV phụ ${secItem.assignedTeacherObj?.name || ''} nghỉ, ${secItem.actualTeacherObj?.name || ''} dạy thay`
               : secItem.state.mode === 'absent'
-              ? `GV phụ ${secItem.assignedTeacherObj?.name || ''} vắng mặt (0 đ)`
+              ? `GV phụ ${secItem.assignedTeacherObj?.name || ''} vắng mặt (0 tiết)`
               : `Giáo viên phụ / Trợ giảng ${secItem.index} đứng lớp`),
         };
       });
@@ -1705,6 +1714,174 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         newTeacherAttendanceRecord,
         ...secondaryAttendanceRecords,
       ];
+
+      // Tính toán diff cũ -> mới để lưu audit_logs chi tiết khi chỉnh sửa lớp đã kết thúc
+      const formatStatusVi = (st?: string) =>
+        st === 'present'
+          ? 'Có mặt'
+          : st === 'absent_excused'
+          ? 'Vắng CP'
+          : st === 'absent_unexcused'
+          ? 'Vắng KP'
+          : 'Chưa ĐD';
+      const formatTeacherModeVi = (rec?: TeacherAttendanceRecord) => {
+        if (!rec) return 'Chưa chấm công';
+        if (rec.is_substitute) return 'Dạy thay';
+        if (rec.status === 'late') return 'Đi muộn';
+        if (rec.status === 'absent_excused' || rec.status === 'absent_unexcused') return 'Vắng mặt';
+        return 'Đúng giờ';
+      };
+
+      const studentChanges = enrolledStudents
+        .map(s => {
+          const oldRec = prevSessionAttendance.find(a => a.student_id === s.id);
+          const newRec = newRecords.find(a => a.student_id === s.id);
+          const oldSt = oldRec?.status || 'none';
+          const newSt = newRec?.status || 'present';
+          const oldNote = oldRec?.note || '';
+          const newNote = newRec?.note || '';
+          if (oldSt === newSt && oldNote === newNote) return null;
+          return {
+            student_id: s.id,
+            student_code: s.code,
+            student_name: s.name,
+            old_status: oldSt,
+            new_status: newSt,
+            old_note: oldNote,
+            new_note: newNote,
+            summary: `${s.name} (${s.code}): ${formatStatusVi(oldRec?.status)} -> ${formatStatusVi(newSt)}${oldNote !== newNote ? ` [Ghi chú: "${oldNote}" -> "${newNote}"]` : ''}`,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
+      const nextTeacherRecordsForSession = [newTeacherAttendanceRecord, ...secondaryAttendanceRecords];
+      const teacherChanges = nextTeacherRecordsForSession
+        .map(newT => {
+          const oldT = existingSessionTeacherAtts.find(
+            ta => ta.assigned_teacher_id === newT.assigned_teacher_id
+          );
+          const oldActualName =
+            prev.teachers.find(t => t.id === oldT?.actual_teacher_id)?.name || oldT?.actual_teacher_id || 'Chưa có';
+          const newActualName =
+            prev.teachers.find(t => t.id === newT.actual_teacher_id)?.name || newT.actual_teacher_id;
+          const oldModeLabel = formatTeacherModeVi(oldT);
+          const newModeLabel = formatTeacherModeVi(newT);
+          const changed =
+            !oldT ||
+            oldT.status !== newT.status ||
+            oldT.actual_teacher_id !== newT.actual_teacher_id ||
+            oldT.is_substitute !== newT.is_substitute ||
+            oldT.periods_count !== newT.periods_count ||
+            (oldT.check_in_time || '') !== (newT.check_in_time || '') ||
+            (oldT.notes || '') !== (newT.notes || '');
+          if (!changed) return null;
+          return {
+            assigned_teacher_id: newT.assigned_teacher_id,
+            old_status: oldT?.status || 'none',
+            new_status: newT.status,
+            old_actual_teacher_id: oldT?.actual_teacher_id || null,
+            new_actual_teacher_id: newT.actual_teacher_id,
+            old_periods_count: oldT?.periods_count ?? null,
+            new_periods_count: newT.periods_count,
+            old_check_in_time: oldT?.check_in_time || null,
+            new_check_in_time: newT.check_in_time || null,
+            summary: `GV ${newActualName}: ${oldModeLabel} (${oldActualName}, ${oldT?.periods_count ?? 0} tiết) -> ${newModeLabel} (${newActualName}, ${newT.periods_count} tiết)`,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
+      const changeSummaryText = [
+        ...studentChanges.map(c => c.summary),
+        ...teacherChanges.map(c => c.summary),
+      ]
+        .slice(0, 6)
+        .join('; ');
+
+      const attendanceLog = createAuditRecord(
+        'ATTENDANCE_SAVE',
+        'ACADEMIC',
+        `Sổ Điểm danh Lớp ${currentClass.name}`,
+        isEndedClass
+          ? `[Sửa lịch sử lớp đã kết thúc] Lưu điểm danh ngày ${selectedDate} lớp ${currentClass.name} (Có mặt: ${enrolledStudents.filter(s => attendanceState[s.id]?.status === 'present').length}, Vắng CP: ${liveReturned}, Suất bánh sữa hoàn: ${liveReturned})${changeSummaryText ? ` | Thay đổi: ${changeSummaryText}` : ''}`
+          : `Lưu điểm danh ngày ${selectedDate} lớp ${currentClass.name} (Có mặt: ${enrolledStudents.filter(s => attendanceState[s.id]?.status === 'present').length}, Vắng CP: ${liveReturned}, Suất bánh sữa hoàn: ${liveReturned}${newlyPromoted.length > 0 ? `, Tự động lên chính thức: ${newlyPromoted.join(', ')}` : ''})`,
+        currentUser,
+        {
+          target_id: currentClass.code || currentClass.id,
+          details: {
+            session_date: selectedDate,
+            class_id: currentClass.id,
+            class_name: currentClass.name,
+            is_ended_class_edit: isEndedClass,
+            snacks_allocated: totalRoyalCount,
+            snacks_consumed: liveConsumed,
+            snacks_returned: liveReturned,
+            newly_promoted_trials: newlyPromoted,
+            student_changes: studentChanges,
+            teacher_changes: teacherChanges,
+            ...(isEndedClass
+              ? {
+                  before: {
+                    attendance: prevSessionAttendance.map(a => ({
+                      student_id: a.student_id,
+                      status: a.status,
+                      note: a.note || '',
+                    })),
+                    teacher_attendance: existingSessionTeacherAtts.map(t => ({
+                      assigned_teacher_id: t.assigned_teacher_id,
+                      actual_teacher_id: t.actual_teacher_id,
+                      status: t.status,
+                      is_substitute: t.is_substitute,
+                      periods_count: t.periods_count,
+                      check_in_time: t.check_in_time || '',
+                      notes: t.notes || '',
+                    })),
+                  },
+                  after: {
+                    attendance: newRecords.map(a => ({
+                      student_id: a.student_id,
+                      status: a.status,
+                      note: a.note || '',
+                    })),
+                    teacher_attendance: nextTeacherRecordsForSession.map(t => ({
+                      assigned_teacher_id: t.assigned_teacher_id,
+                      actual_teacher_id: t.actual_teacher_id,
+                      status: t.status,
+                      is_substitute: t.is_substitute,
+                      periods_count: t.periods_count,
+                      check_in_time: t.check_in_time || '',
+                      notes: t.notes || '',
+                    })),
+                  },
+                }
+              : {}),
+            status: 'success',
+          },
+        }
+      );
+      newAuditLogs.unshift(attendanceLog);
+
+      // Explicit audit log for excused absences with Drive proof
+      enrolledStudents.forEach(s => {
+        const rec = attendanceState[s.id];
+        if (rec?.status === 'absent_excused' && rec.proof_url) {
+          newAuditLogs.unshift(createAuditRecord(
+            'ATTENDANCE_SAVE',
+            'ACADEMIC',
+            `Học sinh ${s.name} (${s.code})`,
+            `Ghi nhận vắng có phép kèm minh chứng Drive cho học sinh ${s.name} ngày ${selectedDate}`,
+            currentUser,
+            {
+              details: {
+                proof_url: rec.proof_url,
+                proof_file_name: rec.proof_file_name,
+                note: rec.note,
+                session_date: selectedDate,
+                class_id: currentClass.id,
+              }
+            }
+          ));
+        }
+      });
 
       const isTeacherAccountSaving = currentUser?.role === 'teacher';
 
@@ -1732,7 +1909,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       );
     } else {
       showToast(
-        `Đã lưu điểm danh ngày ${selectedDate}: Có mặt ${saveImpactSummary.presentCount} HS, Vắng CP ${saveImpactSummary.excusedCount} HS, Vắng KP ${saveImpactSummary.unexcusedCount} HS | Ghi danh đổi trạng thái: ${saveImpactSummary.enrollmentsChangedCount} | Hóa đơn ảnh hưởng: ${saveImpactSummary.affectedInvoicesCount} | Thù lao GV (${actualTeacherObj?.name || 'GV'}): ${formatVND(liveTeacherTotalPayout)} | Bánh sữa: Tiêu thụ ${liveConsumed}/${totalRoyalCount} suất, Hoàn trả bếp ${liveReturned} suất!`,
+        `Đã lưu điểm danh ngày ${selectedDate}: Có mặt ${saveImpactSummary.presentCount} HS, Vắng CP ${saveImpactSummary.excusedCount} HS, Vắng KP ${saveImpactSummary.unexcusedCount} HS | Ghi danh đổi trạng thái: ${saveImpactSummary.enrollmentsChangedCount} | Hóa đơn ảnh hưởng: ${saveImpactSummary.affectedInvoicesCount} | Chấm công GV (${actualTeacherObj?.name || 'GV'}): ${teacherMode === 'absent' ? 'Vắng mặt (0 tiết)' : `${teacherPeriodsCount} tiết`} | Bánh sữa: Tiêu thụ ${liveConsumed}/${totalRoyalCount} suất, Hoàn trả bếp ${liveReturned} suất!`,
         'success',
         { title: 'Lưu điểm danh & Chấm công GV thành công' }
       );
@@ -2012,10 +2189,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   ? 'Không có lớp học nào khả dụng để lưu điểm danh'
                   : isUpcomingClass
                   ? `Lớp bắt đầu từ ${formatDateVN(currentClassBounds?.startDate)}, chưa thể điểm danh`
-                  : isEndedClass
-                  ? 'Lớp đã kết thúc — chỉ xem lịch sử'
+                  : isOutsideClassBoundsForEnded
+                  ? `Ngày ${formatDateVN(selectedDate)} nằm ngoài thời gian khóa học`
                   : isFutureDate
                   ? 'Không thể lưu điểm danh cho ngày trong tương lai'
+                  : isEndedClass
+                  ? 'Lưu chỉnh sửa điểm danh lịch sử'
                   : 'Lưu dữ liệu điểm danh'
               }
               className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
@@ -2030,8 +2209,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   ? 'Chọn lớp để điểm danh'
                   : isUpcomingClass
                   ? 'Chưa tới ngày bắt đầu'
-                  : isEndedClass
-                  ? 'Đã kết thúc (Chỉ xem)'
+                  : isOutsideClassBoundsForEnded
+                  ? 'Ngoài Thời Gian Khóa'
                   : isFutureDate
                   ? 'Bị Khóa (Ngày Tương Lai)'
                   : 'Lưu Buổi Điểm Danh'}
@@ -2187,20 +2366,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <p className="text-[11px] text-slate-400 mt-0.5">
                       Ca học: <strong>{timeSlot?.start_time || '16:45'} - {timeSlot?.end_time || '18:15'} (90 phút = 2 tiết chuẩn)</strong> &bull; Ghi nhận trực tiếp vào bảng quyết toán thù lao khóa học
                     </p>
-                  </div>
-                </div>
-
-                {/* Live Payout Formula Display */}
-                <div className="px-3.5 py-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 flex items-center gap-3 shrink-0">
-                  <div className="text-right">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300/90">
-                      Thù lao buổi ({actualTeacherObj?.name}):
-                    </div>
-                    <div className="text-xs font-mono text-slate-300 mt-0.5">
-                      <strong className="text-white">{teacherMode === 'absent' ? '0 buổi' : '1 buổi'}</strong> &times;{' '}
-                      <strong className="text-amber-300">{formatVND(liveTeacherSessionRate)}/buổi</strong> ={' '}
-                      <strong className="text-sm font-extrabold text-emerald-400">{formatVND(liveTeacherTotalPayout)}</strong>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -2373,20 +2538,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       {sortByLabelVi(
                         store.teachers
                           .filter(t => t.status !== 'inactive' || t.id === selectedTeacherId)
-                          .map(t => {
-                            const subCalc = calculateTeacherSessionPayAtDate({
-                              teacher: t,
-                              cls: currentClass,
-                              sessionDate: selectedDate,
-                              periodsCount: teacherPeriodsCount,
-                              isWeekendOverride: isWeekendSlot,
-                              store,
-                            });
-                            return {
-                              t,
-                              label: `${t.name} (${t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — ${formatVND(subCalc.earnedAmount)}/buổi`,
-                            };
-                          }),
+                          .map(t => ({
+                            t,
+                            label: `${t.name} (${t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'})`,
+                          })),
                         x => x.label
                       ).map(({ t, label }) => (
                         <option key={t.id} value={t.id} className="bg-slate-900">
@@ -2436,7 +2591,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   <div className="md:col-span-6 p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 flex items-center gap-2 text-rose-200 text-[11px]">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                     <span>
-                      Giáo viên <strong>{assignedTeacherObj?.name}</strong> vắng mặt không có người dạy thay: Thù lao buổi này = <strong>0 đ</strong>. Vui lòng chọn <strong>[🔄 Dạy Thay]</strong> nếu có giáo viên đứng lớp thay.
+                      Giáo viên <strong>{assignedTeacherObj?.name}</strong> vắng mặt không có người dạy thay: Không ghi nhận tiết dạy (<strong>0 tiết</strong>). Vui lòng chọn <strong>[🔄 Dạy Thay]</strong> nếu có giáo viên đứng lớp thay.
                     </span>
                   </div>
                 )}
@@ -2470,10 +2625,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       <UserCheck className="w-3.5 h-3.5" />
                       <span>Danh Sách Giáo Viên Phụ / Trợ Giảng Đứng Lớp ({secondaryTeachersLiveList.length} GV phụ)</span>
                     </span>
-                    <span className="text-[11px] font-mono text-slate-300 bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800">
-                      Tổng thù lao đội ngũ GV ({1 + secondaryTeachersLiveList.length} GV):{' '}
-                      <strong className="text-emerald-400 font-extrabold">{formatVND(totalAllTeachersPayout)}</strong>
-                    </span>
                   </div>
 
                   <div className="grid grid-cols-1 gap-2.5">
@@ -2495,10 +2646,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                                 <span className="text-[10px] text-slate-400 font-normal">
                                   ({(secItem.assignedTeacherObj?.type || secItem.assignedTeacherObj?.teacher_type) === 'partner' ? 'Đối tác' : (secItem.assignedTeacherObj?.type || secItem.assignedTeacherObj?.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
                                 </span>
-                              </div>
-                              <div className="text-[10px] text-slate-400 font-mono">
-                                Đơn giá buổi: <strong className="text-amber-300">{formatVND(secItem.sessionRate)}/buổi</strong> &bull; Thù lao thực nhận:{' '}
-                                <strong className="text-emerald-400">{formatVND(secItem.payout)}</strong>
                               </div>
                             </div>
                           </div>
@@ -2603,22 +2750,31 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         )}
 
         {currentClass && !isUpcomingClass && isEndedClass && (
-          <div className="mt-3 p-3.5 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center gap-3 text-slate-200 text-xs font-semibold backdrop-blur-md">
-            <div className="w-8 h-8 rounded-xl bg-slate-700/70 flex items-center justify-center shrink-0 text-slate-300">
+          <div className="mt-3 px-4 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-2.5 text-amber-200 text-xs font-semibold">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              Lớp đã kết thúc – bạn đang chỉnh sửa điểm danh lịch sử ({formatDateVN(currentClassBounds?.startDate)} &rarr; {formatDateVN(currentClassBounds?.endDate)}).
+            </span>
+          </div>
+        )}
+
+        {currentClass && !isUpcomingClass && isOutsideClassBoundsForEnded && (
+          <div className="mt-3 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 flex items-center gap-3 text-rose-200 text-xs font-semibold backdrop-blur-md">
+            <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center shrink-0 text-rose-400">
               <Lock className="w-4 h-4" />
             </div>
             <div>
-              <div className="font-bold text-slate-100 text-sm">
-                Lớp đã kết thúc, chỉ xem lịch sử ({formatDateVN(currentClassBounds?.endDate)})
+              <div className="font-bold text-rose-300 text-sm">
+                Ngày {formatDateVN(selectedDate)} nằm ngoài thời gian khóa học
               </div>
-              <div className="text-[11px] text-slate-400 mt-0.5">
-                Lớp đã qua ngày kết thúc khóa, sổ điểm danh được chuyển sang chế độ chỉ xem để bảo toàn dữ liệu lịch sử (không tính vắng hay bánh sữa mới).
+              <div className="text-[11px] text-rose-400/90 mt-0.5">
+                Chỉ chỉnh sửa được các buổi học trong khoảng {formatDateVN(currentClassBounds?.startDate)} &rarr; {formatDateVN(currentClassBounds?.endDate)}. Vui lòng chọn tuần/buổi học thuộc khóa này.
               </div>
             </div>
           </div>
         )}
 
-        {currentClass && !isUpcomingClass && !isEndedClass && isFutureDate && (
+        {currentClass && !isUpcomingClass && isFutureDate && (
           <div className="mt-3 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 flex items-center gap-3 text-rose-200 text-xs font-semibold backdrop-blur-md animate-pulse">
             <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center shrink-0 text-rose-400">
               <Lock className="w-4 h-4" />
@@ -2762,14 +2918,24 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
                   <span>Sổ Điểm Danh Học Viên Ca {selectedDayLabel} ({enrolledStudents.length}/{allClassEnrollments.length} học sinh có lịch học)</span>
-                  {offScheduleStudents.length > 0 && (
+                  {weekdayMismatchStudentsCount > 0 && (
                     <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold">
-                      Đã lọc {offScheduleStudents.length} HV không thuộc lịch {selectedDayLabel}
+                      Đã lọc {weekdayMismatchStudentsCount} HV không thuộc lịch {selectedDayLabel}
+                    </span>
+                  )}
+                  {notStartedStudentsCount > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[11px] font-bold">
+                      {notStartedStudentsCount} HV chưa vào học ở ngày này
+                    </span>
+                  )}
+                  {droppedExcludedStudentsCount > 0 && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[11px] font-bold">
+                      {droppedExcludedStudentsCount} HV đã nghỉ / chuyển lớp
                     </span>
                   )}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  * Hệ thống tự động hiển thị đúng học sinh có đăng ký học vào <strong>{selectedDayLabel} ({formatDateVN(selectedDate)})</strong>. Học sinh học lệch thứ/bán phần sẽ không bị tính vắng sai và không phát sinh suất bánh sữa dư.
+                  * Hệ thống tự động hiển thị đúng học sinh có đăng ký học vào <strong>{selectedDayLabel} ({formatDateVN(selectedDate)})</strong>. Học sinh học lệch thứ/bán phần hoặc chưa tới ngày vào học sẽ không bị tính vắng sai và không phát sinh suất bánh sữa dư.
                 </p>
               </div>
 
@@ -2787,8 +2953,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <Calendar className="w-3.5 h-3.5 text-cyan-400" />
                     <span>
                       {showOffScheduleStudents
-                        ? `Ẩn HV khác lịch (${offScheduleStudents.length})`
-                        : `Xem HV nghỉ theo lịch riêng (${offScheduleStudents.length})`}
+                        ? `Ẩn HV không học buổi này (${offScheduleStudents.length})`
+                        : `Xem HV được lọc buổi này (${offScheduleStudents.length})`}
                     </span>
                   </button>
                 )}
@@ -2796,14 +2962,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </div>
             </div>
 
-            {/* Off-Schedule Students Info Drawer (When toggled or when partial-schedule students are hidden today) */}
+            {/* Off-Schedule / Pre-Start / Dropped Students Info Drawer */}
             {offScheduleStudents.length > 0 && showOffScheduleStudents && (
               <div className="mx-4 mt-4 p-3.5 rounded-2xl bg-cyan-950/20 border border-cyan-500/30 space-y-2.5">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="text-xs font-bold text-cyan-300 flex items-center gap-2">
                     <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
                     <span>
-                      Danh sách học viên của lớp KHÔNG thuộc ca học {selectedDayLabel} ({formatDateVN(selectedDate)}) — Tự động miễn điểm danh & không tính bánh sữa:
+                      Danh sách học viên được lọc khỏi ca học {selectedDayLabel} ({formatDateVN(selectedDate)}) — Tự động miễn điểm danh & không tính bánh sữa:
                     </span>
                   </div>
                   <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
@@ -2811,8 +2977,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                  {offScheduleStudents.map(({ student, enrollment }) => {
-                    const isBeforeJoin = enrollment.joined_date && selectedDate < enrollment.joined_date;
+                  {offScheduleStudents.map(({ student, enrollment, reason, startDate }) => {
+                    const effectiveStart = startDate || getEnrollmentStartDate(enrollment, currentClass || undefined);
+                    const isBeforeJoin = reason === 'not_started' || Boolean(effectiveStart && selectedDate < effectiveStart);
                     const statusBadge = getEnrollmentStatusDisplay(enrollment, currentClass || undefined, today, store.terms);
                     const promotedTarget = getPromotedTargetInfo(enrollment, store.enrollments, store.classes, store.promotionHistories);
                     const studentDaysText =
@@ -2831,12 +2998,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                             <span className="text-[10px] font-mono text-slate-400">({student.code})</span>
                           </div>
                           <div className="text-[10px] text-cyan-300 font-semibold mt-0.5">
-                            {statusBadge.tone === 'dropped'
-                              ? 'Học viên đã dừng / nghỉ học'
-                              : statusBadge.tone === 'transferred'
-                              ? 'Học viên đã chuyển sang lớp khác'
+                            {reason === 'dropped'
+                              ? statusBadge.tone === 'transferred'
+                                ? 'Học viên đã chuyển sang lớp khác'
+                                : 'Học viên đã dừng / nghỉ học'
                               : isBeforeJoin
-                              ? `Bắt đầu học từ: ${formatDateVN(enrollment.joined_date)}`
+                              ? `Bắt đầu học từ: ${formatDateVN(effectiveStart)}`
+                              : reason === 'out_of_class_bounds'
+                              ? 'Ngày chọn nằm ngoài thời gian khóa học'
                               : `Lịch cố định: Chỉ học ${studentDaysText} (${enrollment.registered_sessions} buổi)`}
                           </div>
                           {promotedTarget && (
@@ -2846,13 +3015,21 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           )}
                         </div>
                         <span className={`px-2 py-1 rounded-lg border text-[10px] font-bold shrink-0 ${
-                          statusBadge.tone === 'dropped'
+                          reason === 'dropped'
                             ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            : isBeforeJoin
+                            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
                             : statusBadge.tone === 'completed'
                             ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                             : 'bg-slate-800 text-slate-400 border-slate-700'
                         }`}>
-                          {statusBadge.tone === 'dropped' || statusBadge.tone === 'transferred' ? statusBadge.label : 'Không thuộc ca'}
+                          {reason === 'dropped'
+                            ? statusBadge.label
+                            : isBeforeJoin
+                            ? 'Chưa vào học'
+                            : reason === 'out_of_class_bounds'
+                            ? 'Ngoài khóa'
+                            : 'Không thuộc ca'}
                         </span>
                       </div>
                     );
@@ -2888,8 +3065,6 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   className={`rounded-2xl p-4 border transition-all ${
                     isUpcomingClass || enrPhase === 'upcoming'
                       ? 'bg-slate-900/90 border-sky-500/30'
-                      : isEndedClass
-                      ? 'bg-slate-900/90 border-slate-700/80'
                       : currentStatus === 'present'
                       ? 'bg-slate-900/90 border-emerald-500/30 shadow-lg shadow-emerald-500/5'
                       : currentStatus === 'absent_excused'
@@ -2916,7 +3091,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                             : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                         }`}>
                           {statusDisplay.tone === 'upcoming'
-                            ? `${statusDisplay.label} – ${formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}`
+                            ? `${statusDisplay.label} – ${formatDateVN(getEnrollmentStartDate(enr, currentClass) || currentClassBounds?.startDate)}`
                             : statusDisplay.label}
                         </span>
                         {promotedTarget && (
@@ -3208,7 +3383,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                               : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
                           }`}>
                             {statusDisplay.tone === 'upcoming'
-                              ? `${statusDisplay.label} – ${formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}`
+                              ? `${statusDisplay.label} – ${formatDateVN(getEnrollmentStartDate(enr, currentClass) || currentClassBounds?.startDate)}`
                               : statusDisplay.label}
                           </span>
                           {promotedTarget && (
@@ -3867,7 +4042,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">Bản ghi chấm công GV ({actualTeacherObj?.name || 'GV'}):</span>
-                  <strong className="text-emerald-400 font-mono">{formatVND(liveTeacherTotalPayout)}</strong>
+                  <strong className="text-emerald-400 font-mono">
+                    {teacherMode === 'absent'
+                      ? 'Vắng mặt (0 tiết)'
+                      : `${teacherMode === 'substitute' ? 'Dạy thay' : teacherMode === 'late' ? 'Đi muộn' : 'Đúng giờ'} (${teacherPeriodsCount} tiết)`}
+                  </strong>
                 </div>
               </div>
             </div>
