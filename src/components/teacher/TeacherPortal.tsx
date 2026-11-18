@@ -43,10 +43,13 @@ import {
   createAuditRecord,
   appendAuditLog,
   formatDateVN,
+  formatDateShortVN,
   getCampusLabelVN,
   getClassDaysOfWeek,
   getClassEffectiveBounds,
   getClassPhase,
+  getEnrollmentStatusDisplay,
+  getPromotedTargetInfo,
   isStudentScheduledForDate,
   loadStore,
   normalizeCampusScope,
@@ -645,15 +648,17 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
   // Danh sách lớp học được phép nhìn thấy theo vai trò (Giáo viên vs Quản sinh / Bảo mẫu)
   const roleScopedClasses = useMemo(() => {
-    const activeClasses = (activeStore.classes || []).filter(c => c.status === 'active');
+    const visibleClasses = (activeStore.classes || []).filter(
+      c => c.status === 'active' || c.status === 'completed'
+    );
 
     if (!isSupervisorOrNanny) {
       // Đối với Giáo viên: chỉ hiển thị các lớp mà giáo viên đó phụ trách
-      return activeClasses.filter(cls => isTeacherAssignedToClass(cls, sessionDate));
+      return visibleClasses.filter(cls => isTeacherAssignedToClass(cls, sessionDate));
     }
 
-    // Đối với Quản sinh & Bảo mẫu: hiển thị TẤT CẢ các lớp active thuộc phạm vi cơ sở của tài khoản
-    return activeClasses.filter(cls => {
+    // Đối với Quản sinh & Bảo mẫu: hiển thị TẤT CẢ các lớp active/completed thuộc phạm vi cơ sở của tài khoản
+    return visibleClasses.filter(cls => {
       if (effectiveCampusScope === 'all') return true;
       return normalizeCampusScope(cls.campus_id) === effectiveCampusScope;
     });
@@ -726,11 +731,15 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       return true;
     });
 
-    // Sắp xếp: ưu tiên các lớp có lịch học trong ngày sessionDate lên đầu, sau đó theo giờ bắt đầu
+    // Sắp xếp: ưu tiên các lớp có lịch học trong ngày sessionDate lên đầu, lớp chưa kết thúc trước lớp đã kết thúc, sau đó theo giờ bắt đầu
     return [...list].sort((a, b) => {
       const aSched = isClassScheduledOnDate(a, sessionDate) ? 1 : 0;
       const bSched = isClassScheduledOnDate(b, sessionDate) ? 1 : 0;
       if (aSched !== bSched) return bSched - aSched;
+
+      const aEnded = getClassPhase(a, todayStr, activeStore.terms) === 'ended' ? 1 : 0;
+      const bEnded = getClassPhase(b, todayStr, activeStore.terms) === 'ended' ? 1 : 0;
+      if (aEnded !== bEnded) return aEnded - bEnded;
 
       const slotA = (activeStore.timeSlots || []).find(ts => ts.id === a.time_slot_id);
       const slotB = (activeStore.timeSlots || []).find(ts => ts.id === b.time_slot_id);
@@ -785,44 +794,102 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const isSelectedFutureDate = sessionDate > todayStr;
   const isAttendanceLocked = isSelectedClassUpcoming || isSelectedClassEnded || isSelectedFutureDate;
 
-  // Lấy danh sách học sinh đang học (active / trial) của một lớp trong ngày sessionDate
-  // Nếu lớp sắp bắt đầu (chưa tới start_date): trả về danh sách chỉ xem để nhân sự kiểm tra sĩ số
+  const allAttendanceRecords = useMemo(
+    () => activeStore.attendance || activeStore.attendanceRecords || [],
+    [activeStore.attendance, activeStore.attendanceRecords]
+  );
+
+  // Khi mở lớp đã kết thúc từ ngày hiện tại (vượt quá endDate), tự nhảy sang ngày buổi học cuối có dữ liệu hoặc endDate
+  useEffect(() => {
+    if (!selectedClass || !isSelectedClassEnded) return;
+    const endDate = selectedClassBounds?.endDate || '';
+    const startDate = selectedClassBounds?.startDate || '';
+    if (endDate && sessionDate <= endDate && (!startDate || sessionDate >= startDate)) {
+      return;
+    }
+    const savedDates = [
+      ...(activeStore.sessions || [])
+        .filter(s => s.class_id === selectedClass.id && s.session_date && s.session_date <= todayStr)
+        .map(s => String(s.session_date).split('T')[0]),
+      ...allAttendanceRecords
+        .filter(a => a.class_id === selectedClass.id && a.session_date && a.session_date <= todayStr)
+        .map(a => String(a.session_date).split('T')[0]),
+    ]
+      .filter(d => (!startDate || d >= startDate) && (!endDate || d <= endDate))
+      .sort();
+    const targetDate = savedDates.length > 0 ? savedDates[savedDates.length - 1] : endDate;
+    if (targetDate && targetDate !== sessionDate) {
+      setSessionDate(targetDate);
+    }
+  }, [selectedClass?.id, isSelectedClassEnded, selectedClassBounds?.startDate, selectedClassBounds?.endDate]);
+
+  // Lấy danh sách học sinh của một lớp trong ngày sessionDate (bao gồm completed/dropped cho lớp đã kết thúc ở chế độ chỉ xem)
   const getClassEnrolledStudentsForDate = useCallback(
     (cls: ExtracurricularClass | null, targetDate: string): Student[] => {
       if (!cls) return [];
       const classDays = getClassDaysOfWeek(cls, activeStore.timeSlots);
       const clsPhase = getClassPhase(cls, todayStr, activeStore.terms);
-      const enrollments = (activeStore.enrollments || []).filter(
-        e =>
-          e.class_id === cls.id &&
-          (e.status === 'active' || e.status === 'trial') &&
-          (clsPhase === 'upcoming' ||
-            isStudentScheduledForDate(e, targetDate, classDays, cls, activeStore.terms))
+      const clsBounds = getClassEffectiveBounds(cls, activeStore.terms);
+      const effectiveDateForEnded =
+        clsPhase === 'ended' && clsBounds.endDate && targetDate > clsBounds.endDate
+          ? clsBounds.endDate
+          : targetDate;
+
+      const savedAttOnDate = new Set(
+        allAttendanceRecords
+          .filter(a => a.class_id === cls.id && a.session_date === targetDate)
+          .map(a => String(a.student_id))
       );
+
+      const PRIORITY: Record<string, number> = {
+        active: 6,
+        trial: 5,
+        completed: 4,
+        transferred: 3,
+        dropped: 2,
+        trial_dropped: 1,
+      };
+      const dedupByStudent = new Map<string, typeof activeStore.enrollments[number]>();
+      for (const e of activeStore.enrollments || []) {
+        if (e.class_id !== cls.id) continue;
+        const st = String(e.status || 'active');
+        if (st === 'cancelled' || st === 'canceled') continue;
+        if (clsPhase !== 'ended') {
+          const isCurrent = st === 'active' || st === 'trial';
+          if (!isCurrent && !savedAttOnDate.has(String(e.student_id))) continue;
+        }
+        const key = String(e.student_id);
+        const existing = dedupByStudent.get(key);
+        if (!existing || (PRIORITY[st] || 0) >= (PRIORITY[String(existing.status || 'active')] || 0)) {
+          dedupByStudent.set(key, e);
+        }
+      }
+
+      const enrollments = Array.from(dedupByStudent.values()).filter(e => {
+        if (savedAttOnDate.has(String(e.student_id))) return true;
+        if (clsPhase === 'upcoming') return true;
+        if (clsPhase === 'ended') {
+          return isStudentScheduledForDate(e, effectiveDateForEnded, classDays, cls, activeStore.terms);
+        }
+        return isStudentScheduledForDate(e, targetDate, classDays, cls, activeStore.terms);
+      });
+
       const studentMap = new Map((activeStore.students || []).map(s => [s.id, s]));
       const result: Student[] = [];
-      const seen = new Set<string>();
       for (const enr of enrollments) {
-        if (seen.has(enr.student_id)) continue;
         const st = studentMap.get(enr.student_id);
-        if (st && st.status !== 'dropped') {
-          seen.add(st.id);
+        if (st && (clsPhase === 'ended' || st.status !== 'dropped' || savedAttOnDate.has(String(enr.student_id)))) {
           result.push(st);
         }
       }
       return sortByLabelVi(result, s => s.name);
     },
-    [activeStore.enrollments, activeStore.students, activeStore.timeSlots, activeStore.terms, todayStr]
+    [activeStore.enrollments, activeStore.students, activeStore.timeSlots, activeStore.terms, allAttendanceRecords, todayStr]
   );
 
   const selectedClassStudents = useMemo(
     () => getClassEnrolledStudentsForDate(selectedClass, sessionDate),
     [getClassEnrolledStudentsForDate, selectedClass, sessionDate]
-  );
-
-  const allAttendanceRecords = useMemo(
-    () => activeStore.attendance || activeStore.attendanceRecords || [],
-    [activeStore.attendance, activeStore.attendanceRecords]
   );
 
   // Khởi tạo / đồng bộ trạng thái điểm danh khi chọn lớp hoặc đổi ngày
@@ -1870,7 +1937,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                   <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-2">
                     <AlertCircle className="w-4 h-4 text-slate-300 shrink-0" />
                     <span>
-                      Lớp đã kết thúc ({formatDateVN(selectedClassBounds?.endDate)}) — chỉ xem lịch sử điểm danh.
+                      Lớp đã kết thúc, chỉ xem lịch sử ({formatDateVN(selectedClassBounds?.endDate)}).
                     </span>
                   </div>
                 )}
@@ -1939,6 +2006,10 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                         e => e.student_id === student.id && e.class_id === selectedClass.id
                       );
                       const isTrial = enr?.status === 'trial';
+                      const statusDisplay = getEnrollmentStatusDisplay(enr, selectedClass, todayStr, activeStore.terms);
+                      const promotedTarget = enr
+                        ? getPromotedTargetInfo(enr, activeStore.enrollments, activeStore.classes, activeStore.promotionHistories)
+                        : null;
 
                       return (
                         <div
@@ -1958,6 +2029,30 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                                   ({student.code})
                                 </span>
 
+                                <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${
+                                  statusDisplay.tone === 'completed'
+                                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                    : statusDisplay.tone === 'dropped'
+                                    ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                                    : statusDisplay.tone === 'transferred'
+                                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                    : statusDisplay.tone === 'upcoming'
+                                    ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                                    : statusDisplay.tone === 'trial'
+                                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                    : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
+                                }`}>
+                                  {statusDisplay.tone === 'upcoming'
+                                    ? `${statusDisplay.label} – ${formatDateVN(enr?.joined_date || selectedClassBounds?.startDate)}`
+                                    : statusDisplay.label}
+                                </span>
+
+                                {promotedTarget && (
+                                  <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                                    Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateShortVN(promotedTarget.startDate)}
+                                  </span>
+                                )}
+
                                 {student.is_royal_student ? (
                                   <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold inline-flex items-center gap-1">
                                     <Coffee className="w-3 h-3" />
@@ -1969,11 +2064,6 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                                   </span>
                                 )}
 
-                                {isSelectedClassUpcoming && (
-                                  <span className="px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
-                                    Sắp bắt đầu – {formatDateVN(enr?.joined_date || selectedClassBounds?.startDate)}
-                                  </span>
-                                )}
                                 {isTrial && (
                                   <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold inline-flex items-center gap-1">
                                     <Sparkles className="w-3 h-3" />

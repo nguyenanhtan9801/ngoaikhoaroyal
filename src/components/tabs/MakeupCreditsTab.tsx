@@ -39,6 +39,12 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { supabase, getSupabaseClient } from '../../supabaseClient';
+import {
+  generateOfflineInvoiceCode,
+  insertInvoicesToSupabaseWithRetry,
+  isInvoiceCodeDuplicateError,
+} from '../../lib/invoiceCode';
 
 interface MakeupCreditsTabProps {
   store: AppStore;
@@ -240,7 +246,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
   };
 
   // Handle Apply Credit to Next Term Class (PHẦN 2: Buổi vs Tiền)
-  const handleConfirmRedeemToNextTerm = (option: NextTermClassRedemptionOption) => {
+  const handleConfirmRedeemToNextTerm = async (option: NextTermClassRedemptionOption) => {
     if (!applyingCredit) return;
     const targetClass = option.cls;
     const student = store.students.find(s => s.id === applyingCredit.student_id);
@@ -270,6 +276,59 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
       ? reservedSessions
       : targetClass.total_sessions;
 
+    const preExistingInvoice = store.invoices.find(
+      inv =>
+        inv.student_id === applyingCredit.student_id &&
+        inv.class_id === targetClass.id &&
+        inv.payment_status !== 'cancelled'
+    );
+
+    const resolvedNewInvoiceId = preExistingInvoice?.id || `inv_next_${Date.now()}`;
+    let resolvedNewInvoiceCode = preExistingInvoice?.invoice_code || '';
+
+    if (!preExistingInvoice) {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        try {
+          const { codeById } = await insertInvoicesToSupabaseWithRetry(
+            client,
+            [{
+              id: resolvedNewInvoiceId,
+              student_id: applyingCredit.student_id,
+              class_id: targetClass.id,
+              registered_sessions: registeredSessionsForNextClass,
+              total_class_sessions: targetClass.total_sessions,
+              session_rate: option.rateNew,
+              gross_amount: targetGrossAmount,
+              credit_deducted: deductedAmount,
+              discount_amount: 0,
+              net_payable: remainingBalanceDue,
+              paid_amount: 0,
+              outstanding_amount: remainingBalanceDue,
+              payment_status: remainingBalanceDue === 0 ? 'paid' : 'unpaid',
+              due_date: option.term?.start_date || '2027-01-15',
+              created_at: todayStr,
+            }],
+            { upsertOnConflictId: true, maxRetries: 3 }
+          );
+          resolvedNewInvoiceCode = codeById.get(resolvedNewInvoiceId) || '';
+        } catch (err: any) {
+          if (isInvoiceCodeDuplicateError(err)) {
+            showToast(
+              `Lỗi trùng mã hóa đơn trên CSDL: ${err?.message || String(err)}`,
+              'error',
+              { title: 'Không thể tạo hóa đơn' }
+            );
+            return;
+          }
+          console.warn('Supabase insert invoice in MakeupCreditsTab notice:', err?.message || err);
+        }
+      }
+      if (!resolvedNewInvoiceCode) {
+        resolvedNewInvoiceCode = generateOfflineInvoiceCode(store.invoices);
+      }
+    }
+
     onUpdateStore(prev => {
       // 1. Check if invoice already exists for (student_id, targetClass.id)
       const existingInvoice = prev.invoices.find(
@@ -279,10 +338,9 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
           inv.payment_status !== 'cancelled'
       );
 
-      let targetInvoiceId = existingInvoice?.id || `inv_next_${Date.now()}`;
-      let targetInvoiceCode =
-        existingInvoice?.invoice_code ||
-        `INV-2027-${String(prev.invoices.length + 1).padStart(4, '0')}`;
+      const targetInvoiceId = existingInvoice?.id || resolvedNewInvoiceId;
+      const targetInvoiceCode =
+        existingInvoice?.invoice_code || resolvedNewInvoiceCode;
 
       let updatedInvoices: TuitionInvoice[];
       if (existingInvoice) {
@@ -457,7 +515,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
   }, [editRedemptionData, editSelectedClassId]);
 
   // Handle Save Edited Redemption (Change Target Class)
-  const handleSaveEditedRedemption = (newOption: NextTermClassRedemptionOption) => {
+  const handleSaveEditedRedemption = async (newOption: NextTermClassRedemptionOption) => {
     if (!editingCredit) return;
     const oldClassId = editingCredit.redeemed_info?.target_class_id || editingCredit.applied_class_id;
     const oldInvoiceId = editingCredit.redeemed_info?.invoice_id;
@@ -482,6 +540,63 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
     const registeredSessionsForNextClass = isOnlyReservedSessions
       ? reservedSessions
       : newClass.total_sessions;
+
+    const preFilteredInvoices = oldClassId !== newClass.id
+      ? store.invoices.filter(
+          inv => !(oldInvoiceId && inv.id === oldInvoiceId && inv.paid_amount === 0 && inv.id.startsWith('inv_next_'))
+        )
+      : store.invoices;
+    const preExistingNewInvoice = preFilteredInvoices.find(
+      inv =>
+        inv.student_id === editingCredit.student_id &&
+        inv.class_id === newClass.id &&
+        inv.payment_status !== 'cancelled'
+    );
+    const resolvedNewInvoiceId = preExistingNewInvoice?.id || `inv_next_${Date.now()}`;
+    let resolvedNewInvoiceCode = preExistingNewInvoice?.invoice_code || '';
+
+    if (!preExistingNewInvoice) {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        try {
+          const { codeById } = await insertInvoicesToSupabaseWithRetry(
+            client,
+            [{
+              id: resolvedNewInvoiceId,
+              student_id: editingCredit.student_id,
+              class_id: newClass.id,
+              registered_sessions: registeredSessionsForNextClass,
+              total_class_sessions: newClass.total_sessions,
+              session_rate: newOption.rateNew,
+              gross_amount: targetGrossAmount,
+              credit_deducted: deductedAmount,
+              discount_amount: 0,
+              net_payable: remainingBalanceDue,
+              paid_amount: 0,
+              outstanding_amount: remainingBalanceDue,
+              payment_status: remainingBalanceDue === 0 ? 'paid' : 'unpaid',
+              due_date: newOption.term?.start_date || '2027-01-15',
+              created_at: todayStr,
+            }],
+            { upsertOnConflictId: true, maxRetries: 3 }
+          );
+          resolvedNewInvoiceCode = codeById.get(resolvedNewInvoiceId) || '';
+        } catch (err: any) {
+          if (isInvoiceCodeDuplicateError(err)) {
+            showToast(
+              `Lỗi trùng mã hóa đơn trên CSDL: ${err?.message || String(err)}`,
+              'error',
+              { title: 'Không thể tạo hóa đơn' }
+            );
+            return;
+          }
+          console.warn('Supabase insert invoice in MakeupCreditsTab edit notice:', err?.message || err);
+        }
+      }
+      if (!resolvedNewInvoiceCode) {
+        resolvedNewInvoiceCode = generateOfflineInvoiceCode(store.invoices);
+      }
+    }
 
     onUpdateStore(prev => {
       // 1. Rollback old invoice deduction
@@ -524,10 +639,9 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
           inv.payment_status !== 'cancelled'
       );
 
-      let targetInvoiceId = existingNewInvoice?.id || `inv_next_${Date.now()}`;
-      let targetInvoiceCode =
-        existingNewInvoice?.invoice_code ||
-        `INV-2027-${String(updatedInvoices.length + 1).padStart(4, '0')}`;
+      const targetInvoiceId = existingNewInvoice?.id || resolvedNewInvoiceId;
+      const targetInvoiceCode =
+        existingNewInvoice?.invoice_code || resolvedNewInvoiceCode;
 
       if (existingNewInvoice) {
         updatedInvoices = updatedInvoices.map(inv => {

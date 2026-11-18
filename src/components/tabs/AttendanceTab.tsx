@@ -50,6 +50,7 @@ import {
   isStudentScheduledForDate,
   formatStudentScheduleLabel,
   formatDateVN,
+  formatDateShortVN,
   getTeacherEffectivePeriodRate,
   getTeacherEffectiveSessionRate,
   calculateTeacherSessionPayAtDate,
@@ -58,6 +59,7 @@ import {
   getClassEffectiveBounds,
   getClassPhase,
   getEnrollmentPhase,
+  getEnrollmentStatusDisplay,
   getPromotedTargetInfo,
 } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
@@ -150,8 +152,7 @@ const buildTermWeeks = (termStartDateStr?: string, totalWeeks = 16): WeekOption[
   const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
   baseMonday.setDate(baseMonday.getDate() + diffToMonday);
 
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const today = getTodayStrHoChiMinh();
 
   for (let i = 1; i <= totalWeeks; i++) {
     const monday = new Date(baseMonday);
@@ -358,22 +359,75 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   // Current real-world date (Asia/Ho_Chi_Minh YYYY-MM-DD)
   const today = useMemo(() => getTodayStrHoChiMinh(), []);
 
+  // Check strict future & class lifecycle constraints (needed before week/date sync)
+  const currentClassBounds = useMemo(
+    () => (currentClass ? getClassEffectiveBounds(currentClass, store.terms) : null),
+    [currentClass, store.terms]
+  );
+  const currentClassPhase = useMemo(
+    () => (currentClass ? getClassPhase(currentClass, today, store.terms) : 'active'),
+    [currentClass, today, store.terms]
+  );
+  const isUpcomingClass = currentClassPhase === 'upcoming';
+  const isEndedClass = currentClassPhase === 'ended';
+
   // Selected week (Default: current week or week 8 for active term, week 1 for other terms)
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(() => {
     const idx = termWeeks.findIndex(w => w.isCurrent);
     return idx >= 0 ? idx : 7; // Tuần 8 mặc định
   });
 
+  // Auto-select appropriate week when switching term or switching to an ended/upcoming class
   useEffect(() => {
+    if (termWeeks.length === 0) return;
+
+    if (currentClass && currentClassPhase === 'ended') {
+      const endDate = currentClassBounds?.endDate || '';
+      const startDate = currentClassBounds?.startDate || '';
+      const savedDates = [
+        ...(store.sessions || [])
+          .filter(s => s.class_id === currentClass.id && s.session_date && s.session_date <= today)
+          .map(s => String(s.session_date).split('T')[0]),
+        ...(store.attendance || [])
+          .filter(a => a.class_id === currentClass.id && a.session_date && a.session_date <= today)
+          .map(a => String(a.session_date).split('T')[0]),
+      ]
+        .filter(d => (!startDate || d >= startDate) && (!endDate || d <= endDate))
+        .sort();
+
+      const targetDate =
+        savedDates.length > 0
+          ? savedDates[savedDates.length - 1]
+          : endDate || today;
+
+      let targetWeekIdx = termWeeks.findIndex(w => targetDate >= w.startDate && targetDate <= w.endDate);
+      if (targetWeekIdx < 0) {
+        if (targetDate < termWeeks[0].startDate) targetWeekIdx = 0;
+        else targetWeekIdx = termWeeks.length - 1;
+      }
+      setSelectedWeekIndex(targetWeekIdx);
+      return;
+    }
+
+    if (currentClass && currentClassPhase === 'upcoming' && currentClassBounds?.startDate) {
+      const startDate = currentClassBounds.startDate;
+      let targetWeekIdx = termWeeks.findIndex(w => startDate >= w.startDate && startDate <= w.endDate);
+      if (targetWeekIdx < 0) {
+        targetWeekIdx = startDate < termWeeks[0].startDate ? 0 : termWeeks.length - 1;
+      }
+      setSelectedWeekIndex(targetWeekIdx);
+      return;
+    }
+
     const idx = termWeeks.findIndex(w => w.isCurrent);
     if (idx >= 0) {
       setSelectedWeekIndex(idx);
     } else if (selectedTermId === 'term_fall_2026') {
-      setSelectedWeekIndex(7);
+      setSelectedWeekIndex(Math.min(7, termWeeks.length - 1));
     } else {
       setSelectedWeekIndex(0);
     }
-  }, [selectedTermId, termWeeks]);
+  }, [selectedTermId, currentClass?.id, currentClassPhase, currentClassBounds?.startDate, currentClassBounds?.endDate, termWeeks]);
 
   const currentWeek = termWeeks[selectedWeekIndex] || termWeeks[0];
 
@@ -402,38 +456,59 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     return scheduledSessionsForWeek[0]?.dateStr || '2026-09-02';
   });
 
-  // Keep selectedDate in sync when week or class changes
+  // Keep selectedDate in sync when week or class changes (respecting ended class bounds & saved sessions)
   useEffect(() => {
-    if (scheduledSessionsForWeek.length > 0) {
-      const isSelectedInWeek = scheduledSessionsForWeek.some(s => s.dateStr === selectedDate);
-      if (!isSelectedInWeek) {
-        const todaySession = scheduledSessionsForWeek.find(s => s.isToday);
-        if (todaySession) {
-          setSelectedDate(todaySession.dateStr);
-        } else {
-          const pastSessions = scheduledSessionsForWeek.filter(s => !s.isFuture);
-          if (pastSessions.length > 0) {
-            setSelectedDate(pastSessions[pastSessions.length - 1].dateStr);
-          } else {
-            setSelectedDate(scheduledSessionsForWeek[0].dateStr);
-          }
-        }
+    if (scheduledSessionsForWeek.length === 0) return;
+
+    const inBounds = (dateStr: string) => {
+      if (currentClassBounds?.startDate && dateStr < currentClassBounds.startDate) return false;
+      if (currentClassBounds?.endDate && dateStr > currentClassBounds.endDate) return false;
+      return true;
+    };
+
+    const currentSelectedObj = scheduledSessionsForWeek.find(s => s.dateStr === selectedDate);
+    const shouldRechoose =
+      !currentSelectedObj ||
+      (isEndedClass && !inBounds(currentSelectedObj.dateStr));
+
+    if (!shouldRechoose) return;
+
+    if (isEndedClass && currentClass) {
+      const savedInWeek = scheduledSessionsForWeek.filter(s =>
+        inBounds(s.dateStr) &&
+        (store.sessions.some(ses => ses.class_id === currentClass.id && ses.session_date === s.dateStr) ||
+          store.attendance.some(att => att.class_id === currentClass.id && att.session_date === s.dateStr))
+      );
+      if (savedInWeek.length > 0) {
+        setSelectedDate(savedInWeek[savedInWeek.length - 1].dateStr);
+        return;
+      }
+      const inBoundsSessions = scheduledSessionsForWeek.filter(s => inBounds(s.dateStr) && !s.isFuture);
+      if (inBoundsSessions.length > 0) {
+        setSelectedDate(inBoundsSessions[inBoundsSessions.length - 1].dateStr);
+        return;
       }
     }
-  }, [scheduledSessionsForWeek, selectedDate]);
 
-  // Check strict future & class lifecycle constraints
+    const todaySession = scheduledSessionsForWeek.find(s => s.isToday && inBounds(s.dateStr));
+    if (todaySession) {
+      setSelectedDate(todaySession.dateStr);
+      return;
+    }
+    const pastSessions = scheduledSessionsForWeek.filter(s => !s.isFuture && inBounds(s.dateStr));
+    if (pastSessions.length > 0) {
+      setSelectedDate(pastSessions[pastSessions.length - 1].dateStr);
+    } else {
+      const anyPast = scheduledSessionsForWeek.filter(s => !s.isFuture);
+      if (anyPast.length > 0) {
+        setSelectedDate(anyPast[anyPast.length - 1].dateStr);
+      } else {
+        setSelectedDate(scheduledSessionsForWeek[0].dateStr);
+      }
+    }
+  }, [scheduledSessionsForWeek, selectedDate, isEndedClass, currentClass?.id, currentClassBounds?.startDate, currentClassBounds?.endDate]);
+
   const isFutureDate = selectedDate > today;
-  const currentClassBounds = useMemo(
-    () => (currentClass ? getClassEffectiveBounds(currentClass, store.terms) : null),
-    [currentClass, store.terms]
-  );
-  const currentClassPhase = useMemo(
-    () => (currentClass ? getClassPhase(currentClass, today, store.terms) : 'active'),
-    [currentClass, today, store.terms]
-  );
-  const isUpcomingClass = currentClassPhase === 'upcoming';
-  const isEndedClass = currentClassPhase === 'ended';
   const isAttendanceLocked = isFutureDate || isUpcomingClass || isEndedClass;
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
@@ -500,27 +575,66 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const selectedDayCode = useMemo(() => getDateDayCode(selectedDate), [selectedDate]);
   const selectedDayLabel = useMemo(() => getDayLabel(selectedDayCode), [selectedDayCode]);
 
-  // All active/trial enrollments in this class
-  const allClassEnrollments = currentClass
-    ? store.enrollments.filter(
-        e => e.class_id === currentClass.id && (e.status === 'active' || e.status === 'trial')
-      )
-    : [];
+  // Saved attendance records on selectedDate for currentClass
+  const savedAttStudentIdsOnDate = useMemo(() => {
+    if (!currentClass) return new Set<string>();
+    return new Set(
+      (store.attendance || [])
+        .filter(a => a.class_id === currentClass.id && a.session_date === selectedDate)
+        .map(a => String(a.student_id))
+    );
+  }, [currentClass, selectedDate, store.attendance]);
+
+  // Deduplicated enrollments for this class:
+  // - If class is ended: load ALL historical statuses (active, completed, dropped, trial, trial_dropped, transferred)
+  // - Otherwise: load active/trial enrollments + any student who already has saved attendance on selectedDate
+  const allClassEnrollments = useMemo(() => {
+    if (!currentClass) return [] as Enrollment[];
+    const PRIORITY: Record<string, number> = {
+      active: 6,
+      trial: 5,
+      completed: 4,
+      transferred: 3,
+      dropped: 2,
+      trial_dropped: 1,
+    };
+    const byStudent = new Map<string, Enrollment>();
+    for (const enr of store.enrollments || []) {
+      if (enr.class_id !== currentClass.id) continue;
+      const st = String(enr.status || 'active');
+      if (st === 'cancelled' || st === 'canceled') continue;
+      if (!isEndedClass) {
+        const isCurrentActive = st === 'active' || st === 'trial';
+        const hasSavedOnDate = savedAttStudentIdsOnDate.has(String(enr.student_id));
+        if (!isCurrentActive && !hasSavedOnDate) continue;
+      }
+      const key = String(enr.student_id);
+      const existing = byStudent.get(key);
+      if (!existing || (PRIORITY[st] || 0) >= (PRIORITY[String(existing.status || 'active')] || 0)) {
+        byStudent.set(key, enr);
+      }
+    }
+    return Array.from(byStudent.values());
+  }, [currentClass, store.enrollments, isEndedClass, savedAttStudentIdsOnDate]);
 
   // Split enrollments into:
-  // 1) Scheduled for selectedDate (matches student's enrolled_days_of_week AND selectedDate >= joined_date)
-  // 2) Off-schedule for selectedDate (partial weekly schedule not matching selectedDayCode, or before joined_date)
-  // If class is upcoming, keep roster visible in view-only mode without counting attendance or snacks
+  // 1) Scheduled for selectedDate (or already has saved attendance record on selectedDate)
+  // 2) Off-schedule / dropped for selectedDate
+  // If class is upcoming, keep full roster visible in view-only mode
   const classEnrollments = isUpcomingClass
     ? allClassEnrollments
-    : allClassEnrollments.filter(e =>
-        isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
+    : allClassEnrollments.filter(
+        e =>
+          savedAttStudentIdsOnDate.has(String(e.student_id)) ||
+          isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
       );
 
   const offScheduleEnrollments = isUpcomingClass
     ? []
     : allClassEnrollments.filter(
-        e => !isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
+        e =>
+          !savedAttStudentIdsOnDate.has(String(e.student_id)) &&
+          !isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
       );
 
   const enrolledStudents = classEnrollments
@@ -968,16 +1082,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     });
     setAttendanceState(newMap);
     setIsDirty(false);
-  }, [selectedDate, currentClass?.id, store.attendance]);
+  }, [selectedDate, currentClass?.id, store.attendance, store.enrollments, isEndedClass]);
 
-  // Royal Snacks live calculation for this session (0 if class has not started yet)
-  const royalStudents = isUpcomingClass ? [] : enrolledStudents.filter(s => s.is_royal_student);
-  const totalRoyalCount = isUpcomingClass ? 0 : royalStudents.length;
+  // Royal Snacks live calculation for this session (0 if class has not started or has already ended)
+  const royalStudents = (isUpcomingClass || isEndedClass) ? [] : enrolledStudents.filter(s => s.is_royal_student);
+  const totalRoyalCount = (isUpcomingClass || isEndedClass) ? 0 : royalStudents.length;
 
   let liveConsumed = 0;
   let liveReturned = 0;
 
-  if (!isUpcomingClass) {
+  if (!isUpcomingClass && !isEndedClass) {
     royalStudents.forEach(s => {
       const st = attendanceState[s.id]?.status || 'present';
       if (st === 'present' || st === 'absent_unexcused') {
@@ -1094,11 +1208,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Remove proof from student while keeping excused absence status (using in-app modal instead of window.confirm)
   const handleRemoveProof = (studentId: string) => {
+    if (isAttendanceLocked) return;
     setRemoveProofStudentId(studentId);
   };
 
   const confirmRemoveProofNow = () => {
-    if (!removeProofStudentId) return;
+    if (isAttendanceLocked || !removeProofStudentId) return;
     setIsDirty(true);
     setAttendanceState(prev => ({
       ...prev,
@@ -1626,7 +1741,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Quick manual promote / drop trial student directly from Attendance Sheet
   const handleQuickTrialAction = (student: Student, action: 'promote' | 'drop') => {
-    if (!currentClass) return;
+    if (!currentClass || isAttendanceLocked) return;
     onUpdateStore(prev => {
       const enr = prev.enrollments.find(e => e.student_id === student.id && e.class_id === currentClass.id && e.status === 'trial');
       if (!enr) return prev;
@@ -2494,10 +2609,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             </div>
             <div>
               <div className="font-bold text-slate-100 text-sm">
-                🔒 Lớp đã kết thúc ({formatDateVN(currentClassBounds?.endDate)}) — chỉ xem lịch sử điểm danh
+                Lớp đã kết thúc, chỉ xem lịch sử ({formatDateVN(currentClassBounds?.endDate)})
               </div>
               <div className="text-[11px] text-slate-400 mt-0.5">
-                Lớp đã qua ngày kết thúc khóa, sổ điểm danh được chuyển sang chế độ chỉ xem để bảo toàn dữ liệu lịch sử.
+                Lớp đã qua ngày kết thúc khóa, sổ điểm danh được chuyển sang chế độ chỉ xem để bảo toàn dữ liệu lịch sử (không tính vắng hay bánh sữa mới).
               </div>
             </div>
           </div>
@@ -2698,6 +2813,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
                   {offScheduleStudents.map(({ student, enrollment }) => {
                     const isBeforeJoin = enrollment.joined_date && selectedDate < enrollment.joined_date;
+                    const statusBadge = getEnrollmentStatusDisplay(enrollment, currentClass || undefined, today, store.terms);
+                    const promotedTarget = getPromotedTargetInfo(enrollment, store.enrollments, store.classes, store.promotionHistories);
                     const studentDaysText =
                       enrollment.enrolled_days_of_week && enrollment.enrolled_days_of_week.length > 0
                         ? formatDaysListLabel(enrollment.enrolled_days_of_week)
@@ -2706,7 +2823,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     return (
                       <div
                         key={student.id}
-                        className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 opacity-85"
+                        className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 opacity-90"
                       >
                         <div className="min-w-0">
                           <div className="font-bold text-slate-200 text-xs truncate flex items-center gap-1.5">
@@ -2714,20 +2831,35 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                             <span className="text-[10px] font-mono text-slate-400">({student.code})</span>
                           </div>
                           <div className="text-[10px] text-cyan-300 font-semibold mt-0.5">
-                            {isBeforeJoin
-                              ? `⏳ Bắt đầu học từ: ${formatDateVN(enrollment.joined_date)}`
-                              : `🗓️ Lịch cố định: Chỉ học ${studentDaysText} (${enrollment.registered_sessions} buổi)`}
+                            {statusBadge.tone === 'dropped'
+                              ? 'Học viên đã dừng / nghỉ học'
+                              : statusBadge.tone === 'transferred'
+                              ? 'Học viên đã chuyển sang lớp khác'
+                              : isBeforeJoin
+                              ? `Bắt đầu học từ: ${formatDateVN(enrollment.joined_date)}`
+                              : `Lịch cố định: Chỉ học ${studentDaysText} (${enrollment.registered_sessions} buổi)`}
                           </div>
+                          {promotedTarget && (
+                            <div className="text-[10px] text-indigo-300 font-semibold mt-0.5">
+                              Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateShortVN(promotedTarget.startDate)}
+                            </div>
+                          )}
                         </div>
-                        <span className="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-bold shrink-0">
-                      Không thuộc ca
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                        <span className={`px-2 py-1 rounded-lg border text-[10px] font-bold shrink-0 ${
+                          statusBadge.tone === 'dropped'
+                            ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            : statusBadge.tone === 'completed'
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                            : 'bg-slate-800 text-slate-400 border-slate-700'
+                        }`}>
+                          {statusBadge.tone === 'dropped' || statusBadge.tone === 'transferred' ? statusBadge.label : 'Không thuộc ca'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
         {/* VIEW 1: CARDS VIEW */}
         {viewMode === 'cards' && (
@@ -2740,11 +2872,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               const invoice = store.invoices.find(
                 i => i.student_id === student.id && i.class_id === currentClass.id
               );
-              const enr = store.enrollments.find(
-                e => e.student_id === student.id && e.class_id === currentClass.id
-              );
+              const enr =
+                allClassEnrollments.find(e => e.student_id === student.id) ||
+                store.enrollments.find(e => e.student_id === student.id && e.class_id === currentClass.id);
               const isTrial = enr?.status === 'trial';
               const enrPhase = enr ? getEnrollmentPhase(enr, currentClass, today, store.terms) : 'active';
+              const statusDisplay = getEnrollmentStatusDisplay(enr, currentClass, today, store.terms);
               const promotedTarget = enr
                 ? getPromotedTargetInfo(enr, store.enrollments, store.classes, store.promotionHistories)
                 : null;
@@ -2755,6 +2888,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   className={`rounded-2xl p-4 border transition-all ${
                     isUpcomingClass || enrPhase === 'upcoming'
                       ? 'bg-slate-900/90 border-sky-500/30'
+                      : isEndedClass
+                      ? 'bg-slate-900/90 border-slate-700/80'
                       : currentStatus === 'present'
                       ? 'bg-slate-900/90 border-emerald-500/30 shadow-lg shadow-emerald-500/5'
                       : currentStatus === 'absent_excused'
@@ -2767,14 +2902,26 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <div>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-extrabold text-white text-sm">{student.name}</span>
-                        {(isUpcomingClass || enrPhase === 'upcoming') && (
-                          <span className="px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
-                            Sắp bắt đầu – {formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}
-                          </span>
-                        )}
+                        <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${
+                          statusDisplay.tone === 'completed'
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                            : statusDisplay.tone === 'dropped'
+                            ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            : statusDisplay.tone === 'transferred'
+                            ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                            : statusDisplay.tone === 'upcoming'
+                            ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                            : statusDisplay.tone === 'trial'
+                            ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                            : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
+                        }`}>
+                          {statusDisplay.tone === 'upcoming'
+                            ? `${statusDisplay.label} – ${formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}`
+                            : statusDisplay.label}
+                        </span>
                         {promotedTarget && (
                           <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
-                            Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateVN(promotedTarget.startDate)}
+                            Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateShortVN(promotedTarget.startDate)}
                           </span>
                         )}
                         {isTrial && (
@@ -3021,11 +3168,11 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   const invoice = store.invoices.find(
                     i => i.student_id === student.id && i.class_id === currentClass.id
                   );
-                  const enr = store.enrollments.find(
-                    e => e.student_id === student.id && e.class_id === currentClass.id
-                  );
+                  const enr =
+                    allClassEnrollments.find(e => e.student_id === student.id) ||
+                    store.enrollments.find(e => e.student_id === student.id && e.class_id === currentClass.id);
                   const isTrial = enr?.status === 'trial';
-                  const enrPhase = enr ? getEnrollmentPhase(enr, currentClass, today, store.terms) : 'active';
+                  const statusDisplay = getEnrollmentStatusDisplay(enr, currentClass, today, store.terms);
                   const promotedTarget = enr
                     ? getPromotedTargetInfo(enr, store.enrollments, store.classes, store.promotionHistories)
                     : null;
@@ -3047,14 +3194,26 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       <td className="py-3 px-4">
                         <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
                           <span>{student.name}</span>
-                          {(isUpcomingClass || enrPhase === 'upcoming') && (
-                            <span className="px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
-                              Sắp bắt đầu – {formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}
-                            </span>
-                          )}
+                          <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${
+                            statusDisplay.tone === 'completed'
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : statusDisplay.tone === 'dropped'
+                              ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                              : statusDisplay.tone === 'transferred'
+                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                              : statusDisplay.tone === 'upcoming'
+                              ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                              : statusDisplay.tone === 'trial'
+                              ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
+                          }`}>
+                            {statusDisplay.tone === 'upcoming'
+                              ? `${statusDisplay.label} – ${formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}`
+                              : statusDisplay.label}
+                          </span>
                           {promotedTarget && (
                             <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
-                              Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateVN(promotedTarget.startDate)}
+                              Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateShortVN(promotedTarget.startDate)}
                             </span>
                           )}
                           {isTrial && (
@@ -3151,24 +3310,28 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                                 >
                                   <Download className="w-3 h-3" />
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveProof(student.id)}
-                                  className="p-1 rounded bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
-                                  title="Gỡ bỏ tệp (vẫn giữ trạng thái Vắng CP)"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenProofModal(student)}
-                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-amber-400 transition-colors"
-                                  title="Đổi hoặc nạp lại đơn khác"
-                                >
-                                  <Edit2 className="w-3 h-3" />
-                                </button>
+                                {!isAttendanceLocked && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveProof(student.id)}
+                                      className="p-1 rounded bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                                      title="Gỡ bỏ tệp (vẫn giữ trạng thái Vắng CP)"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenProofModal(student)}
+                                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-amber-400 transition-colors"
+                                      title="Đổi hoặc nạp lại đơn khác"
+                                    >
+                                      <Edit2 className="w-3 h-3" />
+                                    </button>
+                                  </>
+                                )}
                               </div>
-                            ) : (
+                            ) : !isAttendanceLocked ? (
                               <button
                                 type="button"
                                 onClick={() => handleOpenProofModal(student)}
@@ -3178,6 +3341,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                                 <Paperclip className="w-3 h-3 text-amber-400" />
                                 <span>+ Đính kèm file (Tùy chọn)</span>
                               </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 italic">Không có minh chứng</span>
                             )}
                           </div>
                         )}

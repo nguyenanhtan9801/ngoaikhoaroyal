@@ -126,6 +126,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const consecutiveAlerts: ConsecutiveAbsenceAlert[] = [];
 
   filteredClasses.forEach(cls => {
+    if (getClassPhase(cls, todayStr, store.terms) === 'ended') return;
     const classRecords = store.attendance
       .filter(a => a.class_id === cls.id)
       .sort((a, b) => a.session_date.localeCompare(b.session_date));
@@ -350,7 +351,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
       }
     });
 
-    if (activeEnrs.length === 0) {
+    if (activeEnrs.length === 0 && (store.enrollments || []).length === 0) {
       (store.classes || []).forEach(cls => {
         if (getClassPhase(cls, todayStr, store.terms) === 'upcoming') return;
         const count = Number((cls as any).enrolled_count ?? cls.current_students) || 0;
@@ -363,15 +364,16 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
       });
     }
 
-    const totalEnrollments = activeEnrs.length > 0
-      ? (pmhCount + plCount)
-      : (store.classes || []).reduce(
-          (acc, c) =>
-            getClassPhase(c, todayStr, store.terms) === 'upcoming'
-              ? acc
-              : acc + (Number((c as any).enrolled_count ?? c.current_students) || 0),
-          0
-        );
+    const totalEnrollments =
+      activeEnrs.length > 0 || (store.enrollments || []).length > 0
+        ? pmhCount + plCount
+        : (store.classes || []).reduce(
+            (acc, c) =>
+              getClassPhase(c, todayStr, store.terms) === 'upcoming'
+                ? acc
+                : acc + (Number((c as any).enrolled_count ?? c.current_students) || 0),
+            0
+          );
 
     const pmhPercent = totalEnrollments > 0 ? ((pmhCount / totalEnrollments) * 100).toFixed(1) : '0.0';
     const plPercent = totalEnrollments > 0 ? ((plCount / totalEnrollments) * 100).toFixed(1) : '0.0';

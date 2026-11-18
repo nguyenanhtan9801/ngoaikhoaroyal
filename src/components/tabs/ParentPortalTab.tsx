@@ -37,6 +37,11 @@ import { supabase, getSupabaseClient } from '@/supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
 import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
 import { sortByLabelVi } from '../../utils/sortVi';
+import {
+  createOfflineInvoiceCodeAllocator,
+  insertInvoicesToSupabaseWithRetry,
+  isInvoiceCodeDuplicateError,
+} from '../../lib/invoiceCode';
 import { 
   AppStore, 
   generateStudentCode, 
@@ -962,6 +967,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       );
       const newEnrollments: Enrollment[] = [];
       const newInvoices: TuitionInvoice[] = [];
+      const allocateOfflineInvoiceCode = createOfflineInvoiceCodeAllocator(store.invoices);
       const todayStr = new Date().toISOString().split('T')[0];
       const isTrialMode = forceTrial !== undefined
         ? forceTrial
@@ -1101,9 +1107,10 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             ? `Tính học phí giữa khóa: ${pricing.effectiveSessions}/${pricing.totalSessions} buổi (Từ ngày ${formatDateVN(startDateVal)})`
             : `Học phí trọn khóa: ${pricing.totalSessions}/${pricing.totalSessions} buổi (${formatDaysListLabel(autoCalc.daysOfWeek)})`;
 
+          const invoiceId = `inv_${Date.now()}_${idx}`;
           const invoicePayload: TuitionInvoice = {
-            id: `inv_${Date.now()}_${idx}`,
-            invoice_code: `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${idx + 1}`,
+            id: invoiceId,
+            invoice_code: '',
             student_id: studentId,
             class_id: cls.id,
             gross_amount: pricing.proratedGrossFee,
@@ -1126,15 +1133,55 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             created_at: todayStr,
             due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
           };
-          newInvoices.push(invoicePayload);
 
           if (client) {
             try {
-              await client.from('tuition_invoices').upsert([invoicePayload], { onConflict: 'id' });
-            } catch {
-              // ignore
+              const { codeById } = await insertInvoicesToSupabaseWithRetry(
+                client,
+                [invoicePayload],
+                { upsertOnConflictId: true, maxRetries: 3 }
+              );
+              invoicePayload.invoice_code = codeById.get(invoiceId) || allocateOfflineInvoiceCode();
+            } catch (invErr: any) {
+              if (isInvoiceCodeDuplicateError(invErr)) {
+                throw invErr;
+              }
+              // Fallback các cột cơ bản nếu DB chưa có một số cột mở rộng
+              try {
+                const { codeById } = await insertInvoicesToSupabaseWithRetry(
+                  client,
+                  [{
+                    id: invoiceId,
+                    student_id: studentId,
+                    class_id: cls.id,
+                    registered_sessions: pricing.effectiveSessions,
+                    total_class_sessions: pricing.totalSessions,
+                    session_rate: pricing.sessionRate,
+                    gross_amount: pricing.proratedGrossFee,
+                    credit_deducted: 0,
+                    discount_amount: pricing.discountAmount,
+                    net_payable: pricing.netPayable,
+                    paid_amount: 0,
+                    outstanding_amount: pricing.netPayable,
+                    payment_status: 'unpaid',
+                    due_date: invoicePayload.due_date,
+                    created_at: todayStr,
+                  }],
+                  { upsertOnConflictId: true, maxRetries: 3 }
+                );
+                invoicePayload.invoice_code = codeById.get(invoiceId) || allocateOfflineInvoiceCode();
+              } catch (innerErr: any) {
+                if (isInvoiceCodeDuplicateError(innerErr)) {
+                  throw innerErr;
+                }
+                invoicePayload.invoice_code = allocateOfflineInvoiceCode();
+              }
             }
+          } else {
+            invoicePayload.invoice_code = allocateOfflineInvoiceCode();
           }
+
+          newInvoices.push(invoicePayload);
         }
       }
 
@@ -1452,6 +1499,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       let updatedInvoices = [...prev.invoices];
       let updatedRegistrations = [...prev.parentRegistrations];
       let updatedAuditLogs = [...(prev.auditLogs || [])];
+      const allocateBulkOfflineInvoiceCode = createOfflineInvoiceCodeAllocator(prev.invoices);
 
       previews.forEach((item, leadIdx) => {
         const {
@@ -1564,7 +1612,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           );
           if (!alreadyInvoiced) {
             const invId = `inv_bulk_${Date.now()}_${leadIdx}_${cIdx}`;
-            const invCode = `INV-${new Date().getFullYear()}-${Date.now().toString().slice(-3)}${leadIdx}${cIdx}`;
+            const invCode = allocateBulkOfflineInvoiceCode();
             updatedInvoices.push({
               id: invId,
               invoice_code: invCode,
@@ -1591,9 +1639,9 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             });
 
+            // KHÔNG gửi invoice_code để Postgres DEFAULT next_invoice_code() tự sinh
             supabaseInvoices.push({
               id: invId,
-              invoice_code: invCode,
               student_id: studentId,
               class_id: mCls.cls.id,
               gross_amount: mCls.netPayable,
@@ -1719,8 +1767,23 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               if (eErr) console.warn('Supabase bulk enrollments upsert notice:', eErr.message);
             }
             if (supabaseInvoices.length > 0) {
-              const { error: iErr } = await client.from('tuition_invoices').upsert(supabaseInvoices, { onConflict: 'id' });
-              if (iErr) console.warn('Supabase bulk invoices upsert notice:', iErr.message);
+              try {
+                const { codeById } = await insertInvoicesToSupabaseWithRetry(
+                  client,
+                  supabaseInvoices,
+                  { upsertOnConflictId: true, maxRetries: 3 }
+                );
+                if (codeById.size > 0) {
+                  onUpdateStore(prev => ({
+                    ...prev,
+                    invoices: prev.invoices.map(inv =>
+                      codeById.has(inv.id) ? { ...inv, invoice_code: codeById.get(inv.id)! } : inv
+                    ),
+                  }));
+                }
+              } catch (iErr: any) {
+                console.warn('Supabase bulk invoices upsert notice:', iErr?.message || iErr);
+              }
             }
             for (const reg of supabaseRegistrations) {
               await client.from('parent_registrations').update(reg.payload).eq('id', reg.id);

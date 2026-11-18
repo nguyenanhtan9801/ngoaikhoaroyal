@@ -60,7 +60,12 @@ export async function loadAppDataSafe(customClient?: SupabaseClient | null): Pro
       let query = client.from(tableName).select(cols);
       if (tableName === 'academic_terms') {
         query = query.order('start_date', { ascending: true });
-      } else if (tableName === 'students' || tableName === 'enrollments') {
+      } else if (
+        tableName === 'students' ||
+        tableName === 'enrollments' ||
+        tableName === 'attendance_records' ||
+        tableName === 'extracurricular_classes'
+      ) {
         query = query.range(0, 4999);
       }
       const { data, error } = await query;
@@ -440,8 +445,13 @@ export async function loadInitialDataSafely(
               }
             }
 
-            // Tải đầy đủ danh sách học sinh và ghi danh để điểm danh chính xác
-            if (item.tableName === 'students' || item.tableName === 'enrollments') {
+            // Tải đầy đủ danh sách học sinh, ghi danh, lớp học và điểm danh lịch sử
+            if (
+              item.tableName === 'students' ||
+              item.tableName === 'enrollments' ||
+              item.tableName === 'attendance_records' ||
+              item.tableName === 'extracurricular_classes'
+            ) {
               query = query.range(0, 4999);
             }
 

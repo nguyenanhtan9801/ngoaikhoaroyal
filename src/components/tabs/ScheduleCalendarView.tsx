@@ -17,6 +17,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { AppStore, ExtracurricularClass, Student, Enrollment, UserRole } from '../../types';
+import { getTodayStrHoChiMinh } from '../../lib/storage';
 import { sortByLabelVi } from '../../utils/sortVi';
 
 interface ScheduleCalendarViewProps {
@@ -127,8 +128,7 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
     }
 
     // Các ngày trong tháng hiện tại
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayStr = getTodayStrHoChiMinh();
 
     for (let d = 1; d <= totalDays; d++) {
       const dObj = new Date(year, month, d);

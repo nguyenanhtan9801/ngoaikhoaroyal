@@ -27,6 +27,11 @@ import { showToast } from '../../lib/toast';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { DatePickerVN } from '../common/DatePickerVN';
 import { sortByLabelVi } from '../../utils/sortVi';
+import {
+  generateOfflineInvoiceCode,
+  insertInvoicesToSupabaseWithRetry,
+  isInvoiceCodeDuplicateError,
+} from '../../lib/invoiceCode';
 
 // Ánh xạ thứ sang chỉ số ngày trong JavaScript Date (0 = Chủ Nhật, 1 = Thứ 2, ..., 6 = Thứ 7)
 export const DAY_MAP: Record<string, number> = {
@@ -594,7 +599,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       const trialDateVal = trialSessionDate || startDate;
 
       let invoiceId = `inv_${Date.now()}`;
-      let invoiceCode = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+      let invoiceCode = '';
       const todayStr = new Date().toISOString().split('T')[0];
       const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
       const totalStd = effectivePricing.total_sessions || selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 16;
@@ -609,26 +614,46 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
       const client = getSupabaseClient() || supabase;
       if (client) {
         // 1. Gọi hàm RPC create_enrollment_with_invoice (đảm bảo toàn vẹn khóa ngoại trong 1 giao dịch)
-        const { data: rpcRes, error: rpcErr } = await client.rpc('create_enrollment_with_invoice', {
-          p_student_id: resolvedStudentId,
-          p_student_code: resolvedStudentCode,
-          p_student_name: enrollingStudent.name,
-          p_campus_id: enrollingStudent.campus_id || selectedClass.campus_id || 'pmh',
-          p_parent_name: enrollingStudent.parent_name || 'Phụ huynh',
-          p_parent_phone: enrollingStudent.parent_phone || '',
-          p_class_id: selectedClass.id,
-          p_is_trial: isTrialMode,
-          p_start_date: isTrialMode ? trialDateVal : startDate,
-          p_actual_sessions: isTrialMode ? 1 : effectiveSessions,
-          p_session_rate: isTrialMode ? 0 : rate,
-          p_total_tuition: grossAmount
-        });
+        let rpcRes: any = null;
+        let rpcErr: any = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const res = await client.rpc('create_enrollment_with_invoice', {
+            p_student_id: resolvedStudentId,
+            p_student_code: resolvedStudentCode,
+            p_student_name: enrollingStudent.name,
+            p_campus_id: enrollingStudent.campus_id || selectedClass.campus_id || 'pmh',
+            p_parent_name: enrollingStudent.parent_name || 'Phụ huynh',
+            p_parent_phone: enrollingStudent.parent_phone || '',
+            p_class_id: selectedClass.id,
+            p_is_trial: isTrialMode,
+            p_start_date: isTrialMode ? trialDateVal : startDate,
+            p_actual_sessions: isTrialMode ? 1 : effectiveSessions,
+            p_session_rate: isTrialMode ? 0 : rate,
+            p_total_tuition: grossAmount
+          });
+          rpcRes = res.data;
+          rpcErr = res.error;
+          const dupErr = rpcErr || (rpcRes?.success === false && rpcRes?.error ? { message: rpcRes.error } : null);
+          if (!rpcErr && (!rpcRes || rpcRes.success !== false)) break;
+          if (!isInvoiceCodeDuplicateError(dupErr) || attempt >= 3) break;
+        }
 
         if (!rpcErr && (!rpcRes || rpcRes.success !== false)) {
           if (rpcRes?.student_id) finalStudentId = rpcRes.student_id;
           if (rpcRes?.enrollment_id) enrollmentId = rpcRes.enrollment_id;
           if (rpcRes?.invoice_id) invoiceId = rpcRes.invoice_id;
           if (rpcRes?.invoice_code) invoiceCode = rpcRes.invoice_code;
+
+          if (!invoiceCode && invoiceId) {
+            const { data: fetchedInv } = await client
+              .from('tuition_invoices')
+              .select('invoice_code')
+              .eq('id', invoiceId)
+              .maybeSingle();
+            if (fetchedInv?.invoice_code) {
+              invoiceCode = String(fetchedInv.invoice_code);
+            }
+          }
 
           // Đồng bộ bổ sung lịch học riêng (enrolled_days_of_week, is_partial_schedule) nếu có
           await client
@@ -640,6 +665,10 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
             .eq('student_id', finalStudentId)
             .eq('class_id', selectedClass.id);
         } else {
+          const dupErr = rpcErr || (rpcRes?.error ? { message: rpcRes.error } : null);
+          if (isInvoiceCodeDuplicateError(dupErr)) {
+            throw new Error(dupErr?.message || 'Lỗi trùng mã hóa đơn trên CSDL.');
+          }
           console.warn('RPC create_enrollment_with_invoice thông báo, chuyển sang đồng bộ bảo đảm khóa ngoại:', rpcErr || rpcRes?.error);
 
           // Đảm bảo học sinh tồn tại trong bảng students và lấy đúng id khóa chính
@@ -710,9 +739,9 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
             }
           }
 
+          // KHÔNG gửi invoice_code để Postgres DEFAULT next_invoice_code() tự cấp phát
           const invoicePayload = {
             id: invoiceId,
-            invoice_code: invoiceCode,
             student_id: finalStudentId,
             class_id: selectedClass.id,
             registered_sessions: isTrialMode ? 1 : effectiveSessions,
@@ -731,14 +760,17 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
             updated_at: new Date().toISOString()
           };
 
-          const { error: invError } = await client
-            .from('tuition_invoices')
-            .upsert([invoicePayload], { onConflict: 'id' });
-
-          if (invError) {
-            throw new Error(invError.message);
-          }
+          const { codeById } = await insertInvoicesToSupabaseWithRetry(
+            client,
+            [invoicePayload],
+            { upsertOnConflictId: true, maxRetries: 3 }
+          );
+          invoiceCode = codeById.get(invoiceId) || '';
         }
+      }
+
+      if (!invoiceCode) {
+        invoiceCode = generateOfflineInvoiceCode(store.invoices);
       }
 
       // 3. Tạo đối tượng Enrollment & TuitionInvoice cho Local Store

@@ -24,12 +24,13 @@ import {
   Globe,
   Trash2
 } from 'lucide-react';
-import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN, getCurrentTerm, getClassPhase, getTodayStrHoChiMinh } from '../../lib/storage';
+import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN, getCurrentTerm, getClassPhase, getTodayStrHoChiMinh, getClassEnrollmentStatsMap } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
-import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
+import { ExtracurricularClass, ClassSession, UserRole, Enrollment } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { CreateClassModal, calculateExactSchedule, DAY_INDEX } from '../modals/CreateClassModal';
+import { ClassRosterModal } from '../modals/ClassRosterModal';
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
 import { FacilityManagementView } from '../classes/FacilityManagementView';
 import { ScheduleCalendarView } from './ScheduleCalendarView';
@@ -135,6 +136,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ExtracurricularClass | null>(null);
+  const [rosterClass, setRosterClass] = useState<ExtracurricularClass | null>(null);
   const [dayPickerNotice, setDayPickerNotice] = useState<string | null>(null);
 
   // Synchronize initialTab if changed externally
@@ -169,16 +171,17 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     }
   }, [searchQuery]);
 
-  // Auto-fetch latest classes and facilities from Supabase
+  // Auto-fetch latest classes, facilities, and full enrollments from Supabase (single bulk query, no N+1)
   useEffect(() => {
     let cancelled = false;
     const fetchClassesFromCloud = async () => {
       const client = getSupabaseClient() || supabase;
       if (!client) return;
       try {
-        const [classesRes, facilitiesRes] = await Promise.all([
-          client.from('extracurricular_classes').select('*'),
+        const [classesRes, facilitiesRes, enrollmentsRes] = await Promise.all([
+          client.from('extracurricular_classes').select('*').range(0, 4999),
           client.from('facilities').select('*').order('name', { ascending: true }),
+          client.from('enrollments').select('*').range(0, 4999),
         ]);
 
         if (!cancelled) {
@@ -229,10 +232,36 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               ? facilitiesRes.data
               : prev.facilities;
 
+            let nextEnrollments = prev.enrollments;
+            if (!enrollmentsRes.error && Array.isArray(enrollmentsRes.data)) {
+              const enrMap = new Map<string, Enrollment>();
+              (prev.enrollments || []).forEach(e => enrMap.set(e.id, e));
+              enrollmentsRes.data.forEach((r: any) => {
+                const isTrial = Boolean((r.is_trial === true || r.enrollment_type === 'trial') && r.status !== 'active');
+                const existing = enrMap.get(r.id);
+                enrMap.set(r.id, {
+                  ...(existing || {}),
+                  id: r.id,
+                  student_id: r.student_id,
+                  class_id: r.class_id,
+                  joined_date: r.joined_date || r.enrolled_at || existing?.joined_date || '',
+                  enrolled_days_of_week: Array.isArray(r.enrolled_days_of_week) ? r.enrolled_days_of_week : existing?.enrolled_days_of_week,
+                  registered_sessions: Number(r.registered_sessions ?? existing?.registered_sessions ?? 0),
+                  status: isTrial ? 'trial' : (r.status || existing?.status || 'active'),
+                  is_trial: r.is_trial !== undefined ? Boolean(r.is_trial) : existing?.is_trial,
+                  promoted_from_enrollment_id: r.promoted_from_enrollment_id ?? existing?.promoted_from_enrollment_id,
+                  promoted_from_class_id: r.promoted_from_class_id ?? existing?.promoted_from_class_id,
+                  promotion_batch_id: r.promotion_batch_id ?? existing?.promotion_batch_id,
+                } as Enrollment);
+              });
+              nextEnrollments = Array.from(enrMap.values());
+            }
+
             return {
               ...prev,
               classes: nextClasses,
               facilities: nextFacilities,
+              enrollments: nextEnrollments,
             };
           });
         }
@@ -536,13 +565,15 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     }
 
     try {
-      // 1. Kiểm tra sĩ số / học viên thực tế trong bảng enrollments (cả từ local store và Supabase)
+      // 1. Kiểm tra sĩ số / học viên thực tế trong bảng enrollments (tất cả trạng thái lịch sử trừ cancelled)
       const localEnrollments = store.enrollments.filter(
-        e => e.class_id === classItem.id && (e.status === 'active' || e.status === 'trial')
+        e => e.class_id === classItem.id && !['cancelled', 'canceled'].includes(String(e.status || ''))
       );
       if (localEnrollments.length > 0) {
-        alert(
-          `Không thể xóa! Lớp "${classItem.name}" đang có ${localEnrollments.length} học viên ghi danh. Vui lòng gỡ học viên khỏi lớp trước khi xóa.`
+        showToast(
+          `Không thể xóa! Lớp "${classItem.name}" đang có ${localEnrollments.length} hồ sơ ghi danh. Vui lòng giữ lớp để bảo toàn lịch sử học viên.`,
+          'error',
+          { title: 'Không thể xóa lớp' }
         );
         return;
       }
@@ -555,8 +586,10 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
           .eq('class_id', classItem.id);
 
         if (!countError && count && count > 0) {
-          alert(
-            `Không thể xóa! Lớp "${classItem.name}" đang có ${count} học viên ghi danh. Vui lòng gỡ học viên khỏi lớp trước khi xóa.`
+          showToast(
+            `Không thể xóa! Lớp "${classItem.name}" đang có ${count} hồ sơ ghi danh trên CSDL. Vui lòng giữ lớp để bảo toàn lịch sử.`,
+            'error',
+            { title: 'Không thể xóa lớp' }
           );
           return;
         }
@@ -767,6 +800,12 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       return matchTerm && matchCampus && matchSubject && matchQuery;
     });
   }, [store.classes, store.campuses, store.subjects, store.teachers, store.facilities, localTermId, localCampusId, localSubjectId, localSearchQuery]);
+
+  const todayStr = useMemo(() => getTodayStrHoChiMinh(), []);
+  const enrollmentStatsMap = useMemo(
+    () => getClassEnrollmentStatsMap(store.enrollments),
+    [store.enrollments]
+  );
 
   // Active filter readable names for statistics label
   const activeCampusName = localCampusId === 'all' 
@@ -1160,12 +1199,22 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   const timeSlot = store.timeSlots.find(t => t.id === cls.time_slot_id);
                   const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
                   const term = store.terms.find(t => t.id === cls.term_id);
-                  const enrollments = store.enrollments.filter(e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'));
-                  const trialCount = enrollments.filter(e => e.status === 'trial').length;
-                  const isOverQuota = enrollments.length > cls.max_students;
+                  const stats = enrollmentStatsMap.get(String(cls.id)) || {
+                    activeCount: 0,
+                    trialCount: 0,
+                    activeAndTrialCount: 0,
+                    completedCount: 0,
+                    droppedCount: 0,
+                    transferredCount: 0,
+                    totalCount: 0,
+                    enrollments: [],
+                  };
+                  const phase = getClassPhase(cls, todayStr, store.terms);
+                  const endedCompletedCount = stats.completedCount + stats.activeAndTrialCount;
+                  const trialCount = stats.trialCount;
+                  const isOverQuota = phase !== 'ended' && stats.activeAndTrialCount > cls.max_students;
                   const classDays = getClassDays(cls, store);
                   const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
-                  const phase = getClassPhase(cls, getTodayStrHoChiMinh(), store.terms);
 
                   return (
                     <tr key={cls.id} className="hover:bg-slate-800/30 transition-colors">
@@ -1269,15 +1318,30 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4 text-center">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono ${
-                          isOverQuota ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-800 text-white'
-                        }`}>
-                          {enrollments.length} / {cls.max_students}
-                        </span>
-                        {trialCount > 0 && (
-                          <div className="text-[9px] text-purple-300 font-semibold mt-0.5">
-                            ({trialCount} học thử)
+                        {phase === 'ended' ? (
+                          <div className="inline-flex flex-col items-center gap-0.5">
+                            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold tabular-nums bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              {endedCompletedCount} học viên đã hoàn thành
+                            </span>
+                            {stats.droppedCount > 0 && (
+                              <span className="text-[9.5px] text-slate-400 tabular-nums">
+                                ({stats.totalCount} đã học • {stats.droppedCount} đã nghỉ)
+                              </span>
+                            )}
                           </div>
+                        ) : (
+                          <>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono tabular-nums ${
+                              isOverQuota ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-800 text-white'
+                            }`}>
+                              {stats.activeAndTrialCount} / {cls.max_students}
+                            </span>
+                            {trialCount > 0 && (
+                              <div className="text-[9px] text-purple-300 font-semibold mt-0.5">
+                                ({trialCount} học thử)
+                              </div>
+                            )}
+                          </>
                         )}
                       </td>
 
@@ -1300,6 +1364,15 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                         <div className="flex items-center justify-end gap-2">
                           <button
                             type="button"
+                            onClick={() => setRosterClass(cls)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 hover:border-cyan-500/40 transition-all inline-flex items-center gap-1 whitespace-nowrap"
+                            title="Xem danh sách học viên đầy đủ của lớp"
+                          >
+                            <Users className="w-3.5 h-3.5" />
+                            <span>Danh sách học viên</span>
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => handleOpenEditModal(cls)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                               isTermClosed(cls.term_id, store)
@@ -1313,7 +1386,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                           <button
                             type="button"
                             onClick={() => onSelectClassForAttendance(cls)}
-                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold"
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold whitespace-nowrap"
                           >
                             Điểm Danh
                           </button>
@@ -1349,14 +1422,23 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             const timeSlot = store.timeSlots.find(t => t.id === cls.time_slot_id);
             const teacher = store.teachers.find(t => t.id === cls.primary_teacher_id);
             const term = store.terms.find(t => t.id === cls.term_id);
-            
-            const enrollments = store.enrollments.filter(e => e.class_id === cls.id && (e.status === 'active' || e.status === 'trial'));
-            const trialCount = enrollments.filter(e => e.status === 'trial').length;
-            const studentCount = enrollments.length;
-            const isOverQuota = studentCount > cls.max_students;
+            const stats = enrollmentStatsMap.get(String(cls.id)) || {
+              activeCount: 0,
+              trialCount: 0,
+              activeAndTrialCount: 0,
+              completedCount: 0,
+              droppedCount: 0,
+              transferredCount: 0,
+              totalCount: 0,
+              enrollments: [],
+            };
+            const phase = getClassPhase(cls, todayStr, store.terms);
+            const endedCompletedCount = stats.completedCount + stats.activeAndTrialCount;
+            const trialCount = stats.trialCount;
+            const studentCount = phase === 'ended' ? endedCompletedCount : stats.activeAndTrialCount;
+            const isOverQuota = phase !== 'ended' && studentCount > cls.max_students;
             const classDays = getClassDays(cls, store);
             const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
-            const phase = getClassPhase(cls, getTodayStrHoChiMinh(), store.terms);
 
             return (
               <div
@@ -1481,19 +1563,36 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
                   <div className="mt-4 pt-3 border-t border-slate-800">
                     <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="text-slate-400">Sĩ số lớp:</span>
-                      <span className={`font-mono font-bold ${isOverQuota ? 'text-rose-400' : 'text-white'}`}>
-                        {studentCount} / {cls.max_students} học viên
-                        {trialCount > 0 && <span className="text-purple-300 text-[10px] ml-1">({trialCount} thử)</span>}
-                        {isOverQuota && ' (Vượt chỉ tiêu)'}
+                      <span className="text-slate-400">
+                        {phase === 'ended' ? 'Tổng kết lớp:' : 'Sĩ số lớp:'}
                       </span>
+                      {phase === 'ended' ? (
+                        <span className="font-bold text-emerald-300 tabular-nums text-right">
+                          {endedCompletedCount} học viên đã hoàn thành
+                          {stats.droppedCount > 0 && (
+                            <span className="text-slate-400 text-[10px] font-normal ml-1">
+                              ({stats.totalCount} đã học)
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className={`font-mono font-bold tabular-nums ${isOverQuota ? 'text-rose-400' : 'text-white'}`}>
+                          {studentCount} / {cls.max_students} học viên
+                          {trialCount > 0 && <span className="text-purple-300 text-[10px] ml-1">({trialCount} thử)</span>}
+                          {isOverQuota && ' (Vượt chỉ tiêu)'}
+                        </span>
+                      )}
                     </div>
                     <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all ${
-                          isOverQuota ? 'bg-rose-500' : 'bg-gradient-to-r from-amber-500 to-yellow-400'
+                          phase === 'ended'
+                            ? 'bg-emerald-500/80'
+                            : isOverQuota
+                            ? 'bg-rose-500'
+                            : 'bg-gradient-to-r from-amber-500 to-yellow-400'
                         }`}
-                        style={{ width: `${Math.min(100, (studentCount / cls.max_students) * 100)}%` }}
+                        style={{ width: `${Math.min(100, (studentCount / Math.max(1, cls.max_students)) * 100)}%` }}
                       />
                     </div>
                   </div>
@@ -1512,8 +1611,18 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   </div>
                 </div>
 
-                <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
+                <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setRosterClass(cls)}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 hover:border-cyan-500/40 text-xs font-semibold transition-all inline-flex items-center gap-1"
+                      title="Xem danh sách học viên đầy đủ"
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      <span>Danh sách học viên</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => handleOpenEditModal(cls)}
@@ -1572,6 +1681,16 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         initialTermId={localTermId !== 'all' ? localTermId : undefined}
         initialCampusId={localCampusId !== 'all' ? localCampusId : undefined}
         initialSubjectId={localSubjectId !== 'all' ? localSubjectId : undefined}
+      />
+
+      {/* Full Class Roster Modal */}
+      <ClassRosterModal
+        isOpen={Boolean(rosterClass)}
+        onClose={() => setRosterClass(null)}
+        classItem={rosterClass}
+        store={store}
+        onUpdateStore={onUpdateStore}
+        onNavigateToAttendance={onSelectClassForAttendance}
       />
       </>
       )}

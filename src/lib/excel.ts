@@ -1241,7 +1241,7 @@ export async function parseMasterExcelFile(
 
             return {
               id: String(r['ID Hóa Đơn'] || r['id'] || `inv_imp_${idx + 1}`).trim(),
-              invoice_code: String(r['Số Hóa Đơn'] || `INV-2026-${String(idx + 1).padStart(4, '0')}`).trim(),
+              invoice_code: String(r['Số Hóa Đơn'] || r['invoice_code']).trim(),
               student_id: matchedStu?.id || rawStu,
               class_id: matchedCls?.id || rawCls,
               registered_sessions: Number(r['Số Buổi Tính Phí'] || 24),

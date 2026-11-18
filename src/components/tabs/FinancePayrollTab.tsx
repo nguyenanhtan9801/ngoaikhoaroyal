@@ -58,6 +58,11 @@ import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
+import {
+  generateOfflineInvoiceCode,
+  insertInvoicesToSupabaseWithRetry,
+  isInvoiceCodeDuplicateError,
+} from '../../lib/invoiceCode';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
 import { PartnershipReportTab } from './PartnershipReportTab';
 import { EditInvoiceModal } from '../modals/EditInvoiceModal';
@@ -729,7 +734,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     return targetEnrollmentCount >= toClass.max_students;
   }, [toClass, targetEnrollmentCount]);
 
-  const handleExecuteTransfer = () => {
+  const handleExecuteTransfer = async () => {
     const student = store.students.find(s => s.id === transferState.student_id);
     if (!student || !fromClass || !toClass || currentStudentClasses.length === 0 || fromClass.id === toClass.id) {
       showToast('Vui lòng chọn học sinh có lớp đang học và lớp chuyển đến hợp lệ!', 'warning', {
@@ -748,7 +753,50 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     const today = new Date().toISOString().split('T')[0];
     const expiryDate = new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0];
     const transferCode = `TRF-2026-${String((store.transfers?.length || 0) + 1).padStart(5, '0')}`;
-    const invoiceCode = surcharge > 0 ? `INV-CHUYENLOP-${String(store.invoices.length + 1).padStart(4, '0')}` : undefined;
+    const surchargeInvoiceId = surcharge > 0 ? `inv_surcharge_${Date.now()}` : undefined;
+    const surchargeDueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+    let invoiceCode: string | undefined = undefined;
+
+    if (surcharge > 0 && surchargeInvoiceId) {
+      const client = getSupabaseClient() || supabase;
+      if (client) {
+        try {
+          const { codeById } = await insertInvoicesToSupabaseWithRetry(
+            client,
+            [{
+              id: surchargeInvoiceId,
+              student_id: student.id,
+              class_id: toClass.id,
+              gross_amount: surcharge,
+              credit_deducted: 0,
+              discount_amount: 0,
+              net_payable: surcharge,
+              paid_amount: 0,
+              outstanding_amount: surcharge,
+              payment_status: 'unpaid',
+              due_date: surchargeDueDate,
+              created_at: today,
+            }],
+            { upsertOnConflictId: true, maxRetries: 3 }
+          );
+          invoiceCode = codeById.get(surchargeInvoiceId) || '';
+        } catch (err: any) {
+          if (isInvoiceCodeDuplicateError(err)) {
+            showToast(
+              `Lỗi trùng mã hóa đơn phụ thu trên CSDL: ${err?.message || String(err)}`,
+              'error',
+              { title: 'Không thể lập hóa đơn' }
+            );
+            return;
+          }
+          console.warn('Supabase insert surcharge invoice in FinancePayrollTab notice:', err?.message || err);
+        }
+      }
+      if (!invoiceCode) {
+        invoiceCode = generateOfflineInvoiceCode(store.invoices);
+      }
+    }
+
     const creditCode = (surplusHandling === 'issue_credit_note' && surplus > 0)
       ? `CRE-2026-${String((store.makeupCredits?.length || 0) + 1).padStart(4, '0')}`
       : undefined;
@@ -794,7 +842,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       surplus_handling: surplusHandling,
       converted_sessions: extraSessions,
       credit_note_id: createdCreditNote?.id,
-      invoice_id: invoiceCode ? `inv_surcharge_${Date.now()}` : undefined,
+      invoice_id: surchargeInvoiceId,
       reason: transferReason || 'Chuyển môn / lớp theo nguyện vọng của học sinh',
       transfer_date: today,
       created_by: currentUser?.full_name ? formatCapitalizeWords(currentUser.full_name) : 'Học vụ Royal School',
@@ -833,7 +881,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           paid_amount: 0,
           outstanding_amount: surcharge,
           payment_status: 'unpaid',
-          due_date: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
+          due_date: surchargeDueDate,
           created_at: today,
         });
       }

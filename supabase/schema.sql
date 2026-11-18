@@ -224,9 +224,39 @@ CREATE TABLE IF NOT EXISTS teacher_work_sessions (
 );
 
 -- 5. NHÓM TÀI CHÍNH, BẢO LƯU & CHUYỂN MÔN
+CREATE SEQUENCE IF NOT EXISTS public.invoice_code_seq AS BIGINT START WITH 1000 INCREMENT BY 1 NO MAXVALUE CACHE 1;
+
+CREATE OR REPLACE FUNCTION public.next_invoice_code()
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_year TEXT := to_char(NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY');
+  v_seq BIGINT;
+  v_candidate TEXT;
+  v_attempts INTEGER := 0;
+BEGIN
+  LOOP
+    v_seq := nextval('public.invoice_code_seq');
+    v_candidate := 'INV-' || v_year || '-' || lpad(v_seq::text, 4, '0');
+    IF to_regclass('public.tuition_invoices') IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.tuition_invoices WHERE invoice_code = v_candidate
+    ) THEN
+      RETURN v_candidate;
+    END IF;
+    v_attempts := v_attempts + 1;
+    IF v_attempts >= 500 THEN
+      RAISE EXCEPTION 'Không thể cấp phát mã hóa đơn duy nhất sau % lần thử.', v_attempts;
+    END IF;
+  END LOOP;
+END;
+$$;
+
 CREATE TABLE IF NOT EXISTS tuition_invoices (
   id TEXT PRIMARY KEY,
-  invoice_code TEXT NOT NULL UNIQUE,
+  invoice_code TEXT NOT NULL UNIQUE DEFAULT public.next_invoice_code(),
   student_id TEXT NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
   class_id TEXT NOT NULL REFERENCES extracurricular_classes(id) ON DELETE RESTRICT,
   term_id TEXT REFERENCES academic_terms(id) ON DELETE SET NULL,

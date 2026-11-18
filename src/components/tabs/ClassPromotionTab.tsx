@@ -58,6 +58,11 @@ import {
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { sortByLabelVi } from '../../utils/sortVi';
+import {
+  createOfflineInvoiceCodeAllocator,
+  insertInvoicesToSupabaseWithRetry,
+  isInvoiceCodeDuplicateError,
+} from '../../lib/invoiceCode';
 
 interface ClassPromotionTabProps {
   store: AppStore;
@@ -937,7 +942,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
       const historyItems: ClassPromotionStudentItem[] = [];
       const auditLogsToCreate: AuditLogRecord[] = [];
 
-      let invoiceSeq = (store.invoices?.length || 0) + 1;
+      const allocateOfflineInvoiceCode = createOfflineInvoiceCodeAllocator(store.invoices);
 
       for (const row of computedRows) {
         const {
@@ -989,12 +994,11 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
           }
 
           // Tạo hóa đơn học phí mới liên kết với màn Thu Học Phí & Mã Chuyển Khoản
+          // Khi có Supabase: để DB tự sinh invoice_code bằng DEFAULT next_invoice_code()
           const invoiceId = `inv_prom_${Date.now()}_${student.id}_${Math.random()
             .toString(36)
             .substring(2, 6)}`;
-          const invoiceCode = `INV-${new Date().getFullYear()}-${String(
-            invoiceSeq++
-          ).padStart(4, '0')}`;
+          const invoiceCode = supabase ? '' : allocateOfflineInvoiceCode();
           const cleanStudentCode = (student.code || student.id).replace(
             /[^a-zA-Z0-9]/g,
             ''
@@ -1058,7 +1062,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
               createAuditRecord(
                 'TUITION_MANUAL_OVERRIDE',
                 'FINANCE',
-                `Hóa đơn ${invoiceCode} - HS ${student.name} (${student.code})`,
+                `Hóa đơn ${invoiceCode || invoiceId} - HS ${student.name} (${student.code})`,
                 `Chỉnh tay học phí khi lên lớp ${selectedTargetClass.code}: ${finalSessions} buổi / ${formatVND(
                   finalGrossAmount
                 )}. Lý do: ${draft.manualOverrideReason.trim()}`,
@@ -1229,6 +1233,35 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
 
       const allAuditLogs = [mainAuditLog, ...auditLogsToCreate];
 
+      const applyDbInvoiceCodes = (codeById: Map<string, string>) => {
+        if (codeById.size === 0) return;
+        for (const inv of newInvoices) {
+          const dbCode = codeById.get(inv.id);
+          if (dbCode) {
+            inv.invoice_code = dbCode;
+          }
+        }
+        for (const item of historyRecord.items) {
+          if (item.invoice_id) {
+            const dbCode = codeById.get(item.invoice_id);
+            if (dbCode) {
+              item.invoice_code = dbCode;
+            }
+          }
+        }
+        for (const log of allAuditLogs) {
+          if (log.target_id) {
+            const dbCode = codeById.get(log.target_id);
+            if (dbCode && log.target_entity) {
+              log.target_entity = log.target_entity.replace(
+                `Hóa đơn ${log.target_id}`,
+                `Hóa đơn ${dbCode}`
+              );
+            }
+          }
+        }
+      };
+
       // 1. Thực thi đồng bộ nguyên tử lên Supabase (nếu có kết nối)
       if (supabase) {
         const rpcPayload = {
@@ -1240,18 +1273,57 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
           updated_old_enrollments: Array.from(
             updatedOldEnrollmentMap.entries()
           ).map(([id, status]) => ({ id, status })),
-          new_invoices: newInvoices,
+          // KHÔNG gửi invoice_code để Postgres DEFAULT next_invoice_code() tự cấp phát
+          new_invoices: newInvoices.map(({ invoice_code: _omit, ...invRest }) => invRest),
           updated_credits: Array.from(updatedCreditsMap.values()),
           audit_logs: allAuditLogs,
         };
 
-        const { error: rpcError } = await supabase.rpc(
-          'promote_students_to_new_class',
-          { p_payload: rpcPayload }
-        );
+        let rpcData: any = null;
+        let rpcError: any = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const res = await supabase.rpc('promote_students_to_new_class', {
+            p_payload: rpcPayload,
+          });
+          rpcData = res.data;
+          rpcError = res.error;
+          if (!rpcError) break;
+          if (!isInvoiceCodeDuplicateError(rpcError) || attempt >= 3) break;
+        }
+
+        if (!rpcError) {
+          const codeById = new Map<string, string>();
+          if (Array.isArray(rpcData?.created_invoices)) {
+            for (const row of rpcData.created_invoices) {
+              if (row?.id && row?.invoice_code) {
+                codeById.set(String(row.id), String(row.invoice_code));
+              }
+            }
+          }
+          if (newInvoices.length > 0 && codeById.size < newInvoices.length) {
+            const { data: fetchedInvs } = await supabase
+              .from('tuition_invoices')
+              .select('id, invoice_code')
+              .in('id', newInvoices.map(i => i.id));
+            if (Array.isArray(fetchedInvs)) {
+              for (const row of fetchedInvs) {
+                if (row?.id && row?.invoice_code) {
+                  codeById.set(String(row.id), String(row.invoice_code));
+                }
+              }
+            }
+          }
+          applyDbInvoiceCodes(codeById);
+        }
 
         // Nếu DB chưa chạy migration tạo hàm RPC, thực hiện tuần tự kèm cơ chế Rollback nguyên tử
         if (rpcError) {
+          if (isInvoiceCodeDuplicateError(rpcError)) {
+            throw new Error(
+              `Lỗi tạo hóa đơn học phí khóa mới trên CSDL: ${rpcError.message}`
+            );
+          }
+
           const insertedEnrollmentIds: string[] = [];
           const insertedInvoiceIds: string[] = [];
           const previousOldEnrollments = store.enrollments.filter(e =>
@@ -1287,11 +1359,10 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
               insertedEnrollmentIds.push(...newEnrollments.map(e => e.id));
             }
 
-            // Bước B: Insert hóa đơn học phí mới
+            // Bước B: Insert hóa đơn học phí mới (KHÔNG gửi invoice_code, nhận từ DB, retry tối đa 3 lần nếu trùng)
             if (newInvoices.length > 0) {
               const cleanInvRows = newInvoices.map(inv => ({
                 id: inv.id,
-                invoice_code: inv.invoice_code,
                 student_id: inv.student_id,
                 class_id: inv.class_id,
                 registered_sessions: inv.registered_sessions,
@@ -1308,15 +1379,19 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                 payment_reference: inv.payment_reference || null,
                 created_at: inv.created_at,
               }));
-              const { error: invErr } = await supabase
-                .from('tuition_invoices')
-                .insert(cleanInvRows);
-              if (invErr) {
+              try {
+                const { codeById } = await insertInvoicesToSupabaseWithRetry(
+                  supabase,
+                  cleanInvRows,
+                  { maxRetries: 3 }
+                );
+                insertedInvoiceIds.push(...newInvoices.map(i => i.id));
+                applyDbInvoiceCodes(codeById);
+              } catch (invErr: any) {
                 throw new Error(
-                  `Lỗi tạo hóa đơn học phí khóa mới trên CSDL: ${invErr.message}`
+                  `Lỗi tạo hóa đơn học phí khóa mới trên CSDL: ${invErr?.message || String(invErr)}`
                 );
               }
-              insertedInvoiceIds.push(...newInvoices.map(i => i.id));
             }
 
             // Bước C: Cập nhật trạng thái enrollments ở lớp cũ

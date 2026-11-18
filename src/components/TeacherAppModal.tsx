@@ -14,7 +14,7 @@ import {
   Lock,
   Coffee
 } from 'lucide-react';
-import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek, getTodayStrHoChiMinh, getClassPhase, getClassEffectiveBounds, formatDateVN } from '../lib/storage';
+import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek, getTodayStrHoChiMinh, getClassPhase, getClassEffectiveBounds, formatDateVN, formatDateShortVN, getEnrollmentStatusDisplay, getPromotedTargetInfo } from '../lib/storage';
 import { Teacher, ExtracurricularClass, Student, AttendanceRecord, ClassSession } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 import { DatePickerVN } from './common/DatePickerVN';
@@ -53,16 +53,54 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   const isUpcomingClass = classPhase === 'upcoming';
   const isEndedClass = classPhase === 'ended';
 
-  // Enrolled students in this class scheduled for sessionDate (or view-only if upcoming)
-  const classEnrollments = store.enrollments.filter(
-    e =>
-      e.class_id === currentClass?.id &&
-      (e.status === 'active' || e.status === 'trial') &&
-      (isUpcomingClass || isStudentScheduledForDate(e, sessionDate, classDays, currentClass, store.terms))
+  React.useEffect(() => {
+    if (!isOpen || !currentClass || !isEndedClass) return;
+    const endDate = classBounds?.endDate || '';
+    const startDate = classBounds?.startDate || '';
+    if (endDate && sessionDate <= endDate && (!startDate || sessionDate >= startDate)) return;
+    const savedDates = [
+      ...store.sessions
+        .filter(s => s.class_id === currentClass.id && s.session_date && s.session_date <= todayStr)
+        .map(s => String(s.session_date).split('T')[0]),
+      ...store.attendance
+        .filter(a => a.class_id === currentClass.id && a.session_date && a.session_date <= todayStr)
+        .map(a => String(a.session_date).split('T')[0]),
+    ]
+      .filter(d => (!startDate || d >= startDate) && (!endDate || d <= endDate))
+      .sort();
+    const targetDate = savedDates.length > 0 ? savedDates[savedDates.length - 1] : endDate;
+    if (targetDate && targetDate !== sessionDate) {
+      setSessionDate(targetDate);
+    }
+  }, [isOpen, currentClass?.id, isEndedClass, classBounds?.startDate, classBounds?.endDate]);
+
+  const savedAttOnDate = new Set(
+    store.attendance
+      .filter(a => a.class_id === currentClass?.id && a.session_date === sessionDate)
+      .map(a => String(a.student_id))
   );
-  const enrolledStudents = classEnrollments
-    .map(e => store.students.find(s => s.id === e.student_id))
-    .filter(Boolean) as Student[];
+
+  // Enrolled students in this class scheduled for sessionDate (or full historical roster if ended/upcoming)
+  const classEnrollments = store.enrollments.filter(e => {
+    if (e.class_id !== currentClass?.id) return false;
+    const st = String(e.status || 'active');
+    if (st === 'cancelled' || st === 'canceled') return false;
+    if (!isEndedClass) {
+      if (st !== 'active' && st !== 'trial' && !savedAttOnDate.has(String(e.student_id))) return false;
+    }
+    if (savedAttOnDate.has(String(e.student_id))) return true;
+    if (isUpcomingClass) return true;
+    const effectiveDate = isEndedClass && classBounds?.endDate && sessionDate > classBounds.endDate ? classBounds.endDate : sessionDate;
+    return isStudentScheduledForDate(e, effectiveDate, classDays, currentClass, store.terms);
+  });
+  const enrolledStudents = Array.from(
+    new Map(
+      classEnrollments
+        .map(e => store.students.find(s => s.id === e.student_id))
+        .filter((s): s is Student => Boolean(s))
+        .map(s => [s.id, s])
+    ).values()
+  );
 
   // Existing attendance map for this date: student_id -> status
   const existingAttendance = store.attendance.filter(
@@ -321,7 +359,7 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
         {!isUpcomingClass && isEndedClass && (
           <div className="mx-6 mt-4 p-3 rounded-2xl bg-slate-800 border border-slate-700 text-slate-200 text-xs flex items-center gap-2">
             <Lock className="w-4 h-4 text-slate-300 shrink-0" />
-            <span>Lớp đã kết thúc ({formatDateVN(classBounds?.endDate)}) — chỉ xem lịch sử.</span>
+            <span>Lớp đã kết thúc, chỉ xem lịch sử ({formatDateVN(classBounds?.endDate)}).</span>
           </div>
         )}
 
@@ -349,6 +387,10 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
             const note = attendanceState[student.id]?.note || '';
             const enr = store.enrollments.find(e => e.student_id === student.id && e.class_id === currentClass?.id);
             const isTrial = enr?.status === 'trial';
+            const statusDisplay = getEnrollmentStatusDisplay(enr, currentClass, todayStr, store.terms);
+            const promotedTarget = enr
+              ? getPromotedTargetInfo(enr, store.enrollments, store.classes, store.promotionHistories)
+              : null;
 
             return (
               <div
@@ -360,6 +402,28 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
                     <span className="font-mono text-xs text-slate-400 font-bold">{idx + 1}.</span>
                     <span className="font-bold text-white text-sm">{student.name}</span>
                     <span className="font-mono text-xs text-amber-400 font-semibold">({student.code})</span>
+
+                    <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${
+                      statusDisplay.tone === 'completed'
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                        : statusDisplay.tone === 'dropped'
+                        ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                        : statusDisplay.tone === 'transferred'
+                        ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                        : statusDisplay.tone === 'upcoming'
+                        ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                        : statusDisplay.tone === 'trial'
+                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                        : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25'
+                    }`}>
+                      {statusDisplay.label}
+                    </span>
+
+                    {promotedTarget && (
+                      <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                        Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateShortVN(promotedTarget.startDate)}
+                      </span>
+                    )}
 
                     {isTrial && (
                       <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1 shadow-sm">

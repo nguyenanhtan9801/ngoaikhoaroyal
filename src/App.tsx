@@ -43,6 +43,8 @@ import {
   fetchAllProfilesFromSupabase,
   isLegacyLoginEnabled,
   syncTeachersCurrentFieldsFromContracts,
+  getClassPhase,
+  getTodayStrHoChiMinh,
 } from './lib/storage';
 import {
   isRouteAllowed,
@@ -834,8 +836,22 @@ export default function App() {
   };
 
   const handlePrintAttendanceBook = (cls: ExtracurricularClass, sessionDate: string) => {
-    const enrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
-    const students = enrollments.map(e => store.students.find(s => s.id === e.student_id)).filter(Boolean) as Student[];
+    const clsPhase = getClassPhase(cls, getTodayStrHoChiMinh(), store.terms);
+    const enrollments = store.enrollments.filter(
+      e =>
+        e.class_id === cls.id &&
+        (e.status === 'active' ||
+          e.status === 'trial' ||
+          (clsPhase === 'ended' && e.status === 'completed'))
+    );
+    const students = Array.from(
+      new Map(
+        enrollments
+          .map(e => store.students.find(s => s.id === e.student_id))
+          .filter((s): s is Student => Boolean(s))
+          .map(s => [s.id, s])
+      ).values()
+    );
     setPrintableDoc({
       type: 'attendance_book',
       cls,

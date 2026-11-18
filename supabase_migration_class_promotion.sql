@@ -21,6 +21,79 @@ ALTER TABLE IF EXISTS public.tuition_invoices
   ADD COLUMN IF NOT EXISTS manual_override_reason TEXT,
   ADD COLUMN IF NOT EXISTS promotion_batch_id TEXT;
 
+-- 1b. Sequence & hàm sinh mã hóa đơn học phí tự động trên CSDL (tránh trùng 23505 ở client)
+-- Không đụng tới dữ liệu cũ đang lẫn mã ngắn INV-YYYY-0001..0371 và mã ngẫu nhiên 6 số INV-YYYY-xxxxxx.
+CREATE SEQUENCE IF NOT EXISTS public.invoice_code_seq
+  AS BIGINT
+  START WITH 1000
+  INCREMENT BY 1
+  NO MAXVALUE
+  CACHE 1;
+
+DO $$
+DECLARE
+  v_max_short BIGINT := 0;
+  v_current_seq BIGINT := 0;
+  v_seq_called BOOLEAN := FALSE;
+  v_next_val BIGINT;
+BEGIN
+  IF to_regclass('public.tuition_invoices') IS NOT NULL THEN
+    SELECT COALESCE(
+      MAX((regexp_match(invoice_code, '^INV-[0-9]{4}-([0-9]{1,4})$'))[1]::bigint),
+      0
+    )
+    INTO v_max_short
+    FROM public.tuition_invoices
+    WHERE invoice_code ~ '^INV-[0-9]{4}-[0-9]{1,4}$';
+  END IF;
+
+  SELECT last_value, is_called
+    INTO v_current_seq, v_seq_called
+    FROM public.invoice_code_seq;
+
+  IF v_seq_called THEN
+    v_current_seq := v_current_seq + 1;
+  END IF;
+
+  v_next_val := GREATEST(1000, v_max_short + 1, v_current_seq);
+  PERFORM setval('public.invoice_code_seq', v_next_val, FALSE);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.next_invoice_code()
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_year TEXT := to_char(NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY');
+  v_seq BIGINT;
+  v_candidate TEXT;
+  v_attempts INTEGER := 0;
+BEGIN
+  LOOP
+    v_seq := nextval('public.invoice_code_seq');
+    v_candidate := 'INV-' || v_year || '-' || lpad(v_seq::text, 4, '0');
+    IF to_regclass('public.tuition_invoices') IS NULL OR NOT EXISTS (
+      SELECT 1 FROM public.tuition_invoices WHERE invoice_code = v_candidate
+    ) THEN
+      RETURN v_candidate;
+    END IF;
+    v_attempts := v_attempts + 1;
+    IF v_attempts >= 500 THEN
+      RAISE EXCEPTION 'Không thể cấp phát mã hóa đơn duy nhất sau % lần thử.', v_attempts;
+    END IF;
+  END LOOP;
+END;
+$$;
+
+ALTER TABLE IF EXISTS public.tuition_invoices
+  ALTER COLUMN invoice_code SET DEFAULT public.next_invoice_code();
+
+GRANT USAGE, SELECT ON SEQUENCE public.invoice_code_seq TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.next_invoice_code() TO anon, authenticated, service_role;
+
 -- 2. Tạo bảng lưu lịch sử các đợt Lên Lớp (class_promotion_histories)
 -- Lịch sử lên lớp chỉ cho phép XEM, tuyệt đối không cho phép tự động xóa.
 CREATE TABLE IF NOT EXISTS public.class_promotion_histories (
@@ -147,6 +220,11 @@ DECLARE
   v_updated_credits JSONB := COALESCE(p_payload->'updated_credits', '[]'::jsonb);
   v_audit_logs JSONB := COALESCE(p_payload->'audit_logs', '[]'::jsonb);
   v_item JSONB;
+  v_invoice_code TEXT;
+  v_created_invoices JSONB := '[]'::jsonb;
+  v_history_items JSONB := '[]'::jsonb;
+  v_log_entity TEXT;
+  v_matched_code TEXT;
 BEGIN
   IF v_history IS NULL OR (v_history->>'id') IS NULL THEN
     RAISE EXCEPTION 'Thiếu thông tin đợt lên lớp (history payload).';
@@ -209,9 +287,11 @@ BEGIN
           promotion_batch_id = EXCLUDED.promotion_batch_id;
   END LOOP;
 
-  -- 4.3. Tạo các hóa đơn học phí tương ứng cho khóa mới
+  -- 4.3. Tạo các hóa đơn học phí tương ứng cho khóa mới (DB tự sinh invoice_code nếu client không truyền)
   FOR v_item IN SELECT * FROM jsonb_array_elements(v_new_invoices)
   LOOP
+    v_invoice_code := COALESCE(NULLIF(TRIM(v_item->>'invoice_code'), ''), public.next_invoice_code());
+
     INSERT INTO public.tuition_invoices (
       id,
       invoice_code,
@@ -236,7 +316,7 @@ BEGIN
       created_at
     ) VALUES (
       v_item->>'id',
-      v_item->>'invoice_code',
+      v_invoice_code,
       v_item->>'student_id',
       v_item->>'class_id',
       COALESCE((v_item->>'registered_sessions')::integer, 24),
@@ -257,6 +337,13 @@ BEGIN
       v_history->>'id',
       COALESCE((v_item->>'created_at')::date, CURRENT_DATE)
     );
+
+    v_created_invoices := v_created_invoices || jsonb_build_array(
+      jsonb_build_object(
+        'id', v_item->>'id',
+        'invoice_code', v_invoice_code
+      )
+    );
   END LOOP;
 
   -- 4.4. Cập nhật trạng thái các phiếu bảo lưu (credit_notes) đã áp dụng cấn trừ
@@ -273,7 +360,33 @@ BEGIN
      WHERE id = (v_item->>'id');
   END LOOP;
 
-  -- 4.5. Lưu bản ghi lịch sử đợt Lên Lớp
+  -- 4.5. Lưu bản ghi lịch sử đợt Lên Lớp (cập nhật lại invoice_code vừa được DB cấp phát vào items)
+  SELECT COALESCE(
+    jsonb_agg(
+      CASE
+        WHEN (elem ? 'invoice_id') AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(v_created_invoices) ci
+          WHERE ci->>'id' = elem->>'invoice_id'
+        )
+        THEN jsonb_set(
+          elem,
+          '{invoice_code}',
+          to_jsonb((
+            SELECT ci->>'invoice_code'
+            FROM jsonb_array_elements(v_created_invoices) ci
+            WHERE ci->>'id' = elem->>'invoice_id'
+            LIMIT 1
+          )),
+          TRUE
+        )
+        ELSE elem
+      END
+    ),
+    '[]'::jsonb
+  )
+  INTO v_history_items
+  FROM jsonb_array_elements(COALESCE(v_history->'items', '[]'::jsonb)) AS elem;
+
   INSERT INTO public.class_promotion_histories (
     id,
     batch_code,
@@ -317,7 +430,7 @@ BEGIN
     COALESCE((v_history->>'total_credit_deducted')::numeric, 0),
     COALESCE((v_history->>'total_prepaid_deducted')::numeric, 0),
     COALESCE((v_history->>'total_net_payable')::numeric, 0),
-    COALESCE(v_history->'items', '[]'::jsonb),
+    v_history_items,
     COALESCE(v_history->>'created_by', 'system'),
     COALESCE(v_history->>'created_by_name', 'Hệ thống'),
     v_history->>'created_by_role',
@@ -327,6 +440,17 @@ BEGIN
   -- 4.6. Ghi nhật ký kiểm toán (audit_logs)
   FOR v_item IN SELECT * FROM jsonb_array_elements(v_audit_logs)
   LOOP
+    v_log_entity := v_item->>'target_entity';
+    SELECT ci->>'invoice_code'
+      INTO v_matched_code
+      FROM jsonb_array_elements(v_created_invoices) ci
+     WHERE ci->>'id' = (v_item->>'target_id')
+     LIMIT 1;
+
+    IF v_matched_code IS NOT NULL AND v_log_entity IS NOT NULL THEN
+      v_log_entity := REPLACE(v_log_entity, 'Hóa đơn ' || (v_item->>'target_id'), 'Hóa đơn ' || v_matched_code);
+    END IF;
+
     INSERT INTO public.audit_logs (
       id,
       timestamp,
@@ -349,7 +473,7 @@ BEGIN
       v_item->>'full_name',
       v_item->>'action',
       v_item->>'category',
-      v_item->>'target_entity',
+      v_log_entity,
       v_item->>'target_id',
       v_item->>'description',
       COALESCE(v_item->'details', '{}'::jsonb)
@@ -360,7 +484,8 @@ BEGIN
   RETURN jsonb_build_object(
     'success', TRUE,
     'batch_id', v_history->>'id',
-    'batch_code', v_history->>'batch_code'
+    'batch_code', v_history->>'batch_code',
+    'created_invoices', v_created_invoices
   );
 END;
 $$;

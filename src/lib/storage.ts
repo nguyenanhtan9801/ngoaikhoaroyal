@@ -1425,6 +1425,133 @@ export function getPromotedTargetInfo(
   return null;
 }
 
+export interface ClassEnrollmentStats {
+  activeCount: number;
+  trialCount: number;
+  activeAndTrialCount: number;
+  completedCount: number;
+  droppedCount: number;
+  transferredCount: number;
+  totalCount: number;
+  enrollments: Enrollment[];
+}
+
+const ENROLLMENT_STATUS_PRIORITY: Record<string, number> = {
+  active: 6,
+  trial: 5,
+  completed: 4,
+  transferred: 3,
+  dropped: 2,
+  trial_dropped: 1,
+};
+
+/**
+ * Gom nhóm enrollments theo class_id trong 1 lượt duyệt (O(N), không N+1 query, không phụ thuộc cột enrolled_count).
+ * Tự động loại bỏ bản ghi trùng (class_id, student_id) theo thứ tự ưu tiên trạng thái.
+ */
+export function getClassEnrollmentStatsMap(
+  enrollments: Enrollment[] = []
+): Map<string, ClassEnrollmentStats> {
+  const dedupByClassAndStudent = new Map<string, Map<string, Enrollment>>();
+
+  for (const enr of enrollments) {
+    if (!enr || !enr.class_id || !enr.student_id) continue;
+    const classId = String(enr.class_id);
+    const studentId = String(enr.student_id);
+    let studentMap = dedupByClassAndStudent.get(classId);
+    if (!studentMap) {
+      studentMap = new Map<string, Enrollment>();
+      dedupByClassAndStudent.set(classId, studentMap);
+    }
+    const existing = studentMap.get(studentId);
+    if (!existing) {
+      studentMap.set(studentId, enr);
+    } else {
+      const existingPri = ENROLLMENT_STATUS_PRIORITY[String(existing.status || 'active')] || 0;
+      const nextPri = ENROLLMENT_STATUS_PRIORITY[String(enr.status || 'active')] || 0;
+      if (nextPri >= existingPri) {
+        studentMap.set(studentId, enr);
+      }
+    }
+  }
+
+  const statsMap = new Map<string, ClassEnrollmentStats>();
+  dedupByClassAndStudent.forEach((studentMap, classId) => {
+    const classEnrollments = Array.from(studentMap.values());
+    let activeCount = 0;
+    let trialCount = 0;
+    let completedCount = 0;
+    let droppedCount = 0;
+    let transferredCount = 0;
+
+    for (const enr of classEnrollments) {
+      const st = String(enr.status || 'active');
+      if (st === 'active') activeCount += 1;
+      else if (st === 'trial') trialCount += 1;
+      else if (st === 'completed') completedCount += 1;
+      else if (st === 'dropped' || st === 'trial_dropped' || st === 'cancelled' || st === 'canceled') droppedCount += 1;
+      else if (st === 'transferred') transferredCount += 1;
+    }
+
+    statsMap.set(classId, {
+      activeCount,
+      trialCount,
+      activeAndTrialCount: activeCount + trialCount,
+      completedCount,
+      droppedCount,
+      transferredCount,
+      totalCount: classEnrollments.length,
+      enrollments: classEnrollments,
+    });
+  });
+
+  return statsMap;
+}
+
+export type EnrollmentDisplayTone =
+  | 'active'
+  | 'completed'
+  | 'dropped'
+  | 'trial'
+  | 'transferred'
+  | 'upcoming';
+
+export function getEnrollmentStatusDisplay(
+  enr: Pick<Enrollment, 'status' | 'joined_date'> | undefined,
+  cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
+  todayStr?: string,
+  terms: AcademicTerm[] = []
+): { label: string; tone: EnrollmentDisplayTone } {
+  const status = String(enr?.status || 'active');
+  if (status === 'dropped' || status === 'trial_dropped' || status === 'cancelled' || status === 'canceled') {
+    return { label: 'Đã nghỉ', tone: 'dropped' };
+  }
+  if (status === 'transferred') {
+    return { label: 'Đã chuyển lớp', tone: 'transferred' };
+  }
+  if (status === 'completed') {
+    return { label: 'Đã hoàn thành', tone: 'completed' };
+  }
+  if (status === 'trial') {
+    return { label: 'Học thử', tone: 'trial' };
+  }
+  const refDate = getTodayStrHoChiMinh(todayStr || new Date());
+  const clsPhase = cls ? getClassPhase(cls, refDate, terms) : 'active';
+  if (clsPhase === 'upcoming') {
+    return { label: 'Sắp bắt đầu', tone: 'upcoming' };
+  }
+  if (enr?.joined_date) {
+    const joined = String(enr.joined_date).split('T')[0];
+    if (joined && refDate < joined) {
+      return { label: 'Sắp bắt đầu', tone: 'upcoming' };
+    }
+  }
+  if (clsPhase === 'ended') {
+    return { label: 'Đã hoàn thành', tone: 'completed' };
+  }
+  return { label: 'Đang học', tone: 'active' };
+}
+
 export function isStudentScheduledForDate(
   enrollment: Enrollment | undefined,
   sessionDate: string,
@@ -1464,9 +1591,18 @@ export function isStudentScheduledForDate(
 
 export function formatDateVN(dateStr?: string): string {
   if (!dateStr) return '';
-  const parts = dateStr.split('-');
+  const clean = String(dateStr).split('T')[0];
+  const parts = clean.split('-');
   if (parts.length !== 3) return dateStr;
   return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+export function formatDateShortVN(dateStr?: string): string {
+  if (!dateStr) return '';
+  const clean = String(dateStr).split('T')[0];
+  const parts = clean.split('-');
+  if (parts.length !== 3) return dateStr;
+  return `${parts[2]}/${parts[1]}`;
 }
 
 export function getClassDaysOfWeek(
