@@ -19,6 +19,9 @@ import {
   syncTeachersCurrentFieldsFromContracts,
   calculateTeacherSessionPayAtDate,
   isSessionSettledForTeacher,
+  getTodayStrHoChiMinh,
+  getClassPhase,
+  getClassEnrollmentStatsMap,
 } from '../lib/storage';
 import { loadInitialDataSafely, loadPublicCatalogSafely } from '../services/dataLoader';
 
@@ -51,16 +54,18 @@ export interface UseSupabaseRealtimeResult {
  * 3. Định mức thù lao theo buổi cho giáo viên (Cơ hữu: 300.000đ/buổi, Thỉnh giảng: 270.000đ/buổi)
  */
 export function recomputeDerivedRealtimeState(store: AppStore): AppStore {
-  const activeCountByClass = new Map<string, number>();
-  for (const enr of store.enrollments || []) {
-    if (enr.status === 'active' || enr.status === 'trial') {
-      activeCountByClass.set(enr.class_id, (activeCountByClass.get(enr.class_id) || 0) + 1);
-    }
-  }
+  const todayStr = getTodayStrHoChiMinh();
+  const statsMap = getClassEnrollmentStatsMap(store.enrollments);
 
   let classesChanged = false;
   const updatedClasses = (store.classes || []).map(cls => {
-    const computedCount = activeCountByClass.get(cls.id) || 0;
+    const stats = statsMap.get(String(cls.id));
+    const phase = getClassPhase(cls, todayStr, store.terms);
+    const computedCount = stats
+      ? phase === 'ended'
+        ? stats.completedCount + stats.activeAndTrialCount
+        : stats.activeAndTrialCount
+      : 0;
     if (cls.current_students !== computedCount) {
       classesChanged = true;
       return { ...cls, current_students: computedCount };
@@ -351,7 +356,7 @@ export function useSupabaseRealtime({
                   type: 'new_lead_registration',
                   title: 'Đơn đăng ký tuyển sinh mới (Realtime)',
                   message: `Phụ huynh ${mappedNew.parent_name} vừa đăng ký cho bé ${mappedNew.student_name} (${mappedNew.parent_phone}).`,
-                  date: new Date().toISOString().split('T')[0],
+                  date: getTodayStrHoChiMinh(),
                   severity: 'high',
                   read: false,
                 },

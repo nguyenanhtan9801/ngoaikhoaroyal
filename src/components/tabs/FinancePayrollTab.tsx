@@ -49,6 +49,8 @@ import {
   formatDateVN,
   getCurrentTerm,
   getEffectivePrice,
+  getTodayStrHoChiMinh,
+  getClassEnrollmentStatsMap,
 } from '../../lib/storage';
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
 import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
@@ -217,7 +219,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const [paymentAmountInput, setPaymentAmountInput] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'cash'>('bank_transfer');
   const [paymentRefInput, setPaymentRefInput] = useState('');
-  const [paymentDate, setPaymentDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [paymentDate, setPaymentDate] = useState<string>(getTodayStrHoChiMinh());
   const [paymentNotesInput, setPaymentNotesInput] = useState('');
   const [verifiedByInput, setVerifiedByInput] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -264,7 +266,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       a => a.class_id === fromClass.id && a.student_id === transferState.student_id
     ).length;
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayStrHoChiMinh();
     const completedSessions = store.sessions.filter(
       s => s.class_id === fromClass.id && (s.status === 'completed' || s.session_date <= today)
     ).length;
@@ -349,7 +351,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     setPaymentAmountInput(outstanding.toString());
     setPaymentMethod('bank_transfer');
     setPaymentRefInput(`VCB-FT${Date.now().toString().slice(-8)}`);
-    setPaymentDate(new Date().toISOString().split('T')[0]);
+    setPaymentDate(getTodayStrHoChiMinh());
     const histCount = invoice.payment_history?.length || 0;
     setPaymentNotesInput(histCount > 0 ? `Đóng đợt ${histCount + 1}` : 'Đóng đợt 1');
     setVerifiedByInput(currentUser?.full_name ? formatCapitalizeWords(currentUser.full_name) : 'Kế toán Lê Minh Thư');
@@ -500,7 +502,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
 
     const newPaymentRecord: InvoicePaymentRecord = {
       id: `pay_rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      payment_date: paymentDate || new Date().toISOString().split('T')[0],
+      payment_date: paymentDate || getTodayStrHoChiMinh(),
       amount: numAmount,
       payment_method: paymentMethod,
       payment_reference: effectiveRef,
@@ -633,7 +635,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
   const handleSettlePayroll = (teacher: Teacher, cls: ExtracurricularClass) => {
     const activeContract = getTeacherContractAt(
       teacher,
-      new Date().toISOString().split('T')[0],
+      getTodayStrHoChiMinh(),
       store
     );
     if (!isPayable(teacher, activeContract)) {
@@ -650,14 +652,20 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     );
     const taughtCount = sessions.length;
 
+    const classStats = getClassEnrollmentStatsMap(store.enrollments).get(String(cls.id));
+    const classEnrollments = (
+      classStats?.enrollments || store.enrollments.filter(e => e.class_id === cls.id)
+    ).filter(
+      e => e.status === 'active' || e.status === 'trial' || e.status === 'completed'
+    );
+    const grossRevenue = classEnrollments.length * cls.full_course_fee;
+
     // Calculate payroll
     let totalPayroll = 0;
     if (teacher.teacher_type === 'permanent') {
       totalPayroll = taughtCount * teacher.fixed_rate_per_session;
     } else if (teacher.teacher_type === 'visiting') {
       // Visiting: % of class revenue (after discounts)
-      const classEnrollments = store.enrollments.filter(e => e.class_id === cls.id && e.status === 'active');
-      const grossRevenue = classEnrollments.length * cls.full_course_fee;
       totalPayroll = (grossRevenue * teacher.percentage_rate) / 100;
     }
 
@@ -671,10 +679,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           term_id: cls.term_id,
           taught_sessions: taughtCount,
           substitute_sessions: 0,
-          class_revenue: cls.full_course_fee * store.enrollments.filter(e => e.class_id === cls.id).length,
+          class_revenue: grossRevenue,
           calculation_type: teacher.teacher_type === 'permanent' ? 'fixed' : 'percentage',
           total_payroll: totalPayroll,
-          settled_date: new Date().toISOString().split('T')[0],
+          settled_date: getTodayStrHoChiMinh(),
           is_settled: true,
         },
         ...prev.payrollSettlements,
@@ -750,11 +758,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       return;
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    const expiryDate = new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0];
+    const today = getTodayStrHoChiMinh();
+    const expiryDate = getTodayStrHoChiMinh(new Date(Date.now() + 365 * 86400000));
     const transferCode = `TRF-2026-${String((store.transfers?.length || 0) + 1).padStart(5, '0')}`;
     const surchargeInvoiceId = surcharge > 0 ? `inv_surcharge_${Date.now()}` : undefined;
-    const surchargeDueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+    const surchargeDueDate = getTodayStrHoChiMinh(new Date(Date.now() + 7 * 86400000));
     let invoiceCode: string | undefined = undefined;
 
     if (surcharge > 0 && surchargeInvoiceId) {
@@ -1856,7 +1864,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           });
         })();
 
-        const todayIso = new Date().toISOString().split('T')[0];
+        const todayIso = getTodayStrHoChiMinh();
 
         // Compute per-teacher workload & payroll summary rows by summing each session's contract payout at session_date
         // Loại bỏ hoàn toàn giáo viên đối tác (partner / pay_model = 'none') khỏi bảng lương và tổng chi phí lương
@@ -2033,7 +2041,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
           row: typeof teacherPayrollRows[number],
           overrideReasonNote?: string
         ) => {
-          const settledDate = new Date().toISOString().split('T')[0];
+          const settledDate = getTodayStrHoChiMinh();
           const bankRef = `PAY-${row.code}-${Date.now().toString().slice(-5)}`;
           const trimmedReason = (overrideReasonNote || '').trim();
           const settlementNotes = trimmedReason
@@ -2899,7 +2907,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                             Số phiếu: PAY-{targetRow.code}-{new Date().getFullYear()}
                           </div>
                           <div className="text-slate-400 text-[11px] mt-0.5">
-                            Ngày lập: {formatDateVN(new Date().toISOString().split('T')[0])}
+                            Ngày lập: {formatDateVN(getTodayStrHoChiMinh())}
                           </div>
                           <div className="mt-1">
                             {targetRow.isSettled ? (

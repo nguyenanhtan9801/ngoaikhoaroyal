@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { AppState } from './storage';
+import { getEnrollmentStartDate } from '../utils/classLifecycle';
 
 export function exportMasterExcelTemplate(state: AppState): void {
   const wb = XLSX.utils.book_new();
@@ -118,7 +119,7 @@ export function exportMasterExcelTemplate(state: AppState): void {
       'Tên Học Sinh': st ? st.name : '',
       'Tên Lớp Ngoại Khóa': cl ? cl.name : en.class_id,
       'Số Buổi Đăng Ký': en.registered_sessions,
-      'Ngày Vào Lớp': en.joined_date,
+      'Ngày Vào Lớp': getEnrollmentStartDate(en as any, cl as any) || en.joined_date,
       'Trạng Thái': en.status
     };
   });

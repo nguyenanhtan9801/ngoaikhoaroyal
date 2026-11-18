@@ -6,6 +6,8 @@ import {
   getTeacherTypeLabel,
   getTeacherContractAt,
   isPayable,
+  getTodayStrHoChiMinh,
+  getEnrollmentStartDate,
 } from './storage';
 import { formatCapitalizedName } from './formatters';
 import {
@@ -30,7 +32,7 @@ import {
  */
 export function exportMasterWorkbook(
   store: AppStore,
-  filename = `RoyalSchool_CSDL_TongThe_10Bang_${new Date().toISOString().split('T')[0]}.xlsx`
+  filename = `RoyalSchool_CSDL_TongThe_10Bang_${getTodayStrHoChiMinh()}.xlsx`
 ) {
   const wb = XLSX.utils.book_new();
 
@@ -275,7 +277,7 @@ export function exportMasterWorkbook(
       'Mã Lớp Học': cls?.id || en.class_id,
       'Tên Lớp Học': cls?.name || '',
       'Số Buổi Đăng Ký': en.registered_sessions,
-      'Ngày Bắt Đầu Học': en.joined_date,
+      'Ngày Bắt Đầu Học': getEnrollmentStartDate(en, cls) || en.joined_date || '',
       'Thứ Đăng Ký Học': (en.enrolled_days_of_week || cls?.days_of_week || []).join(', '),
       'Học Bán Phần Tuần': en.is_partial_schedule ? 'CÓ' : 'KHÔNG',
       'Đăng Ký Học Thử': en.is_trial ? 'CÓ' : 'KHÔNG',
@@ -1092,7 +1094,7 @@ export async function parseMasterExcelFile(
               is_royal_student: isRoyal,
               medical_notes: String(r['Lưu Ý Y Tế & Thực Phẩm'] || '').trim(),
               status: 'active',
-              created_at: String(r['Ngày Tạo Hồ Sơ'] || new Date().toISOString().split('T')[0]).trim(),
+              created_at: String(r['Ngày Tạo Hồ Sơ'] || getTodayStrHoChiMinh()).trim(),
             };
           });
         totalRowsParsed += importedData.students.length;
@@ -1256,7 +1258,7 @@ export async function parseMasterExcelFile(
               due_date: String(r['Hạn Thanh Toán'] || '2026-09-10').trim(),
               payment_reference: r['Mã Giao Dịch Ngân Hàng'] ? String(r['Mã Giao Dịch Ngân Hàng']).trim() : undefined,
               verified_by: r['Kế Toán Xác Nhận'] ? String(r['Kế Toán Xác Nhận']).trim() : undefined,
-              created_at: String(r['Ngày Lập Hóa Đơn'] || new Date().toISOString().split('T')[0]).trim(),
+              created_at: String(r['Ngày Lập Hóa Đơn'] || getTodayStrHoChiMinh()).trim(),
             };
           });
         totalRowsParsed += importedData.invoices.length;
@@ -1304,7 +1306,7 @@ export function exportTeacherPayrollWorkbook(
   const termName = store.terms.find(t => t.id === termId)?.name || 'Toàn khóa';
   const campusName = campusId === 'all' ? 'Toàn hệ thống (PMH & PL)' : (store.campuses.find(c => c.id === campusId)?.name || campusId);
 
-  const todayIso = new Date().toISOString().split('T')[0];
+  const todayIso = getTodayStrHoChiMinh();
 
   // Sheet 1: Tổng hợp thù lao (loại bỏ giáo viên đối tác không tính lương)
   const payableSummaryRows = summaryRows.filter(r => {
@@ -1421,5 +1423,5 @@ export function exportTeacherPayrollWorkbook(
   XLSX.utils.book_append_sheet(wb, ws2, 'Chi_Tiet_Ca_Day');
 
   const safeTermCode = store.terms.find(t => t.id === termId)?.code || 'ALL';
-  XLSX.writeFile(wb, `QuyetToan_ThuLao_GiaoVien_${safeTermCode}_${new Date().toISOString().split('T')[0]}.xlsx`);
+  XLSX.writeFile(wb, `QuyetToan_ThuLao_GiaoVien_${safeTermCode}_${getTodayStrHoChiMinh()}.xlsx`);
 }

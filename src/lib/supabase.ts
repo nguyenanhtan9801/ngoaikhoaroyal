@@ -58,8 +58,7 @@ export const SUPABASE_TABLE_SELECT_COLUMNS: Record<string, string> = {
     'id,code,name,phone,email,campus_id,type,teacher_type,fixed_rate_per_session,default_rate_per_period,periods_per_session,bank_account,subjects,status,updated_at,percentage_rate,weekend_multiplier,custom_subject_rates,duration_rates,hire_date,notes',
   teacher_contracts:
     'id,teacher_id,teacher_type,pay_model,effective_from,rate_per_period,periods_per_session,session_rate,percentage_rate,weekend_multiplier,custom_subject_rates,duration_rates,note,created_by,created_at',
-  extracurricular_classes:
-    'id,code,name,term_id,spanning_term_id,is_cross_term,term_distribution,campus_id,subject_id,facility_id,time_slot_id,days_of_week,start_date,end_date,primary_teacher_id,max_students,total_sessions,full_course_fee,price_per_session,status,allow_over_quota',
+  extracurricular_classes: '*',
   students:
     'id,code,previous_student_code,name,dob,gender,is_royal_student,campus_id,school_name,regular_class,parent_name,parent_phone,medical_notes,avatar_url,status,created_at',
   enrollments: '*',
@@ -1567,7 +1566,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         medical_notes: s.medical_notes || '',
         avatar_url: s.avatar_url && !s.avatar_url.startsWith('data:') ? s.avatar_url : null,
         status: s.status || 'active',
-        created_at: s.created_at || new Date().toISOString().split('T')[0],
+        created_at: s.created_at || getTodayStrHoChiMinh(),
       }));
 
     case 'enrollments': {
@@ -1641,7 +1640,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         substitute_reason: ta.substitute_reason || null,
         status: ta.status || 'present',
         late_minutes: ta.late_minutes || 0,
-        check_in_time: ta.check_in_time || '16:40',
+        check_in_time: ta.check_in_time || null,
         rate_per_period: ta.rate_per_period || 150000,
         rate_applied: ta.rate_applied || 300000,
         earned_amount: ta.earned_amount ?? ta.total_payout ?? 300000,
@@ -1679,7 +1678,7 @@ function serializeTableRowsForSupabase(tableName: string, store: AppStore): Reco
         verified_by: inv.verified_by || null,
         verified_at: inv.verified_at || null,
         payment_history: inv.payment_history || [],
-        created_at: inv.created_at || new Date().toISOString().split('T')[0],
+        created_at: inv.created_at || getTodayStrHoChiMinh(),
       }));
 
     case 'credit_notes':
@@ -2042,6 +2041,11 @@ export async function pullAllTablesFromSupabase(
               subject_id: r.subject_id,
               facility_id: r.facility_id || '',
               time_slot_id: r.time_slot_id || '',
+              time_slot: r.time_slot || undefined,
+              start_time: r.start_time || undefined,
+              end_time: r.end_time || undefined,
+              schedule: r.schedule || undefined,
+              schedules: Array.isArray(r.schedules) ? r.schedules : undefined,
               days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
               start_date: r.start_date || undefined,
               end_date: r.end_date || undefined,
@@ -2087,7 +2091,7 @@ export async function pullAllTablesFromSupabase(
               medical_notes: r.medical_notes || '',
               avatar_url: r.avatar_url || undefined,
               status: r.status || 'active',
-              created_at: r.created_at || new Date().toISOString().split('T')[0],
+              created_at: r.created_at || getTodayStrHoChiMinh(),
             };
           });
           break;
@@ -2160,7 +2164,7 @@ export async function pullAllTablesFromSupabase(
             substitute_reason: r.substitute_reason || undefined,
             status: r.status || 'present',
             late_minutes: Number(r.late_minutes) || 0,
-            check_in_time: r.check_in_time || '16:40',
+            check_in_time: r.check_in_time || undefined,
             rate_per_period: Number(r.rate_per_period) || 150000,
             rate_applied: Number(r.rate_applied) || 300000,
             earned_amount: Number(r.earned_amount) || Number(r.total_payout) || 300000,
@@ -2194,7 +2198,7 @@ export async function pullAllTablesFromSupabase(
             verified_by: r.verified_by || undefined,
             verified_at: r.verified_at || undefined,
             payment_history: Array.isArray(r.payment_history) ? r.payment_history : [],
-            created_at: r.created_at || new Date().toISOString().split('T')[0],
+            created_at: r.created_at || getTodayStrHoChiMinh(),
           }));
           break;
       }
@@ -2437,7 +2441,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         permissions: r.permissions || undefined,
         linked_teacher_id: r.linked_teacher_id || r.teacher_id || undefined,
         last_login: r.last_login || undefined,
-        created_at: r.created_at || new Date().toISOString().split('T')[0],
+        created_at: r.created_at || getTodayStrHoChiMinh(),
       };
     }
 
@@ -2455,6 +2459,11 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         subject_id: r.subject_id,
         facility_id: r.facility_id || '',
         time_slot_id: r.time_slot_id || '',
+        time_slot: r.time_slot || undefined,
+        start_time: r.start_time || undefined,
+        end_time: r.end_time || undefined,
+        schedule: r.schedule || undefined,
+        schedules: Array.isArray(r.schedules) ? r.schedules : undefined,
         days_of_week: Array.isArray(r.days_of_week) ? r.days_of_week : ['T2', 'T4'],
         start_date: r.start_date || undefined,
         end_date: r.end_date || undefined,
@@ -2500,7 +2509,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         medical_notes: r.medical_notes || '',
         avatar_url: r.avatar_url || undefined,
         status: r.status || 'active',
-        created_at: r.created_at || new Date().toISOString().split('T')[0],
+        created_at: r.created_at || getTodayStrHoChiMinh(),
       };
     }
 
@@ -2574,7 +2583,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         substitute_reason: r.substitute_reason || undefined,
         status: r.status || 'present',
         late_minutes: Number(r.late_minutes) || 0,
-        check_in_time: r.check_in_time || '16:40',
+        check_in_time: r.check_in_time || undefined,
         rate_per_period: Number(r.rate_per_period) || 150000,
         rate_applied: Number(r.rate_applied) || 300000,
         earned_amount: Number(r.earned_amount) || Number(r.total_payout) || 300000,
@@ -2641,7 +2650,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         verified_by: r.verified_by || undefined,
         verified_at: r.verified_at || undefined,
         payment_history: Array.isArray(r.payment_history) ? r.payment_history : [],
-        created_at: r.created_at || new Date().toISOString().split('T')[0],
+        created_at: r.created_at || getTodayStrHoChiMinh(),
       };
 
     case 'credit_notes':
@@ -2658,7 +2667,7 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
         credit_rule: r.credit_rule || 'monetary',
         total_credit_amount: Number(r.total_credit_amount) || 0,
         transferred_sessions: Number(r.transferred_sessions) || 3,
-        issue_date: r.issue_date || new Date().toISOString().split('T')[0],
+        issue_date: r.issue_date || getTodayStrHoChiMinh(),
         expiry_date: r.expiry_date || '',
         status: r.status || 'issued',
         redeemed_info: r.redeemed_info || undefined,

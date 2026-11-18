@@ -373,6 +373,14 @@ export interface ExtracurricularClass {
   room_id?: string;
   time_slot_id: string;
   time_slot?: string;
+  start_time?: string;
+  end_time?: string;
+  schedule?: string;
+  schedules?: Array<{
+    day_of_week?: number | string;
+    start_time?: string;
+    end_time?: string;
+  }>;
   days_of_week?: string[]; // e.g. ['T2', 'T4'] - Exactly 2 days per class
   start_date?: string; // Ngày bắt đầu mở lớp (YYYY-MM-DD)
   end_date?: string; // Ngày kết thúc dự kiến (YYYY-MM-DD)

@@ -53,6 +53,7 @@ import {
   getTeacherEffectivePeriodRate,
   getTeacherEffectiveSessionRate,
   calculateTeacherSessionPayAtDate,
+  isSessionSettledForTeacher,
   getCurrentTerm,
   getTodayStrHoChiMinh,
   getClassEffectiveBounds,
@@ -63,7 +64,7 @@ import {
   getEnrollmentStatusDisplay,
   getPromotedTargetInfo,
 } from '../../lib/storage';
-import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
+import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment, TuitionInvoice } from '../../types';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
@@ -103,6 +104,27 @@ interface WeekOption {
   label: string;
   isCurrent: boolean;
 }
+
+const normalizeTimeToHHMM = (rawTime?: string | null): string => {
+  if (!rawTime) return '';
+  const cleaned = String(rawTime).trim();
+  const match = cleaned.match(/(\d{1,2}):(\d{2})/);
+  if (!match) return '';
+  const hoursNum = Number(match[1]);
+  const minsNum = Number(match[2]);
+  if (Number.isNaN(hoursNum) || Number.isNaN(minsNum) || hoursNum < 0 || hoursNum > 23 || minsNum < 0 || minsNum > 59) {
+    return '';
+  }
+  return `${String(hoursNum).padStart(2, '0')}:${String(minsNum).padStart(2, '0')}`;
+};
+
+const addMinutesToHHMM = (hhmm: string, deltaMinutes: number): string => {
+  const norm = normalizeTimeToHHMM(hhmm);
+  if (!norm) return hhmm;
+  const [h, m] = norm.split(':').map(Number);
+  const total = Math.max(0, Math.min(23 * 60 + 59, h * 60 + m + deltaMinutes));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
 
 // 1. Quy ước độ lệch ngày tính từ Thứ Hai (Thứ 2 = +0 ngày, Thứ 3 = +1 ngày, ..., CN = +6 ngày)
 const DAY_OFFSETS: Record<string, number> = {
@@ -375,7 +397,15 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     return buildTermWeeks(effectiveStart, neededWeeks);
   }, [activeFilterTerm, currentClassBounds?.startDate, currentClassBounds?.endDate]);
 
-  const timeSlot = store.timeSlots.find(t => t.id === currentClass?.time_slot_id);
+  const timeSlot = useMemo(
+    () =>
+      currentClass?.time_slot_id
+        ? store.timeSlots.find(
+            t => t.id === currentClass.time_slot_id || t.code === currentClass.time_slot_id
+          )
+        : undefined,
+    [store.timeSlots, currentClass?.time_slot_id]
+  );
 
   // Class scheduled days of week (Default: T2, T4)
   const classDays = useMemo(() => {
@@ -470,6 +500,80 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     return scheduledSessionsForWeek[0]?.dateStr || '2026-09-02';
   });
 
+  // Resolve standard class start/end time from DB (schedules -> class columns -> time_slots -> schedule string)
+  const classTimeSlot = useMemo(() => {
+    if (!currentClass) return { startTime: '16:45', endTime: '18:15' };
+
+    const schedulesList = Array.isArray(currentClass.schedules)
+      ? currentClass.schedules
+      : Array.isArray((currentClass as any).class_schedules)
+      ? ((currentClass as any).class_schedules as any[])
+      : null;
+
+    if (selectedDate && schedulesList && schedulesList.length > 0) {
+      const dayObj = new Date(`${selectedDate}T12:00:00`);
+      const jsDay = Number.isNaN(dayObj.getTime()) ? -1 : dayObj.getDay();
+      const dayCode = getDateDayCode(selectedDate);
+      const daySchedule = schedulesList.find((s: any) => {
+        if (s?.day_of_week === undefined || s?.day_of_week === null) return false;
+        const raw = String(s.day_of_week).trim();
+        if (/^\d+$/.test(raw)) return Number(raw) === jsDay;
+        return raw.toUpperCase() === dayCode;
+      });
+      const schedStart = normalizeTimeToHHMM(daySchedule?.start_time);
+      if (schedStart) {
+        return {
+          startTime: schedStart,
+          endTime: normalizeTimeToHHMM(daySchedule?.end_time) || normalizeTimeToHHMM(timeSlot?.end_time) || '',
+        };
+      }
+    }
+
+    const directStart = normalizeTimeToHHMM(currentClass.start_time);
+    if (directStart) {
+      return {
+        startTime: directStart,
+        endTime: normalizeTimeToHHMM(currentClass.end_time) || normalizeTimeToHHMM(timeSlot?.end_time) || '',
+      };
+    }
+
+    const slotStart = normalizeTimeToHHMM(timeSlot?.start_time);
+    if (slotStart) {
+      return {
+        startTime: slotStart,
+        endTime: normalizeTimeToHHMM(timeSlot?.end_time) || '',
+      };
+    }
+
+    const scheduleStr = String(
+      currentClass.schedule || currentClass.time_slot || timeSlot?.name || ''
+    );
+    const rangeMatch = scheduleStr.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+    if (rangeMatch) {
+      return {
+        startTime: normalizeTimeToHHMM(rangeMatch[1]) || '16:45',
+        endTime: normalizeTimeToHHMM(rangeMatch[2]) || '',
+      };
+    }
+
+    return { startTime: '16:45', endTime: '18:15' };
+  }, [currentClass, selectedDate, timeSlot]);
+
+  const classDurationMinutes = useMemo(() => {
+    const startNorm = normalizeTimeToHHMM(classTimeSlot.startTime);
+    const endNorm = normalizeTimeToHHMM(classTimeSlot.endTime);
+    if (startNorm && endNorm) {
+      const [sh, sm] = startNorm.split(':').map(Number);
+      const [eh, em] = endNorm.split(':').map(Number);
+      const diff = eh * 60 + em - (sh * 60 + sm);
+      if (diff > 0) return diff;
+    }
+    if (timeSlot?.duration_minutes && Number(timeSlot.duration_minutes) > 0) {
+      return Number(timeSlot.duration_minutes);
+    }
+    return 90;
+  }, [classTimeSlot.startTime, classTimeSlot.endTime, timeSlot?.duration_minutes]);
+
   // Keep selectedDate in sync when week or class changes (respecting ended class bounds & saved sessions)
   useEffect(() => {
     if (scheduledSessionsForWeek.length === 0) return;
@@ -533,7 +637,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   const isAttendanceLocked = isFutureDate || isUpcomingClass || isOutsideClassBoundsForEnded;
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
-    currentClass?.primary_teacher_id || store.teachers[0]?.id || ''
+    currentClass?.primary_teacher_id || ''
   );
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [isSubstitute, setIsSubstitute] = useState<boolean>(false);
@@ -541,7 +645,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   // Teacher Attendance & Work Session Tracking State
   const [teacherMode, setTeacherMode] = useState<'present' | 'late' | 'substitute' | 'absent'>('present');
   const [teacherPeriodsCount, setTeacherPeriodsCount] = useState<number>(2);
-  const [teacherCheckInTime, setTeacherCheckInTime] = useState<string>('16:40');
+  const [teacherCheckInTime, setTeacherCheckInTime] = useState<string>(() => classTimeSlot.startTime || '16:45');
   const [teacherLateMinutes, setTeacherLateMinutes] = useState<number>(10);
   const [teacherSessionNote, setTeacherSessionNote] = useState<string>('');
 
@@ -944,7 +1048,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       sessionTeacherRecords[0];
     const assignedTeacher = store.teachers.find(t => t.id === currentClass.primary_teacher_id);
     const defaultPeriods = assignedTeacher?.periods_per_session || 2;
-    const defaultStartTime = timeSlot?.start_time || '16:45';
+    const defaultStartTime = classTimeSlot.startTime || '16:45';
 
     const checkinRecord = (store.teacherCheckins || []).find(
       c =>
@@ -954,7 +1058,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     );
 
     if (checkinRecord) {
-      const vnCheckinTime = formatCheckinVietnamHhMm(checkinRecord.checked_in_at) || defaultStartTime;
+      const vnCheckinTime = normalizeTimeToHHMM(formatCheckinVietnamHhMm(checkinRecord.checked_in_at)) || defaultStartTime;
       const lateMins = Number(checkinRecord.late_minutes || 0);
       setSelectedTeacherId(checkinRecord.teacher_id);
       setIsSubstitute(checkinRecord.teacher_id !== currentClass.primary_teacher_id);
@@ -970,15 +1074,21 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         setTeacherMode('present');
       }
     } else if (existingTeacherAtt) {
-      setSelectedTeacherId(existingTeacherAtt.actual_teacher_id);
-      setIsSubstitute(existingTeacherAtt.is_substitute);
+      const hasPrimaryAssigned = Boolean(currentClass.primary_teacher_id);
+      const loadedTeacherId = existingTeacherAtt.actual_teacher_id || currentClass.primary_teacher_id || '';
+      const isActualSub =
+        Boolean(existingTeacherAtt.is_substitute) &&
+        (!hasPrimaryAssigned || loadedTeacherId !== currentClass.primary_teacher_id);
+      setSelectedTeacherId(loadedTeacherId);
+      setIsSubstitute(isActualSub);
       setTeacherPeriodsCount(existingTeacherAtt.periods_count || defaultPeriods);
-      setTeacherCheckInTime(existingTeacherAtt.check_in_time || defaultStartTime);
+      const savedAttCheckinTime = normalizeTimeToHHMM(existingTeacherAtt.check_in_time);
+      setTeacherCheckInTime(savedAttCheckinTime || defaultStartTime);
       setTeacherLateMinutes(existingTeacherAtt.late_minutes || 10);
       setTeacherSessionNote(existingTeacherAtt.notes || '');
       if (existingTeacherAtt.status === 'absent_excused' || existingTeacherAtt.status === 'absent_unexcused') {
         setTeacherMode('absent');
-      } else if (existingTeacherAtt.is_substitute) {
+      } else if (isActualSub) {
         setTeacherMode('substitute');
       } else if (existingTeacherAtt.status === 'late') {
         setTeacherMode('late');
@@ -986,8 +1096,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         setTeacherMode('present');
       }
     } else if (currentSession) {
-      setSelectedTeacherId(currentSession.actual_teacher_id || currentClass.primary_teacher_id);
-      const isSub = Boolean(currentSession.is_substitute || (currentSession.actual_teacher_id && currentSession.actual_teacher_id !== currentClass.primary_teacher_id));
+      const hasPrimaryAssigned = Boolean(currentClass.primary_teacher_id);
+      const loadedTeacherId = currentSession.actual_teacher_id || currentClass.primary_teacher_id || '';
+      setSelectedTeacherId(loadedTeacherId);
+      const isSub = Boolean(
+        currentSession.is_substitute &&
+          (!hasPrimaryAssigned || (loadedTeacherId && loadedTeacherId !== currentClass.primary_teacher_id))
+      );
       setIsSubstitute(isSub);
       setTeacherMode(isSub ? 'substitute' : 'present');
       setTeacherPeriodsCount(defaultPeriods);
@@ -995,7 +1110,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       setTeacherLateMinutes(10);
       setTeacherSessionNote('');
     } else {
-      setSelectedTeacherId(currentClass.primary_teacher_id);
+      setSelectedTeacherId(currentClass.primary_teacher_id || '');
       setIsSubstitute(false);
       setTeacherMode('present');
       setTeacherPeriodsCount(defaultPeriods);
@@ -1043,7 +1158,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       }
     });
     setSecondaryTeacherStates(nextSecStates);
-  }, [currentClass?.id, selectedDate, store.teacherAttendance, store.teacherCheckins, classSecondaryTeacherIds]);
+  }, [currentClass?.id, selectedDate, classTimeSlot.startTime, store.teacherAttendance, store.teacherCheckins, classSecondaryTeacherIds]);
 
   // Live Teacher Rate & Payout Calculation for Current Session based on teacher_contracts at session_date
   const assignedTeacherObj = currentClass
@@ -1429,12 +1544,27 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       }
     }
 
+    if (!selectedTeacherId && (teacherMode !== 'absent' || !currentClass.primary_teacher_id)) {
+      showToast(
+        'Lớp học chưa có giáo viên phân công mặc định. Vui lòng chọn giáo viên đứng lớp buổi này trước khi lưu điểm danh!',
+        'warning',
+        { title: 'Chưa chọn giáo viên đứng lớp' }
+      );
+      return;
+    }
+
     setSaveConfirmModalOpen(true);
   };
 
   // Thực thi lưu điểm danh sau khi người dùng xác nhận trong modal
   const executeSaveAttendance = () => {
-    if (!currentClass || isAttendanceLocked) return;
+    if (
+      !currentClass ||
+      isAttendanceLocked ||
+      (!selectedTeacherId && (teacherMode !== 'absent' || !currentClass.primary_teacher_id))
+    ) {
+      return;
+    }
     setSaveConfirmModalOpen(false);
     void handleSaveDutyStaff(true);
 
@@ -1445,14 +1575,22 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         s => !(s.class_id === currentClass.id && s.session_date === selectedDate)
       );
 
+      const hasPrimaryAssigned = Boolean(currentClass.primary_teacher_id);
+      const isPrimarySubstitute =
+        teacherMode === 'substitute' ||
+        (hasPrimaryAssigned && selectedTeacherId !== currentClass.primary_teacher_id && teacherMode !== 'absent');
+
       const newSession: ClassSession = {
         id: currentSession?.id || `ses_${Date.now()}`,
         class_id: currentClass.id,
         term_id: selectedTermId || currentClass.term_id,
         session_date: selectedDate,
         session_number: currentSession?.session_number || sessionNumber,
-        actual_teacher_id: selectedTeacherId,
-        is_substitute: isSubstitute,
+        actual_teacher_id:
+          teacherMode === 'absent'
+            ? currentClass.primary_teacher_id || selectedTeacherId || ''
+            : selectedTeacherId,
+        is_substitute: isPrimarySubstitute,
         snacks_allocated: totalRoyalCount,
         snacks_consumed: liveConsumed,
         snacks_returned: liveReturned,
@@ -1531,31 +1669,52 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           const priorPresentRecords = prev.attendance.filter(
             a => a.student_id === s.id && a.class_id === currentClass.id && a.session_date !== selectedDate && a.status === 'present'
           );
+          const totalPresentInClass = finalAttendance.filter(
+            a => a.student_id === s.id && a.class_id === currentClass.id && a.status === 'present'
+          ).length;
 
-          if (currentStatus === 'present') {
+          if (currentStatus === 'present' || totalPresentInClass >= 2) {
             const hasCompletedFirstTrialSession =
+              totalPresentInClass >= 2 ||
               priorPresentRecords.length >= 1 ||
               Boolean(enr.trial_attended && enr.trial_session_date && enr.trial_session_date !== selectedDate);
 
             if (hasCompletedFirstTrialSession) {
               // Kịch bản 1: Học tiếp tục buổi thứ 2 -> Tự động chuyển sang Chính thức (Active) & kích hoạt hóa đơn toàn khóa
-              updatedEnrollments = updatedEnrollments.map(e => 
-                e.id === enr.id 
-                  ? { 
-                      ...e, 
-                      status: 'active', 
+              updatedEnrollments = updatedEnrollments.map(e =>
+                e.id === enr.id
+                  ? {
+                      ...e,
+                      status: 'active',
                       trial_attended: true,
                       trial_completed_action: 'promoted',
-                      trial_outcome: 'promoted', 
-                      trial_notes: `Tự động chuyển sang Chính thức (Active) khi tham gia buổi học thứ ${priorPresentRecords.length + 1} (Buổi học thử đầu tiên được tính là buổi chính thức số 1)` 
+                      trial_outcome: 'promoted',
+                      trial_notes: `Tự động chuyển sang Chính thức (Active) khi tham gia buổi học thứ ${Math.max(2, totalPresentInClass)} (Buổi học thử đầu tiên được tính là buổi chính thức số 1)`,
                     }
                   : e
               );
-              updatedInvoices = updatedInvoices.map(inv => 
-                inv.student_id === s.id && inv.class_id === currentClass.id && inv.is_trial_pending
-                  ? { ...inv, is_trial_pending: false, payment_status: 'unpaid' }
-                  : inv
-              );
+              updatedInvoices = updatedInvoices.map(inv => {
+                if (inv.student_id === s.id && inv.class_id === currentClass.id && inv.is_trial_pending) {
+                  const netPayable = Math.max(
+                    0,
+                    Number(inv.gross_amount || 0) -
+                      Number(inv.credit_deducted || 0) -
+                      Number(inv.discount_amount || 0)
+                  );
+                  const paid = Math.max(0, Number(inv.paid_amount || 0));
+                  const outstanding = Math.max(0, netPayable - paid);
+                  const nextStatus: TuitionInvoice['payment_status'] =
+                    outstanding <= 0 && netPayable > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
+                  return {
+                    ...inv,
+                    is_trial_pending: false,
+                    net_payable: netPayable,
+                    outstanding_amount: outstanding,
+                    payment_status: nextStatus,
+                  };
+                }
+                return inv;
+              });
               newNotifications.unshift({
                 id: `notif_trial_promote_${Date.now()}_${s.id}`,
                 type: 'enrollment_over_quota',
@@ -1582,6 +1741,39 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         }
       });
 
+      // Đồng bộ lại công nợ / trạng thái thanh toán cho tất cả hóa đơn thuộc lớp hiện tại
+      updatedInvoices = updatedInvoices.map(inv => {
+        if (inv.class_id !== currentClass.id || inv.payment_status === 'cancelled') return inv;
+        const netPayable = Math.max(
+          0,
+          Number(inv.gross_amount || 0) -
+            Number(inv.credit_deducted || 0) -
+            Number(inv.discount_amount || 0)
+        );
+        const paid = Math.max(0, Number(inv.paid_amount || 0));
+        const outstanding = inv.is_trial_pending ? 0 : Math.max(0, netPayable - paid);
+        const nextStatus: TuitionInvoice['payment_status'] = inv.is_trial_pending
+          ? 'trial_pending'
+          : outstanding <= 0 && netPayable > 0
+          ? 'paid'
+          : paid > 0
+          ? 'partial'
+          : 'unpaid';
+        if (
+          inv.net_payable === netPayable &&
+          inv.outstanding_amount === outstanding &&
+          inv.payment_status === nextStatus
+        ) {
+          return inv;
+        }
+        return {
+          ...inv,
+          net_payable: netPayable,
+          outstanding_amount: outstanding,
+          payment_status: nextStatus,
+        };
+      });
+
       // 5. Audit Logging for attendance save, proofs & historical ended-class diffs
       const prevSessionAttendance = prev.attendance.filter(
         a => a.class_id === currentClass.id && a.session_date === selectedDate
@@ -1606,8 +1798,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           ? 'late'
           : 'present';
 
+      const resolvedAssignedTeacherId =
+        currentClass.primary_teacher_id || selectedTeacherId || '';
       const actualPrimaryTeacherId =
-        teacherMode === 'absent' ? currentClass.primary_teacher_id : selectedTeacherId;
+        teacherMode === 'absent' ? resolvedAssignedTeacherId : selectedTeacherId;
       const primaryCheckinMatch =
         (prev.teacherCheckins || []).find(
           c =>
@@ -1619,9 +1813,26 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           c =>
             c.class_id === currentClass.id &&
             c.session_date === selectedDate &&
-            c.teacher_id === currentClass.primary_teacher_id
+            c.teacher_id === resolvedAssignedTeacherId
         ) ||
         null;
+
+      const storeWithUpdatedEnrollments: AppStore = {
+        ...prev,
+        sessions: updatedSessions,
+        attendance: finalAttendance,
+        enrollments: updatedEnrollments,
+        invoices: updatedInvoices,
+      };
+      const recalcPrimaryPay = calculateTeacherSessionPayAtDate({
+        teacher: store.teachers.find(t => t.id === actualPrimaryTeacherId),
+        cls: currentClass,
+        sessionDate: selectedDate,
+        periodsCount: teacherMode === 'absent' ? 0 : teacherPeriodsCount,
+        isWeekendOverride: isWeekendSlot,
+        isAbsent: teacherMode === 'absent',
+        store: storeWithUpdatedEnrollments,
+      });
 
       const newTeacherAttendanceRecord: TeacherAttendanceRecord = {
         id: existingPrimaryAtt?.id || `tatt_${currentClass.id}_${selectedDate}`,
@@ -1631,29 +1842,29 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         session_date: selectedDate,
         session_number: newSession.session_number,
         periods_count: teacherMode === 'absent' ? 0 : teacherPeriodsCount,
-        assigned_teacher_id: currentClass.primary_teacher_id,
+        assigned_teacher_id: resolvedAssignedTeacherId,
         actual_teacher_id: actualPrimaryTeacherId,
-        is_substitute: teacherMode === 'substitute' || (selectedTeacherId !== currentClass.primary_teacher_id && teacherMode !== 'absent'),
+        is_substitute: isPrimarySubstitute,
         status: resolvedStatus,
         late_minutes: teacherMode === 'late' ? teacherLateMinutes : undefined,
         check_in_time: teacherMode === 'absent' ? undefined : teacherCheckInTime,
         check_in_id: teacherMode === 'absent' ? null : primaryCheckinMatch?.id || null,
         check_in_method: teacherMode === 'absent' ? null : primaryCheckinMatch?.method || null,
         check_in_at: teacherMode === 'absent' ? null : primaryCheckinMatch?.checked_in_at || null,
-        rate_per_period: liveTeacherPeriodRate,
-        rate_applied: liveTeacherSessionRate,
-        earned_amount: liveTeacherTotalPayout,
-        total_payout: liveTeacherTotalPayout,
+        rate_per_period: recalcPrimaryPay.ratePerPeriod,
+        rate_applied: recalcPrimaryPay.sessionRate,
+        earned_amount: teacherMode === 'absent' ? 0 : recalcPrimaryPay.earnedAmount,
+        total_payout: teacherMode === 'absent' ? 0 : recalcPrimaryPay.earnedAmount,
         verified_by: currentUser?.full_name || 'Ban Học Vụ',
         notes:
           teacherSessionNote.trim() ||
-          (teacherMode === 'substitute'
-            ? `${assignedTeacherObj?.name || 'GV chính'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay 1 buổi`
+          (isPrimarySubstitute
+            ? `${assignedTeacherObj?.name || 'GV phân công'} nghỉ phép, ${actualTeacherObj?.name || 'GV dạy thay'} dạy thay 1 buổi`
             : teacherMode === 'late'
             ? `Vào lớp lúc ${teacherCheckInTime} (muộn ${teacherLateMinutes} phút)`
             : teacherMode === 'absent'
-            ? `Giáo viên ${assignedTeacherObj?.name || ''} vắng mặt buổi này (0 buổi - chờ bố trí học bù)`
-            : 'Giáo viên chính thức đứng lớp đúng giờ'),
+            ? `Giáo viên ${assignedTeacherObj?.name || actualTeacherObj?.name || ''} vắng mặt buổi này (0 buổi - chờ bố trí học bù)`
+            : 'Giáo viên đứng lớp đúng giờ'),
       };
 
       const secondaryAttendanceRecords: TeacherAttendanceRecord[] = secondaryTeachersLiveList.map(secItem => {
@@ -1709,11 +1920,47 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
         };
       });
 
-      const finalTeacherAttendance = [
+      const rawFinalTeacherAttendance = [
         ...remainingTeacherAttendance,
         newTeacherAttendanceRecord,
         ...secondaryAttendanceRecords,
       ];
+
+      // Tính lại thù lao tất cả các buổi chưa quyết toán của lớp (đặc biệt khi enrollment đổi sang active hoặc sửa lớp đã kết thúc)
+      const finalTeacherAttendance = rawFinalTeacherAttendance.map(rec => {
+        if (rec.class_id !== currentClass.id) return rec;
+        if (
+          isSessionSettledForTeacher(
+            rec.actual_teacher_id,
+            rec.session_date,
+            rec.term_id,
+            rec.class_id,
+            storeWithUpdatedEnrollments
+          )
+        ) {
+          return rec;
+        }
+        const isRecAbsent =
+          rec.status === 'absent_excused' ||
+          rec.status === 'absent_unexcused' ||
+          rec.periods_count === 0;
+        const recTeacher = prev.teachers.find(t => t.id === (rec.actual_teacher_id || rec.assigned_teacher_id));
+        const recCalc = calculateTeacherSessionPayAtDate({
+          teacher: recTeacher,
+          cls: currentClass,
+          sessionDate: rec.session_date,
+          periodsCount: rec.periods_count || 2,
+          isAbsent: isRecAbsent,
+          store: storeWithUpdatedEnrollments,
+        });
+        return {
+          ...rec,
+          rate_per_period: recCalc.ratePerPeriod,
+          rate_applied: recCalc.sessionRate,
+          earned_amount: isRecAbsent ? 0 : recCalc.earnedAmount,
+          total_payout: isRecAbsent ? 0 : recCalc.earnedAmount,
+        };
+      });
 
       // Tính toán diff cũ -> mới để lưu audit_logs chi tiết khi chỉnh sửa lớp đã kết thúc
       const formatStatusVi = (st?: string) =>
@@ -2345,8 +2592,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         Chấm Công Giáo Viên &amp; Định Mức Tiết Dạy Buổi Học
                       </span>
                       <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-[10px] font-mono text-slate-300">
-                        GV Phân công: <strong className="text-amber-300">{assignedTeacherObj?.name || 'Chưa gán'} (Chính thức)</strong>
+                        GV Phân công:{' '}
+                        <strong className="text-amber-300">
+                          {assignedTeacherObj ? `${assignedTeacherObj.name} (Chính thức)` : 'Chưa gán'}
+                        </strong>
                       </span>
+                      {!assignedTeacherObj && actualTeacherObj && (
+                        <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/30 text-[10px] font-mono text-cyan-300">
+                          GV Đứng lớp: <strong>{actualTeacherObj.name}</strong>
+                        </span>
+                      )}
                       {matchedPrimaryCheckin ? (
                         <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px] font-extrabold inline-flex items-center gap-1.5">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -2364,7 +2619,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       )}
                     </div>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      Ca học: <strong>{timeSlot?.start_time || '16:45'} - {timeSlot?.end_time || '18:15'} (90 phút = 2 tiết chuẩn)</strong> &bull; Ghi nhận trực tiếp vào bảng quyết toán thù lao khóa học
+                      Ca học:{' '}
+                      <strong>
+                        {classTimeSlot.startTime}
+                        {classTimeSlot.endTime ? ` - ${classTimeSlot.endTime}` : ''}{' '}
+                        ({classDurationMinutes} phút{classDurationMinutes === 90 ? ' = 2 tiết chuẩn' : ''})
+                      </strong>{' '}
+                      &bull; Ghi nhận trực tiếp vào bảng quyết toán thù lao khóa học
                     </p>
                   </div>
                 </div>
@@ -2379,9 +2640,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     disabled={isAttendanceLocked || isCheckinLockedForUser}
                     onClick={() => {
                       setTeacherMode('present');
-                      setSelectedTeacherId(currentClass.primary_teacher_id);
+                      setSelectedTeacherId(prev => currentClass.primary_teacher_id || prev || '');
                       setIsSubstitute(false);
-                      setTeacherPeriodsCount(assignedTeacherObj?.periods_per_session || 2);
+                      setTeacherPeriodsCount(assignedTeacherObj?.periods_per_session || actualTeacherObj?.periods_per_session || 2);
+                      if (!matchedPrimaryCheckin) {
+                        setTeacherCheckInTime(classTimeSlot.startTime);
+                      }
                       setIsDirty(true);
                     }}
                     className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed ${
@@ -2399,10 +2663,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     disabled={isAttendanceLocked || isCheckinLockedForUser}
                     onClick={() => {
                       setTeacherMode('late');
-                      setSelectedTeacherId(currentClass.primary_teacher_id);
+                      setSelectedTeacherId(prev => currentClass.primary_teacher_id || prev || '');
                       setIsSubstitute(false);
                       if (!matchedPrimaryCheckin) {
-                        setTeacherCheckInTime('16:55');
+                        setTeacherCheckInTime(addMinutesToHHMM(classTimeSlot.startTime, 10));
                         setTeacherLateMinutes(10);
                       }
                       setIsDirty(true);
@@ -2428,7 +2692,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         activeTeachers.find(t => t.id !== currentClass.primary_teacher_id) ||
                         activeTeachers[0] ||
                         store.teachers[0];
-                      if (fallbackSub && selectedTeacherId === currentClass.primary_teacher_id) {
+                      if (fallbackSub && (!selectedTeacherId || selectedTeacherId === currentClass.primary_teacher_id)) {
                         setSelectedTeacherId(fallbackSub.id);
                       }
                       setIsDirty(true);
@@ -2448,7 +2712,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     disabled={isAttendanceLocked}
                     onClick={() => {
                       setTeacherMode('absent');
-                      setSelectedTeacherId(currentClass.primary_teacher_id);
+                      setSelectedTeacherId(prev => currentClass.primary_teacher_id || prev || '');
                       setIsSubstitute(false);
                       setIsDirty(true);
                     }}
@@ -2517,8 +2781,51 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 </div>
               </div>
 
-              {/* Conditional Sub-Panels for Substitute / Late / Absent / Note */}
+              {/* Conditional Sub-Panels for Unassigned Primary Teacher / Substitute / Late / Absent / Note */}
               <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-1 text-xs">
+                {!assignedTeacherObj && teacherMode !== 'substitute' && (
+                  <div
+                    className={`md:col-span-6 p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                      !selectedTeacherId
+                        ? 'bg-amber-950/35 border-amber-500/60'
+                        : 'bg-cyan-950/25 border-cyan-500/40'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <UserCheck className={`w-4 h-4 shrink-0 ${!selectedTeacherId ? 'text-amber-400' : 'text-cyan-400'}`} />
+                      <span className={`font-bold text-xs ${!selectedTeacherId ? 'text-amber-200' : 'text-cyan-200'}`}>
+                        {teacherMode === 'absent'
+                          ? 'Chọn giáo viên vắng mặt *:'
+                          : 'Chọn giáo viên đứng lớp buổi này *:'}
+                      </span>
+                    </div>
+                    <select
+                      value={selectedTeacherId}
+                      disabled={isAttendanceLocked}
+                      onChange={(e) => {
+                        setSelectedTeacherId(e.target.value);
+                        setIsSubstitute(false);
+                        setIsDirty(true);
+                      }}
+                      className={`px-3 py-1.5 rounded-xl bg-slate-950 border text-white font-bold text-xs focus:outline-none disabled:opacity-60 ${
+                        !selectedTeacherId ? 'border-amber-500/70' : 'border-cyan-500/50'
+                      }`}
+                    >
+                      <option value="" className="bg-slate-900 text-slate-400">
+                        -- Chọn giáo viên đứng lớp --
+                      </option>
+                      {sortByLabelVi(
+                        store.teachers.filter(t => t.status !== 'inactive' || t.id === selectedTeacherId),
+                        t => t.name
+                      ).map(t => (
+                        <option key={t.id} value={t.id} className="bg-slate-900">
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {teacherMode === 'substitute' && (
                   <div className="md:col-span-6 p-3 rounded-xl bg-purple-950/30 border border-purple-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -2530,11 +2837,17 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       disabled={isAttendanceLocked}
                       onChange={(e) => {
                         setSelectedTeacherId(e.target.value);
-                        setIsSubstitute(e.target.value !== currentClass.primary_teacher_id);
+                        setIsSubstitute(
+                          Boolean(currentClass.primary_teacher_id) &&
+                            e.target.value !== currentClass.primary_teacher_id
+                        );
                         setIsDirty(true);
                       }}
                       className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none disabled:opacity-60"
                     >
+                      <option value="" className="bg-slate-900 text-slate-400">
+                        -- Chọn giáo viên dạy thay --
+                      </option>
                       {sortByLabelVi(
                         store.teachers
                           .filter(t => t.status !== 'inactive' || t.id === selectedTeacherId)
@@ -2591,12 +2904,12 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   <div className="md:col-span-6 p-3 rounded-xl bg-rose-950/30 border border-rose-500/40 flex items-center gap-2 text-rose-200 text-[11px]">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
                     <span>
-                      Giáo viên <strong>{assignedTeacherObj?.name}</strong> vắng mặt không có người dạy thay: Không ghi nhận tiết dạy (<strong>0 tiết</strong>). Vui lòng chọn <strong>[🔄 Dạy Thay]</strong> nếu có giáo viên đứng lớp thay.
+                      Giáo viên <strong>{assignedTeacherObj?.name || actualTeacherObj?.name || 'chưa chọn'}</strong> vắng mặt không có người dạy thay: Không ghi nhận tiết dạy (<strong>0 tiết</strong>). Vui lòng chọn <strong>[🔄 Dạy Thay]</strong> nếu có giáo viên đứng lớp thay.
                     </span>
                   </div>
                 )}
 
-                <div className={teacherMode === 'present' ? 'md:col-span-12' : 'md:col-span-6'}>
+                <div className={teacherMode === 'present' && assignedTeacherObj ? 'md:col-span-12' : 'md:col-span-6'}>
                   <input
                     type="text"
                     value={teacherSessionNote}

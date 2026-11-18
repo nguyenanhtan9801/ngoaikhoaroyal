@@ -43,7 +43,8 @@ import {
   fetchAllProfilesFromSupabase,
   isLegacyLoginEnabled,
   syncTeachersCurrentFieldsFromContracts,
-  getClassPhase,
+  evaluateStudentSessionEligibility,
+  getClassDaysOfWeek,
   getTodayStrHoChiMinh,
 } from './lib/storage';
 import {
@@ -758,13 +759,14 @@ export default function App() {
       validation.validSessionDates.length >= 3 ? validation.validSessionDates : dates;
 
     const today = new Date();
+    const todayStr = getTodayStrHoChiMinh(today);
     const expiry = new Date(today);
     expiry.setFullYear(today.getFullYear() + 1);
-    const expiryStr = expiry.toISOString().split('T')[0];
+    const expiryStr = getTodayStrHoChiMinh(expiry);
 
     const newCredit: MakeupCredit = {
       id: `cred_${Date.now()}`,
-      credit_code: `CRE-${today.getFullYear()}-${String(store.makeupCredits.length + 1).padStart(4, '0')}`,
+      credit_code: `CRE-${todayStr.slice(0, 4)}-${String(store.makeupCredits.length + 1).padStart(4, '0')}`,
       student_id: student.id,
       student_name: student.name,
       source_class_id: cls.id,
@@ -780,7 +782,7 @@ export default function App() {
       credit_rule: 'monetary',
       total_credit_amount: cls.price_per_session * effectiveDates.length,
       transferred_sessions: effectiveDates.length,
-      issue_date: today.toISOString().split('T')[0],
+      issue_date: todayStr,
       expiry_date: expiryStr,
       expires_at: expiryStr,
       status: 'issued',
@@ -836,22 +838,34 @@ export default function App() {
   };
 
   const handlePrintAttendanceBook = (cls: ExtracurricularClass, sessionDate: string) => {
-    const clsPhase = getClassPhase(cls, getTodayStrHoChiMinh(), store.terms);
-    const enrollments = store.enrollments.filter(
-      e =>
-        e.class_id === cls.id &&
-        (e.status === 'active' ||
-          e.status === 'trial' ||
-          (clsPhase === 'ended' && e.status === 'completed'))
+    const savedStudentIds = new Set(
+      (store.attendance || [])
+        .filter(a => a.class_id === cls.id && a.session_date === sessionDate)
+        .map(a => a.student_id)
     );
-    const students = Array.from(
-      new Map(
-        enrollments
-          .map(e => store.students.find(s => s.id === e.student_id))
-          .filter((s): s is Student => Boolean(s))
-          .map(s => [s.id, s])
-      ).values()
-    );
+    const eligibleStudentIds = new Set<string>();
+    const classDays = getClassDaysOfWeek(cls, store);
+    store.enrollments
+      .filter(e => e.class_id === cls.id)
+      .forEach(enr => {
+        const eligibility = evaluateStudentSessionEligibility(
+          enr,
+          sessionDate,
+          classDays,
+          cls,
+          store.terms,
+          savedStudentIds.has(enr.student_id)
+        );
+        if (eligibility.eligible) {
+          eligibleStudentIds.add(enr.student_id);
+        }
+      });
+    savedStudentIds.forEach(id => eligibleStudentIds.add(id));
+
+    const students = Array.from(eligibleStudentIds)
+      .map(id => store.students.find(s => s.id === id))
+      .filter((s): s is Student => Boolean(s));
+
     setPrintableDoc({
       type: 'attendance_book',
       cls,
