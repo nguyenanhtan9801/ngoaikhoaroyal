@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { AppStore, formatVND, getCurrentTerm } from '../../lib/storage';
 import { ExtracurricularClass, UserRole, Campus, Subject, AcademicTerm, TimeSlot, Facility, Teacher, Student, Enrollment, ClassSession } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface ScheduleTabProps {
   store: AppStore;
@@ -414,7 +415,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 <option value="all" className="bg-[#111827] text-white">
                   🏢 Toàn Hệ Thống (Tất cả cơ sở)
                 </option>
-                {store.campuses.map(c => (
+                {sortByLabelVi(store.campuses, c => `${c.name} (${c.code})`).map(c => (
                   <option key={c.id} value={c.id} className="bg-[#111827] text-white">
                     {c.name} ({c.code})
                   </option>
@@ -440,7 +441,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 <option value="all" className="bg-[#111827] text-white">
                   🎨 Tất cả môn ngoại khóa
                 </option>
-                {store.subjects.map(s => (
+                {sortByLabelVi(store.subjects, s => `${s.name} (${s.category})`).map(s => (
                   <option key={s.id} value={s.id} className="bg-[#111827] text-white">
                     {s.name} ({s.category})
                   </option>

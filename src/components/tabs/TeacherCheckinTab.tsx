@@ -22,6 +22,7 @@ import { AppUser, Teacher, ExtracurricularClass, TeacherCheckin } from '../../ty
 import { AppStore, normalizeCampusScope } from '../../lib/storage';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface TeacherCheckinTabProps {
   store: AppStore;
@@ -955,9 +956,16 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
                   onChange={e => setSelectedDeviceId(e.target.value)}
                   className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-white font-bold text-xs focus:outline-none focus:border-amber-500"
                 >
-                  {videoDevices.map((dev, idx) => (
-                    <option key={dev.deviceId || idx} value={dev.deviceId}>
-                      {dev.label || `Camera #${idx + 1}`}
+                  {sortByLabelVi(
+                    videoDevices.map((dev, idx) => ({
+                      deviceId: dev.deviceId,
+                      key: dev.deviceId || idx,
+                      label: dev.label || `Camera #${idx + 1}`,
+                    })),
+                    item => item.label
+                  ).map(item => (
+                    <option key={item.key} value={item.deviceId}>
+                      {item.label}
                     </option>
                   ))}
                 </select>

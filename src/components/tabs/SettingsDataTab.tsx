@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { sortByLabelVi } from '../../utils/sortVi';
 import { 
   Settings, 
   Trash2, 
@@ -3703,10 +3704,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             }}
                             className="w-full px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs font-semibold focus:outline-none focus:border-amber-500"
                           >
-                            <option value="draft">Dự thảo</option>
-                            <option value="open_enrollment">Mở tuyển sinh</option>
-                            <option value="in_progress">Đang giảng dạy</option>
-                            <option value="closed">Đã đóng (Khóa sửa)</option>
+                            {sortByLabelVi(
+                              [
+                                { value: 'draft', label: 'Dự thảo' },
+                                { value: 'open_enrollment', label: 'Mở tuyển sinh' },
+                                { value: 'in_progress', label: 'Đang giảng dạy' },
+                                { value: 'closed', label: 'Đã đóng (Khóa sửa)' },
+                              ],
+                              opt => opt.label
+                            ).map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
                           </select>
                         </div>
                       </div>
@@ -4267,7 +4275,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       onChange={(e) => setSelectedConfigCampusId(e.target.value)}
                       className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40 text-cyan-400 text-xs font-bold focus:outline-none"
                     >
-                      {store.campuses.map(c => (
+                      {sortByLabelVi(store.campuses, c => c.name).map(c => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
                     </select>
@@ -4919,7 +4927,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               <option value="all" className="bg-[#111827] text-white">
                                 Tất cả cơ sở ({store.campuses.length})
                               </option>
-                              {store.campuses.map(campus => (
+                              {sortByLabelVi(store.campuses, campus => `${campus.name} (${campus.code})`).map(campus => (
                                 <option key={campus.id} value={campus.id} className="bg-[#111827] text-white">
                                   {campus.name} ({campus.code})
                                 </option>
@@ -4943,7 +4951,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               <option value="all" className="bg-[#111827] text-white">
                                 Tất cả phân loại
                               </option>
-                              {categoriesList.map(cat => (
+                              {sortByLabelVi(categoriesList, cat => cat.name).map(cat => (
                                 <option key={cat.id} value={cat.name} className="bg-[#111827] text-white">
                                   {cat.name}
                                 </option>
@@ -4967,12 +4975,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                               <option value="all" className="bg-[#111827] text-white">
                                 Tất cả nguồn
                               </option>
-                              <option value="campus_override" className="bg-[#111827] text-white">
-                                ★ Cơ sở Override
-                              </option>
-                              <option value="term_standard" className="bg-[#111827] text-white">
-                                ✓ Chuẩn Khóa Học
-                              </option>
+                              {sortByLabelVi(
+                                [
+                                  { value: 'campus_override', label: '★ Cơ sở Override', sortKey: 'Cơ sở Override' },
+                                  { value: 'term_standard', label: '✓ Chuẩn Khóa Học', sortKey: 'Chuẩn Khóa Học' },
+                                ],
+                                opt => opt.sortKey
+                              ).map(opt => (
+                                <option key={opt.value} value={opt.value} className="bg-[#111827] text-white">
+                                  {opt.label}
+                                </option>
+                              ))}
                             </select>
                           </div>
                         </div>
@@ -5416,8 +5429,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   onChange={(e) => setCloneFormData({ ...cloneFormData, status: e.target.value as TermStatus })}
                   className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500 font-semibold"
                 >
-                  <option value="draft">Dự thảo - Tiếp tục chỉnh sửa trước khi công bố</option>
-                  <option value="open_enrollment">Mở tuyển sinh - Cho phép tuyển sinh ngay</option>
+                  {sortByLabelVi(
+                    [
+                      { value: 'draft', label: 'Dự thảo - Tiếp tục chỉnh sửa trước khi công bố' },
+                      { value: 'open_enrollment', label: 'Mở tuyển sinh - Cho phép tuyển sinh ngay' },
+                    ],
+                    opt => opt.label
+                  ).map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
               </div>
 
@@ -5615,10 +5635,17 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   onChange={(e) => setTermFormData({ ...termFormData, status: e.target.value as TermStatus })}
                   className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
                 >
-                  <option value="draft">Dự thảo</option>
-                  <option value="open_enrollment">Mở tuyển sinh</option>
-                  <option value="in_progress">Đang giảng dạy</option>
-                  <option value="closed">Đã đóng (Khóa sửa)</option>
+                  {sortByLabelVi(
+                    [
+                      { value: 'draft', label: 'Dự thảo' },
+                      { value: 'open_enrollment', label: 'Mở tuyển sinh' },
+                      { value: 'in_progress', label: 'Đang giảng dạy' },
+                      { value: 'closed', label: 'Đã đóng (Khóa sửa)' },
+                    ],
+                    opt => opt.label
+                  ).map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
                 </select>
               </div>
 
@@ -5693,8 +5720,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     onChange={(e) => setCampusFormData({ ...campusFormData, status: e.target.value as 'active' | 'inactive' })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="active">Đang hoạt động</option>
-                    <option value="inactive">Tạm dừng</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'active', label: 'Đang hoạt động' },
+                        { value: 'inactive', label: 'Tạm dừng' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -7444,8 +7478,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       className="bg-transparent font-bold text-white focus:outline-none cursor-pointer"
                     >
                       <option value="all" className="bg-slate-900">Tất cả cơ sở</option>
-                      <option value="camp_pmh" className="bg-slate-900">Phú Mỹ Hưng (PMH)</option>
-                      <option value="camp_pl" className="bg-slate-900">Phú Lâm (PL)</option>
+                      {sortByLabelVi(
+                        [
+                          { value: 'camp_pmh', label: 'Phú Mỹ Hưng (PMH)' },
+                          { value: 'camp_pl', label: 'Phú Lâm (PL)' },
+                        ],
+                        opt => opt.label
+                      ).map(opt => (
+                        <option key={opt.value} value={opt.value} className="bg-slate-900">{opt.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -7457,9 +7498,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       className="bg-transparent font-bold text-white focus:outline-none cursor-pointer"
                     >
                       <option value="all" className="bg-slate-900">Tất cả phân loại ({store.teachers.length})</option>
-                      <option value="permanent" className="bg-slate-900">Cơ hữu ({permanentTeachersCount})</option>
-                      <option value="visiting" className="bg-slate-900">Thỉnh giảng ({visitingTeachersCount})</option>
-                      <option value="partner" className="bg-slate-900">Đối tác ({partnerTeachersCount})</option>
+                      {sortByLabelVi(
+                        [
+                          { value: 'permanent', label: `Cơ hữu (${permanentTeachersCount})` },
+                          { value: 'visiting', label: `Thỉnh giảng (${visitingTeachersCount})` },
+                          { value: 'partner', label: `Đối tác (${partnerTeachersCount})` },
+                        ],
+                        opt => opt.label
+                      ).map(opt => (
+                        <option key={opt.value} value={opt.value} className="bg-slate-900">{opt.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -7748,9 +7796,16 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     }}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="permanent">Giáo viên Cơ hữu (Permanent)</option>
-                    <option value="visiting">Giáo viên Thỉnh giảng (Visiting)</option>
-                    <option value="partner">Giáo viên Đối tác (Partner — Không tính lương)</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'permanent', label: 'Giáo viên Cơ hữu (Permanent)' },
+                        { value: 'visiting', label: 'Giáo viên Thỉnh giảng (Visiting)' },
+                        { value: 'partner', label: 'Giáo viên Đối tác (Partner — Không tính lương)' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -7761,8 +7816,15 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                     onChange={(e) => setTeacherForm(prev => ({ ...prev, campus_id: e.target.value }))}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="camp_pmh">Cơ sở Phú Mỹ Hưng (PMH)</option>
-                    <option value="camp_pl">Cơ sở Phú Lâm (PL)</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'camp_pmh', label: 'Cơ sở Phú Mỹ Hưng (PMH)' },
+                        { value: 'camp_pl', label: 'Cơ sở Phú Lâm (PL)' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -7912,12 +7974,12 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                       onChange={(e) => setTeacherForm(prev => ({ ...prev, bank_name: e.target.value }))}
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs"
                     >
-                      <option value="Vietcombank">Vietcombank</option>
-                      <option value="BIDV">BIDV</option>
-                      <option value="Techcombank">Techcombank</option>
-                      <option value="MBBank">MBBank</option>
-                      <option value="ACB">ACB</option>
-                      <option value="VietinBank">VietinBank</option>
+                      {sortByLabelVi(
+                        ['Vietcombank', 'BIDV', 'Techcombank', 'MBBank', 'ACB', 'VietinBank'],
+                        b => b
+                      ).map(bank => (
+                        <option key={bank} value={bank}>{bank}</option>
+                      ))}
                     </select>
                   </div>
                   <div>

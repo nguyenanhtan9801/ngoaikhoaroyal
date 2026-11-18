@@ -14,6 +14,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { Facility } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface FacilityModalProps {
   isOpen: boolean;
@@ -174,8 +175,15 @@ export const FacilityModal: React.FC<FacilityModalProps> = ({
                 required
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
               >
-                <option value="camp_pmh">Phú Mỹ Hưng (camp_pmh)</option>
-                <option value="camp_pl">Phú Lâm (camp_pl)</option>
+                {sortByLabelVi(
+                  [
+                    { value: 'camp_pmh', label: 'Phú Mỹ Hưng (camp_pmh)' },
+                    { value: 'camp_pl', label: 'Phú Lâm (camp_pl)' },
+                  ],
+                  opt => opt.label
+                ).map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
 
@@ -222,7 +230,7 @@ export const FacilityModal: React.FC<FacilityModalProps> = ({
                 }
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
               >
-                {ROOM_TYPE_OPTIONS.map((opt) => (
+                {sortByLabelVi(ROOM_TYPE_OPTIONS, opt => opt.label).map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>

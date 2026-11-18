@@ -448,6 +448,9 @@ export interface Enrollment {
   trial_outcome?: 'promoted' | 'dropped'; // Kết quả sau buổi thử (tương thích ngược)
   trial_notes?: string;                 // Ghi chú đánh giá sau buổi học thử
   enrollment_type?: 'trial' | 'official';
+  promoted_from_enrollment_id?: string;
+  promoted_from_class_id?: string;
+  promotion_batch_id?: string;
 }
 
 export interface InvoicePaymentRecord {

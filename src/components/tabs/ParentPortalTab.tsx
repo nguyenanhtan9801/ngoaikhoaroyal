@@ -36,6 +36,7 @@ import {
 import { supabase, getSupabaseClient } from '@/supabaseClient';
 import { mapSupabaseRowToStoreEntity } from '../../lib/supabase';
 import { fetchOnce, invalidateFetchOnce } from '../../lib/fetchOnce';
+import { sortByLabelVi } from '../../utils/sortVi';
 import { 
   AppStore, 
   generateStudentCode, 
@@ -1877,11 +1878,18 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
             >
               <option value="all">Tất cả trạng thái</option>
-              <option value="pending">Chờ xử lý</option>
-              <option value="contacted">Đã tư vấn</option>
-              <option value="enrolled">Đã xếp đủ lớp</option>
-              <option value="partially_enrolled">Đã xếp một phần</option>
-              <option value="canceled">Đã hủy</option>
+              {sortByLabelVi(
+                [
+                  { value: 'pending', label: 'Chờ xử lý' },
+                  { value: 'contacted', label: 'Đã tư vấn' },
+                  { value: 'enrolled', label: 'Đã xếp đủ lớp' },
+                  { value: 'partially_enrolled', label: 'Đã xếp một phần' },
+                  { value: 'canceled', label: 'Đã hủy' },
+                ],
+                opt => opt.label
+              ).map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
 
             {/* Campus filter */}
@@ -1891,7 +1899,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
             >
               <option value="all">Tất cả cơ sở</option>
-              {store.campuses.map(c => (
+              {sortByLabelVi(store.campuses, c => c.name).map(c => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
@@ -1903,7 +1911,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-medium focus:outline-none focus:border-amber-500"
             >
               <option value="all">Tất cả môn học</option>
-              {store.subjects.map(s => (
+              {sortByLabelVi(store.subjects, s => s.name).map(s => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
@@ -3602,7 +3610,18 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                                   }`}
                                 >
                                   <option value="">-- Vui lòng chọn lớp học ngoại khóa --</option>
-                                  {sortedClasses.map(c => {
+                                  {sortByLabelVi(sortedClasses, c => {
+                                    const enrolledCount = store.enrollments.filter(
+                                      e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')
+                                    ).length;
+                                    const isFullClass = enrolledCount >= c.max_students;
+                                    const isAlreadyInThisClass = matchRes.enrolledClasses.some(ec => ec.id === c.id);
+                                    const days = c.days_of_week?.join(', ') || 'Lịch mở';
+                                    const campusObj = store.campuses.find(cp => cp.id === c.campus_id);
+                                    const campusLabel = campusObj?.code || campusObj?.name || 'Cơ sở';
+                                    const classPricing = calculateClassProratedPricing(c, c.total_sessions || 24, lead.is_royal_student, store);
+                                    return `${c.name} ${isAlreadyInThisClass ? '⛔ [Đã ghi danh lớp này trước đó]' : `• Sĩ số: ${enrolledCount}/${c.max_students} • ${days} • Đơn giá ${campusLabel}: ${formatVND(classPricing.sessionRate)}/b (${formatVND(classPricing.fullCourseFee)}) ${isFullClass ? '[HẾT CHỖ]' : ''}`}`;
+                                  }).map(c => {
                                     const enrolledCount = store.enrollments.filter(
                                       e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')
                                     ).length;
@@ -4316,10 +4335,17 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                 onChange={(e) => setContactStatusInput(e.target.value as any)}
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500"
               >
-                <option value="pending">Chờ liên hệ</option>
-                <option value="contacted">Đã liên hệ tư vấn</option>
-                <option value="partially_enrolled">Đã xếp một phần (Chờ mở thêm lớp)</option>
-                <option value="canceled">Đã hủy / Phụ huynh không đăng ký</option>
+                {sortByLabelVi(
+                  [
+                    { value: 'pending', label: 'Chờ liên hệ' },
+                    { value: 'contacted', label: 'Đã liên hệ tư vấn' },
+                    { value: 'partially_enrolled', label: 'Đã xếp một phần (Chờ mở thêm lớp)' },
+                    { value: 'canceled', label: 'Đã hủy / Phụ huynh không đăng ký' },
+                  ],
+                  opt => opt.label
+                ).map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
 

@@ -33,6 +33,7 @@ import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { isDateInHoliday } from './EnrollmentModal';
 import { DatePickerVN } from '../common/DatePickerVN';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface CreateClassModalProps {
   isOpen: boolean;
@@ -1022,7 +1023,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                   }}
                   className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-cyan-500 font-semibold"
                 >
-                  {store.campuses.map(c => (
+                  {sortByLabelVi(store.campuses, c => `${c.name} (${c.code})`).map(c => (
                     <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
                   ))}
                 </select>
@@ -1045,7 +1046,10 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                   {activeTermSubjects.length === 0 ? (
                     <option value="" disabled>Không có môn nào được kích hoạt trong khóa này</option>
                   ) : (
-                    activeTermSubjects.map(s => {
+                    sortByLabelVi(activeTermSubjects, s => {
+                      const p = getEffectivePrice(formData.term_id, formData.campus_id, s.id, store);
+                      return `${s.name} ${p.source === 'campus_override' ? '★ (Giá riêng CS)' : '✓ (Chuẩn khóa)'}`;
+                    }).map(s => {
                       const p = getEffectivePrice(formData.term_id, formData.campus_id, s.id, store);
                       return (
                         <option key={s.id} value={s.id}>
@@ -1119,7 +1123,10 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                 {facilityList.length === 0 ? (
                   <option value="" disabled>Không có phòng học nào tại cơ sở này</option>
                 ) : (
-                  facilityList.map((f: any) => {
+                  sortByLabelVi(facilityList, (f: any) => {
+                    const roomCode = f.code || f.id;
+                    return `✓ ${f.name} (${roomCode} • Sức chứa: ${f.capacity || 30} HS)`;
+                  }).map((f: any) => {
                     const roomCode = f.code || f.id;
                     return (
                       <option key={f.id} value={f.id}>
@@ -1148,7 +1155,7 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                 }}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-semibold"
               >
-                {store.timeSlots.map(t => (
+                {sortByLabelVi(store.timeSlots, t => `${t.name} (${t.start_time} - ${t.end_time})`).map(t => (
                   <option key={t.id} value={t.id}>{t.name} ({t.start_time} - {t.end_time})</option>
                 ))}
               </select>
@@ -1421,13 +1428,14 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                   onChange={(e) => setFormData({ ...formData, primary_teacher_id: e.target.value })}
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-amber-500/40 text-white text-xs font-bold focus:outline-none focus:border-amber-500"
                 >
-                  {store.teachers
-                    .filter(t => t.status !== 'inactive' || t.id === editingClass?.primary_teacher_id)
-                    .map(t => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
-                      </option>
-                    ))}
+                  {sortByLabelVi(
+                    store.teachers.filter(t => t.status !== 'inactive' || t.id === editingClass?.primary_teacher_id),
+                    t => `${t.name} (${(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})`
+                  ).map(t => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1442,11 +1450,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-amber-500"
                 >
                   <option value="">-- Không phân công --</option>
-                  {store.teachers
-                    .filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id)
-                    .map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
+                  {sortByLabelVi(
+                    store.teachers.filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id),
+                    t => t.name
+                  ).map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
                 </select>
               </div>
 
@@ -1461,11 +1470,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-amber-500"
                 >
                   <option value="">-- Không phân công --</option>
-                  {store.teachers
-                    .filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id && t.id !== formData.secondary_teacher_1)
-                    .map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
+                  {sortByLabelVi(
+                    store.teachers.filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id && t.id !== formData.secondary_teacher_1),
+                    t => t.name
+                  ).map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
                 </select>
               </div>
 
@@ -1480,11 +1490,12 @@ export const CreateClassModal: React.FC<CreateClassModalProps> = ({
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-amber-500"
                 >
                   <option value="">-- Không phân công --</option>
-                  {store.teachers
-                    .filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id && t.id !== formData.secondary_teacher_1 && t.id !== formData.secondary_teacher_2)
-                    .map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
+                  {sortByLabelVi(
+                    store.teachers.filter(t => t.status !== 'inactive' && t.id !== formData.primary_teacher_id && t.id !== formData.secondary_teacher_1 && t.id !== formData.secondary_teacher_2),
+                    t => t.name
+                  ).map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
                 </select>
               </div>
             </div>

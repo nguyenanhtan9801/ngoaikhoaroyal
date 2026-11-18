@@ -14,10 +14,11 @@ import {
   Lock,
   Coffee
 } from 'lucide-react';
-import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek } from '../lib/storage';
+import { AppStore, isStudentScheduledForDate, getClassDaysOfWeek, getTodayStrHoChiMinh, getClassPhase, getClassEffectiveBounds, formatDateVN } from '../lib/storage';
 import { Teacher, ExtracurricularClass, Student, AttendanceRecord, ClassSession } from '../types';
 import { RoyalLogo } from './RoyalLogo';
 import { DatePickerVN } from './common/DatePickerVN';
+import { sortByLabelVi } from '../utils/sortVi';
 
 interface TeacherAppModalProps {
   store: AppStore;
@@ -41,18 +42,23 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   const [selectedClassId, setSelectedClassId] = useState<string>(teacherClasses[0]?.id || store.classes[0]?.id || '');
   const currentClass = store.classes.find(c => c.id === selectedClassId) || store.classes[0];
 
-  // Date selection (default today or realistic demo date '2026-09-23')
-  const [sessionDate, setSessionDate] = useState<string>('2026-09-23');
+  // Date selection (Asia/Ho_Chi_Minh today)
+  const todayStr = getTodayStrHoChiMinh();
+  const [sessionDate, setSessionDate] = useState<string>(todayStr);
   const [savedBanner, setSavedBanner] = useState(false);
 
   const classDays = getClassDaysOfWeek(currentClass, store.timeSlots);
+  const classPhase = currentClass ? getClassPhase(currentClass, todayStr, store.terms) : 'active';
+  const classBounds = currentClass ? getClassEffectiveBounds(currentClass, store.terms) : null;
+  const isUpcomingClass = classPhase === 'upcoming';
+  const isEndedClass = classPhase === 'ended';
 
-  // Enrolled students in this class scheduled for sessionDate (including trial enrollments)
+  // Enrolled students in this class scheduled for sessionDate (or view-only if upcoming)
   const classEnrollments = store.enrollments.filter(
     e =>
       e.class_id === currentClass?.id &&
       (e.status === 'active' || e.status === 'trial') &&
-      isStudentScheduledForDate(e, sessionDate, classDays)
+      (isUpcomingClass || isStudentScheduledForDate(e, sessionDate, classDays, currentClass, store.terms))
   );
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
@@ -83,10 +89,12 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Is future date check (> 2026-10-14)
-  const isFutureDate = sessionDate > '2026-10-14';
+  // Is future date or locked lifecycle check
+  const isFutureDate = sessionDate > todayStr;
+  const isAttendanceLocked = isFutureDate || isUpcomingClass || isEndedClass;
 
   const handleStatusChange = (studentId: string, status: 'present' | 'absent_excused' | 'absent_unexcused') => {
+    if (isAttendanceLocked) return;
     setAttendanceState(prev => ({
       ...prev,
       [studentId]: {
@@ -97,6 +105,7 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   };
 
   const handleNoteChange = (studentId: string, note: string) => {
+    if (isAttendanceLocked) return;
     setAttendanceState(prev => ({
       ...prev,
       [studentId]: {
@@ -107,10 +116,7 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
   };
 
   const handleSaveTeacherAttendance = () => {
-    if (isFutureDate) {
-      alert('Không thể điểm danh cho ngày trong tương lai!');
-      return;
-    }
+    if (isAttendanceLocked) return;
 
     if (!currentClass) return;
 
@@ -259,9 +265,15 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
               }}
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
             >
-              {store.teachers.map(t => (
+              {sortByLabelVi(
+                store.teachers.map(t => ({
+                  id: t.id,
+                  label: `${t.name} (${(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})`,
+                })),
+                x => x.label
+              ).map(t => (
                 <option key={t.id} value={t.id}>
-                  {t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})
+                  {t.label}
                 </option>
               ))}
             </select>
@@ -274,7 +286,7 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
               onChange={(e) => setSelectedClassId(e.target.value)}
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-bold focus:outline-none focus:border-amber-500"
             >
-              {teacherClasses.map(c => (
+              {sortByLabelVi(teacherClasses, c => c.name).map(c => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
@@ -299,7 +311,21 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
           </div>
         )}
 
-        {isFutureDate && (
+        {isUpcomingClass && (
+          <div className="mx-6 mt-4 p-3 rounded-2xl bg-sky-500/20 border border-sky-500/40 text-sky-200 text-xs flex items-center gap-2">
+            <Lock className="w-4 h-4 text-sky-300 shrink-0" />
+            <span>Lớp bắt đầu từ {formatDateVN(classBounds?.startDate)}, chưa thể điểm danh (chế độ chỉ xem).</span>
+          </div>
+        )}
+
+        {!isUpcomingClass && isEndedClass && (
+          <div className="mx-6 mt-4 p-3 rounded-2xl bg-slate-800 border border-slate-700 text-slate-200 text-xs flex items-center gap-2">
+            <Lock className="w-4 h-4 text-slate-300 shrink-0" />
+            <span>Lớp đã kết thúc ({formatDateVN(classBounds?.endDate)}) — chỉ xem lịch sử.</span>
+          </div>
+        )}
+
+        {!isUpcomingClass && !isEndedClass && isFutureDate && (
           <div className="mx-6 mt-4 p-3 rounded-2xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
             <Lock className="w-4 h-4 text-rose-400 shrink-0" />
             <span>Khóa điểm danh: Ngày này trong tương lai! Vui lòng chọn buổi học hôm nay hoặc trước đó.</span>
@@ -378,8 +404,9 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
+                      disabled={isAttendanceLocked}
                       onClick={() => handleStatusChange(student.id, 'present')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                         st === 'present'
                           ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
                           : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -391,8 +418,9 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
 
                     <button
                       type="button"
+                      disabled={isAttendanceLocked}
                       onClick={() => handleStatusChange(student.id, 'absent_excused')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                         st === 'absent_excused'
                           ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30'
                           : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -404,8 +432,9 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
 
                     <button
                       type="button"
+                      disabled={isAttendanceLocked}
                       onClick={() => handleStatusChange(student.id, 'absent_unexcused')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                         st === 'absent_unexcused'
                           ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
                           : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -418,10 +447,11 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
 
                   <input
                     type="text"
+                    disabled={isAttendanceLocked}
                     placeholder="Ghi chú nhanh..."
                     value={note}
                     onChange={(e) => handleNoteChange(student.id, e.target.value)}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs placeholder-slate-600 w-36 focus:outline-none focus:border-amber-500"
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs placeholder-slate-600 w-36 focus:outline-none focus:border-amber-500 disabled:opacity-40"
                   />
                 </div>
               </div>
@@ -443,8 +473,9 @@ export const TeacherAppModal: React.FC<TeacherAppModalProps> = ({
               Đóng
             </button>
             <button
+              disabled={isAttendanceLocked}
               onClick={handleSaveTeacherAttendance}
-              className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/25 flex items-center gap-1.5"
+              className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/25 flex items-center gap-1.5"
             >
               <Save className="w-4 h-4 text-slate-950" />
               <span>Lưu Buổi Điểm Danh</span>

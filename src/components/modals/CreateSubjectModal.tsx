@@ -12,6 +12,7 @@ import { Subject, SubjectCategory } from '../../types';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { formatVND } from '../../lib/storage';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface CreateSubjectModalProps {
   isOpen: boolean;
@@ -319,7 +320,7 @@ export const CreateSubjectModal: React.FC<CreateSubjectModalProps> = ({
                 required
               >
                 <option value="">-- Chọn Phân Loại Môn --</option>
-                {categories.map((cat) => (
+                {sortByLabelVi(categories, cat => `${cat.name} (${cat.code})`).map((cat) => (
                   <option key={cat.code} value={cat.code}>
                     {cat.name} ({cat.code})
                   </option>

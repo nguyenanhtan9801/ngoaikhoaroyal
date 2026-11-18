@@ -17,7 +17,7 @@ import {
   BookOpen,
   School
 } from 'lucide-react';
-import { AppStore, formatVND, getCurrentTerm, formatDateVN } from '../../lib/storage';
+import { AppStore, formatVND, getCurrentTerm, formatDateVN, getTodayStrHoChiMinh, isEnrollmentEffectiveActive, getClassPhase } from '../../lib/storage';
 import { Student, ExtracurricularClass } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { supabase } from '../../supabaseClient';
@@ -39,22 +39,31 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   onIssueCreditForStudent,
 }) => {
   const [alertViewMode, setAlertViewMode] = React.useState<ViewMode>('table');
-  // Filter classes by campus & term
+  const todayStr = getTodayStrHoChiMinh();
+  const classMap = React.useMemo(() => 
+    new Map((store.classes || []).map(c => [String(c.id), c])), 
+    [store.classes]
+  );
+
   const filteredClasses = store.classes.filter(c => {
     const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
     const matchTerm = selectedTermId === 'all' || c.term_id === selectedTermId;
-    return matchCampus && matchTerm;
+    return matchCampus && matchTerm && getClassPhase(c, todayStr, store.terms) !== 'upcoming';
   });
 
   const filteredClassIds = new Set(filteredClasses.map(c => c.id));
 
-  // Filter attendance records (Exclude students currently in 'trial' or 'trial_dropped' status from official attendance rate until promoted to 'active')
+  // Filter attendance records (Exclude trial/trial_dropped and upcoming enrollments before start_date)
   const filteredAttendance = store.attendance.filter(a => {
     if (!filteredClassIds.has(a.class_id)) return false;
     const enrollment = store.enrollments.find(
       e => e.student_id === a.student_id && e.class_id === a.class_id
     );
     if (enrollment && (enrollment.status === 'trial' || enrollment.status === 'trial_dropped')) {
+      return false;
+    }
+    const cls = classMap.get(String(a.class_id));
+    if (enrollment && !isEnrollmentEffectiveActive(enrollment, cls, a.session_date, store.terms) && getClassPhase(cls, todayStr, store.terms) === 'upcoming') {
       return false;
     }
     return true;
@@ -66,7 +75,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const unexcusedCount = filteredAttendance.filter(a => a.status === 'absent_unexcused').length;
   const attendanceRate = totalAttendance > 0 ? Math.round((presentCount / totalAttendance) * 100) : 0;
 
-  // Filter snacks
+  // Filter snacks (already excludes upcoming classes via filteredClassIds)
   const filteredSessions = store.sessions.filter(s => filteredClassIds.has(s.class_id));
   const snacksAllocated = filteredSessions.reduce((acc, s) => acc + (s.snacks_allocated || 0), 0);
   const snacksConsumed = filteredSessions.reduce((acc, s) => acc + (s.snacks_consumed || 0), 0);
@@ -189,9 +198,12 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   // ==========================================
   // KPI CALCULATIONS (Synchronized with Supabase & Local Store)
   // ==========================================
-  // 1. Lấy danh sách ID học sinh đang học thực tế
+  // 1. Lấy danh sách ID học sinh đang học thực tế (chỉ tính ghi danh đang hiệu lực, loại trừ lớp/ghi danh sắp bắt đầu)
   const totalStudents = store.students.length;
-  const activeEnrollments = (store.enrollments || []).filter(e => e.status === 'active');
+  const activeEnrollments = (store.enrollments || []).filter(e =>
+    e.status === 'active' &&
+    isEnrollmentEffectiveActive(e, classMap.get(String(e.class_id)), todayStr, store.terms)
+  );
   const uniqueActiveStudentIds = Array.from(new Set(activeEnrollments.map(e => String(e.student_id || ''))))
     .filter(id => id !== '');
 
@@ -202,11 +214,6 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
   const studentMap = React.useMemo(() => 
     new Map((store.students || []).map(s => [String(s.id || s.code), s])), 
     [store.students]
-  );
-
-  const classMap = React.useMemo(() => 
-    new Map((store.classes || []).map(c => [String(c.id), c])), 
-    [store.classes]
   );
 
   const { activePMH, activePL } = React.useMemo(() => {
@@ -271,7 +278,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
           async () => {
             const [resStudents, resEnrollments] = await Promise.all([
               sbClient.from('students').select('*', { count: 'exact', head: true }),
-              sbClient.from('enrollments').select('student_id').eq('status', 'active'),
+              sbClient.from('enrollments').select('student_id, class_id, joined_date, status').eq('status', 'active'),
             ]);
             return [resStudents, resEnrollments] as const;
           },
@@ -281,7 +288,10 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
         if (!isMounted) return;
 
         if (!sErr && typeof sCount === 'number' && sCount > 0) {
-          const uniqueIds = enrData ? Array.from(new Set(enrData.map((e: any) => e.student_id))) : [];
+          const effectiveRows = (enrData || []).filter((e: any) =>
+            isEnrollmentEffectiveActive(e, classMap.get(String(e.class_id)), todayStr, store.terms)
+          );
+          const uniqueIds = Array.from(new Set(effectiveRows.map((e: any) => e.student_id)));
           setLiveDb({
             totalStudents: sCount,
             activeCount: uniqueIds.length,
@@ -293,7 +303,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     };
     fetchLiveKPIs();
     return () => { isMounted = false; };
-  }, [selectedTermId]);
+  }, [selectedTermId, classMap, todayStr, store.terms]);
 
   // Đồng bộ với dữ liệu liveDb nếu có: Nếu tổng học viên đang học = 0 thì ép PMH và PL về 0
   const displayActiveStudents = liveDb?.activeCount ?? activeStudentsCount;
@@ -313,8 +323,11 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
 
   // 4. SỐ LƯỢNG ĐĂNG KÝ HỌC (Tổng lượt ghi danh của từng lớp cộng lại, 1 học sinh học 2 lớp = tính là 2)
   const enrollmentStats = React.useMemo(() => {
-    // Lấy danh sách ghi danh đang hoạt động (active)
-    const activeEnrs = (store.enrollments || []).filter(e => e.status === 'active' || !e.status);
+    // Lấy danh sách ghi danh đang hoạt động (active & hiệu lực theo ngày học)
+    const activeEnrs = (store.enrollments || []).filter(e =>
+      (e.status === 'active' || !e.status) &&
+      isEnrollmentEffectiveActive({ status: e.status || 'active', joined_date: e.joined_date }, classMap.get(String(e.class_id)), todayStr, store.terms)
+    );
 
     // Tạo map tra cứu cơ sở của từng lớp
     const classCampusMap = new Map<string, string>();
@@ -339,6 +352,7 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
 
     if (activeEnrs.length === 0) {
       (store.classes || []).forEach(cls => {
+        if (getClassPhase(cls, todayStr, store.terms) === 'upcoming') return;
         const count = Number((cls as any).enrolled_count ?? cls.current_students) || 0;
         const campus = classCampusMap.get(String(cls.id)) || 'pmh';
         if (campus === 'pl') {
@@ -351,7 +365,13 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
 
     const totalEnrollments = activeEnrs.length > 0
       ? (pmhCount + plCount)
-      : (store.classes || []).reduce((acc, c) => acc + (Number((c as any).enrolled_count ?? c.current_students) || 0), 0);
+      : (store.classes || []).reduce(
+          (acc, c) =>
+            getClassPhase(c, todayStr, store.terms) === 'upcoming'
+              ? acc
+              : acc + (Number((c as any).enrolled_count ?? c.current_students) || 0),
+          0
+        );
 
     const pmhPercent = totalEnrollments > 0 ? ((pmhCount / totalEnrollments) * 100).toFixed(1) : '0.0';
     const plPercent = totalEnrollments > 0 ? ((plCount / totalEnrollments) * 100).toFixed(1) : '0.0';
@@ -363,13 +383,16 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
       pmhPercent,
       plPercent,
     };
-  }, [store.enrollments, store.classes]);
+  }, [store.enrollments, store.classes, store.terms, classMap, todayStr]);
 
   // ============================================================================
   // TÍNH TOÁN THỐNG KÊ MÔN HỌC & CƠ CẤU HỌC SINH (THAY THẾ KHUNG CẢNH BÁO VẮNG)
   // ============================================================================
   const detailedStats = useMemo(() => {
-    const activeEnrs = (store.enrollments || []).filter(e => e.status === 'active' || !e.status);
+    const activeEnrs = (store.enrollments || []).filter(e =>
+      (e.status === 'active' || !e.status) &&
+      isEnrollmentEffectiveActive({ status: e.status || 'active', joined_date: e.joined_date }, classMap.get(String(e.class_id)), todayStr, store.terms)
+    );
     const classes = store.classes || [];
     const subjects = store.subjects || [];
     const students = store.students || [];

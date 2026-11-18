@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Coffee, Printer, CheckCircle2, AlertTriangle, ArrowRight, Calendar, Filter } from 'lucide-react';
-import { AppStore, formatVND } from '../../lib/storage';
+import { AppStore, formatVND, getClassPhase, getTodayStrHoChiMinh } from '../../lib/storage';
 import { UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface SnacksTabProps {
   store: AppStore;
@@ -22,18 +23,21 @@ export const SnacksTab: React.FC<SnacksTabProps> = ({
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [filterClassId, setFilterClassId] = useState<string>('all');
 
-  // Filter classes
+  const todayStr = getTodayStrHoChiMinh();
+
+  // Filter classes (exclude classes that have not started yet)
   const classesInScope = store.classes.filter(c => {
     const matchCampus = selectedCampusId === 'all' || c.campus_id === selectedCampusId;
     const matchTerm = c.term_id === selectedTermId;
-    return matchCampus && matchTerm;
+    return matchCampus && matchTerm && getClassPhase(c, todayStr, store.terms) !== 'upcoming';
   });
 
   const classIdsInScope = new Set(classesInScope.map(c => c.id));
 
-  // Filter sessions
+  // Filter sessions (only sessions for classes already started)
   const sessionsInScope = store.sessions.filter(s => {
-    const matchClass = filterClassId === 'all' ? classIdsInScope.has(s.class_id) : s.class_id === filterClassId;
+    if (!classIdsInScope.has(s.class_id)) return false;
+    const matchClass = filterClassId === 'all' ? true : s.class_id === filterClassId;
     return matchClass;
   }).sort((a, b) => b.session_date.localeCompare(a.session_date));
 
@@ -116,7 +120,7 @@ export const SnacksTab: React.FC<SnacksTabProps> = ({
                 className="bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-amber-500"
               >
                 <option value="all">Tất cả các lớp</option>
-                {classesInScope.map(c => (
+                {sortByLabelVi(classesInScope, c => c.name).map(c => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>

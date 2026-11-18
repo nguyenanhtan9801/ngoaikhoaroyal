@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { AppState } from '../../services/storage';
 import { ClassItem } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface ClassManagementProps {
   state: AppState;
@@ -297,7 +298,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setSubjectId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {sortByLabelVi(subjects, s => s.name).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
 
@@ -308,7 +309,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setCampusId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {campuses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    {sortByLabelVi(campuses, c => c.name).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
               </div>
@@ -321,7 +322,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setFacilityId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {facilities.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                    {sortByLabelVi(facilities, f => f.name).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                   </select>
                 </div>
 
@@ -332,7 +333,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setTimeSlotId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {timeSlots.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    {sortByLabelVi(timeSlots, t => t.name).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </div>
               </div>
@@ -345,7 +346,10 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setPrimaryTeacherId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})</option>)}
+                    {sortByLabelVi(
+                      teachers,
+                      t => `${t.name} (${(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})`
+                    ).map(t => <option key={t.id} value={t.id}>{t.name} ({(t.type || t.teacher_type) === 'partner' ? 'Đối tác' : (t.type || t.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'})</option>)}
                   </select>
                 </div>
 
@@ -437,7 +441,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                   onChange={(e) => setTransferStudentId(e.target.value)}
                   className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                 >
-                  {students.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+                  {sortByLabelVi(students, s => `${s.name} (${s.code})`).map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
                 </select>
               </div>
 
@@ -449,7 +453,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setTransferFromClassId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {classes.map(c => <option key={c.id} value={c.id}>{c.name} ({c.price_per_session.toLocaleString('vi-VN')} đ)</option>)}
+                    {sortByLabelVi(classes, c => `${c.name} (${c.price_per_session.toLocaleString('vi-VN')} đ)`).map(c => <option key={c.id} value={c.id}>{c.name} ({c.price_per_session.toLocaleString('vi-VN')} đ)</option>)}
                   </select>
                 </div>
 
@@ -460,7 +464,7 @@ export const ClassManagement: React.FC<ClassManagementProps> = ({
                     onChange={(e) => setTransferToClassId(e.target.value)}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    {classes.map(c => <option key={c.id} value={c.id}>{c.name} ({c.price_per_session.toLocaleString('vi-VN')} đ)</option>)}
+                    {sortByLabelVi(classes, c => `${c.name} (${c.price_per_session.toLocaleString('vi-VN')} đ)`).map(c => <option key={c.id} value={c.id}>{c.name} ({c.price_per_session.toLocaleString('vi-VN')} đ)</option>)}
                   </select>
                 </div>
               </div>

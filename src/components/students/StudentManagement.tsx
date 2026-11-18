@@ -22,6 +22,7 @@ import { DatePickerVN } from '../common/DatePickerVN';
 import { checkIsRoyalStudent } from '../../lib/storage';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface StudentManagementProps {
   state: AppState;
@@ -258,8 +259,15 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
                 className="bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white"
               >
                 <option value="all">Tất cả phân loại</option>
-                <option value="royal">Chỉ học sinh Royal (RY-)</option>
-                <option value="external">Chỉ học sinh ngoài (EXT-)</option>
+                {sortByLabelVi(
+                  [
+                    { value: 'royal', label: 'Chỉ học sinh Royal (RY-)' },
+                    { value: 'external', label: 'Chỉ học sinh ngoài (EXT-)' },
+                  ],
+                  opt => opt.label
+                ).map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -579,8 +587,15 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
                     onChange={(e) => setNewStudent({ ...newStudent, gender: e.target.value as any })}
                     className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                   >
-                    <option value="Nam">Nam</option>
-                    <option value="Nữ">Nữ</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'Nam', label: 'Nam' },
+                        { value: 'Nữ', label: 'Nữ' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>

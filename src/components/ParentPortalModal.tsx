@@ -33,6 +33,7 @@ import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser }
 import { RoyalLogo } from './RoyalLogo';
 import { DatePickerVN } from './common/DatePickerVN';
 import { showToast } from '../lib/toast';
+import { sortByLabelVi } from '../utils/sortVi';
 
 interface ParentPortalModalProps {
   store: AppStore;
@@ -1163,7 +1164,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                       onChange={(e) => setRegForm({ ...regForm, desired_campus_id: e.target.value })}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-medium focus:outline-none focus:border-amber-500"
                     >
-                      {catalogCampuses.map((c: any) => (
+                      {sortByLabelVi(catalogCampuses, (c: any) => c.name).map((c: any) => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
                     </select>
@@ -1345,7 +1346,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
                               onChange={(e) => handleChangeSubjectTimeSlot(item.subjectId, e.target.value)}
                               className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white text-xs focus:outline-none focus:border-amber-500 font-medium"
                             >
-                              {slotOptions.map(opt => (
+                              {sortByLabelVi(slotOptions, opt => opt.label).map(opt => (
                                 <option key={opt.value} value={opt.value}>
                                   {opt.label}
                                 </option>

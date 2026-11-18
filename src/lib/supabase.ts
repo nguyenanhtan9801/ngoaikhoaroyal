@@ -2069,7 +2069,17 @@ export async function pullAllTablesFromSupabase(
               is_trial: isTrial,
               trial_session_date: r.trial_session_date || undefined,
               trial_attended: Boolean(r.trial_attended),
-              status: isTrial ? 'trial' : (r.status === 'dropped' || r.status === 'trial_dropped' ? r.status : 'active'),
+              status: isTrial
+                ? 'trial'
+                : r.status === 'dropped' ||
+                  r.status === 'trial_dropped' ||
+                  r.status === 'completed' ||
+                  r.status === 'transferred'
+                ? r.status
+                : 'active',
+              promoted_from_enrollment_id: r.promoted_from_enrollment_id || undefined,
+              promoted_from_class_id: r.promoted_from_class_id || undefined,
+              promotion_batch_id: r.promotion_batch_id || undefined,
               ...({ enrollment_type: isTrial ? 'trial' : 'official' } as any),
             };
           });
@@ -2472,6 +2482,9 @@ export function mapSupabaseRowToStoreEntity(tableName: string, r: any): any {
             r.status === 'transferred'
           ? r.status
           : 'active',
+        promoted_from_enrollment_id: r.promoted_from_enrollment_id || undefined,
+        promoted_from_class_id: r.promoted_from_class_id || undefined,
+        promotion_batch_id: r.promotion_batch_id || undefined,
         ...({ enrollment_type: isTrial ? 'trial' : 'official' } as any),
       };
     }

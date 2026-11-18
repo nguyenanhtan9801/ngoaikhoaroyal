@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { AppState } from '../../services/storage';
 import { TuitionInvoice, TeacherPayrollSettlement } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface FinanceManagementProps {
   state: AppState;
@@ -219,9 +220,16 @@ export const FinanceManagement: React.FC<FinanceManagementProps> = ({
                 className="bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white"
               >
                 <option value="all">Tất cả thanh toán</option>
-                <option value="paid">Đã đóng đủ</option>
-                <option value="partial">Đóng một phần</option>
-                <option value="unpaid">Còn nợ (Unpaid)</option>
+                {sortByLabelVi(
+                  [
+                    { value: 'paid', label: 'Đã đóng đủ' },
+                    { value: 'partial', label: 'Đóng một phần' },
+                    { value: 'unpaid', label: 'Còn nợ (Unpaid)' },
+                  ],
+                  opt => opt.label
+                ).map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
           </div>

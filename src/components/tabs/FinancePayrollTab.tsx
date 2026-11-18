@@ -53,6 +53,7 @@ import {
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
 import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
 import { TuitionInvoice, Teacher, TeacherAttendanceRecord, ExtracurricularClass, UserRole, AppUser, InvoicePaymentRecord, ClassTransfer, CreditNote } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
@@ -1072,7 +1073,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     className="bg-transparent text-sky-300 text-xs font-bold focus:outline-none cursor-pointer"
                   >
                     <option value="all" className="bg-slate-900 text-sky-300">— Tất cả cơ sở —</option>
-                    {store.campuses.map(c => (
+                    {sortByLabelVi(store.campuses, c => c.name).map(c => (
                       <option key={c.id} value={c.id} className="bg-slate-900 text-white font-medium">
                         {c.name}
                       </option>
@@ -2133,8 +2134,15 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
                   >
                     <option value="all" className="bg-slate-900 text-white">Tất cả cơ sở (PMH &amp; PL)</option>
-                    <option value="camp_pmh" className="bg-slate-900 text-white">Phú Mỹ Hưng (PMH)</option>
-                    <option value="camp_pl" className="bg-slate-900 text-white">Phú Lâm (PL)</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'camp_pmh', label: 'Phú Mỹ Hưng (PMH)' },
+                        { value: 'camp_pl', label: 'Phú Lâm (PL)' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value} className="bg-slate-900 text-white">{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -3193,7 +3201,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   {currentStudentClasses.length === 0 ? (
                     <option value="">[ Học sinh chưa có lớp đang học hoạt động ]</option>
                   ) : (
-                    currentStudentClasses.map(c => {
+                    sortByLabelVi(currentStudentClasses, c => {
+                      const campus = store.campuses.find(cp => cp.id === c.campus_id);
+                      return `${c.name} (${campus?.code || 'PMH'}) — ${formatVND(c.price_per_session)}/buổi`;
+                    }).map(c => {
                       const campus = store.campuses.find(cp => cp.id === c.campus_id);
                       return (
                         <option key={c.id} value={c.id}>
@@ -3258,7 +3269,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     onChange={(e) => setTargetCampusId(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-cyan-500 text-xs"
                   >
-                    {store.campuses.map(cp => (
+                    {sortByLabelVi(store.campuses, cp => `${cp.name} (${cp.code})`).map(cp => (
                       <option key={cp.id} value={cp.id}>
                         {cp.name} ({cp.code})
                       </option>
@@ -3278,7 +3289,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 text-xs"
                   >
                     <option value="all">-- Tất cả các bộ môn ngoại khóa --</option>
-                    {store.subjects.map(sb => (
+                    {sortByLabelVi(store.subjects, sb => `${sb.name} (${sb.code})`).map(sb => (
                       <option key={sb.id} value={sb.id}>
                         {sb.name} ({sb.code})
                       </option>
@@ -3301,7 +3312,12 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   {filteredTargetClasses.length === 0 ? (
                     <option value="">[ Không có lớp nào phù hợp với bộ môn và cơ sở đã chọn ]</option>
                   ) : (
-                    filteredTargetClasses.map(c => {
+                    sortByLabelVi(filteredTargetClasses, c => {
+                      const count = store.enrollments.filter(e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')).length;
+                      const emptySeats = c.max_students - count;
+                      const daysText = c.days_of_week?.join('-') || '';
+                      return `${c.name} • ${daysText} • Sĩ số: ${count}/${c.max_students} (${emptySeats > 0 ? `Còn ${emptySeats} chỗ` : 'ĐÃ ĐẦY SĨ SỐ'}) • ${formatVND(c.price_per_session)}/buổi`;
+                    }).map(c => {
                       const count = store.enrollments.filter(e => e.class_id === c.id && (e.status === 'active' || e.status === 'trial')).length;
                       const emptySeats = c.max_students - count;
                       const daysText = c.days_of_week?.join('-') || '';

@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Search, X, User, Phone, GraduationCap, Check, ChevronDown } from 'lucide-react';
 import { Student, Enrollment, ExtracurricularClass } from '../types';
+import { isEnrollmentEffectiveActive, getTodayStrHoChiMinh } from '../lib/storage';
+import { sortByLabelVi } from '../utils/sortVi';
 
 interface StudentSearchComboboxProps {
   students: Student[];
@@ -68,15 +70,17 @@ export const StudentSearchCombobox: React.FC<StudentSearchComboboxProps> = ({
   const [query, setQuery] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
 
-  // Map student -> active enrollment count & class names
+  // Map student -> effective active enrollment count & class names
   const studentEnrollmentMeta = useMemo(() => {
+    const todayStr = getTodayStrHoChiMinh();
+    const classMap = new Map(classes.map(c => [c.id, c]));
     const map: Record<string, { activeCount: number; classNames: string[] }> = {};
     students.forEach(s => {
       const activeEnrs = enrollments.filter(
-        e => e.student_id === s.id && (e.status === 'active' || e.status === 'trial')
+        e => e.student_id === s.id && isEnrollmentEffectiveActive(e, classMap.get(e.class_id), todayStr)
       );
       const classNames = activeEnrs
-        .map(e => classes.find(c => c.id === e.class_id)?.name)
+        .map(e => classMap.get(e.class_id)?.name)
         .filter((n): n is string => Boolean(n));
       map[s.id] = {
         activeCount: activeEnrs.length,
@@ -108,16 +112,17 @@ export const StudentSearchCombobox: React.FC<StudentSearchComboboxProps> = ({
       );
     });
 
+    const sortedAlpha = sortByLabelVi(matched, s => `${s.name} (${s.code})`);
     if (prioritizeActiveEnrollments) {
-      return [...matched].sort((a, b) => {
+      return [...sortedAlpha].sort((a, b) => {
         const countA = studentEnrollmentMeta[a.id]?.activeCount || 0;
         const countB = studentEnrollmentMeta[b.id]?.activeCount || 0;
         if (countA !== countB) return countB - countA;
-        return a.name.localeCompare(b.name, 'vi');
+        return 0;
       });
     }
 
-    return matched;
+    return sortedAlpha;
   }, [students, query, prioritizeActiveEnrollments, studentEnrollmentMeta]);
 
   // Close popover when clicking outside

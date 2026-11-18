@@ -24,7 +24,7 @@ import {
   Globe,
   Trash2
 } from 'lucide-react';
-import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN, getCurrentTerm } from '../../lib/storage';
+import { AppStore, formatVND, calculateCeilSessionRate, getEffectivePrice, isTermClosed, createAuditRecord, appendAuditLog, formatDateVN, getCurrentTerm, getClassPhase, getTodayStrHoChiMinh } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { ExtracurricularClass, ClassSession, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
@@ -33,6 +33,7 @@ import { CreateClassModal, calculateExactSchedule, DAY_INDEX } from '../modals/C
 import { TimeSlotsManager } from '../classes/TimeSlotsManager';
 import { FacilityManagementView } from '../classes/FacilityManagementView';
 import { ScheduleCalendarView } from './ScheduleCalendarView';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 export { calculateExactSchedule, DAY_INDEX };
 
@@ -1012,7 +1013,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white focus:outline-none focus:border-cyan-500 text-xs font-medium cursor-pointer transition-colors"
             >
               <option value="all">Tất cả cơ sở ({store.campuses.length} cơ sở)</option>
-              {store.campuses.map(c => (
+              {sortByLabelVi(store.campuses, c => `${c.name} (${c.code})`).map(c => (
                 <option key={c.id} value={c.id}>
                   {c.name} ({c.code})
                 </option>
@@ -1032,7 +1033,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white focus:outline-none focus:border-purple-500 text-xs font-medium cursor-pointer transition-colors"
             >
               <option value="all">Tất cả bộ môn ({store.subjects.length} môn)</option>
-              {store.subjects.map(s => (
+              {sortByLabelVi(store.subjects, s => `${s.name} (${s.code})`).map(s => (
                 <option key={s.id} value={s.id}>
                   {s.name} ({s.code})
                 </option>
@@ -1164,11 +1165,23 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   const isOverQuota = enrollments.length > cls.max_students;
                   const classDays = getClassDays(cls, store);
                   const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
+                  const phase = getClassPhase(cls, getTodayStrHoChiMinh(), store.terms);
 
                   return (
                     <tr key={cls.id} className="hover:bg-slate-800/30 transition-colors">
                       <td className="py-3 px-4">
-                        <div className="font-bold text-white text-sm">{cls.name}</div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-white text-sm">{cls.name}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            phase === 'upcoming'
+                              ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                              : phase === 'ended'
+                              ? 'bg-slate-800 text-slate-400 border-slate-700'
+                              : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                          }`}>
+                            {phase === 'upcoming' ? 'Sắp bắt đầu' : phase === 'ended' ? 'Đã kết thúc' : 'Đang học'}
+                          </span>
+                        </div>
                         {localTermId === 'all' && term && (
                           <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                             [{term.name}]
@@ -1343,6 +1356,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             const isOverQuota = studentCount > cls.max_students;
             const classDays = getClassDays(cls, store);
             const conflicts = checkConflicts(cls.facility_id, cls.primary_teacher_id, cls.time_slot_id, classDays, cls.campus_id, cls.id, cls.term_id);
+            const phase = getClassPhase(cls, getTodayStrHoChiMinh(), store.terms);
 
             return (
               <div
@@ -1354,6 +1368,15 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="px-2.5 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[11px] font-bold">
                         {subject?.name || 'Môn Ngoại Khóa'}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${
+                        phase === 'upcoming'
+                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                          : phase === 'ended'
+                          ? 'bg-slate-800 text-slate-400 border-slate-700'
+                          : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      }`}>
+                        {phase === 'upcoming' ? 'Sắp bắt đầu' : phase === 'ended' ? 'Đã kết thúc' : 'Đang học'}
                       </span>
                       {localTermId === 'all' && term && (
                         <span className="text-[10px] text-slate-500 font-mono">

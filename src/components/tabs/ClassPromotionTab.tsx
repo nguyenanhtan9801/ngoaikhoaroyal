@@ -57,6 +57,7 @@ import {
 } from '../modals/EnrollmentModal';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface ClassPromotionTabProps {
   store: AppStore;
@@ -876,7 +877,9 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
     setIsSubmitting(true);
     const snapshotStore = store;
     const nowIso = new Date().toISOString();
-    const todayDate = nowIso.split('T')[0];
+    const todayDate = getTodayStrHoChiMinh();
+    const sourceEndDate = selectedSourceClass.end_date || selectedSourceTerm?.end_date || '';
+    const isSourceClassEnded = Boolean(sourceEndDate && todayDate > sourceEndDate);
     const batchId = `prom_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const batchCode = `LENLOP-${todayDate.replace(/-/g, '')}-${String(
       (store.promotionHistories?.length || 0) + 1
@@ -941,11 +944,16 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
             is_trial: false,
             enrollment_type: 'official',
             status: 'active',
+            promoted_from_enrollment_id: sourceEnrollment.id,
+            promoted_from_class_id: selectedSourceClass.id,
+            promotion_batch_id: batchId,
           };
           newEnrollments.push(newEnrollment);
 
-          // Đánh dấu enrollment ở lớp cũ thành 'completed'
-          updatedOldEnrollmentMap.set(sourceEnrollment.id, 'completed');
+          // Chỉ đánh dấu enrollment ở lớp cũ thành 'completed' khi lớp cũ đã thực sự quá ngày kết thúc (end_date < today)
+          if (isSourceClassEnded) {
+            updatedOldEnrollmentMap.set(sourceEnrollment.id, 'completed');
+          }
 
           // Tạo hóa đơn học phí mới liên kết với màn Thu Học Phí & Mã Chuyển Khoản
           const invoiceId = `inv_prom_${Date.now()}_${student.id}_${Math.random()
@@ -1366,7 +1374,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
         ).length;
 
         const updatedClasses = prev.classes.map(cls => {
-          if (cls.id === selectedSourceClass.id && remainingActiveInSource === 0) {
+          if (cls.id === selectedSourceClass.id && remainingActiveInSource === 0 && isSourceClassEnded) {
             return { ...cls, status: 'completed' as const };
           }
           if (cls.id === selectedTargetClass.id) {
@@ -1655,12 +1663,21 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                     {userCampusScope === 'all' && (
                       <option value="all">Toàn Trường (PMH & Phú Lâm)</option>
                     )}
-                    {(userCampusScope === 'all' || userCampusScope === 'camp_pmh') && (
-                      <option value="camp_pmh">Cơ sở Phú Mỹ Hưng (PMH)</option>
-                    )}
-                    {(userCampusScope === 'all' || userCampusScope === 'camp_pl') && (
-                      <option value="camp_pl">Cơ sở Phú Lâm (PL)</option>
-                    )}
+                    {sortByLabelVi(
+                      [
+                        ...((userCampusScope === 'all' || userCampusScope === 'camp_pl')
+                          ? [{ id: 'camp_pl', label: 'Cơ sở Phú Lâm (PL)' }]
+                          : []),
+                        ...((userCampusScope === 'all' || userCampusScope === 'camp_pmh')
+                          ? [{ id: 'camp_pmh', label: 'Cơ sở Phú Mỹ Hưng (PMH)' }]
+                          : []),
+                      ],
+                      c => c.label
+                    ).map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -1692,7 +1709,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-white focus:outline-none focus:border-amber-500"
                   >
                     <option value="all">Tất cả môn ngoại khóa</option>
-                    {store.subjects.map(s => (
+                    {sortByLabelVi(store.subjects, s => `${s.code} — ${s.name}`).map(s => (
                       <option key={s.id} value={s.id}>
                         {s.code} — {s.name}
                       </option>
@@ -1911,7 +1928,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                       )
                     </option>
                     <option value="all">Tất cả môn học (Cho phép lên lớp khác môn)</option>
-                    {store.subjects.map(s => (
+                    {sortByLabelVi(store.subjects, s => `${s.code} — ${s.name}`).map(s => (
                       <option key={s.id} value={s.id}>
                         {s.code} — {s.name}
                       </option>

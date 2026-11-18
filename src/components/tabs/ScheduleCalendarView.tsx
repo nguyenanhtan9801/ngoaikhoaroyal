@@ -17,6 +17,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { AppStore, ExtracurricularClass, Student, Enrollment, UserRole } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface ScheduleCalendarViewProps {
   store: AppStore;
@@ -331,7 +332,7 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
               className="px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-amber-500 font-medium"
             >
               <option value="all">Tất cả môn học ({store.subjects?.length || 0})</option>
-              {(store.subjects || []).map((sub) => (
+              {sortByLabelVi(store.subjects || [], sub => `${sub.name} (${sub.code})`).map((sub) => (
                 <option key={sub.id} value={sub.id}>
                   {sub.name} ({sub.code})
                 </option>

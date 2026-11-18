@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { AppState } from '../../services/storage';
 import { MakeupCredit } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface MakeupCreditManagementProps {
   state: AppState;
@@ -188,9 +189,16 @@ export const MakeupCreditManagement: React.FC<MakeupCreditManagementProps> = ({
               className="bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white"
             >
               <option value="all">Tất cả trạng thái</option>
-              <option value="issued">Còn hiệu lực</option>
-              <option value="applied">Đã cấn trừ</option>
-              <option value="expired">Đã hết hạn</option>
+              {sortByLabelVi(
+                [
+                  { value: 'issued', label: 'Còn hiệu lực' },
+                  { value: 'applied', label: 'Đã cấn trừ' },
+                  { value: 'expired', label: 'Đã hết hạn' },
+                ],
+                opt => opt.label
+              ).map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
           </div>
         </div>
@@ -311,7 +319,10 @@ export const MakeupCreditManagement: React.FC<MakeupCreditManagementProps> = ({
                   onChange={(e) => setStudentId(e.target.value)}
                   className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                 >
-                  {students.map(s => (
+                  {sortByLabelVi(
+                    students,
+                    s => `${s.name} (${s.code}) - ${s.is_royal_student ? 'Học sinh Royal' : 'Học sinh ngoài'}`
+                  ).map(s => (
                     <option key={s.id} value={s.id}>
                       {s.name} ({s.code}) - {s.is_royal_student ? 'Học sinh Royal' : 'Học sinh ngoài'}
                     </option>
@@ -327,7 +338,10 @@ export const MakeupCreditManagement: React.FC<MakeupCreditManagementProps> = ({
                   onChange={(e) => setSourceClassId(e.target.value)}
                   className="w-full bg-[#0B0F19] border border-slate-700 rounded-xl px-3 py-2 text-white"
                 >
-                  {classes.map(c => (
+                  {sortByLabelVi(
+                    classes,
+                    c => `${c.name} • Đơn giá: ${c.price_per_session.toLocaleString('vi-VN')} đ/buổi`
+                  ).map(c => (
                     <option key={c.id} value={c.id}>
                       {c.name} &bull; Đơn giá: {c.price_per_session.toLocaleString('vi-VN')} đ/buổi
                     </option>

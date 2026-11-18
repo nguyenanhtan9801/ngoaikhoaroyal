@@ -50,7 +50,11 @@ import {
   getCampusPricingForClass,
   resolveStudentCampusId,
   checkIsRoyalStudent,
-  getCurrentTerm
+  getCurrentTerm,
+  getTodayStrHoChiMinh,
+  getEnrollmentPhase,
+  getClassEffectiveBounds,
+  getPromotedTargetInfo
 } from '../../lib/storage';
 import { formatCapitalizedName } from '../../lib/formatters';
 import { Student, UserRole, ExtracurricularClass, Enrollment, TuitionInvoice } from '../../types';
@@ -61,6 +65,7 @@ import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { EnrollmentModal } from '../modals/EnrollmentModal';
 import { DatePickerVN } from '../common/DatePickerVN';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 const SignedAvatarImg: React.FC<{ src?: string; alt: string; className?: string }> = ({
   src,
@@ -578,10 +583,20 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             joined_date: normalizedJoinedDate,
             enrolled_days_of_week: enrolledDays,
             is_partial_schedule: Boolean(raw.is_partial_schedule ?? existing?.is_partial_schedule),
-            status: isTrial ? 'trial' : (raw.status === 'dropped' || raw.status === 'trial_dropped' ? raw.status : 'active'),
+            status: isTrial
+              ? 'trial'
+              : raw.status === 'dropped' ||
+                raw.status === 'trial_dropped' ||
+                raw.status === 'completed' ||
+                raw.status === 'transferred'
+              ? raw.status
+              : 'active',
             is_trial: isTrial,
             trial_session_date: raw.trial_session_date || raw.start_date || existing?.trial_session_date,
             trial_attended: Boolean(raw.trial_attended ?? existing?.trial_attended),
+            promoted_from_enrollment_id: raw.promoted_from_enrollment_id || existing?.promoted_from_enrollment_id,
+            promoted_from_class_id: raw.promoted_from_class_id || existing?.promoted_from_class_id,
+            promotion_batch_id: raw.promotion_batch_id || existing?.promotion_batch_id,
             ...( {
               enrollment_type: isTrial ? 'trial' : (raw.enrollment_type || 'official'),
               extracurricular_classes: nestedCls || (existing as any)?.extracurricular_classes,
@@ -731,9 +746,19 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
           registered_sessions: Number(raw.registered_sessions || raw.actual_sessions || existing?.registered_sessions || 24),
           joined_date: normalizedJoinedDate,
           enrolled_days_of_week: Array.isArray(raw.enrolled_days_of_week) ? raw.enrolled_days_of_week : existing?.enrolled_days_of_week,
-          status: isTrial ? 'trial' : 'active',
+          status: isTrial
+            ? 'trial'
+            : raw.status === 'dropped' ||
+              raw.status === 'trial_dropped' ||
+              raw.status === 'completed' ||
+              raw.status === 'transferred'
+            ? raw.status
+            : 'active',
           is_trial: isTrial,
           trial_session_date: raw.trial_session_date || raw.start_date || existing?.trial_session_date,
+          promoted_from_enrollment_id: raw.promoted_from_enrollment_id || existing?.promoted_from_enrollment_id,
+          promoted_from_class_id: raw.promoted_from_class_id || existing?.promoted_from_class_id,
+          promotion_batch_id: raw.promotion_batch_id || existing?.promotion_batch_id,
           ...( {
             enrollment_type: isTrial ? 'trial' : 'official',
             extracurricular_classes: raw.extracurricular_classes || (existing as any)?.extracurricular_classes,
@@ -1951,8 +1976,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               title="Sắp xếp theo ngày bắt đầu học"
             >
               <option value="none">Sắp xếp: Mặc định</option>
-              <option value="desc">Mới nhất → Cũ nhất</option>
-              <option value="asc">Cũ nhất → Mới nhất</option>
+              {sortByLabelVi(
+                [
+                  { value: 'asc', label: 'Cũ nhất → Mới nhất' },
+                  { value: 'desc', label: 'Mới nhất → Cũ nhất' },
+                ],
+                o => o.label
+              ).map(o => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
             </select>
             <input
               type="date"
@@ -2246,6 +2280,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                      a.status === 'present'
                               ).length;
                               const startDateStr = getEnrollmentStartDate(enr);
+                              const todayStr = getTodayStrHoChiMinh();
+                              const enrPhase = getEnrollmentPhase(enr, c, todayStr, store.terms);
+                              const clsBounds = getClassEffectiveBounds(c, store.terms);
+                              const effectiveStartForBadge = startDateStr || clsBounds.startDate;
+                              const promotedTarget = getPromotedTargetInfo(
+                                enr,
+                                store.enrollments,
+                                store.classes,
+                                store.promotionHistories
+                              );
 
                               return (
                                 <div key={enr.id} className="flex flex-col gap-1">
@@ -2261,6 +2305,22 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                         <span>🟢</span>
                                         <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                                         <span>{shortName} (Chính thức)</span>
+                                      </span>
+                                    )}
+
+                                    {enrPhase === 'upcoming' && (
+                                      <span className="px-2 py-0.5 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
+                                        Sắp bắt đầu – {formatDateVN(effectiveStartForBadge)}
+                                      </span>
+                                    )}
+                                    {enrPhase === 'ended' && (
+                                      <span className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-bold">
+                                        Đã kết thúc
+                                      </span>
+                                    )}
+                                    {promotedTarget && (
+                                      <span className="px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                                        Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateVN(promotedTarget.startDate)}
                                       </span>
                                     )}
 
@@ -2584,6 +2644,16 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                  a.status === 'present'
                           ).length;
                           const startDateStr = getEnrollmentStartDate(enr);
+                          const todayStr = getTodayStrHoChiMinh();
+                          const enrPhase = getEnrollmentPhase(enr, c, todayStr, store.terms);
+                          const clsBounds = getClassEffectiveBounds(c, store.terms);
+                          const effectiveStartForBadge = startDateStr || clsBounds.startDate;
+                          const promotedTarget = getPromotedTargetInfo(
+                            enr,
+                            store.enrollments,
+                            store.classes,
+                            store.promotionHistories
+                          );
 
                           return (
                             <div key={enr.id} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-900/90 border border-slate-800">
@@ -2600,6 +2670,22 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                                       <span>🟢</span>
                                       <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                                       <span className="truncate">{shortName} (Chính thức)</span>
+                                    </span>
+                                  )}
+
+                                  {enrPhase === 'upcoming' && (
+                                    <span className="px-2 py-0.5 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
+                                      Sắp bắt đầu – {formatDateVN(effectiveStartForBadge)}
+                                    </span>
+                                  )}
+                                  {enrPhase === 'ended' && (
+                                    <span className="px-2 py-0.5 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 text-[10px] font-bold">
+                                      Đã kết thúc
+                                    </span>
+                                  )}
+                                  {promotedTarget && (
+                                    <span className="px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                                      Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateVN(promotedTarget.startDate)}
                                     </span>
                                   )}
 
@@ -2911,8 +2997,17 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                     }}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-amber-300 font-bold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="true">Học sinh ROYAL SCHOOL</option>
-                    <option value="false">Học sinh ngoài trường</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'false', label: 'Học sinh ngoài trường' },
+                        { value: 'true', label: 'Học sinh ROYAL SCHOOL' },
+                      ],
+                      o => o.label
+                    ).map(o => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>

@@ -38,6 +38,7 @@ import { MakeupCredit, Student, ExtracurricularClass, UserRole, TuitionInvoice, 
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
 import { showToast } from '../../lib/toast';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface MakeupCreditsTabProps {
   store: AppStore;
@@ -1269,7 +1270,10 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
                   onChange={e => setIssueForm(prev => ({ ...prev, source_class_id: e.target.value }))}
                   className="w-full px-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
                 >
-                  {currentTermClasses.map(c => {
+                  {sortByLabelVi(
+                    currentTermClasses,
+                    c => `${studentEnrolledClassIds.has(c.id) ? '★ [Đang theo học] ' : ''}${c.name} — Đơn giá: ${formatVND(c.price_per_session)}/buổi`
+                  ).map(c => {
                     const isEnrolled = studentEnrolledClassIds.has(c.id);
                     return (
                       <option key={c.id} value={c.id}>

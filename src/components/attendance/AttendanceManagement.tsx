@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { AppState } from '../../services/storage';
 import { AttendanceStatus } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface AttendanceManagementProps {
   state: AppState;
@@ -207,7 +208,10 @@ export const AttendanceManagement: React.FC<AttendanceManagementProps> = ({
               onChange={(e) => setSelectedClassId(e.target.value)}
               className="w-full bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
             >
-              {classes.map(c => (
+              {sortByLabelVi(
+                classes,
+                c => `${c.name} (${c.price_per_session.toLocaleString('vi-VN')} đ/buổi)`
+              ).map(c => (
                 <option key={c.id} value={c.id}>
                   {c.name} ({c.price_per_session.toLocaleString('vi-VN')} đ/buổi)
                 </option>
@@ -244,7 +248,10 @@ export const AttendanceManagement: React.FC<AttendanceManagementProps> = ({
               onChange={(e) => setActualTeacherId(e.target.value)}
               className="w-full bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
             >
-              {teachers.map(t => (
+              {sortByLabelVi(
+                teachers,
+                t => `${t.name} ${t.id === selectedClass?.primary_teacher_id ? '(Phụ trách)' : '(Dạy thay)'}`
+              ).map(t => (
                 <option key={t.id} value={t.id}>
                   {t.name} {t.id === selectedClass?.primary_teacher_id ? '(Phụ trách)' : '(Dạy thay)'}
                 </option>

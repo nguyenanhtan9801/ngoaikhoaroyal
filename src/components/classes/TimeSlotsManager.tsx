@@ -19,6 +19,7 @@ import { TimeSlot, AppStore } from '../../types';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { createAuditRecord, appendAuditLog } from '../../lib/storage';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface TimeSlotsManagerProps {
   store: AppStore;
@@ -693,8 +694,15 @@ export const TimeSlotsManager: React.FC<TimeSlotsManagerProps> = ({
                     onChange={e => setFormData({ ...formData, status: e.target.value as any })}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="active">Đang áp dụng</option>
-                    <option value="inactive">Tạm dừng</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'active', label: 'Đang áp dụng' },
+                        { value: 'inactive', label: 'Tạm dừng' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>

@@ -38,6 +38,7 @@ import {
   AppUser,
   ExtracurricularClass,
 } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 import {
   formatVND,
   formatDateVN,
@@ -1690,8 +1691,15 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả cơ sở</option>
-            <option value="camp_pmh">Phú Mỹ Hưng (PMH)</option>
-            <option value="camp_pl">Phú Lâm (PL)</option>
+            {sortByLabelVi(
+              [
+                { value: 'camp_pmh', label: 'Phú Mỹ Hưng (PMH)' },
+                { value: 'camp_pl', label: 'Phú Lâm (PL)' },
+              ],
+              opt => opt.label
+            ).map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
 
           {/* Teacher Type Filter */}
@@ -1701,9 +1709,16 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả phân loại ({teacherTypeCounts.all})</option>
-            <option value="permanent">Cơ hữu ({teacherTypeCounts.permanent})</option>
-            <option value="visiting">Thỉnh giảng ({teacherTypeCounts.visiting})</option>
-            <option value="partner">Đối tác ({teacherTypeCounts.partner})</option>
+            {sortByLabelVi(
+              [
+                { value: 'permanent', label: `Cơ hữu (${teacherTypeCounts.permanent})` },
+                { value: 'visiting', label: `Thỉnh giảng (${teacherTypeCounts.visiting})` },
+                { value: 'partner', label: `Đối tác (${teacherTypeCounts.partner})` },
+              ],
+              opt => opt.label
+            ).map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
 
           {/* Status Filter */}
@@ -1713,8 +1728,15 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả trạng thái</option>
-            <option value="active">Đang giảng dạy</option>
-            <option value="inactive">Đã khóa / Ngưng dạy</option>
+            {sortByLabelVi(
+              [
+                { value: 'active', label: 'Đang giảng dạy' },
+                { value: 'inactive', label: 'Đã khóa / Ngưng dạy' },
+              ],
+              opt => opt.label
+            ).map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
 
           {/* View Mode Toggle: [ 田 Dạng Lưới ] & [ 㗊 Dạng Thẻ ] */}
@@ -2541,7 +2563,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                     onChange={e => setFormData({ ...formData, campus_id: e.target.value })}
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    {store.campuses.map(c => (
+                    {sortByLabelVi(store.campuses, c => `${c.name} (${c.code})`).map(c => (
                       <option key={c.id} value={c.id}>
                         {c.name} ({c.code})
                       </option>
@@ -2592,9 +2614,16 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                     }}
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-semibold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="permanent">Cơ hữu (Permanent)</option>
-                    <option value="visiting">Thỉnh giảng (Visiting)</option>
-                    <option value="partner">Đối tác (Partner — Không tính lương)</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'permanent', label: 'Cơ hữu (Permanent)' },
+                        { value: 'visiting', label: 'Thỉnh giảng (Visiting)' },
+                        { value: 'partner', label: 'Đối tác (Partner — Không tính lương)' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -3000,9 +3029,16 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                     }}
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-bold focus:outline-none focus:border-amber-500"
                   >
-                    <option value="permanent">Cơ hữu (Permanent)</option>
-                    <option value="visiting">Thỉnh giảng (Visiting)</option>
-                    <option value="partner">Đối tác (Partner — Không tính lương)</option>
+                    {sortByLabelVi(
+                      [
+                        { value: 'permanent', label: 'Cơ hữu (Permanent)' },
+                        { value: 'visiting', label: 'Thỉnh giảng (Visiting)' },
+                        { value: 'partner', label: 'Đối tác (Partner — Không tính lương)' },
+                      ],
+                      opt => opt.label
+                    ).map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -3721,8 +3757,15 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
                     >
                       <option value="all">Tất cả cơ sở</option>
-                      <option value="camp_pmh">Cơ sở Phú Mỹ Hưng (PMH)</option>
-                      <option value="camp_pl">Cơ sở Phú Lâm (PL)</option>
+                      {sortByLabelVi(
+                        [
+                          { value: 'camp_pmh', label: 'Cơ sở Phú Mỹ Hưng (PMH)' },
+                          { value: 'camp_pl', label: 'Cơ sở Phú Lâm (PL)' },
+                        ],
+                        opt => opt.label
+                      ).map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -3738,8 +3781,15 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
                     >
                       <option value="all">Tất cả lớp đang mở ({store.classes.filter(c => c.status === 'active').length})</option>
-                      <option value="unassigned">Lớp chưa có GV chính</option>
-                      <option value="assigned_to_me">Lớp GV đang phụ trách</option>
+                      {sortByLabelVi(
+                        [
+                          { value: 'unassigned', label: 'Lớp chưa có GV chính' },
+                          { value: 'assigned_to_me', label: 'Lớp GV đang phụ trách' },
+                        ],
+                        opt => opt.label
+                      ).map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>

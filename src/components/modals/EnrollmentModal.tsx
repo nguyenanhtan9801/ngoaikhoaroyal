@@ -26,6 +26,7 @@ import {
 import { showToast } from '../../lib/toast';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { DatePickerVN } from '../common/DatePickerVN';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 // Ánh xạ thứ sang chỉ số ngày trong JavaScript Date (0 = Chủ Nhật, 1 = Thứ 2, ..., 6 = Thứ 7)
 export const DAY_MAP: Record<string, number> = {
@@ -980,7 +981,13 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500 transition-colors"
             >
               <option value="all">-- Tất cả môn học ({activeTermSubjects.length} môn) --</option>
-              {activeTermSubjects.map((s) => {
+              {sortByLabelVi(activeTermSubjects, s => {
+                const openCount = termClasses.filter(
+                  (c) => (String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)) &&
+                         !enrolledClassIds.includes(String(c.id))
+                ).length;
+                return `${s.name} (${s.code}) - Chuẩn ${s.standard_sessions || 24}b • ${s.standard_duration || '90p'} [${openCount} lớp mở]`;
+              }).map((s) => {
                 const openCount = termClasses.filter(
                   (c) => (String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)) &&
                          !enrolledClassIds.includes(String(c.id))
@@ -1015,7 +1022,20 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
               }`}
             >
               <option value="" disabled>-- Chọn lớp học cần ghi danh --</option>
-              {filteredClassesToDisplay.map((c) => {
+              {sortByLabelVi(filteredClassesToDisplay, (c) => {
+                const isEnrolled = enrolledClassIds.includes(String(c.id));
+                const campus = store.campuses.find((cp) => cp.id === c.campus_id);
+                const teacher = store.teachers.find((t) => t.id === c.primary_teacher_id);
+                const clsDays = Array.isArray(c.days_of_week) && c.days_of_week.length > 0
+                  ? c.days_of_week
+                  : (Array.isArray((c as any).schedule_days) && (c as any).schedule_days.length > 0
+                      ? (c as any).schedule_days
+                      : getClassDaysOfWeek(c, store));
+                const campusLabel = campus ? campus.name.split('-')[0].trim() : (c.campus_id || '').toUpperCase();
+                const teacherLabel = teacher ? teacher.name : 'Chưa phân công GV';
+                const daysLabel = clsDays.join(', ');
+                return `${c.name} • [${campusLabel}] • Thứ: [${daysLabel}] • GV: ${teacherLabel} ${isEnrolled ? '⛔ [ĐÃ GHI DANH]' : ''}`;
+              }).map((c) => {
                 const isEnrolled = enrolledClassIds.includes(String(c.id));
                 const campus = store.campuses.find((cp) => cp.id === c.campus_id);
                 const teacher = store.teachers.find((t) => t.id === c.primary_teacher_id);

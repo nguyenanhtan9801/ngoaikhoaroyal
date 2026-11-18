@@ -35,6 +35,7 @@ import {
   LogActionType,
   CloudStorageConfig,
   PayrollRateConfig,
+  ClassPromotionHistoryRecord,
   AppStore,
 } from '../types';
 import {
@@ -1281,13 +1282,173 @@ export function shouldStudentAttendSession(
   return enrollment.enrolled_days_of_week.includes(dayCode);
 }
 
+export type ClassLifecyclePhase = 'upcoming' | 'active' | 'ended';
+
+/**
+ * Lấy khoảng ngày hiệu lực [startDate, endDate] của lớp học (ưu tiên ngày riêng của lớp, fallback sang AcademicTerm)
+ */
+export function getClassEffectiveBounds(
+  cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id'> | undefined,
+  terms: AcademicTerm[] = []
+): { startDate: string; endDate: string } {
+  if (!cls) return { startDate: '', endDate: '' };
+  const term = terms.find(t => t.id === cls.term_id);
+  const startDate = String(cls.start_date || term?.start_date || '').split('T')[0];
+  const endDate = String(cls.end_date || term?.end_date || '').split('T')[0];
+  return { startDate, endDate };
+}
+
+/**
+ * Xác định giai đoạn hiệu lực của lớp theo ngày (YYYY-MM-DD, Asia/Ho_Chi_Minh):
+ * - 'upcoming': chưa tới startDate
+ * - 'ended': đã qua endDate hoặc status === 'completed'
+ * - 'active': trong khoảng [startDate, endDate]
+ */
+export function getClassPhase(
+  cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
+  todayStr?: string,
+  terms: AcademicTerm[] = []
+): ClassLifecyclePhase {
+  if (!cls) return 'active';
+  const refDate = getTodayStrHoChiMinh(todayStr || new Date());
+  const { startDate, endDate } = getClassEffectiveBounds(cls, terms);
+  if (startDate && refDate < startDate) {
+    return 'upcoming';
+  }
+  if (cls.status === 'completed' || (endDate && refDate > endDate)) {
+    return 'ended';
+  }
+  return 'active';
+}
+
+/**
+ * Xác định giai đoạn hiệu lực của một enrollment theo lớp và joined_date
+ */
+export function getEnrollmentPhase(
+  enr: Pick<Enrollment, 'joined_date' | 'status'> | undefined,
+  cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
+  todayStr?: string,
+  terms: AcademicTerm[] = []
+): ClassLifecyclePhase {
+  const refDate = getTodayStrHoChiMinh(todayStr || new Date());
+  const classPhase = getClassPhase(cls, refDate, terms);
+  if (classPhase === 'upcoming') return 'upcoming';
+  if (enr?.joined_date) {
+    const joined = String(enr.joined_date).split('T')[0];
+    if (joined && refDate < joined) return 'upcoming';
+  }
+  if (enr?.status === 'completed' || classPhase === 'ended') return 'ended';
+  return 'active';
+}
+
+/**
+ * Kiểm tra ghi danh có đang thực sự diễn ra (effective active) tại todayStr không
+ * (status active/trial và đang nằm trong hiệu lực ngày học, không ở trạng thái upcoming/ended)
+ */
+export function isEnrollmentEffectiveActive(
+  enr: Pick<Enrollment, 'status' | 'joined_date'> | undefined,
+  cls: Pick<ExtracurricularClass, 'start_date' | 'end_date' | 'term_id' | 'status'> | undefined,
+  todayStr?: string,
+  terms: AcademicTerm[] = []
+): boolean {
+  if (!enr) return false;
+  if (enr.status !== 'active' && enr.status !== 'trial') return false;
+  return getEnrollmentPhase(enr, cls, todayStr, terms) === 'active';
+}
+
+/**
+ * Tìm thông tin lớp mới mà học sinh đã được lên lớp từ sourceEnr (kiểm tra cả trên enrollments và promotionHistories)
+ */
+export function getPromotedTargetInfo(
+  sourceEnr: Enrollment,
+  enrollments: Enrollment[] = [],
+  classes: ExtracurricularClass[] = [],
+  promotionHistories: ClassPromotionHistoryRecord[] = []
+): { targetEnrollment?: Enrollment; targetClass: ExtracurricularClass; startDate: string } | null {
+  const targetEnr = enrollments.find(e => {
+    if (e.id === sourceEnr.id || e.class_id === sourceEnr.class_id) return false;
+    if (e.status === 'dropped' || e.status === 'trial_dropped' || (e.status as string) === 'cancelled' || (e.status as string) === 'canceled') {
+      return false;
+    }
+    if (e.promoted_from_enrollment_id && e.promoted_from_enrollment_id === sourceEnr.id) return true;
+    if (
+      e.promoted_from_class_id &&
+      e.promoted_from_class_id === sourceEnr.class_id &&
+      String(e.student_id) === String(sourceEnr.student_id)
+    ) {
+      return true;
+    }
+    return false;
+  });
+
+  if (targetEnr) {
+    const targetCls = classes.find(c => c.id === targetEnr.class_id);
+    if (targetCls) {
+      return {
+        targetEnrollment: targetEnr,
+        targetClass: targetCls,
+        startDate: targetEnr.joined_date || targetCls.start_date || '',
+      };
+    }
+  }
+
+  for (const hist of promotionHistories || []) {
+    if (hist.source_class_id !== sourceEnr.class_id) continue;
+    const item = (hist.items || []).find(
+      it =>
+        it.action_status === 'promoted' &&
+        (it.source_enrollment_id === sourceEnr.id || String(it.student_id) === String(sourceEnr.student_id))
+    );
+    if (item) {
+      const linkedEnr = item.new_enrollment_id
+        ? enrollments.find(e => e.id === item.new_enrollment_id)
+        : enrollments.find(
+            e =>
+              e.class_id === hist.target_class_id &&
+              String(e.student_id) === String(sourceEnr.student_id) &&
+              e.status !== 'dropped' &&
+              e.status !== 'trial_dropped'
+          );
+      if (linkedEnr) {
+        const targetCls = classes.find(c => c.id === linkedEnr.class_id);
+        if (targetCls) {
+          return {
+            targetEnrollment: linkedEnr,
+            targetClass: targetCls,
+            startDate: linkedEnr.joined_date || item.start_date || targetCls.start_date || '',
+          };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 export function isStudentScheduledForDate(
   enrollment: Enrollment | undefined,
   sessionDate: string,
-  classDays?: string[]
+  classDays?: string[],
+  cls?: ExtracurricularClass,
+  terms: AcademicTerm[] = []
 ): boolean {
   if (!enrollment) return true;
-  if (enrollment.joined_date && sessionDate < enrollment.joined_date) {
+  const statusStr = String(enrollment.status || '');
+  if (
+    statusStr === 'dropped' ||
+    statusStr === 'trial_dropped' ||
+    statusStr === 'cancelled' ||
+    statusStr === 'canceled' ||
+    statusStr === 'transferred'
+  ) {
+    return false;
+  }
+  if (cls) {
+    const { startDate, endDate } = getClassEffectiveBounds(cls, terms);
+    if (startDate && sessionDate < startDate) return false;
+    if (endDate && sessionDate > endDate) return false;
+  }
+  if (enrollment.joined_date && sessionDate < String(enrollment.joined_date).split('T')[0]) {
     return false;
   }
   const effectiveStudentDays =
@@ -1335,7 +1496,7 @@ export function getDefaultClassStartDate(
   const term = store.terms?.find(t => t.id === classItem.term_id);
   const classStart = classItem.start_date || term?.start_date || '2026-09-01';
   const classEnd = classItem.end_date || term?.end_date || '2026-12-25';
-  const todayStr = referenceDateStr || new Date().toISOString().split('T')[0];
+  const todayStr = referenceDateStr || getTodayStrHoChiMinh();
 
   let baseDateStr = todayStr;
   if (baseDateStr < classStart) baseDateStr = classStart;

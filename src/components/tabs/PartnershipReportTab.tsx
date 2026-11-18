@@ -28,6 +28,7 @@ import {
   exportPartnershipExcel,
 } from '../../services/partnershipReportExport';
 import { showToast } from '../../lib/toast';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface PartnershipReportTabProps {
   store: AppStore;
@@ -538,9 +539,16 @@ export const PartnershipReportTab: React.FC<PartnershipReportTabProps> = ({
               onChange={e => setCampusFilter(e.target.value)}
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-bold focus:outline-none focus:border-amber-500"
             >
-              <option value="camp_pmh">Phú Mỹ Hưng (PMH)</option>
-              <option value="camp_pl">Phú Lâm (PL)</option>
               <option value="all">Toàn trường (PMH &amp; PL)</option>
+              {sortByLabelVi(
+                [
+                  { value: 'camp_pmh', label: 'Phú Mỹ Hưng (PMH)' },
+                  { value: 'camp_pl', label: 'Phú Lâm (PL)' },
+                ],
+                opt => opt.label
+              ).map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
           </div>
 
@@ -576,7 +584,7 @@ export const PartnershipReportTab: React.FC<PartnershipReportTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-bold focus:outline-none focus:border-amber-500"
             >
               <option value="all">Tất cả môn ({store.subjects.length} môn)</option>
-              {store.subjects.map(sub => (
+              {sortByLabelVi(store.subjects, sub => sub.name).map(sub => (
                 <option key={sub.id} value={sub.id}>
                   {sub.name}
                 </option>
@@ -596,7 +604,10 @@ export const PartnershipReportTab: React.FC<PartnershipReportTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-bold focus:outline-none focus:border-amber-500"
             >
               <option value="all">Tất cả lớp thuộc môn</option>
-              {matchingClasses.map(cls => (
+              {sortByLabelVi(
+                matchingClasses,
+                cls => `${cls.name} (${formatDaysListLabel(getClassDaysOfWeek(cls))})`
+              ).map(cls => (
                 <option key={cls.id} value={cls.id}>
                   {cls.name} ({formatDaysListLabel(getClassDaysOfWeek(cls))})
                 </option>

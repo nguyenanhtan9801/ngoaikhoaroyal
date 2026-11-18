@@ -54,12 +54,18 @@ import {
   getTeacherEffectiveSessionRate,
   calculateTeacherSessionPayAtDate,
   getCurrentTerm,
+  getTodayStrHoChiMinh,
+  getClassEffectiveBounds,
+  getClassPhase,
+  getEnrollmentPhase,
+  getPromotedTargetInfo,
 } from '../../lib/storage';
 import { ExtracurricularClass, Student, ClassSession, AttendanceRecord, TeacherAttendanceRecord, UserRole, AppUser, Enrollment } from '../../types';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { showToast } from '../../lib/toast';
 import { supabase } from '../../supabaseClient';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface DutyPerson {
   id: string;
@@ -349,11 +355,8 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       : (timeSlot?.days_of_week || ['T2', 'T4']);
   }, [currentClass, timeSlot]);
 
-  // Current real-world date (Local Time YYYY-MM-DD)
-  const today = useMemo(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  }, []);
+  // Current real-world date (Asia/Ho_Chi_Minh YYYY-MM-DD)
+  const today = useMemo(() => getTodayStrHoChiMinh(), []);
 
   // Selected week (Default: current week or week 8 for active term, week 1 for other terms)
   const [selectedWeekIndex, setSelectedWeekIndex] = useState<number>(() => {
@@ -419,8 +422,19 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     }
   }, [scheduledSessionsForWeek, selectedDate]);
 
-  // Check strict future constraint
+  // Check strict future & class lifecycle constraints
   const isFutureDate = selectedDate > today;
+  const currentClassBounds = useMemo(
+    () => (currentClass ? getClassEffectiveBounds(currentClass, store.terms) : null),
+    [currentClass, store.terms]
+  );
+  const currentClassPhase = useMemo(
+    () => (currentClass ? getClassPhase(currentClass, today, store.terms) : 'active'),
+    [currentClass, today, store.terms]
+  );
+  const isUpcomingClass = currentClassPhase === 'upcoming';
+  const isEndedClass = currentClassPhase === 'ended';
+  const isAttendanceLocked = isFutureDate || isUpcomingClass || isEndedClass;
 
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>(
     currentClass?.primary_teacher_id || store.teachers[0]?.id || ''
@@ -496,13 +510,18 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   // Split enrollments into:
   // 1) Scheduled for selectedDate (matches student's enrolled_days_of_week AND selectedDate >= joined_date)
   // 2) Off-schedule for selectedDate (partial weekly schedule not matching selectedDayCode, or before joined_date)
-  const classEnrollments = allClassEnrollments.filter(e =>
-    isStudentScheduledForDate(e, selectedDate, classDays)
-  );
+  // If class is upcoming, keep roster visible in view-only mode without counting attendance or snacks
+  const classEnrollments = isUpcomingClass
+    ? allClassEnrollments
+    : allClassEnrollments.filter(e =>
+        isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
+      );
 
-  const offScheduleEnrollments = allClassEnrollments.filter(
-    e => !isStudentScheduledForDate(e, selectedDate, classDays)
-  );
+  const offScheduleEnrollments = isUpcomingClass
+    ? []
+    : allClassEnrollments.filter(
+        e => !isStudentScheduledForDate(e, selectedDate, classDays, currentClass || undefined, store.terms)
+      );
 
   const enrolledStudents = classEnrollments
     .map(e => store.students.find(s => s.id === e.student_id))
@@ -951,25 +970,27 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     setIsDirty(false);
   }, [selectedDate, currentClass?.id, store.attendance]);
 
-  // Royal Snacks live calculation for this session
-  const royalStudents = enrolledStudents.filter(s => s.is_royal_student);
-  const totalRoyalCount = royalStudents.length;
+  // Royal Snacks live calculation for this session (0 if class has not started yet)
+  const royalStudents = isUpcomingClass ? [] : enrolledStudents.filter(s => s.is_royal_student);
+  const totalRoyalCount = isUpcomingClass ? 0 : royalStudents.length;
 
   let liveConsumed = 0;
   let liveReturned = 0;
 
-  royalStudents.forEach(s => {
-    const st = attendanceState[s.id]?.status || 'present';
-    if (st === 'present' || st === 'absent_unexcused') {
-      liveConsumed += 1;
-    } else if (st === 'absent_excused') {
-      liveReturned += 1;
-    }
-  });
+  if (!isUpcomingClass) {
+    royalStudents.forEach(s => {
+      const st = attendanceState[s.id]?.status || 'present';
+      if (st === 'present' || st === 'absent_unexcused') {
+        liveConsumed += 1;
+      } else if (st === 'absent_excused') {
+        liveReturned += 1;
+      }
+    });
+  }
 
   // Handle Status Change: 1-click status change (Proof is OPTIONAL)
   const handleSetStatus = (student: Student, targetStatus: 'present' | 'absent_excused' | 'absent_unexcused') => {
-    if (isFutureDate) return;
+    if (isAttendanceLocked) return;
 
     setIsDirty(true);
     setAttendanceState(prev => {
@@ -987,6 +1008,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Explicitly open the Proof Modal to upload/edit proof file or detailed note (Optional)
   const handleOpenProofModal = (student: Student) => {
+    if (isAttendanceLocked) return;
     const existing = attendanceState[student.id];
     setProofModalStudent(student);
     setProofUrlInput(existing?.proof_url || '');
@@ -999,6 +1021,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   };
 
   const setNote = (studentId: string, note: string) => {
+    if (isAttendanceLocked) return;
     setIsDirty(true);
     setAttendanceState(prev => ({
       ...prev,
@@ -1198,6 +1221,22 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   // Mở modal xác nhận (ghi đè nếu đã có phiên + tóm tắt tác động) trước khi lưu
   const handleSaveAttendance = () => {
     if (!currentClass) return;
+    if (isUpcomingClass) {
+      showToast(
+        `Lớp bắt đầu từ ${formatDateVN(currentClassBounds?.startDate)}, chưa thể điểm danh.`,
+        'warning',
+        { title: 'Lớp chưa bắt đầu' }
+      );
+      return;
+    }
+    if (isEndedClass) {
+      showToast(
+        `Lớp đã kết thúc (${formatDateVN(currentClassBounds?.endDate)}) — chỉ xem lịch sử điểm danh.`,
+        'warning',
+        { title: 'Lớp đã kết thúc' }
+      );
+      return;
+    }
     if (isFutureDate) {
       showToast(
         `RÀNG BUỘC THỜI GIAN: Ngày ${selectedDate} là ngày trong tương lai. Hệ thống chỉ cho phép điểm danh cho ngày hôm nay hoặc quá khứ!`,
@@ -1231,7 +1270,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   // Thực thi lưu điểm danh sau khi người dùng xác nhận trong modal
   const executeSaveAttendance = () => {
-    if (!currentClass || isFutureDate) return;
+    if (!currentClass || isAttendanceLocked) return;
     setSaveConfirmModalOpen(false);
     void handleSaveDutyStaff(true);
 
@@ -1676,7 +1715,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     );
   };
 
-  const canSaveAttendance = Boolean(currentClass) && !isFutureDate;
+  const canSaveAttendance = Boolean(currentClass) && !isAttendanceLocked;
 
   return (
     <div className="space-y-4">
@@ -1716,8 +1755,17 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               }}
               className="bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer pr-1"
             >
-              <option value="camp_pmh" className="bg-slate-900 text-white">Cơ sở Phú Mỹ Hưng (PMH)</option>
-              <option value="camp_pl" className="bg-slate-900 text-white">Cơ sở Phú Lâm (PL)</option>
+              {sortByLabelVi(
+                [
+                  { id: 'camp_pl', label: 'Cơ sở Phú Lâm (PL)' },
+                  { id: 'camp_pmh', label: 'Cơ sở Phú Mỹ Hưng (PMH)' },
+                ],
+                c => c.label
+              ).map(c => (
+                <option key={c.id} value={c.id} className="bg-slate-900 text-white">
+                  {c.label}
+                </option>
+              ))}
             </select>
           </div>
         </div>
@@ -1772,15 +1820,33 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       {isTeacherRole && availableClasses.length > 1 && (
                         <option value="">-- Chọn lớp để điểm danh ({availableClasses.length} lớp) --</option>
                       )}
-                      {availableClasses.map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
+                      {sortByLabelVi(
+                        availableClasses.map(c => {
+                          const p = getClassPhase(c, today, store.terms);
+                          const label =
+                            p === 'upcoming'
+                              ? `${c.name} (sắp bắt đầu)`
+                              : p === 'ended'
+                              ? `${c.name} (đã kết thúc)`
+                              : c.name;
+                          return { c, label };
+                        }),
+                        x => x.label
+                      ).map(({ c, label }) => (
+                        <option key={c.id} value={c.id}>{label}</option>
                       ))}
                     </>
                   )}
                 </select>
                 {currentClass && (
-                  <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold">
-                    {currentClass.status === 'active' ? 'Đang hoạt động' : 'Tạm dừng'}
+                  <span className={`px-2 py-0.5 rounded-lg text-xs font-bold border ${
+                    isUpcomingClass
+                      ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                      : isEndedClass
+                      ? 'bg-slate-800 text-slate-400 border-slate-700'
+                      : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                  }`}>
+                    {isUpcomingClass ? 'Sắp bắt đầu' : isEndedClass ? 'Đã kết thúc' : 'Đang học'}
                   </span>
                 )}
                 {currentClass?.is_cross_term && currentClass.spanning_term_id === selectedTermId && (
@@ -1829,6 +1895,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               title={
                 !currentClass
                   ? 'Không có lớp học nào khả dụng để lưu điểm danh'
+                  : isUpcomingClass
+                  ? `Lớp bắt đầu từ ${formatDateVN(currentClassBounds?.startDate)}, chưa thể điểm danh`
+                  : isEndedClass
+                  ? 'Lớp đã kết thúc — chỉ xem lịch sử'
                   : isFutureDate
                   ? 'Không thể lưu điểm danh cho ngày trong tương lai'
                   : 'Lưu dữ liệu điểm danh'
@@ -1843,6 +1913,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               <span>
                 {!currentClass
                   ? 'Chọn lớp để điểm danh'
+                  : isUpcomingClass
+                  ? 'Chưa tới ngày bắt đầu'
+                  : isEndedClass
+                  ? 'Đã kết thúc (Chỉ xem)'
                   : isFutureDate
                   ? 'Bị Khóa (Ngày Tương Lai)'
                   : 'Lưu Buổi Điểm Danh'}
@@ -2022,7 +2096,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 <div className="lg:col-span-7 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    disabled={isFutureDate || isCheckinLockedForUser}
+                    disabled={isAttendanceLocked || isCheckinLockedForUser}
                     onClick={() => {
                       setTeacherMode('present');
                       setSelectedTeacherId(currentClass.primary_teacher_id);
@@ -2042,7 +2116,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                   <button
                     type="button"
-                    disabled={isFutureDate || isCheckinLockedForUser}
+                    disabled={isAttendanceLocked || isCheckinLockedForUser}
                     onClick={() => {
                       setTeacherMode('late');
                       setSelectedTeacherId(currentClass.primary_teacher_id);
@@ -2065,7 +2139,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                   <button
                     type="button"
-                    disabled={isFutureDate}
+                    disabled={isAttendanceLocked}
                     onClick={() => {
                       setTeacherMode('substitute');
                       setIsSubstitute(true);
@@ -2079,7 +2153,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       }
                       setIsDirty(true);
                     }}
-                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed ${
                       teacherMode === 'substitute'
                         ? 'bg-purple-600 text-white border-purple-400 shadow-md shadow-purple-500/20 font-extrabold'
                         : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-purple-500/40'
@@ -2091,14 +2165,14 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                   <button
                     type="button"
-                    disabled={isFutureDate}
+                    disabled={isAttendanceLocked}
                     onClick={() => {
                       setTeacherMode('absent');
                       setSelectedTeacherId(currentClass.primary_teacher_id);
                       setIsSubstitute(false);
                       setIsDirty(true);
                     }}
-                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed ${
                       teacherMode === 'absent'
                         ? 'bg-rose-600 text-white border-rose-400 shadow-md shadow-rose-500/20 font-extrabold'
                         : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-rose-500/40'
@@ -2115,7 +2189,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <span className="text-[11px] text-slate-400 font-semibold">Số tiết dạy:</span>
                     <select
                       value={teacherMode === 'absent' ? 0 : teacherPeriodsCount}
-                      disabled={isFutureDate || teacherMode === 'absent'}
+                      disabled={isAttendanceLocked || teacherMode === 'absent'}
                       onChange={(e) => {
                         setTeacherPeriodsCount(Number(e.target.value));
                         setIsDirty(true);
@@ -2151,7 +2225,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       <input
                         type="time"
                         value={teacherCheckInTime}
-                        disabled={isFutureDate || isCheckinLockedForUser}
+                        disabled={isAttendanceLocked || isCheckinLockedForUser}
                         onChange={(e) => {
                           setTeacherCheckInTime(e.target.value);
                           setIsDirty(true);
@@ -2173,30 +2247,37 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     </div>
                     <select
                       value={selectedTeacherId}
+                      disabled={isAttendanceLocked}
                       onChange={(e) => {
                         setSelectedTeacherId(e.target.value);
                         setIsSubstitute(e.target.value !== currentClass.primary_teacher_id);
                         setIsDirty(true);
                       }}
-                      className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none"
+                      className="px-3 py-1.5 rounded-xl bg-slate-950 border border-purple-500/50 text-white font-bold text-xs focus:outline-none disabled:opacity-60"
                     >
-                      {store.teachers
-                        .filter(t => t.status !== 'inactive' || t.id === selectedTeacherId)
-                        .map(t => {
-                          const subCalc = calculateTeacherSessionPayAtDate({
-                            teacher: t,
-                            cls: currentClass,
-                            sessionDate: selectedDate,
-                            periodsCount: teacherPeriodsCount,
-                            isWeekendOverride: isWeekendSlot,
-                            store,
-                          });
-                          return (
-                            <option key={t.id} value={t.id} className="bg-slate-900">
-                              {t.name} ({t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — {formatVND(subCalc.earnedAmount)}/buổi
-                            </option>
-                          );
-                        })}
+                      {sortByLabelVi(
+                        store.teachers
+                          .filter(t => t.status !== 'inactive' || t.id === selectedTeacherId)
+                          .map(t => {
+                            const subCalc = calculateTeacherSessionPayAtDate({
+                              teacher: t,
+                              cls: currentClass,
+                              sessionDate: selectedDate,
+                              periodsCount: teacherPeriodsCount,
+                              isWeekendOverride: isWeekendSlot,
+                              store,
+                            });
+                            return {
+                              t,
+                              label: `${t.name} (${t.id === currentClass.primary_teacher_id ? 'GV Chính' : 'Dạy Thay'}) — ${formatVND(subCalc.earnedAmount)}/buổi`,
+                            };
+                          }),
+                        x => x.label
+                      ).map(({ t, label }) => (
+                        <option key={t.id} value={t.id} className="bg-slate-900">
+                          {label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 )}
@@ -2224,7 +2305,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         min={1}
                         max={90}
                         value={teacherLateMinutes}
-                        disabled={isFutureDate || isCheckinLockedForUser}
+                        disabled={isAttendanceLocked || isCheckinLockedForUser}
                         onChange={(e) => {
                           setTeacherLateMinutes(Math.max(1, Number(e.target.value)));
                           setIsDirty(true);
@@ -2249,7 +2330,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   <input
                     type="text"
                     value={teacherSessionNote}
-                    disabled={isFutureDate}
+                    disabled={isAttendanceLocked}
                     onChange={(e) => {
                       setTeacherSessionNote(e.target.value);
                       setIsDirty(true);
@@ -2322,7 +2403,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                                 <button
                                   key={m}
                                   type="button"
-                                  disabled={isFutureDate}
+                                  disabled={isAttendanceLocked}
                                   onClick={() => {
                                     setSecondaryTeacherStates(prev => ({
                                       ...prev,
@@ -2334,7 +2415,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                                     }));
                                     setIsDirty(true);
                                   }}
-                                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-all ${
+                                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                                     isAct
                                       ? m === 'present'
                                         ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-extrabold'
@@ -2354,7 +2435,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                             {st.mode === 'substitute' && (
                               <select
                                 value={st.actualTeacherId}
-                                disabled={isFutureDate}
+                                disabled={isAttendanceLocked}
                                 onChange={(e) => {
                                   const nextActual = e.target.value;
                                   setSecondaryTeacherStates(prev => ({
@@ -2366,15 +2447,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                                   }));
                                   setIsDirty(true);
                                 }}
-                                className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-purple-500/50 text-white text-[11px] font-bold"
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-purple-500/50 text-white text-[11px] font-bold disabled:opacity-50"
                               >
-                                {store.teachers
-                                  .filter(t => t.status !== 'inactive' || t.id === st.actualTeacherId)
-                                  .map(t => (
-                                    <option key={t.id} value={t.id}>
-                                      {t.name}
-                                    </option>
-                                  ))}
+                                {sortByLabelVi(
+                                  store.teachers.filter(t => t.status !== 'inactive' || t.id === st.actualTeacherId),
+                                  t => t.name
+                                ).map(t => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.name}
+                                  </option>
+                                ))}
                               </select>
                             )}
                           </div>
@@ -2388,8 +2470,40 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
           </div>
         )}
 
-        {/* FUTURE DATE STRICT LOCK WARNING BANNER */}
-        {currentClass && isFutureDate && (
+        {/* UPCOMING / ENDED / FUTURE DATE STRICT LOCK WARNING BANNER */}
+        {currentClass && isUpcomingClass && (
+          <div className="mt-3 p-3.5 rounded-2xl bg-sky-500/15 border border-sky-500/40 flex items-center gap-3 text-sky-200 text-xs font-semibold backdrop-blur-md">
+            <div className="w-8 h-8 rounded-xl bg-sky-500/20 flex items-center justify-center shrink-0 text-sky-300">
+              <Lock className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="font-bold text-sky-200 text-sm">
+                ⏳ Lớp bắt đầu từ {formatDateVN(currentClassBounds?.startDate)}, chưa thể điểm danh
+              </div>
+              <div className="text-[11px] text-sky-300/90 mt-0.5">
+                Danh sách học viên bên dưới đang ở chế độ chỉ xem (không ghi nhận điểm danh, không đếm vắng, không tính suất bánh sữa trước ngày bắt đầu).
+              </div>
+            </div>
+          </div>
+        )}
+
+        {currentClass && !isUpcomingClass && isEndedClass && (
+          <div className="mt-3 p-3.5 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center gap-3 text-slate-200 text-xs font-semibold backdrop-blur-md">
+            <div className="w-8 h-8 rounded-xl bg-slate-700/70 flex items-center justify-center shrink-0 text-slate-300">
+              <Lock className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="font-bold text-slate-100 text-sm">
+                🔒 Lớp đã kết thúc ({formatDateVN(currentClassBounds?.endDate)}) — chỉ xem lịch sử điểm danh
+              </div>
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                Lớp đã qua ngày kết thúc khóa, sổ điểm danh được chuyển sang chế độ chỉ xem để bảo toàn dữ liệu lịch sử.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {currentClass && !isUpcomingClass && !isEndedClass && isFutureDate && (
           <div className="mt-3 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 flex items-center gap-3 text-rose-200 text-xs font-semibold backdrop-blur-md animate-pulse">
             <div className="w-8 h-8 rounded-xl bg-rose-500/20 flex items-center justify-center shrink-0 text-rose-400">
               <Lock className="w-4 h-4" />
@@ -2421,9 +2535,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
               </p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-w-4xl mx-auto">
-              {availableClasses.map(cls => {
+              {sortByLabelVi(availableClasses, c => c.name).map(cls => {
                 const slot = store.timeSlots.find(ts => ts.id === cls.time_slot_id);
                 const fac = store.facilities.find(f => f.id === cls.facility_id);
+                const clsPhase = getClassPhase(cls, today, store.terms);
                 return (
                   <button
                     key={cls.id}
@@ -2434,8 +2549,19 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     }}
                     className="p-4 rounded-2xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-amber-500/60 text-left transition-all group shadow-md"
                   >
-                    <div className="font-extrabold text-sm text-white group-hover:text-amber-400 transition-colors">
-                      {cls.name}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-extrabold text-sm text-white group-hover:text-amber-400 transition-colors">
+                        {cls.name}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border shrink-0 ${
+                        clsPhase === 'upcoming'
+                          ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                          : clsPhase === 'ended'
+                          ? 'bg-slate-800 text-slate-400 border-slate-700'
+                          : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      }`}>
+                        {clsPhase === 'upcoming' ? 'Sắp bắt đầu' : clsPhase === 'ended' ? 'Đã kết thúc' : 'Đang học'}
+                      </span>
                     </div>
                     <div className="text-[11px] text-slate-400 mt-1 space-y-0.5">
                       <div>Ca học: <strong className="text-slate-200">{slot?.name || 'Chưa gán'}</strong></div>
@@ -2618,12 +2744,18 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                 e => e.student_id === student.id && e.class_id === currentClass.id
               );
               const isTrial = enr?.status === 'trial';
+              const enrPhase = enr ? getEnrollmentPhase(enr, currentClass, today, store.terms) : 'active';
+              const promotedTarget = enr
+                ? getPromotedTargetInfo(enr, store.enrollments, store.classes, store.promotionHistories)
+                : null;
 
               return (
                 <div 
                   key={student.id}
                   className={`rounded-2xl p-4 border transition-all ${
-                    currentStatus === 'present'
+                    isUpcomingClass || enrPhase === 'upcoming'
+                      ? 'bg-slate-900/90 border-sky-500/30'
+                      : currentStatus === 'present'
                       ? 'bg-slate-900/90 border-emerald-500/30 shadow-lg shadow-emerald-500/5'
                       : currentStatus === 'absent_excused'
                       ? 'bg-slate-900/90 border-amber-500/40 shadow-lg shadow-amber-500/10'
@@ -2635,6 +2767,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <div>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-extrabold text-white text-sm">{student.name}</span>
+                        {(isUpcomingClass || enrPhase === 'upcoming') && (
+                          <span className="px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
+                            Sắp bắt đầu – {formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}
+                          </span>
+                        )}
+                        {promotedTarget && (
+                          <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                            Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateVN(promotedTarget.startDate)}
+                          </span>
+                        )}
                         {isTrial && (
                           <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
                             <span>[ 🧪 Học Thử Buổi 1 ]</span>
@@ -2646,7 +2788,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           </span>
                         )}
                       </div>
-                      {isTrial && (
+                      {isTrial && !isAttendanceLocked && (
                         <div className="flex items-center gap-1.5 mt-1.5">
                           <button
                             type="button"
@@ -2704,7 +2846,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           <span>Đơn xin nghỉ & minh chứng:</span>
                         </span>
                         <div className="flex items-center gap-1">
-                          {!isFutureDate && (
+                          {!isAttendanceLocked && (
                             <button
                               type="button"
                               onClick={() => handleOpenProofModal(student)}
@@ -2714,14 +2856,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                               Đổi tệp
                             </button>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveProof(student.id)}
-                            className="text-[10px] text-rose-400 hover:text-rose-300 p-0.5 rounded hover:bg-rose-500/10"
-                            title="Gỡ tệp minh chứng"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {!isAttendanceLocked && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveProof(student.id)}
+                              className="text-[10px] text-rose-400 hover:text-rose-300 p-0.5 rounded hover:bg-rose-500/10"
+                              title="Gỡ tệp minh chứng"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -2771,8 +2915,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           </span>
                           <button
                             type="button"
+                            disabled={isAttendanceLocked}
                             onClick={() => handleOpenProofModal(student)}
-                            className="px-2 py-0.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-bold text-[10px] transition-colors"
+                            className="px-2 py-0.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 disabled:opacity-40 disabled:cursor-not-allowed text-amber-300 border border-amber-500/30 font-bold text-[10px] transition-colors"
                           >
                             + Nạp file
                           </button>
@@ -2789,10 +2934,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     <div className="grid grid-cols-3 gap-1.5">
                       <button
                         type="button"
-                        disabled={isFutureDate}
+                        disabled={isAttendanceLocked}
                         onClick={() => handleSetStatus(student, 'present')}
                         className={`py-2 px-1 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-1 ${
-                          isFutureDate ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
+                          isAttendanceLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
                           currentStatus === 'present'
                             ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 font-extrabold ring-1 ring-emerald-400'
                             : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
@@ -2804,10 +2949,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                       <button
                         type="button"
-                        disabled={isFutureDate}
+                        disabled={isAttendanceLocked}
                         onClick={() => handleSetStatus(student, 'absent_excused')}
                         className={`py-2 px-1 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-1 ${
-                          isFutureDate ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
+                          isAttendanceLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
                           currentStatus === 'absent_excused'
                             ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30 font-extrabold ring-1 ring-amber-300'
                             : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
@@ -2819,10 +2964,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                       <button
                         type="button"
-                        disabled={isFutureDate}
+                        disabled={isAttendanceLocked}
                         onClick={() => handleSetStatus(student, 'absent_unexcused')}
                         className={`py-2 px-1 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-1 ${
-                          isFutureDate ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
+                          isAttendanceLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
                           currentStatus === 'absent_unexcused'
                             ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30 font-extrabold ring-1 ring-rose-400'
                             : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
@@ -2838,7 +2983,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                   <div className="mt-3">
                     <input
                       type="text"
-                      disabled={isFutureDate}
+                      disabled={isAttendanceLocked}
                       placeholder="Lý do nghỉ hoặc ghi chú..."
                       value={currentNote}
                       onChange={(e) => setNote(student.id, e.target.value)}
@@ -2880,6 +3025,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                     e => e.student_id === student.id && e.class_id === currentClass.id
                   );
                   const isTrial = enr?.status === 'trial';
+                  const enrPhase = enr ? getEnrollmentPhase(enr, currentClass, today, store.terms) : 'active';
+                  const promotedTarget = enr
+                    ? getPromotedTargetInfo(enr, store.enrollments, store.classes, store.promotionHistories)
+                    : null;
 
                   return (
                     <tr key={student.id} className="hover:bg-slate-800/30 transition-colors">
@@ -2898,6 +3047,16 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       <td className="py-3 px-4">
                         <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
                           <span>{student.name}</span>
+                          {(isUpcomingClass || enrPhase === 'upcoming') && (
+                            <span className="px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
+                              Sắp bắt đầu – {formatDateVN(enr?.joined_date || currentClassBounds?.startDate)}
+                            </span>
+                          )}
+                          {promotedTarget && (
+                            <span className="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                              Đã xếp lớp {promotedTarget.targetClass.code || promotedTarget.targetClass.name} từ {formatDateVN(promotedTarget.startDate)}
+                            </span>
+                          )}
                           {isTrial && (
                             <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 text-[10px] font-bold flex items-center gap-1">
                               <span>[ 🧪 Học Thử Buổi 1 ]</span>
@@ -2910,7 +3069,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           )}
                         </div>
                         <div className="text-[10px] text-slate-500">PH: {student.parent_phone}</div>
-                        {isTrial && (
+                        {isTrial && !isAttendanceLocked && (
                           <div className="flex items-center gap-1 mt-1 flex-wrap">
                             <button
                               type="button"
@@ -3054,10 +3213,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                         <div className="flex items-center justify-center gap-1.5">
                           <button
                             type="button"
-                            disabled={isFutureDate}
+                            disabled={isAttendanceLocked}
                             onClick={() => handleSetStatus(student, 'present')}
                             className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
-                              isFutureDate ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
+                              isAttendanceLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
                               currentStatus === 'present'
                                 ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 font-extrabold ring-1 ring-emerald-400'
                                 : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -3069,10 +3228,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                           <button
                             type="button"
-                            disabled={isFutureDate}
+                            disabled={isAttendanceLocked}
                             onClick={() => handleSetStatus(student, 'absent_excused')}
                             className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
-                              isFutureDate ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
+                              isAttendanceLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
                               currentStatus === 'absent_excused'
                                 ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30 font-extrabold ring-1 ring-amber-300'
                                 : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -3084,10 +3243,10 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                           <button
                             type="button"
-                            disabled={isFutureDate}
+                            disabled={isAttendanceLocked}
                             onClick={() => handleSetStatus(student, 'absent_unexcused')}
                             className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
-                              isFutureDate ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
+                              isAttendanceLocked ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' :
                               currentStatus === 'absent_unexcused'
                                 ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30 font-extrabold ring-1 ring-rose-400'
                                 : 'bg-slate-800 text-slate-400 hover:text-white'
@@ -3102,7 +3261,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       <td className="py-3 px-4">
                         <input
                           type="text"
-                          disabled={isFutureDate}
+                          disabled={isAttendanceLocked}
                           placeholder="Nhập lý do nghỉ nếu có..."
                           value={currentNote}
                           onChange={(e) => setNote(student.id, e.target.value)}

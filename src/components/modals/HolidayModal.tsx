@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Holiday } from '../../types';
 import { DatePickerVN } from '../common/DatePickerVN';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface HolidayModalProps {
   isOpen: boolean;
@@ -234,8 +235,15 @@ export const HolidayModal: React.FC<HolidayModalProps> = ({
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
               >
                 <option value="">Toàn trường (Tất cả cơ sở)</option>
-                <option value="camp_pmh">Cơ sở Phú Mỹ Hưng</option>
-                <option value="camp_pl">Cơ sở Phú Lâm</option>
+                {sortByLabelVi(
+                  [
+                    { value: 'camp_pmh', label: 'Cơ sở Phú Mỹ Hưng' },
+                    { value: 'camp_pl', label: 'Cơ sở Phú Lâm' },
+                  ],
+                  opt => opt.label
+                ).map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
 
@@ -290,8 +298,15 @@ export const HolidayModal: React.FC<HolidayModalProps> = ({
                 onChange={(e) => setStatus(e.target.value as 'active' | 'inactive')}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500"
               >
-                <option value="active">🟢 Đang áp dụng (Active)</option>
-                <option value="inactive">⏸️ Tạm ngưng (Inactive)</option>
+                {sortByLabelVi(
+                  [
+                    { value: 'active', label: '🟢 Đang áp dụng (Active)', sortKey: 'Đang áp dụng (Active)' },
+                    { value: 'inactive', label: '⏸️ Tạm ngưng (Inactive)', sortKey: 'Tạm ngưng (Inactive)' },
+                  ],
+                  opt => opt.sortKey
+                ).map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </div>
           </div>

@@ -34,6 +34,7 @@ import {
 import { AppStore, appendAuditLog, createAuditRecord } from '../../lib/storage';
 import { isUserSuperAdmin } from '../../lib/permissions';
 import { UserRole, AuditLogRecord, LogActionType, AppUser } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 
 interface AuditLogsTabProps {
   store: AppStore;
@@ -588,10 +589,17 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-white focus:outline-none focus:border-amber-500/60 transition-colors"
             >
               <option value="all">Tất cả phân nhóm nghiệp vụ</option>
-              <option value="AUTH">Xác thực & Phiên làm việc (AUTH)</option>
-              <option value="ACADEMIC">Học vụ & Đào tạo (ACADEMIC)</option>
-              <option value="FINANCE">Tài chính & Học phí (FINANCE)</option>
-              <option value="SYSTEM">Quản trị Hệ thống (SYSTEM)</option>
+              {sortByLabelVi(
+                [
+                  { value: 'AUTH', label: 'Xác thực & Phiên làm việc (AUTH)' },
+                  { value: 'ACADEMIC', label: 'Học vụ & Đào tạo (ACADEMIC)' },
+                  { value: 'FINANCE', label: 'Tài chính & Học phí (FINANCE)' },
+                  { value: 'SYSTEM', label: 'Quản trị Hệ thống (SYSTEM)' },
+                ],
+                opt => opt.label
+              ).map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
           </div>
 
@@ -603,22 +611,29 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-white focus:outline-none focus:border-amber-500/60 transition-colors"
             >
               <option value="all">Tất cả mã hành động</option>
-              <option value="AUTH_LOGIN_SUCCESS">Đăng nhập thành công</option>
-              <option value="AUTH_LOGIN_FAILED">Đăng nhập thất bại</option>
-              <option value="AUTH_LOGOUT">Đăng xuất</option>
-              <option value="STUDENT_CREATE">Tạo hồ sơ học sinh</option>
-              <option value="STUDENT_UPDATE">Cập nhật học sinh</option>
-              <option value="STUDENT_DELETE">Xóa học sinh</option>
-              <option value="CLASS_ASSIGN">Xếp lớp ghi danh</option>
-              <option value="CLASS_CREATE">Tạo lớp học mới</option>
-              <option value="ATTENDANCE_SAVE">Lưu điểm danh buổi</option>
-              <option value="INVOICE_PAYMENT_COLLECT">Gạch nợ thu học phí</option>
-              <option value="CREDIT_ISSUE">Lập phiếu bảo lưu</option>
-              <option value="CLASS_TRANSFER">Chuyển lớp ngoại khóa</option>
-              <option value="DATABASE_RESET">Dọn sạch / Reset DB</option>
-              <option value="EXCEL_IMPORT">Import Master Excel</option>
-              <option value="USER_CREATE">Tạo tài khoản nhân sự</option>
-              <option value="USER_PASSWORD_CHANGE">Đổi mật khẩu nhân sự</option>
+              {sortByLabelVi(
+                [
+                  { value: 'AUTH_LOGIN_SUCCESS', label: 'Đăng nhập thành công' },
+                  { value: 'AUTH_LOGIN_FAILED', label: 'Đăng nhập thất bại' },
+                  { value: 'AUTH_LOGOUT', label: 'Đăng xuất' },
+                  { value: 'STUDENT_CREATE', label: 'Tạo hồ sơ học sinh' },
+                  { value: 'STUDENT_UPDATE', label: 'Cập nhật học sinh' },
+                  { value: 'STUDENT_DELETE', label: 'Xóa học sinh' },
+                  { value: 'CLASS_ASSIGN', label: 'Xếp lớp ghi danh' },
+                  { value: 'CLASS_CREATE', label: 'Tạo lớp học mới' },
+                  { value: 'ATTENDANCE_SAVE', label: 'Lưu điểm danh buổi' },
+                  { value: 'INVOICE_PAYMENT_COLLECT', label: 'Gạch nợ thu học phí' },
+                  { value: 'CREDIT_ISSUE', label: 'Lập phiếu bảo lưu' },
+                  { value: 'CLASS_TRANSFER', label: 'Chuyển lớp ngoại khóa' },
+                  { value: 'DATABASE_RESET', label: 'Dọn sạch / Reset DB' },
+                  { value: 'EXCEL_IMPORT', label: 'Import Master Excel' },
+                  { value: 'USER_CREATE', label: 'Tạo tài khoản nhân sự' },
+                  { value: 'USER_PASSWORD_CHANGE', label: 'Đổi mật khẩu nhân sự' },
+                ],
+                opt => opt.label
+              ).map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
           </div>
 
@@ -630,7 +645,7 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-white focus:outline-none focus:border-amber-500/60 transition-colors"
             >
               <option value="all">Tất cả nhân sự</option>
-              {distinctUsers.map(([uname, fname]) => (
+              {sortByLabelVi(distinctUsers, ([uname, fname]) => `${fname} (${uname})`).map(([uname, fname]) => (
                 <option key={uname} value={uname}>
                   {fname} ({uname})
                 </option>

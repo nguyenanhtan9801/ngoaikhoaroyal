@@ -31,6 +31,7 @@ import {
   UserRole,
   UserPermissionMatrix,
 } from '../../types';
+import { sortByLabelVi } from '../../utils/sortVi';
 import {
   AppStore,
   getDefaultPermissionsForRole,
@@ -1010,14 +1011,21 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả vai trò</option>
-            <option value="super_admin">Quản trị viên</option>
-            <option value="campus_manager">Quản lý cơ sở</option>
-            <option value="academic">Học vụ</option>
-            <option value="admissions">Tuyển sinh</option>
-            <option value="accountant">Kế toán</option>
-            <option value="teacher">Giáo viên</option>
-            <option value="nanny">Bảo mẫu</option>
-            <option value="supervisor">Quản sinh</option>
+            {sortByLabelVi(
+              [
+                { value: 'super_admin', label: 'Quản trị viên' },
+                { value: 'campus_manager', label: 'Quản lý cơ sở' },
+                { value: 'academic', label: 'Học vụ' },
+                { value: 'admissions', label: 'Tuyển sinh' },
+                { value: 'accountant', label: 'Kế toán' },
+                { value: 'teacher', label: 'Giáo viên' },
+                { value: 'nanny', label: 'Bảo mẫu' },
+                { value: 'supervisor', label: 'Quản sinh' },
+              ],
+              opt => opt.label
+            ).map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
 
           {/* Bộ lọc Cơ sở */}
@@ -1027,8 +1035,15 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả cơ sở</option>
-            <option value="pmh">Phú Mỹ Hưng (PMH)</option>
-            <option value="pl">Phú Lâm (PL)</option>
+            {sortByLabelVi(
+              [
+                { value: 'pmh', label: 'Phú Mỹ Hưng (PMH)' },
+                { value: 'pl', label: 'Phú Lâm (PL)' },
+              ],
+              opt => opt.label
+            ).map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
 
           {/* Bộ lọc Trạng thái */}
@@ -1038,8 +1053,15 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
             className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 font-semibold focus:outline-none focus:border-amber-500"
           >
             <option value="all">Tất cả trạng thái</option>
-            <option value="active">● Đang hoạt động</option>
-            <option value="locked">🔒 Đang bị khóa</option>
+            {sortByLabelVi(
+              [
+                { value: 'active', label: '● Đang hoạt động', sortKey: 'Đang hoạt động' },
+                { value: 'locked', label: '🔒 Đang bị khóa', sortKey: 'Đang bị khóa' },
+              ],
+              opt => opt.sortKey
+            ).map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
           </select>
         </div>
 
@@ -1476,8 +1498,15 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white font-semibold focus:outline-none focus:border-amber-500"
                     >
                       <option value="all">Toàn trường (All)</option>
-                      <option value="pmh">Cơ sở Phú Mỹ Hưng (PMH)</option>
-                      <option value="pl">Cơ sở Phú Lâm (PL)</option>
+                      {sortByLabelVi(
+                        [
+                          { value: 'pmh', label: 'Cơ sở Phú Mỹ Hưng (PMH)' },
+                          { value: 'pl', label: 'Cơ sở Phú Lâm (PL)' },
+                        ],
+                        opt => opt.label
+                      ).map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -1490,15 +1519,22 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                       onChange={e => handleRoleChangeInForm(e.target.value as UserRole)}
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-amber-300 font-bold focus:outline-none focus:border-amber-500"
                     >
-                      <option value="super_admin">Quản trị viên cấp cao (Toàn quyền)</option>
-                      <option value="campus_manager">Quản lý cơ sở (PMH / Phú Lâm)</option>
-                      <option value="academic_accountant">Học vụ kiêm Kế toán</option>
-                      <option value="academic">Giáo vụ / Học vụ (Lớp học &amp; Điểm danh)</option>
-                      <option value="admissions">Tuyển sinh (Tiếp nhận đơn &amp; Xếp lớp)</option>
-                      <option value="accountant">Kế toán (Học phí, Bảo lưu &amp; Thù lao GV)</option>
-                      <option value="teacher">Giáo viên (Check-in QR &amp; Điểm danh lớp phụ trách)</option>
-                      <option value="nanny">Bảo mẫu (Check-in QR &amp; Điểm danh lớp cơ sở)</option>
-                      <option value="supervisor">Quản sinh (Check-in QR &amp; Điểm danh toàn cơ sở)</option>
+                      {sortByLabelVi(
+                        [
+                          { value: 'super_admin', label: 'Quản trị viên cấp cao (Toàn quyền)' },
+                          { value: 'campus_manager', label: 'Quản lý cơ sở (PMH / Phú Lâm)' },
+                          { value: 'academic_accountant', label: 'Học vụ kiêm Kế toán' },
+                          { value: 'academic', label: 'Giáo vụ / Học vụ (Lớp học & Điểm danh)' },
+                          { value: 'admissions', label: 'Tuyển sinh (Tiếp nhận đơn & Xếp lớp)' },
+                          { value: 'accountant', label: 'Kế toán (Học phí, Bảo lưu & Thù lao GV)' },
+                          { value: 'teacher', label: 'Giáo viên (Check-in QR & Điểm danh lớp phụ trách)' },
+                          { value: 'nanny', label: 'Bảo mẫu (Check-in QR & Điểm danh lớp cơ sở)' },
+                          { value: 'supervisor', label: 'Quản sinh (Check-in QR & Điểm danh toàn cơ sở)' },
+                        ],
+                        opt => opt.label
+                      ).map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -1524,7 +1560,11 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                       className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-purple-500/40 text-purple-200 font-semibold focus:outline-none focus:border-purple-400"
                     >
                       <option value="">-- Chọn hồ sơ Giáo viên liên kết --</option>
-                      {store.teachers.map(tc => (
+                      {sortByLabelVi(
+                        store.teachers,
+                        tc =>
+                          `${tc.code} - ${tc.name} (${(tc.type || tc.teacher_type) === 'partner' ? 'Đối tác' : (tc.type || tc.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'} • ${tc.campus_id === 'camp_pl' ? 'Phú Lâm' : 'PMH'})`
+                      ).map(tc => (
                         <option key={tc.id} value={tc.id}>
                           {tc.code} - {tc.name} (
                           {(tc.type || tc.teacher_type) === 'partner' ? 'Đối tác' : (tc.type || tc.teacher_type) === 'visiting' ? 'Thỉnh giảng' : 'Cơ hữu'} •{' '}

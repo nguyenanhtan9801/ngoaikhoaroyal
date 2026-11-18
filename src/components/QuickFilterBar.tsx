@@ -1,6 +1,7 @@
 import React from 'react';
 import { Search, Calendar, Building2, Clock, X } from 'lucide-react';
 import { Campus, AcademicTerm } from '../types';
+import { sortByLabelVi } from '../utils/sortVi';
 
 interface QuickFilterBarProps {
   campuses: Campus[];
@@ -85,7 +86,7 @@ export const QuickFilterBar: React.FC<QuickFilterBarProps> = ({
               className="w-full bg-transparent text-xs font-bold text-white focus:outline-none cursor-pointer mt-0.5"
             >
               <option value="all" className="bg-[#111827] text-white">Tất cả các cơ sở (Toàn trường)</option>
-              {campuses.map(c => (
+              {sortByLabelVi(campuses, c => c.name).map(c => (
                 <option key={c.id} value={c.id} className="bg-[#111827] text-white">
                   {c.name}
                 </option>
