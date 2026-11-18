@@ -403,7 +403,8 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
         hasConfiguredPrice: false,
         courseFee: 0,
         sessionRate: 0,
-        totalSessions: 24,
+        totalSessions: 16,
+        standardSessions: 16,
         discountType: 'none' as const,
         discountValue: 0,
         discountReason: '',
@@ -411,23 +412,55 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
       };
     }
 
+    const termId =
+      selectedTargetClass.term_id ||
+      (selectedTargetClass as any).primary_term_id ||
+      '';
     const campusPricingRecord = getCampusPricingForClass(selectedTargetClass, store);
     const effective = getEffectivePrice(
-      selectedTargetClass.term_id,
+      termId,
       selectedTargetClass.campus_id,
       selectedTargetClass.subject_id,
       store
     );
+    const subjectInfo = (store.subjects || []).find(
+      s =>
+        String(s.id) === String(selectedTargetClass.subject_id) ||
+        s.code === String(selectedTargetClass.subject_id)
+    );
+
+    // SỐ BUỔI QUY ĐỊNH CHUẨN CỦA MÔN HỌC (Biểu phí cơ sở -> Danh mục môn -> mặc định 16)
+    // Tuyệt đối không dùng số buổi đếm từ lịch ngày của lớp (selectedTargetClass.total_sessions) làm số buổi chuẩn môn
+    const standardSessions = Number(
+      effective.total_sessions ||
+        subjectInfo?.standard_sessions ||
+        (subjectInfo as any)?.default_sessions ||
+        (subjectInfo as any)?.sessions_count ||
+        16
+    );
+
+    const fullCourseFee = Number(
+      effective.course_fee ||
+        effective.base_course_fee ||
+        selectedTargetClass.full_course_fee ||
+        0
+    );
+
+    const sessionRate = Number(
+      effective.session_rate ||
+        (standardSessions > 0 ? Math.round(fullCourseFee / standardSessions) : 0)
+    );
 
     const hasExplicitOrValidPrice =
       Boolean(campusPricingRecord) ||
-      (effective.course_fee > 0 && effective.session_rate > 0);
+      (fullCourseFee > 0 && sessionRate > 0);
 
     return {
-      hasConfiguredPrice: hasExplicitOrValidPrice && effective.course_fee > 0 && effective.session_rate > 0,
-      courseFee: effective.course_fee,
-      sessionRate: effective.session_rate,
-      totalSessions: effective.total_sessions || selectedTargetClass.total_sessions || 24,
+      hasConfiguredPrice: hasExplicitOrValidPrice && fullCourseFee > 0 && sessionRate > 0,
+      courseFee: fullCourseFee,
+      sessionRate,
+      totalSessions: standardSessions,
+      standardSessions,
       discountType: effective.discount_type || 'none',
       discountValue: effective.discount_value || 0,
       discountReason: effective.discount_reason || '',
@@ -526,7 +559,6 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
     if (!selectedSourceClass || !selectedTargetClass) return [];
 
     const holidays = store.holidays || [];
-    const fullDaysCount = targetClassWeekdays.length;
 
     // Số buổi chuẩn trọn khóa thực tế theo lịch lớp đích (trừ lễ)
     const fullScheduleActualSessions = calculateActualSessions(
@@ -549,36 +581,37 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
         selectedTargetClass.campus_id
       );
 
-      // Xác định học sinh học đủ tất cả các ngày của lớp từ đầu khóa hay học lẻ ngày / vào muộn
-      const isAllWeekdaysSelected =
-        draft.selectedDays.length >= fullDaysCount &&
-        targetClassWeekdays.every(d => draft.selectedDays.includes(d));
-      const isStartingFromCourseBegin = draft.startDate <= targetClassStartDate;
-      const isFullCourseAttendance = isAllWeekdaysSelected && isStartingFromCourseBegin;
-
-      // 2. Tính học phí theo đúng quy tắc nghiệp vụ:
-      // - Nếu học đủ tất cả các ngày của lớp trong khóa từ đầu khóa: lấy trọn gói học phí khóa (course_fee)
-      // - Nếu chỉ học 1 phần số ngày trong tuần hoặc vào muộn giữa khóa: số buổi thực tế × đơn giá buổi
+      // 2. So sánh số buổi thực học với số buổi quy định chuẩn của môn học (không so theo lịch ngày của lớp):
+      // - Nếu actualSessions >= standardSubjectSessions: tính học phí trọn khóa (courseFee)
+      // - Nếu actualSessions < standardSubjectSessions: tính theo đơn giá lẻ × số buổi thực học
+      const standardSubjectSessions = targetPricingInfo.standardSessions;
       const sessionRate = targetPricingInfo.sessionRate;
       const courseFee = targetPricingInfo.courseFee;
 
-      const calculatedGrossAmount = isFullCourseAttendance
-        ? courseFee
-        : calculatedSessions * sessionRate;
+      const validSessions = Math.max(0, Number(calculatedSessions || 0));
+      const isFullCourseAttendance =
+        validSessions > 0 && validSessions >= standardSubjectSessions;
+
+      const calculatedGrossAmount =
+        validSessions === 0
+          ? 0
+          : isFullCourseAttendance
+          ? courseFee
+          : Math.round(validSessions * sessionRate);
 
       const finalSessions = draft.isManualOverride
         ? Math.max(0, Number(draft.manualSessions) || 0)
-        : calculatedSessions;
+        : validSessions;
 
       const finalGrossAmount = draft.isManualOverride
         ? Math.max(0, Number(draft.manualGrossAmount) || 0)
         : calculatedGrossAmount;
 
       const formulaLabel = draft.isManualOverride
-        ? `Chỉnh tay: ${finalSessions} buổi = ${formatVND(finalGrossAmount)} (Mặc định: ${calculatedSessions} buổi = ${formatVND(calculatedGrossAmount)})`
+        ? `Chỉnh tay: ${finalSessions} buổi = ${formatVND(finalGrossAmount)} (Mặc định: ${validSessions} buổi = ${formatVND(calculatedGrossAmount)})`
         : isFullCourseAttendance
-        ? `Trọn khóa (${calculatedSessions} buổi thực học): ${formatVND(courseFee)}`
-        : `${calculatedSessions} buổi × ${formatVND(sessionRate)}/buổi = ${formatVND(calculatedGrossAmount)}`;
+        ? `Học đủ trọn khóa (${validSessions}/${standardSubjectSessions} buổi): ${formatVND(courseFee)}`
+        : `Học thiếu buổi chuẩn (${validSessions}/${standardSubjectSessions} buổi) • ${validSessions} buổi × ${formatVND(sessionRate)}/buổi = ${formatVND(calculatedGrossAmount)}`;
 
       // 3. Khấu trừ 1: Ưu đãi biểu phí (nếu có cấu hình trong Biểu Phí Theo Cơ Sở)
       const discountCalc = computeDiscountedFee(
@@ -1709,9 +1742,9 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs font-bold text-white focus:outline-none focus:border-amber-500"
                   >
                     <option value="all">Tất cả môn ngoại khóa</option>
-                    {sortByLabelVi(store.subjects, s => `${s.code} — ${s.name}`).map(s => (
+                    {sortByLabelVi(store.subjects, s => (s.name || '').trim()).map(s => (
                       <option key={s.id} value={s.id}>
-                        {s.code} — {s.name}
+                        {s.name}
                       </option>
                     ))}
                   </select>
@@ -1928,9 +1961,9 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                       )
                     </option>
                     <option value="all">Tất cả môn học (Cho phép lên lớp khác môn)</option>
-                    {sortByLabelVi(store.subjects, s => `${s.code} — ${s.name}`).map(s => (
+                    {sortByLabelVi(store.subjects, s => (s.name || '').trim()).map(s => (
                       <option key={s.id} value={s.id}>
-                        {s.code} — {s.name}
+                        {s.name}
                       </option>
                     ))}
                   </select>
@@ -2145,7 +2178,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                       {targetClassWeekdays.join('-')}
                     </span>
                     <span className="px-2.5 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-mono font-bold">
-                      Trọn khóa: {formatVND(targetPricingInfo.courseFee)} | Đơn giá lẻ:{' '}
+                      Trọn khóa ({targetPricingInfo.standardSessions} buổi): {formatVND(targetPricingInfo.courseFee)} | Đơn giá lẻ:{' '}
                       {formatVND(targetPricingInfo.sessionRate)}/buổi
                     </span>
                   </div>
@@ -2462,8 +2495,8 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                                     }
                                   >
                                     {isFullCourseAttendance
-                                      ? 'Học đủ lịch trọn khóa'
-                                      : `Học ${draft.selectedDays.length}/${targetClassWeekdays.length} ngày/tuần`}
+                                      ? `Học đủ trọn khóa (${calculatedSessions}/${targetPricingInfo.standardSessions} buổi)`
+                                      : `Học thiếu buổi chuẩn (${calculatedSessions}/${targetPricingInfo.standardSessions} buổi) • Tính theo đơn giá lẻ`}
                                   </span>
                                 </div>
                                 <div className="flex flex-wrap gap-1.5">

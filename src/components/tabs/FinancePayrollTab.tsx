@@ -3289,9 +3289,9 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 text-xs"
                   >
                     <option value="all">-- Tất cả các bộ môn ngoại khóa --</option>
-                    {sortByLabelVi(store.subjects, sb => `${sb.name} (${sb.code})`).map(sb => (
+                    {sortByLabelVi(store.subjects, sb => (sb.name || '').trim()).map(sb => (
                       <option key={sb.id} value={sb.id}>
-                        {sb.name} ({sb.code})
+                        {sb.name}
                       </option>
                     ))}
                   </select>

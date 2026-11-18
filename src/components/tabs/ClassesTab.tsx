@@ -1033,9 +1033,9 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700/80 text-white focus:outline-none focus:border-purple-500 text-xs font-medium cursor-pointer transition-colors"
             >
               <option value="all">Tất cả bộ môn ({store.subjects.length} môn)</option>
-              {sortByLabelVi(store.subjects, s => `${s.name} (${s.code})`).map(s => (
+              {sortByLabelVi(store.subjects, s => (s.name || '').trim()).map(s => (
                 <option key={s.id} value={s.id}>
-                  {s.name} ({s.code})
+                  {s.name}
                 </option>
               ))}
             </select>

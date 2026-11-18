@@ -981,20 +981,14 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold focus:outline-none focus:border-amber-500 transition-colors"
             >
               <option value="all">-- Tất cả môn học ({activeTermSubjects.length} môn) --</option>
-              {sortByLabelVi(activeTermSubjects, s => {
-                const openCount = termClasses.filter(
-                  (c) => (String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)) &&
-                         !enrolledClassIds.includes(String(c.id))
-                ).length;
-                return `${s.name} (${s.code}) - Chuẩn ${s.standard_sessions || 24}b • ${s.standard_duration || '90p'} [${openCount} lớp mở]`;
-              }).map((s) => {
+              {sortByLabelVi(activeTermSubjects, s => (s.name || '').trim()).map((s) => {
                 const openCount = termClasses.filter(
                   (c) => (String(c.subject_id) === String(s.id) || (c as any).subject_code === String(s.code)) &&
                          !enrolledClassIds.includes(String(c.id))
                 ).length;
                 return (
                   <option key={s.id} value={s.id}>
-                    {s.name} ({s.code}) - Chuẩn {s.standard_sessions || 24}b &bull; {s.standard_duration || '90p'} [{openCount} lớp mở]
+                    {s.name} - Chuẩn {s.standard_sessions || 24}b &bull; {s.standard_duration || '90p'} [{openCount} lớp mở]
                   </option>
                 );
               })}

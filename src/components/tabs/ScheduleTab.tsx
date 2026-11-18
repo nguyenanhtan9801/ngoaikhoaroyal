@@ -441,9 +441,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 <option value="all" className="bg-[#111827] text-white">
                   🎨 Tất cả môn ngoại khóa
                 </option>
-                {sortByLabelVi(store.subjects, s => `${s.name} (${s.category})`).map(s => (
+                {sortByLabelVi(store.subjects, s => (s.name || '').trim()).map(s => (
                   <option key={s.id} value={s.id} className="bg-[#111827] text-white">
-                    {s.name} ({s.category})
+                    {s.name}
                   </option>
                 ))}
               </select>
