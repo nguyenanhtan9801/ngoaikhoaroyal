@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Printer, QrCode, User } from 'lucide-react';
 import { TuitionInvoice, MakeupCredit, Student, ExtracurricularClass, ClassTransfer } from '../types';
-import { formatVND } from '../lib/storage';
+import { formatVND, formatDateVN } from '../lib/storage';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../lib/fileStorage';
 import { RoyalLogo } from './RoyalLogo';
 
@@ -507,7 +507,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                   COURSE &amp; CLASS TRANSFER AGREEMENT
                 </div>
                 <div className="text-[11px] text-slate-500 font-mono pt-1">
-                  Số / No: <strong className="text-slate-900">{document.transfer.transfer_code || document.transfer.id}</strong> &bull; Ngày lập / Date: {document.transfer.transfer_date}
+                  Số / No: <strong className="text-slate-900">{document.transfer.transfer_code || document.transfer.id}</strong> &bull; Ngày chuyển lớp / Effective Date: <strong className="text-slate-900">{formatDateVN(document.transfer.transfer_date) || document.transfer.transfer_date}</strong>
                 </div>
               </div>
 
@@ -660,7 +660,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                   IV. ĐIỀU KHOẢN VẬN HÀNH &amp; CHẾ ĐỘ DINH DƯỠNG / TERMS &amp; NUTRITION
                 </div>
                 <p>
-                  1. Học sinh được kích hoạt ghi danh tại lớp mới kể từ ngày <strong>{document.transfer.transfer_date}</strong>, sĩ số và danh sách điểm danh được tự động đồng bộ trên hệ thống.
+                  1. Học sinh được kích hoạt ghi danh tại lớp mới kể từ ngày chuyển lớp <strong>{formatDateVN(document.transfer.transfer_date) || document.transfer.transfer_date}</strong>, sĩ số và danh sách điểm danh được tự động đồng bộ trên hệ thống.
                 </p>
                 <p>
                   2. Đối với học sinh chính khóa Royal School, định mức suất ăn xế / bánh sữa được tự động chuyển giao và phục vụ tại phòng học của lớp mới bắt đầu từ buổi học kế tiếp.

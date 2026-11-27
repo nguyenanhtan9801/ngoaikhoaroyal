@@ -51,6 +51,9 @@ import {
   getEffectivePrice,
   getTodayStrHoChiMinh,
   getClassEnrollmentStatsMap,
+  normalizeDateStr,
+  getEnrollmentStartDate,
+  countSessionsBetweenDates,
 } from '../../lib/storage';
 import { generateVietQRUrl, getBankCode } from '../../lib/vietqr';
 import { exportTeacherPayrollWorkbook, TeacherPayrollSummaryExcelRow } from '../../lib/excel';
@@ -232,6 +235,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     remaining_sessions: 10,
   });
 
+  const [transferDate, setTransferDate] = useState<string>(() => getTodayStrHoChiMinh());
   const [targetCampusId, setTargetCampusId] = useState<string>(selectedCampusId || store.campuses[0]?.id || '');
   const [targetSubjectId, setTargetSubjectId] = useState<string>('all');
   const [surplusHandling, setSurplusHandling] = useState<'standard_no_refund' | 'issue_credit_note' | 'convert_sessions'>('standard_no_refund');
@@ -257,34 +261,110 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
     return currentStudentClasses.find(c => c.id === transferState.from_class_id);
   }, [currentStudentClasses, transferState.from_class_id]);
 
-  // Tự động tính "Số buổi còn lại chưa học" theo sổ điểm danh hoặc lịch khóa
+  const sourceEnrollment = useMemo(() => {
+    return activeEnrollments.find(e => e.class_id === transferState.from_class_id);
+  }, [activeEnrollments, transferState.from_class_id]);
+
+  // Tự động tính "Số buổi còn lại chưa học" theo ngày chuyển lớp (chỉ tính buổi trước ngày chuyển)
   const autoRemainingInfo = useMemo(() => {
     if (!fromClass || !transferState.student_id) return { elapsed: 0, total: 20, remaining: 10 };
-    const total = fromClass.total_sessions || 20;
-    // Điểm danh thực tế của học sinh trong lớp này
-    const attendedCount = store.attendance.filter(
-      a => a.class_id === fromClass.id && a.student_id === transferState.student_id
-    ).length;
 
+    const total =
+      sourceEnrollment?.registered_sessions && sourceEnrollment.registered_sessions > 0
+        ? sourceEnrollment.registered_sessions
+        : fromClass.total_sessions || 20;
+
+    const effectiveTransferDate = normalizeDateStr(transferDate) || getTodayStrHoChiMinh();
+    const enrStartDate = getEnrollmentStartDate(sourceEnrollment, fromClass);
+    const classTerm = store.terms?.find(t => t.id === fromClass.term_id);
+    const classEndDate = normalizeDateStr(fromClass.end_date || classTerm?.end_date || '');
     const today = getTodayStrHoChiMinh();
-    const completedSessions = store.sessions.filter(
-      s => s.class_id === fromClass.id && (s.status === 'completed' || s.session_date <= today)
-    ).length;
 
-    const elapsed = attendedCount > 0 ? attendedCount : completedSessions;
-    const remaining = Math.max(1, total - elapsed);
-    return { elapsed, total, remaining };
-  }, [fromClass, transferState.student_id, store.attendance, store.sessions]);
-
-  // Tự động đồng bộ số buổi còn lại khi chuyển lớp hoặc đổi học sinh
-  useEffect(() => {
-    if (autoRemainingInfo.remaining > 0) {
-      setTransferState(prev => ({
-        ...prev,
-        remaining_sessions: autoRemainingInfo.remaining,
-      }));
+    const prevDateObj = new Date(`${effectiveTransferDate}T12:00:00`);
+    let dayBeforeTransfer = '';
+    if (!isNaN(prevDateObj.getTime())) {
+      prevDateObj.setDate(prevDateObj.getDate() - 1);
+      const y = prevDateObj.getFullYear();
+      const m = String(prevDateObj.getMonth() + 1).padStart(2, '0');
+      const d = String(prevDateObj.getDate()).padStart(2, '0');
+      dayBeforeTransfer = `${y}-${m}-${d}`;
     }
-  }, [autoRemainingInfo.remaining, transferState.from_class_id, transferState.student_id]);
+
+    const studentAttRecords = (store.attendance || []).filter(
+      a => a.class_id === fromClass.id && a.student_id === transferState.student_id
+    );
+    const classSessRecords = (store.sessions || []).filter(
+      s => s.class_id === fromClass.id && s.status !== 'canceled'
+    );
+
+    const attendedDatesBeforeTransfer = new Set(
+      studentAttRecords
+        .map(a => normalizeDateStr(a.session_date))
+        .filter(d => Boolean(d) && d < effectiveTransferDate)
+    );
+
+    const completedSessionDatesBeforeTransfer = new Set(
+      classSessRecords
+        .map(s => normalizeDateStr(s.session_date))
+        .filter(d => {
+          if (!d || d >= effectiveTransferDate) return false;
+          if (enrStartDate && d < enrStartDate) return false;
+          return true;
+        })
+    );
+
+    const classDays = getClassDaysOfWeek(fromClass, store);
+    const enrolledDays =
+      sourceEnrollment?.enrolled_days_of_week && sourceEnrollment.enrolled_days_of_week.length > 0
+        ? sourceEnrollment.enrolled_days_of_week.filter(d => classDays.includes(d))
+        : classDays;
+    const effectiveDays = enrolledDays.length > 0 ? enrolledDays : classDays;
+
+    const hasAnyRecordedHistory = studentAttRecords.length > 0 || classSessRecords.length > 0;
+    let elapsed = 0;
+
+    if (attendedDatesBeforeTransfer.size > 0 || completedSessionDatesBeforeTransfer.size > 0) {
+      elapsed =
+        attendedDatesBeforeTransfer.size > 0
+          ? attendedDatesBeforeTransfer.size
+          : completedSessionDatesBeforeTransfer.size;
+
+      // Nếu chọn ngày chuyển trong tương lai (> hôm nay), cộng thêm số buổi dự kiến từ hôm nay tới trước ngày chuyển
+      if (effectiveTransferDate > today && dayBeforeTransfer >= today) {
+        const futureStart = enrStartDate && enrStartDate > today ? enrStartDate : today;
+        const futureEnd =
+          classEndDate && classEndDate < dayBeforeTransfer ? classEndDate : dayBeforeTransfer;
+        if (futureStart <= futureEnd) {
+          elapsed += countSessionsBetweenDates(futureStart, futureEnd, effectiveDays);
+        }
+      }
+    } else if (!hasAnyRecordedHistory && enrStartDate && dayBeforeTransfer && enrStartDate <= dayBeforeTransfer) {
+      const boundedEnd =
+        classEndDate && classEndDate < dayBeforeTransfer ? classEndDate : dayBeforeTransfer;
+      elapsed = countSessionsBetweenDates(enrStartDate, boundedEnd, effectiveDays);
+    }
+
+    elapsed = Math.min(total, Math.max(0, elapsed));
+    const remaining = Math.max(0, total - elapsed);
+    return { elapsed, total, remaining };
+  }, [
+    fromClass,
+    sourceEnrollment,
+    transferState.student_id,
+    transferDate,
+    store.attendance,
+    store.sessions,
+    store.terms,
+    store.timeSlots,
+  ]);
+
+  // Tự động đồng bộ số buổi còn lại khi chuyển lớp, đổi học sinh hoặc đổi ngày chuyển lớp
+  useEffect(() => {
+    setTransferState(prev => ({
+      ...prev,
+      remaining_sessions: autoRemainingInfo.remaining,
+    }));
+  }, [autoRemainingInfo.remaining, transferState.from_class_id, transferState.student_id, transferDate]);
 
   // 3. Tự động đồng bộ lớp hiện tại (from_class_id) khi người dùng đổi học sinh
   useEffect(() => {
@@ -758,6 +838,14 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       return;
     }
 
+    const effectiveTransferDate = normalizeDateStr(transferDate);
+    if (!effectiveTransferDate) {
+      showToast('Vui lòng chọn Ngày chuyển lớp (Ngày hiệu lực)!', 'warning', {
+        title: 'Thiếu ngày chuyển lớp',
+      });
+      return;
+    }
+
     const today = getTodayStrHoChiMinh();
     const expiryDate = getTodayStrHoChiMinh(new Date(Date.now() + 365 * 86400000));
     const transferCode = `TRF-2026-${String((store.transfers?.length || 0) + 1).padStart(5, '0')}`;
@@ -852,26 +940,32 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       credit_note_id: createdCreditNote?.id,
       invoice_id: surchargeInvoiceId,
       reason: transferReason || 'Chuyển môn / lớp theo nguyện vọng của học sinh',
-      transfer_date: today,
+      transfer_date: effectiveTransferDate,
       created_by: currentUser?.full_name ? formatCapitalizeWords(currentUser.full_name) : 'Học vụ Royal School',
     };
 
     onUpdateStore(prev => {
-      // 1. Cập nhật trạng thái lớp cũ thành transferred (giải phóng chỗ)
+      // 1. Cập nhật trạng thái lớp cũ thành transferred kèm ngày kết thúc = Ngày chuyển lớp
       const updatedEnrollments = prev.enrollments.map(e => {
         if (e.student_id === student.id && e.class_id === fromClass.id && e.status === 'active') {
-          return { ...e, status: 'transferred' as const };
+          return {
+            ...e,
+            status: 'transferred' as const,
+            end_date: effectiveTransferDate,
+            dropped_date: effectiveTransferDate,
+          };
         }
         return e;
       });
 
-      // 2. Tạo bản ghi ghi danh mới ở lớp chuyển đến (kèm số buổi quy đổi nếu có)
+      // 2. Tạo bản ghi ghi danh mới ở lớp chuyển đến với ngày bắt đầu = Ngày chuyển lớp
       updatedEnrollments.push({
         id: `enr_${Date.now()}`,
         student_id: student.id,
         class_id: toClass.id,
         registered_sessions: totalNewSessions,
-        joined_date: today,
+        joined_date: effectiveTransferDate,
+        start_date: effectiveTransferDate,
         status: 'active',
       });
 
@@ -913,7 +1007,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
         'CLASS_TRANSFER',
         'ACADEMIC',
         `Biên bản chuyển lớp ${transferCode}`,
-        `Chuyển lớp cho học sinh ${student.name} (${student.code}) từ "${fromClass.name}" sang "${toClass.name}". ${auditDetailsText}. Định mức bánh sữa chuyển sang lớp mới.`,
+        `Chuyển lớp cho học sinh ${student.name} (${student.code}) từ "${fromClass.name}" sang "${toClass.name}" (Ngày chuyển lớp: ${effectiveTransferDate}). ${auditDetailsText}. Định mức bánh sữa chuyển sang lớp mới.`,
         currentUser,
         {
           target_id: transferCode,
@@ -924,6 +1018,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               class_id: toClass.id,
               class_name: toClass.name,
               rate: newRate,
+              transfer_date: effectiveTransferDate,
               remaining_sessions: transferState.remaining_sessions,
               surcharge,
               surplus,
@@ -3242,8 +3337,8 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
               />
             </div>
 
-            {/* 2. LỚP HIỆN TẠI VÀ SỐ BUỔI CÒN LẠI (TỰ ĐỘNG TÍNH) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
+            {/* 2. LỚP HIỆN TẠI, NGÀY CHUYỂN LỚP & SỐ BUỔI CÒN LẠI (TỰ ĐỘNG TÍNH) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">
                   2. Lớp học hiện tại đang theo học
@@ -3275,11 +3370,30 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     * Học sinh này chưa có lớp ngoại khóa nào đang hoạt động. Không thể thực hiện chuyển lớp.
                   </p>
                 ) : fromClass && (
-                  <div className="mt-2 text-[11px] text-slate-400 flex items-center justify-between">
-                    <span>Đơn giá buổi cũ: <strong className="text-white font-mono">{formatVND(oldRate)}/buổi</strong></span>
+                  <div className="mt-2 text-[11px] text-slate-400 flex items-center justify-between gap-2">
+                    <span>Đơn giá cũ: <strong className="text-white font-mono">{formatVND(oldRate)}/buổi</strong></span>
                     <span>Cơ sở: <strong className="text-slate-300">{store.campuses.find(cp => cp.id === fromClass.campus_id)?.name}</strong></span>
                   </div>
                 )}
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  Ngày chuyển lớp (Ngày hiệu lực) <span className="text-rose-400">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    required
+                    value={transferDate}
+                    onChange={(e) => setTransferDate(e.target.value)}
+                    disabled={currentStudentClasses.length === 0}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
+                  Tính số buổi đã học ở lớp cũ trước ngày chuyển &amp; bắt đầu điểm danh lớp mới từ ngày này
+                </p>
               </div>
 
               <div>
@@ -3288,10 +3402,10 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 </label>
                 <input
                   type="number"
-                  min={1}
+                  min={0}
                   max={40}
                   value={transferState.remaining_sessions}
-                  onChange={(e) => setTransferState(prev => ({ ...prev, remaining_sessions: Math.max(1, Number(e.target.value)) }))}
+                  onChange={(e) => setTransferState(prev => ({ ...prev, remaining_sessions: Math.max(0, Number(e.target.value) || 0) }))}
                   disabled={currentStudentClasses.length === 0}
                   className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
                 />
@@ -3299,7 +3413,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   <div className="mt-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 shrink-0 text-amber-400" />
                     <span>
-                      Đã học: <strong>{autoRemainingInfo.elapsed}/{autoRemainingInfo.total} buổi</strong> &bull; Còn lại: <strong>{autoRemainingInfo.remaining} buổi</strong> (Tự động tính từ sổ điểm danh)
+                      Đã học trước {formatDateVN(transferDate) || transferDate}: <strong>{autoRemainingInfo.elapsed}/{autoRemainingInfo.total} buổi</strong> &bull; Còn lại: <strong>{autoRemainingInfo.remaining} buổi</strong>
                     </span>
                   </div>
                 )}
@@ -3634,6 +3748,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     currentStudentClasses.length === 0 || 
                     !transferState.from_class_id || 
                     !transferState.to_class_id || 
+                    !transferDate ||
                     transferState.from_class_id === transferState.to_class_id ||
                     (isTargetClassFull && !managerOverrideQuota)
                   }
@@ -3675,7 +3790,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <span className="text-[10px] text-amber-500/90 font-mono">{tr.transfer_code || tr.id}</span>
                         </div>
                         <span className="text-[10px] text-slate-400 font-mono bg-slate-950 px-2 py-0.5 rounded-lg border border-slate-800">
-                          {tr.transfer_date}
+                          Ngày chuyển: {formatDateVN(tr.transfer_date) || tr.transfer_date}
                         </span>
                       </div>
 
@@ -3727,7 +3842,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   <thead className="bg-slate-900 text-slate-400 uppercase font-bold text-[10px] tracking-wider border-b border-slate-800">
                     <tr>
                       <th className="py-2.5 px-3">Mã Biên Bản</th>
-                      <th className="py-2.5 px-3">Ngày Lập</th>
+                      <th className="py-2.5 px-3">Ngày Chuyển Lớp</th>
                       <th className="py-2.5 px-3">Học Sinh</th>
                       <th className="py-2.5 px-3">Lớp Cũ</th>
                       <th className="py-2.5 px-3">Lớp Mới</th>
@@ -3747,7 +3862,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <td className="py-2.5 px-3 font-mono font-bold text-amber-400">
                             {tr.transfer_code || tr.id}
                           </td>
-                          <td className="py-2.5 px-3 font-mono text-slate-400">{tr.transfer_date}</td>
+                          <td className="py-2.5 px-3 font-mono text-slate-300">{formatDateVN(tr.transfer_date) || tr.transfer_date}</td>
                           <td className="py-2.5 px-3 font-bold text-white">
                             <div>{student?.name}</div>
                             <div className="text-[10px] text-slate-500 font-mono">{student?.code}</div>
