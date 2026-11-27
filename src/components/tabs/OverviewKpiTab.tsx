@@ -17,7 +17,18 @@ import {
   BookOpen,
   School
 } from 'lucide-react';
-import { AppStore, formatVND, getCurrentTerm, formatDateVN, getTodayStrHoChiMinh, isEnrollmentEffectiveActive, getClassPhase } from '../../lib/storage';
+import {
+  AppStore,
+  formatVND,
+  getCurrentTerm,
+  formatDateVN,
+  getTodayStrHoChiMinh,
+  isEnrollmentEffectiveActive,
+  getClassPhase,
+  isPreschoolStudent,
+  isRoyalInternalStudent,
+  resolveStudentCampusId,
+} from '../../lib/storage';
 import { Student, ExtracurricularClass } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { supabase } from '../../supabaseClient';
@@ -478,16 +489,11 @@ export const OverviewKpiTab: React.FC<OverviewKpiTabProps> = ({
     };
 
     students.forEach((st) => {
-      const isRoyal = Boolean(st.is_royal_student || String(st.code || '').startsWith('RY-'));
-      const isPL = String(st.campus_id || '').toLowerCase().includes('pl');
+      const isRoyal = isRoyalInternalStudent(st);
+      const isPL = resolveStudentCampusId(st) === 'pl';
 
-      // Phân loại Mầm non vs Phổ thông
-      const regClass = String(st.regular_class || '').toUpperCase();
-      const isMN = regClass.includes('MN') || 
-                   regClass.includes('MẦM') || 
-                   regClass.includes('MAM') || 
-                   regClass.includes('KINDY') || 
-                   (st.dob && new Date().getFullYear() - new Date(st.dob).getFullYear() < 6);
+      // Phân loại Mầm non vs Phổ thông theo mã lớp chính khóa & cấp học
+      const isMN = isPreschoolStudent(st);
 
       if (isRoyal) {
         if (isMN) {

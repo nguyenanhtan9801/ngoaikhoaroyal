@@ -402,6 +402,109 @@ export function resolveStudentCampusId(student?: Partial<Student> | null): 'pmh'
   return 'pmh';
 }
 
+/**
+ * Chuẩn hóa kiểm tra học sinh Mầm non vs Phổ thông theo mã lớp chính khóa và cấp học
+ */
+export function isPreschoolStudent(student: any): boolean {
+  if (!student) return false;
+
+  // 1. Kiểm tra trường phân loại cấp học nếu có sẵn
+  const levelStr = String(
+    student.education_level || student.level || student.student_level || ''
+  )
+    .trim()
+    .toLowerCase();
+  if (
+    levelStr.includes('mam_non') ||
+    levelStr.includes('mầm non') ||
+    levelStr.includes('kindergarten') ||
+    levelStr.includes('nursery') ||
+    levelStr.includes('preschool') ||
+    levelStr === 'mn'
+  ) {
+    return true;
+  }
+
+  // 2. Lấy tên/mã lớp chính khóa của học sinh (VD: "K1", "K2A", "N1", "Mầm non 1", "2A3"...)
+  const rawClass = String(
+    student.regular_class ||
+      student.homeroom_class ||
+      student.school_class ||
+      student.grade_class ||
+      student.class_name ||
+      student.grade ||
+      ''
+  ).trim();
+
+  if (!rawClass) return false;
+
+  const normalizedClass = rawClass.replace(/^(lớp|lop|class)\s+/i, '').trim();
+  const upperClass = normalizedClass.toUpperCase();
+  const lowerClass = rawClass.toLowerCase();
+
+  // Quy tắc 2: Chứa cụm từ/mã Mầm non ("mầm non", "mam non", "mn", "kindergarten", "nursery", "nhà trẻ", "mầm", "chồi", "lá")
+  if (
+    lowerClass.includes('mầm non') ||
+    lowerClass.includes('mam non') ||
+    lowerClass.includes('kindergarten') ||
+    lowerClass.includes('kindy') ||
+    lowerClass.includes('nursery') ||
+    lowerClass.includes('preschool') ||
+    lowerClass.includes('nhà trẻ') ||
+    lowerClass.includes('nha tre') ||
+    /(^|[\s\-_/])MN($|[\s\-_/\d])/i.test(upperClass) ||
+    /(^|[\s\-_/])(mầm|mam|chồi|choi|lá)($|[\s\-_/\d])/i.test(lowerClass)
+  ) {
+    return true;
+  }
+
+  // Quy tắc 1: Ký tự đầu tiên của mã lớp là K hoặc N (theo sau là số, chữ cái, khoảng trắng, dấu gạch hoặc kết thúc chuỗi)
+  // Tránh khớp nhầm các từ tiếng Việt không phải mã lớp (VD: "Khối 1", "Ngoài trường")
+  if (/^(khối|khoi|ngoài|ngoai|không|khong|nội|noi|khác|khac)\b/i.test(normalizedClass)) {
+    return false;
+  }
+
+  if (/^(K|N)(\d|[A-Z]|\s|-|_|$)/i.test(upperClass)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Kiểm tra học sinh Royal (nội bộ) vs Ngoài trường
+ */
+export function isRoyalInternalStudent(student: any): boolean {
+  if (!student) return true;
+  if (student.is_royal_student === false) return false;
+  if (
+    student.is_external === true ||
+    student.student_type === 'external' ||
+    student.type === 'outside'
+  ) {
+    return false;
+  }
+  const codeStr = String(student.code || '').trim().toUpperCase();
+  if (codeStr.startsWith('EXT-')) {
+    return false;
+  }
+  const typeStr = String(
+    student.student_type || student.category || student.source || ''
+  ).toLowerCase();
+  if (
+    typeStr.includes('ngoài') ||
+    typeStr.includes('ngoai') ||
+    typeStr.includes('external') ||
+    typeStr.includes('outside')
+  ) {
+    return false;
+  }
+  if (student.is_royal_student === true || codeStr.startsWith('RY-')) {
+    return true;
+  }
+  return true;
+}
+
 export function resolveSubjectCategoryCode(category?: string, name?: string): string {
   const cat = (category || '').trim().toLowerCase();
   const n = (name || '').trim().toLowerCase();
