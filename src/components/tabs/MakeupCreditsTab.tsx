@@ -34,6 +34,7 @@ import {
   canModifyRedeemedCredit,
   getCurrentTerm,
 } from '../../lib/storage';
+import { formatDateVN, getTodayVNISO, addDaysVNISO } from '../../lib/dateUtils';
 import { MakeupCredit, Student, ExtracurricularClass, UserRole, TuitionInvoice, Enrollment, AppUser } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
@@ -176,14 +177,12 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
       return;
     }
 
-    const today = new Date();
-    const expiry = new Date(today);
-    expiry.setFullYear(today.getFullYear() + 1); // 365 ngày
-    const expiryStr = expiry.toISOString().split('T')[0];
+    const todayStr = getTodayVNISO();
+    const expiryStr = addDaysVNISO(365);
 
     const newCredit: MakeupCredit = {
       id: `cred_${Date.now()}`,
-      credit_code: `CRE-${today.getFullYear()}-${String(store.makeupCredits.length + 1).padStart(4, '0')}`,
+      credit_code: `CRE-${todayStr.slice(0, 4)}-${String(store.makeupCredits.length + 1).padStart(4, '0')}`,
       student_id: selectedStudent.id,
       student_name: selectedStudent.name,
       source_class_id: selectedClass.id,
@@ -199,7 +198,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
       credit_rule: 'monetary',
       total_credit_amount: calculatedCreditAmount,
       transferred_sessions: validConsecutiveCount,
-      issue_date: today.toISOString().split('T')[0],
+      issue_date: todayStr,
       expiry_date: expiryStr,
       expires_at: expiryStr,
       status: 'issued',
@@ -250,7 +249,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
     if (!applyingCredit) return;
     const targetClass = option.cls;
     const student = store.students.find(s => s.id === applyingCredit.student_id);
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayVNISO();
 
     const isBySessions = option.redemptionType === 'by_sessions'; // rate_old >= rate_new
     const reservedSessions = option.reservedSessionsCount;
@@ -522,7 +521,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
     const oldClass = store.classes.find(c => c.id === oldClassId);
     const newClass = newOption.cls;
     const student = store.students.find(s => s.id === editingCredit.student_id);
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayVNISO();
 
     const isBySessions = newOption.redemptionType === 'by_sessions';
     const reservedSessions = newOption.reservedSessionsCount;
@@ -1056,7 +1055,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
                     <div className="text-[11px] text-slate-400 flex items-center justify-between mb-3">
                       <span>Hiệu lực đến (365 ngày):</span>
                       <span className="font-mono text-white font-bold">
-                        {credit.expires_at || credit.expiry_date}
+                        {formatDateVN(credit.expires_at || credit.expiry_date)}
                       </span>
                     </div>
                   </div>
@@ -1167,7 +1166,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
                           {absentCount} buổi
                         </span>
                         <div className="text-[10px] text-slate-500 mt-1 font-mono">
-                          {absentDates.join(', ')}
+                          {absentDates.map(d => formatDateVN(d)).join(', ')}
                         </div>
                       </td>
 
@@ -1180,8 +1179,8 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="text-white font-mono">{credit.expires_at || credit.expiry_date}</div>
-                        <div className="text-[10px] text-slate-500">Cấp: {credit.issue_date}</div>
+                        <div className="text-white font-mono">{formatDateVN(credit.expires_at || credit.expiry_date)}</div>
+                        <div className="text-[10px] text-slate-500">Cấp: {formatDateVN(credit.issue_date)}</div>
                       </td>
 
                       <td className="py-3 px-4 text-center">
@@ -1438,7 +1437,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
                                 : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
                             }`}
                           >
-                            <span className="font-mono font-bold">{rec.session_date}</span>
+                            <span className="font-mono font-bold">{formatDateVN(rec.session_date)}</span>
                             <span className="font-semibold">
                               {isExcused
                                 ? '● Vắng có phép'
@@ -1955,7 +1954,7 @@ export const MakeupCreditsTab: React.FC<MakeupCreditsTabProps> = ({
                       <div className="font-bold text-emerald-300 flex items-center gap-2">
                         <span>Đủ điều kiện can thiệp phiếu bảo lưu (Khóa học đích chưa bắt đầu)</span>
                         <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                          Khai giảng: {targetTerm?.start_date || 'Chưa diễn ra'}
+                          Khai giảng: {targetTerm?.start_date ? formatDateVN(targetTerm.start_date) : 'Chưa diễn ra'}
                         </span>
                       </div>
                       <p className="text-slate-300 leading-relaxed">

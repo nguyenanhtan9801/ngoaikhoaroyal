@@ -32,6 +32,7 @@ import {
   UserPermissionMatrix,
 } from '../../types';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { formatDateTimeVN } from '../../lib/dateUtils';
 import {
   AppStore,
   getDefaultPermissionsForRole,
@@ -280,7 +281,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
       return;
     }
 
-    const nowStr = new Date().toLocaleString('vi-VN');
+    const nowStr = formatDateTimeVN(new Date());
     const actorName = currentUser?.full_name || 'Quản trị viên';
 
     if (editingUser) {
@@ -651,7 +652,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         status: nextStatus,
       };
 
-      const nowStr = new Date().toLocaleString('vi-VN');
+      const nowStr = formatDateTimeVN(new Date());
       const actorName = currentUser?.full_name || 'Quản trị viên';
       const actionLabel = nextStatus === 'locked' ? 'Khóa' : 'Mở khóa';
 
@@ -771,7 +772,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         permissions: sanitizedPerms,
       };
 
-      const nowStr = new Date().toLocaleString('vi-VN');
+      const nowStr = formatDateTimeVN(new Date());
       const actorName = currentUser?.full_name || 'Quản trị viên';
 
       const log = createAuditRecord(
@@ -879,7 +880,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
         );
       }
 
-      const nowStr = new Date().toLocaleString('vi-VN');
+      const nowStr = formatDateTimeVN(new Date());
       const actorName = currentUser?.full_name || 'Quản trị viên';
 
       const log = createAuditRecord(
@@ -1223,9 +1224,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({
                               <Clock className="w-2.5 h-2.5" />
                               <span>
                                 Đăng nhập cuối:{' '}
-                                {u.last_login.includes('T')
-                                  ? new Date(u.last_login).toLocaleString('vi-VN')
-                                  : u.last_login}
+                                {formatDateTimeVN(u.last_login)}
                               </span>
                             </div>
                           )}

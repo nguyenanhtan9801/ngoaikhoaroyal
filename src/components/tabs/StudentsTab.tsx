@@ -39,6 +39,7 @@ import {
   GOOGLE_DRIVE_ROOT_URL,
   uploadFileToServer,
   formatDateVN,
+  getTodayVNISO,
   getClassDaysOfWeek,
   getDayLabel,
   formatDaysListLabel,
@@ -259,6 +260,7 @@ const QuickEditRow: React.FC<{ student: Student; onUpdateStore: any }> = ({ stud
       <td className="py-2 px-3">
         <input
           type="date"
+          lang="vi"
           value={row.dob}
           onChange={(e) => setRow({ ...row, dob: e.target.value })}
           onKeyDown={handleKeyDown}
@@ -672,7 +674,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               medical_notes: r.medical_notes ?? existing?.medical_notes ?? '',
               avatar_url: r.avatar_url || existing?.avatar_url,
               status: r.status || existing?.status || 'active',
-              created_at: r.created_at ? String(r.created_at).split('T')[0] : (existing?.created_at || new Date().toISOString().split('T')[0]),
+              created_at: r.created_at ? String(r.created_at).split('T')[0] : (existing?.created_at || getTodayVNISO()),
               ...(Array.isArray(r.enrollments) ? { enrollments: r.enrollments } : {}),
             } as Student);
           });
@@ -826,7 +828,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
   const handleSaveModalPhoto = async (dataUrl: string | null) => {
     if (!photoModalStudent) return;
     const student = photoModalStudent;
-    const now = new Date().toISOString().split('T')[0];
+    const now = getTodayVNISO();
 
     if (dataUrl) {
       const uploadRes = await uploadFileToServer(dataUrl, `${student.code}.jpg`, 'students');
@@ -1047,7 +1049,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             type: 'enrollment_over_quota',
             title: 'Chuyển đổi học sinh sang trường Royal thành công',
             message: `Học sinh ${student.name} đã được cấp mã mới ${newCode} (Mã cũ: ${student.code}). Kích hoạt suất bánh sữa sau giờ!`,
-            date: new Date().toISOString().split('T')[0],
+            date: getTodayVNISO(),
             severity: 'low',
             read: false,
           },
@@ -1121,7 +1123,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
         medical_notes: studentFormData.medical_notes || 'Bình thường',
         avatar_url: studentFormData.avatar_url || undefined,
         status: 'active',
-        created_at: new Date().toISOString().split('T')[0],
+        created_at: getTodayVNISO(),
       };
 
       // 3. Cập nhật state an toàn & đồng bộ
@@ -1650,7 +1652,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
               type: 'enrollment_over_quota',
               title: 'Học viên chính thức theo học sau buổi thử 1',
               message: `Học sinh ${student?.name || studentId} đã chuyển sang học CHÍNH THỨC lớp ${cls?.name || classId || ''}. Hóa đơn học phí đã kích hoạt thanh toán VietQR.`,
-              date: new Date().toISOString().split('T')[0],
+              date: getTodayVNISO(),
               severity: 'low',
               read: false,
             },
@@ -1847,7 +1849,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             type: 'drop_alert',
             title: 'Dừng học thử lớp ngoại khóa (Không nợ phí)',
             message: `Học sinh ${student?.name || ''} dừng học thử lớp ${cls?.name || ''}. Đã hủy hóa đơn, giải phóng sĩ số lớp và không ghi nhận công nợ.`,
-            date: new Date().toISOString().split('T')[0],
+            date: getTodayVNISO(),
             severity: 'medium',
             read: false,
           },
@@ -1995,6 +1997,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             </select>
             <input
               type="date"
+          lang="vi"
               value={startDateFrom}
               onChange={(e) => setStartDateFrom(e.target.value)}
               className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 focus:outline-none focus:border-amber-500/50"
@@ -2003,6 +2006,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
             <span className="text-slate-500 text-[10px]">→</span>
             <input
               type="date"
+          lang="vi"
               value={startDateTo}
               onChange={(e) => setStartDateTo(e.target.value)}
               className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 focus:outline-none focus:border-amber-500/50"
@@ -2210,7 +2214,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                       </td>
 
                       <td className="py-3 px-3 text-slate-300 whitespace-nowrap">
-                        <div>{student.dob}</div>
+                        <div>{formatDateVN(student.dob)}</div>
                         <div className="text-[10px] text-slate-500">{student.gender}</div>
                       </td>
 
@@ -2581,7 +2585,7 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                   <div className="mt-2 space-y-1 text-xs text-slate-400">
                     <div className="flex items-center gap-2">
                       <Cake className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Sinh: {student.dob}</span>
+                      <span>Sinh: {formatDateVN(student.dob)}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <GraduationCap className="w-3.5 h-3.5 text-slate-500 shrink-0" />

@@ -16,6 +16,7 @@ import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { AppStore } from '../../types';
 import { showToast } from '../../lib/toast';
 import { fetchOnce } from '../../lib/fetchOnce';
+import { getTodayVNISO } from '../../lib/dateUtils';
 
 interface DatabaseBackupViewProps {
   store?: AppStore;
@@ -97,7 +98,7 @@ export const DatabaseBackupView: React.FC<DatabaseBackupViewProps> = () => {
     setCurrentProgress('Đang kết nối Supabase...');
     try {
       const wb = XLSX.utils.book_new();
-      const today = new Date().toISOString().split('T')[0];
+      const today = getTodayVNISO();
 
       for (let i = 0; i < ROYAL_DATABASE_TABLES.length; i++) {
         const tbl = ROYAL_DATABASE_TABLES[i];
@@ -134,7 +135,7 @@ export const DatabaseBackupView: React.FC<DatabaseBackupViewProps> = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${tableName}_${new Date().toISOString().split('T')[0]}.csv`;
+      a.download = `${tableName}_${getTodayVNISO()}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -177,7 +178,7 @@ export const DatabaseBackupView: React.FC<DatabaseBackupViewProps> = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `RoyalSchool_Backup_JSON_${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `RoyalSchool_Backup_JSON_${getTodayVNISO()}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

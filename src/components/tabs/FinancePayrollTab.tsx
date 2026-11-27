@@ -47,6 +47,7 @@ import {
   getTeacherTypeLabel,
   isPayable,
   formatDateVN,
+  formatTimeVN,
   getCurrentTerm,
   getEffectivePrice,
   getTodayStrHoChiMinh,
@@ -1413,7 +1414,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                           <div className="mb-2 space-y-1">
                             <div className="text-xs text-slate-300 font-semibold flex items-center justify-between gap-2">
                               <span className="truncate">{cls?.name}</span>
-                              <span className="text-[10px] text-slate-500 font-mono shrink-0">Hạn: {invoice.due_date}</span>
+                              <span className="text-[10px] text-slate-500 font-mono shrink-0">Hạn: {formatDateVN(invoice.due_date)}</span>
                             </div>
                             <div className="flex items-center justify-between gap-1.5 flex-wrap">
                               {isPartialWeek ? (
@@ -1431,7 +1432,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                               )}
                               {invoice.start_date && (
                                 <span className="text-[10px] text-slate-400 font-mono">
-                                  Từ: {invoice.start_date.split('-').reverse().join('/')}
+                                  Từ: {formatDateVN(invoice.start_date)}
                                 </span>
                               )}
                             </div>
@@ -1509,7 +1510,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                               <History className="w-3 h-3" />
                               <span>{invoice.payment_history.length} đợt đã nộp</span>
                             </span>
-                            <span className="font-mono text-slate-500">Gần nhất: {invoice.payment_history[invoice.payment_history.length - 1].payment_date}</span>
+                            <span className="font-mono text-slate-500">Gần nhất: {formatDateVN(invoice.payment_history[invoice.payment_history.length - 1].payment_date)}</span>
                           </div>
                         )}
                       </div>
@@ -1723,7 +1724,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                         </td>
 
                         <td className="py-3 px-4 font-mono text-slate-400">
-                          {invoice.due_date}
+                          {formatDateVN(invoice.due_date)}
                         </td>
 
                         <td className="py-3 px-4 text-center">
@@ -1828,18 +1829,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
       {activeSection === 'payroll' && (() => {
         const formatVietnamHhMmFromIso = (isoStr?: string | null): string | undefined => {
           if (!isoStr) return undefined;
-          try {
-            const dt = new Date(isoStr);
-            if (Number.isNaN(dt.getTime())) return undefined;
-            return dt.toLocaleTimeString('vi-VN', {
-              timeZone: 'Asia/Ho_Chi_Minh',
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false,
-            });
-          } catch {
-            return undefined;
-          }
+          return formatTimeVN(isoStr) || undefined;
         };
 
         const resolveSessionCheckinInfo = (rec: TeacherAttendanceRecord): {
@@ -3384,6 +3374,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 <div className="relative">
                   <input
                     type="date"
+                      lang="vi"
                     required
                     value={transferDate}
                     onChange={(e) => setTransferDate(e.target.value)}
@@ -4073,7 +4064,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                   </div>
 
                   <div className="text-right text-[11px] text-slate-400 font-mono">
-                    Hạn nộp: <span className="text-amber-300">{verifyingInvoice.due_date}</span>
+                    Hạn nộp: <span className="text-amber-300">{formatDateVN(verifyingInvoice.due_date)}</span>
                   </div>
                 </div>
 
@@ -4288,6 +4279,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     </label>
                     <input
                       type="date"
+                      lang="vi"
                       value={paymentDate}
                       onChange={(e) => setPaymentDate(e.target.value)}
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
@@ -4416,7 +4408,7 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                               Đợt {idx + 1}
                             </td>
                             <td className="py-2 px-3 font-mono text-slate-300">
-                              {record.payment_date}
+                              {formatDateVN(record.payment_date)}
                             </td>
                             <td className="py-2 px-3 text-right font-mono font-bold text-emerald-400">
                               {formatVND(record.amount)}

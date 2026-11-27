@@ -33,6 +33,7 @@ import { Student, ParentRegistration, UserRole, RegisteredSubjectItem, AppUser }
 import { RoyalLogo } from './RoyalLogo';
 import { DatePickerVN } from './common/DatePickerVN';
 import { showToast } from '../lib/toast';
+import { formatDateTimeVN } from '../lib/dateUtils';
 import { sortByLabelVi } from '../utils/sortVi';
 
 interface ParentPortalModalProps {
@@ -633,10 +634,7 @@ export const ParentPortalModal: React.FC<ParentPortalModalProps> = ({
         discountAmount: Math.max(0, totalBaseFee - serverTotalFee),
         finalAmount: serverTotalFee,
         discountNote: discountPolicy,
-        submittedAt:
-          new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) +
-          ' ' +
-          new Date().toLocaleDateString('vi-VN'),
+        submittedAt: formatDateTimeVN(new Date()),
       };
 
       setSubmittedRegistration(summary);

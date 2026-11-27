@@ -127,6 +127,7 @@ export const DatePickerVN: React.FC<DatePickerVNProps> = ({
         <CalendarIcon className="w-4 h-4 pointer-events-none" />
         <input
           type="date"
+          lang="vi"
           value={value || ''}
           min={min}
           max={max}

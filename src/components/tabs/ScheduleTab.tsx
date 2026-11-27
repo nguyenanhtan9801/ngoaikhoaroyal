@@ -26,6 +26,7 @@ import {
 import { AppStore, formatVND, getCurrentTerm } from '../../lib/storage';
 import { ExtracurricularClass, UserRole, Campus, Subject, AcademicTerm, TimeSlot, Facility, Teacher, Student, Enrollment, ClassSession } from '../../types';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { getTodayVNISO, VN_TIMEZONE } from '../../lib/dateUtils';
 
 interface ScheduleTabProps {
   store: AppStore;
@@ -368,7 +369,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                   Tháng {month + 1} / {year}
                 </span>
                 <span className="text-[10px] text-amber-400 font-semibold">
-                  {new Intl.DateTimeFormat('vi-VN', { month: 'long', year: 'numeric' }).format(currentDate)}
+                  {new Intl.DateTimeFormat('vi-VN', { timeZone: VN_TIMEZONE, month: 'long', year: 'numeric' }).format(currentDate)}
                 </span>
               </div>
 
@@ -595,7 +596,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
           {calendarCells.map((cell, idx) => {
             const hasClasses = cell.data.classCount > 0;
-            const todayStr = new Date().toISOString().split('T')[0];
+            const todayStr = getTodayVNISO();
             const isToday = cell.dateStr === todayStr;
 
             return (

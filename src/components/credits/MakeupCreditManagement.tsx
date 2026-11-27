@@ -16,6 +16,7 @@ import {
 import { AppState } from '../../services/storage';
 import { MakeupCredit } from '../../types';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { formatDateVN, getTodayVNISO, addDaysVNISO } from '../../lib/dateUtils';
 
 interface MakeupCreditManagementProps {
   state: AppState;
@@ -67,11 +68,8 @@ export const MakeupCreditManagement: React.FC<MakeupCreditManagementProps> = ({
     const st = students.find(s => s.id === studentId);
     if (!st || !selectedClass) return;
 
-    const today = new Date();
-    const issueDateStr = today.toISOString().split('T')[0];
-    const expiryDate = new Date(today);
-    expiryDate.setDate(expiryDate.getDate() + validityDays);
-    const expiryDateStr = expiryDate.toISOString().split('T')[0];
+    const issueDateStr = getTodayVNISO();
+    const expiryDateStr = addDaysVNISO(validityDays);
 
     const newCredit: MakeupCredit = {
       id: 'cred-' + Date.now(),
@@ -235,7 +233,7 @@ export const MakeupCreditManagement: React.FC<MakeupCreditManagementProps> = ({
                     <td className="py-3.5 px-4">
                       <div className="font-semibold text-slate-200">{cl?.name}</div>
                       <div className="text-[11px] text-slate-400 mt-0.5">
-                        Nghỉ <strong className="text-amber-400">{c.consecutive_absent_count} buổi</strong> ({c.consecutive_dates.join(', ')})
+                        Nghỉ <strong className="text-amber-400">{c.consecutive_absent_count} buổi</strong> ({c.consecutive_dates.map(d => formatDateVN(d)).join(', ')})
                       </div>
                     </td>
 
@@ -249,9 +247,9 @@ export const MakeupCreditManagement: React.FC<MakeupCreditManagementProps> = ({
                     </td>
 
                     <td className="py-3.5 px-4">
-                      <div className="text-slate-300">Cấp: {c.issue_date}</div>
+                      <div className="text-slate-300">Cấp: {formatDateVN(c.issue_date)}</div>
                       <div className="text-[11px] text-rose-400 font-semibold mt-0.5">
-                        Hạn: {c.expiry_date}
+                        Hạn: {formatDateVN(c.expiry_date)}
                       </div>
                     </td>
 

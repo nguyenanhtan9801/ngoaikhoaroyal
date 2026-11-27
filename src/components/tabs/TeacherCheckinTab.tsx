@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { AppUser, Teacher, ExtracurricularClass, TeacherCheckin } from '../../types';
 import { AppStore, normalizeCampusScope } from '../../lib/storage';
+import { formatTimeVN, addDaysVNISO, VN_TIMEZONE } from '../../lib/dateUtils';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { sortByLabelVi } from '../../utils/sortVi';
@@ -68,7 +69,7 @@ function getVietnamNowParts(now: Date = new Date()): {
   timeStr: string;
   minutesOfDay: number;
 } {
-  const vnStr = now.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+  const vnStr = now.toLocaleString('en-US', { timeZone: VN_TIMEZONE, hour12: false });
   const vnDate = new Date(vnStr);
   const year = vnDate.getFullYear();
   const month = String(vnDate.getMonth() + 1).padStart(2, '0');
@@ -85,18 +86,7 @@ function getVietnamNowParts(now: Date = new Date()): {
 
 function formatVietnamTimeFromIso(isoStr?: string | null): string {
   if (!isoStr) return '--:--';
-  try {
-    const dt = new Date(isoStr);
-    if (Number.isNaN(dt.getTime())) return '--:--';
-    return dt.toLocaleTimeString('vi-VN', {
-      timeZone: 'Asia/Ho_Chi_Minh',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-  } catch {
-    return '--:--';
-  }
+  return formatTimeVN(isoStr) || '--:--';
 }
 
 function parseHhMmToMinutes(hhmm?: string | null): number {
@@ -839,9 +829,7 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
     currentUser?.role === 'super_admin' || currentUser?.role === 'campus_manager';
 
   const minManualDate = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d.toISOString().split('T')[0];
+    return addDaysVNISO(-7);
   }, []);
 
   return (
@@ -1456,6 +1444,7 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
                 </label>
                 <input
                   type="date"
+                  lang="vi"
                   value={manualSessionDate}
                   min={canSelectPastDateInManual ? minManualDate : vnNow.dateStr}
                   max={vnNow.dateStr}

@@ -18,6 +18,7 @@ import {
 import { AppState } from '../../services/storage';
 import { TuitionInvoice, TeacherPayrollSettlement } from '../../types';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { formatDateVN } from '../../lib/dateUtils';
 
 interface FinanceManagementProps {
   state: AppState;
@@ -266,7 +267,7 @@ export const FinanceManagement: React.FC<FinanceManagementProps> = ({
 
                       <td className="py-3.5 px-4">
                         <div className="font-semibold text-slate-200">{cl?.name}</div>
-                        <div className="text-[10px] text-slate-400">Hạn: {inv.due_date}</div>
+                        <div className="text-[10px] text-slate-400">Hạn: {formatDateVN(inv.due_date)}</div>
                       </td>
 
                       <td className="py-3.5 px-4 font-mono font-medium text-slate-300">

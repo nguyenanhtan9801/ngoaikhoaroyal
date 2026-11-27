@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { Zap, Sparkles, X } from 'lucide-react';
 import { checkIsRoyalStudent } from '../../lib/storage';
+import { getTodayVNISO } from '../../lib/dateUtils';
 
 export interface LeadAssignmentModalProps {
   isOpen: boolean;
@@ -61,7 +62,7 @@ export const LeadAssignmentModal: React.FC<LeadAssignmentModalProps> = ({
         throw new Error('Chưa kết nối tới cơ sở dữ liệu Supabase');
       }
 
-      const startDateVal = registrationData.start_date || new Date().toISOString().split('T')[0];
+      const startDateVal = registrationData.start_date || getTodayVNISO();
       const actualSessionsVal = Number(actualSessions || 12);
       const totalFeeVal = isTrial ? 0 : Number(calculatedFee || 3000000);
 

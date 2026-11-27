@@ -35,6 +35,7 @@ import { AppStore, appendAuditLog, createAuditRecord } from '../../lib/storage';
 import { isUserSuperAdmin } from '../../lib/permissions';
 import { UserRole, AuditLogRecord, LogActionType, AppUser } from '../../types';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { formatDateVN, formatTimeWithSecondsVN, getTodayVNISO } from '../../lib/dateUtils';
 
 interface AuditLogsTabProps {
   store: AppStore;
@@ -74,10 +75,9 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
       const d = new Date(isoString);
       if (isNaN(d.getTime())) return { full: isoString, relative: '' };
 
-      const pad = (n: number) => String(n).padStart(2, '0');
-      const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-      const dateStr = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
-      const full = `${timeStr} ${dateStr}`;
+      const timeStr = formatTimeWithSecondsVN(d);
+      const dateStr = formatDateVN(d);
+      const full = `${timeStr} - ${dateStr}`;
 
       const now = new Date();
       const diffMs = now.getTime() - d.getTime();
@@ -297,11 +297,7 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
         const logDate = new Date(log.timestamp);
         const now = new Date();
         if (timeRange === 'today') {
-          const isToday = 
-            logDate.getDate() === now.getDate() &&
-            logDate.getMonth() === now.getMonth() &&
-            logDate.getFullYear() === now.getFullYear();
-          if (!isToday) return false;
+          if (getTodayVNISO(log.timestamp) !== getTodayVNISO()) return false;
         } else if (timeRange === '7days') {
           const diffDays = (now.getTime() - logDate.getTime()) / (1000 * 3600 * 24);
           if (diffDays > 7) return false;
@@ -368,7 +364,7 @@ export const AuditLogsTab: React.FC<AuditLogsTabProps> = ({
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', `Nhat_Ky_Kiem_Toan_RoyalSchool_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.setAttribute('download', `Nhat_Ky_Kiem_Toan_RoyalSchool_${getTodayVNISO()}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

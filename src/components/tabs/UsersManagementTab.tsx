@@ -27,6 +27,7 @@ import { AppStore } from '../../lib/storage';
 import { AppUser, UserRole } from '../../types';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { getTodayVNISO } from '../../lib/dateUtils';
 
 interface UsersManagementTabProps {
   store: AppStore;
@@ -162,7 +163,7 @@ export const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
         campus_id: formData.campus_id,
         teacher_id: formData.role === 'teacher' ? formData.teacher_id || undefined : undefined,
         status: formData.status,
-        created_at: new Date().toISOString().split('T')[0],
+        created_at: getTodayVNISO(),
       };
 
       onUpdateStore(prev => ({

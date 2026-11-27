@@ -71,6 +71,18 @@ import {
   type StudentSessionEligibilityResult,
 } from '../utils/classLifecycle';
 
+import {
+  VN_TIMEZONE,
+  getTodayVNISO,
+  addDaysVNISO,
+  normalizeDateISO,
+  formatDateVN,
+  formatDateShortVN,
+  formatTimeVN,
+  formatTimeWithSecondsVN,
+  formatDateTimeVN,
+} from './dateUtils';
+
 export {
   isLegacyLoginEnabled,
   JS_DAY_TO_VN_CODE,
@@ -88,6 +100,15 @@ export {
   isEnrollmentEffectiveActive,
   evaluateStudentSessionEligibility,
   isStudentScheduledForDate,
+  VN_TIMEZONE,
+  getTodayVNISO,
+  addDaysVNISO,
+  normalizeDateISO,
+  formatDateVN,
+  formatDateShortVN,
+  formatTimeVN,
+  formatTimeWithSecondsVN,
+  formatDateTimeVN,
   type ClassLifecyclePhase,
   type SessionExclusionReason,
   type StudentSessionEligibilityResult,
@@ -1576,21 +1597,7 @@ export function getEnrollmentStatusDisplay(
   return { label: 'Đang học', tone: 'active' };
 }
 
-export function formatDateVN(dateStr?: string): string {
-  if (!dateStr) return '';
-  const clean = String(dateStr).split('T')[0];
-  const parts = clean.split('-');
-  if (parts.length !== 3) return dateStr;
-  return `${parts[2]}/${parts[1]}/${parts[0]}`;
-}
-
-export function formatDateShortVN(dateStr?: string): string {
-  if (!dateStr) return '';
-  const clean = String(dateStr).split('T')[0];
-  const parts = clean.split('-');
-  if (parts.length !== 3) return dateStr;
-  return `${parts[2]}/${parts[1]}`;
-}
+// formatDateVN & formatDateShortVN được re-export từ ./dateUtils ở đầu file
 
 export function getClassDaysOfWeek(
   classItem: ExtracurricularClass | undefined,

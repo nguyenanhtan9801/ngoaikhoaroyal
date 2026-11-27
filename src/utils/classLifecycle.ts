@@ -3,6 +3,7 @@ import {
   Enrollment,
   ExtracurricularClass,
 } from '../types';
+import { getTodayVNISO } from '../lib/dateUtils';
 
 export type ClassLifecyclePhase = 'upcoming' | 'active' | 'ended';
 
@@ -61,17 +62,7 @@ export function normalizeDateStr(value?: string | null): string {
 }
 
 export function getTodayStrHoChiMinh(today: Date | string = new Date()): string {
-  if (typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today.trim())) {
-    return today.trim();
-  }
-  const d = typeof today === 'string' ? new Date(today) : today;
-  const validDate = isNaN(d.getTime()) ? new Date() : d;
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Ho_Chi_Minh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(validDate);
+  return getTodayVNISO(today);
 }
 
 /**

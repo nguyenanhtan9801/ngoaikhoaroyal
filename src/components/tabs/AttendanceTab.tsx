@@ -50,6 +50,8 @@ import {
   formatStudentScheduleLabel,
   formatDateVN,
   formatDateShortVN,
+  formatTimeVN,
+  formatDateTimeVN,
   getTeacherEffectivePeriodRate,
   getTeacherEffectiveSessionRate,
   calculateTeacherSessionPayAtDate,
@@ -1001,18 +1003,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
   const formatCheckinVietnamHhMm = (iso?: string | null): string => {
     if (!iso) return '';
-    try {
-      const dt = new Date(iso);
-      if (Number.isNaN(dt.getTime())) return '';
-      return dt.toLocaleTimeString('vi-VN', {
-        timeZone: 'Asia/Ho_Chi_Minh',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      });
-    } catch {
-      return '';
-    }
+    return formatTimeVN(iso);
   };
 
   const matchedPrimaryCheckin = useMemo(() => {
@@ -1470,7 +1461,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
       'Cán bộ Học vụ / Giáo viên';
     const rawSavedAt = existingAttendance.find(a => a.uploaded_at)?.uploaded_at;
     const savedAtFormatted = rawSavedAt
-      ? new Date(rawSavedAt).toLocaleString('vi-VN')
+      ? formatDateTimeVN(rawSavedAt)
       : formatDateVN(selectedDate);
 
     return {

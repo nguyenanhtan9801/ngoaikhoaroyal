@@ -17,7 +17,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { AppStore, ExtracurricularClass, Student, Enrollment, UserRole } from '../../types';
-import { getTodayStrHoChiMinh } from '../../lib/storage';
+import { getTodayStrHoChiMinh, formatDateVN } from '../../lib/storage';
 import { sortByLabelVi } from '../../utils/sortVi';
 
 interface ScheduleCalendarViewProps {
@@ -556,7 +556,7 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-                    <span>Chi Tiết Lịch Học Ngày {selectedDayDetail.dateStr}</span>
+                    <span>Chi Tiết Lịch Học Ngày {formatDateVN(selectedDayDetail.dateStr)}</span>
                     <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-mono font-bold border border-amber-500/30">
                       {selectedDayDetail.dayOfWeek}
                     </span>

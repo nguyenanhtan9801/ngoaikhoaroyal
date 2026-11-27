@@ -11,6 +11,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { ServerHealthReport, SERVICE_ROLE_MISSING_MESSAGE } from '../../lib/apiClient';
+import { formatTimeWithSecondsVN } from '../../lib/dateUtils';
 
 const DIRECT_SUPABASE_MODE_MESSAGE =
   'Ứng dụng đang hoạt động trực tiếp qua Supabase Client (không qua cổng /api/health).';
@@ -119,7 +120,7 @@ export const ServerDiagnosticsView: React.FC = () => {
           : DIRECT_SUPABASE_MODE_MESSAGE
       );
     } finally {
-      setLastCheckedAt(new Date().toLocaleTimeString('vi-VN'));
+      setLastCheckedAt(formatTimeWithSecondsVN(new Date()));
       setLoading(false);
     }
   }, []);

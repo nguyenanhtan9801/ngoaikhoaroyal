@@ -76,6 +76,9 @@ import {
   resolveSubjectCategoryCode,
   getTeacherTypeLabel,
   isPayable,
+  formatDateVN,
+  getTodayVNISO,
+  addDaysVNISO,
 } from '../../lib/storage';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { isUserSuperAdmin } from '../../lib/permissions';
@@ -349,7 +352,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
         permanent_rate_per_period: permPeriodRate,
         visiting_rate_per_period: visPeriodRate,
         periods_per_session: periods,
-        updated_at: new Date().toISOString().split('T')[0],
+        updated_at: getTodayVNISO(),
         updated_by: 'Phòng Tài Chính & Kế Toán Royal School',
       };
 
@@ -2212,7 +2215,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                 medical_notes: s.medical_notes || '',
                 avatar_url: s.avatar_url && !s.avatar_url.startsWith('data:') ? s.avatar_url : null,
                 status: s.status || 'active',
-                created_at: s.created_at || new Date().toISOString().split('T')[0]
+                created_at: s.created_at || getTodayVNISO()
               };
             });
             await client.from('students').upsert(studentsPayload, { onConflict: 'id' });
@@ -2225,7 +2228,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               student_id: e.student_id,
               class_id: e.class_id,
               registered_sessions: e.registered_sessions || 24,
-              joined_date: e.joined_date || new Date().toISOString().split('T')[0],
+              joined_date: e.joined_date || getTodayVNISO(),
               enrolled_days_of_week: e.enrolled_days_of_week || ['T2', 'T4'],
               is_partial_schedule: Boolean(e.is_partial_schedule),
               is_trial: Boolean(e.is_trial),
@@ -2302,7 +2305,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               verified_by: inv.verified_by || null,
               verified_at: inv.verified_at || null,
               payment_history: inv.payment_history || [],
-              created_at: inv.created_at || new Date().toISOString().split('T')[0]
+              created_at: inv.created_at || getTodayVNISO()
             }));
             await client.from('tuition_invoices').upsert(invoicesPayload, { onConflict: 'id' });
           }
@@ -2554,7 +2557,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
           backups: '06_SaoLuuHeThong',
         },
         auto_create_subfolders: autoCreateSubfolders,
-        updated_at: new Date().toISOString().split('T')[0],
+        updated_at: getTodayVNISO(),
         updated_by: 'ThS. Nguyễn Hoàng Long',
       };
 
@@ -3546,8 +3549,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                         code: `TERM-${Date.now().toString().slice(-4)}`,
                         name: 'Khóa Ngoại Khóa Mới',
                         academic_year: '2026-2027',
-                        start_date: new Date().toISOString().split('T')[0],
-                        end_date: new Date(Date.now() + 90 * 86400000).toISOString().split('T')[0],
+                        start_date: getTodayVNISO(),
+                        end_date: addDaysVNISO(90),
                         status: 'draft',
                         description: '',
                       });
@@ -3567,8 +3570,8 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                         code: `TERM-${Date.now().toString().slice(-4)}`,
                         name: '',
                         academic_year: '2026-2027',
-                        start_date: new Date().toISOString().split('T')[0],
-                        end_date: new Date(Date.now() + 100 * 86400000).toISOString().split('T')[0],
+                        start_date: getTodayVNISO(),
+                        end_date: addDaysVNISO(100),
                         status: 'open_enrollment',
                         description: '',
                       });
@@ -3637,7 +3640,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                             <span>{term.name}</span>
                           </h4>
                           <p className="text-xs text-slate-400 mt-0.5">
-                            Năm học: <strong className="text-slate-300">{term.academic_year}</strong> &bull; {term.start_date} &rarr; {term.end_date}
+                            Năm học: <strong className="text-slate-300">{term.academic_year}</strong> &bull; {formatDateVN(term.start_date)} &rarr; {formatDateVN(term.end_date)}
                           </p>
                           {term.description && (
                             <p className="text-[11px] text-slate-400 mt-1 italic">{term.description}</p>
@@ -5404,6 +5407,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Ngày bắt đầu</label>
                   <input
                     type="date"
+                    lang="vi"
                     required
                     value={cloneFormData.start_date}
                     onChange={(e) => setCloneFormData({ ...cloneFormData, start_date: e.target.value })}
@@ -5414,6 +5418,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Ngày kết thúc</label>
                   <input
                     type="date"
+                    lang="vi"
                     required
                     value={cloneFormData.end_date}
                     onChange={(e) => setCloneFormData({ ...cloneFormData, end_date: e.target.value })}
@@ -5610,6 +5615,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Ngày bắt đầu</label>
                   <input
                     type="date"
+                    lang="vi"
                     required
                     value={termFormData.start_date}
                     onChange={(e) => setTermFormData({ ...termFormData, start_date: e.target.value })}
@@ -5620,6 +5626,7 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
                   <label className="block text-slate-400 font-medium mb-1">Ngày kết thúc</label>
                   <input
                     type="date"
+                    lang="vi"
                     required
                     value={termFormData.end_date}
                     onChange={(e) => setTermFormData({ ...termFormData, end_date: e.target.value })}

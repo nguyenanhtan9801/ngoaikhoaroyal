@@ -113,6 +113,7 @@ export const SnackManagement: React.FC<SnackManagementProps> = ({
             <label className="text-xs text-slate-400">Lọc ngày:</label>
             <input
               type="date"
+              lang="vi"
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
               className="bg-[#0B0F19] border border-slate-700/80 rounded-xl px-2.5 py-1 text-xs text-white"

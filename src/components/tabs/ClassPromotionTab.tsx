@@ -43,6 +43,7 @@ import {
 import {
   formatVND,
   formatDateVN,
+  formatDateTimeVN,
   getEffectivePrice,
   getCampusPricingForClass,
   computeDiscountedFee,
@@ -2609,6 +2610,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                                   </label>
                                   <input
                                     type="date"
+                                    lang="vi"
                                     value={draft.startDate}
                                     min={targetClassStartDate}
                                     max={targetClassEndDate}
@@ -3241,7 +3243,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                           {h.batch_code}
                         </div>
                         <div className="text-[11px] text-slate-400">
-                          {new Date(h.created_at).toLocaleString('vi-VN')}
+                          {formatDateTimeVN(h.created_at)}
                         </div>
                       </td>
                       <td className="py-3 px-3 font-bold text-slate-200">
@@ -3309,7 +3311,7 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Thực hiện bởi <strong>{viewingHistory.created_by_name}</strong> lúc{' '}
-                  {new Date(viewingHistory.created_at).toLocaleString('vi-VN')} •{' '}
+                  {formatDateTimeVN(viewingHistory.created_at)} •{' '}
                   {viewingHistory.source_class_name} →{' '}
                   {viewingHistory.target_class_name}
                 </p>

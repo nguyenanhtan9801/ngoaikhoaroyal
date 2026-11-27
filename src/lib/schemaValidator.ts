@@ -13,6 +13,7 @@ import {
   Subject,
   Teacher,
 } from '../types';
+import { getTodayVNISO, formatDateVN } from './dateUtils';
 
 /**
  * Chuẩn hóa chuỗi họ tên: bỏ dấu tiếng Việt, viết thường, loại bỏ khoảng trắng thừa
@@ -166,7 +167,7 @@ export class DatabaseIntegrityManager {
     targetSubjectId?: string,
     targetTermId?: string
   ): CreditEligibilityResult {
-    const today = currentDate || new Date().toISOString().split('T')[0];
+    const today = currentDate || getTodayVNISO();
 
     // Kiểm tra định mức 1 lần / môn / khóa
     const hasExisting = existingCreditNotes.some(cn => {
@@ -348,11 +349,11 @@ export class DatabaseIntegrityManager {
    * 6. Ràng buộc Ngày điểm danh không được ở tương lai
    */
   static validateAttendanceDate(sessionDate: string, today?: string): { valid: boolean; error?: string } {
-    const currentDay = today || new Date().toISOString().split('T')[0];
+    const currentDay = today || getTodayVNISO();
     if (sessionDate > currentDay) {
       return {
         valid: false,
-        error: `RÀNG BUỘC THỜI GIAN: Ngày ${sessionDate} là ngày tương lai. Hệ thống khóa chức năng điểm danh trước ngày thực học!`,
+        error: `RÀNG BUỘC THỜI GIAN: Ngày ${formatDateVN(sessionDate)} là ngày tương lai. Hệ thống khóa chức năng điểm danh trước ngày thực học!`,
       };
     }
     return { valid: true };

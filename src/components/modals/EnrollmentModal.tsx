@@ -24,6 +24,7 @@ import {
   getCurrentTerm
 } from '../../lib/storage';
 import { showToast } from '../../lib/toast';
+import { getTodayVNISO, addDaysVNISO } from '../../lib/dateUtils';
 import { getSupabaseClient, supabase } from '../../supabaseClient';
 import { DatePickerVN } from '../common/DatePickerVN';
 import { sortByLabelVi } from '../../utils/sortVi';
@@ -435,7 +436,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     const term = store.terms?.find(t => t.id === selectedClass.term_id);
     const classStart = selectedClass.start_date || term?.start_date || '2026-09-01';
     const classEnd = selectedClass.end_date || term?.end_date || '2026-12-25';
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayVNISO();
 
     let initialStart = classStart;
     if (todayStr >= classStart && todayStr <= classEnd) {
@@ -525,7 +526,7 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
     const term = store.terms?.find(t => t.id === selectedClass.term_id);
     const classStart = selectedClass.start_date || term?.start_date || '2026-09-01';
     const classEnd = selectedClass.end_date || term?.end_date || '2026-12-25';
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayVNISO();
 
     const baseRef = todayStr < classStart ? classStart : todayStr;
     let nextDate = getDefaultClassStartDate(selectedClass, store, baseRef, selectedDays);
@@ -600,14 +601,14 @@ export const EnrollmentModal: React.FC<EnrollmentModalProps> = ({
 
       let invoiceId = `inv_${Date.now()}`;
       let invoiceCode = '';
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getTodayVNISO();
       const subShortName = (selectedSubject?.name || selectedClass.name).split('(')[0].trim();
       const totalStd = effectivePricing.total_sessions || selectedClass.standard_sessions || selectedSubject?.standard_sessions || selectedClass.total_sessions || 16;
       const scheduleLabel = formatStudentScheduleLabel(selectedDays, totalClassDays);
       const proratedNote = isPartial
         ? `Học phí môn ${subShortName} - Lịch học riêng: [${scheduleLabel}] (${effectiveSessions} buổi x ${formatVND(rate)}/buổi)`
         : `Học phí môn ${subShortName}: ${effectiveSessions}/${totalStd} buổi (${formatDaysListLabel(totalClassDays)})`;
-      const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+      const dueDate = addDaysVNISO(7);
 
       let finalStudentId = resolvedStudentId;
 

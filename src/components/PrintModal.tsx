@@ -113,7 +113,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                   BIÊN LAI THU TIỀN HỌC PHÍ NGOẠI KHÓA
                 </h2>
                 <div className="text-xs text-slate-500 mt-1 font-mono">
-                  Số phiếu: <strong>{document.invoice.invoice_code}</strong> &bull; Ngày lập: {document.invoice.created_at}
+                  Số phiếu: <strong>{document.invoice.invoice_code}</strong> &bull; Ngày lập: {formatDateVN(document.invoice.created_at)}
                 </div>
               </div>
 
@@ -228,7 +228,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                       {document.invoice.payment_history.map((record, idx) => (
                         <tr key={record.id || idx} className="border-b border-slate-200">
                           <td className="p-2 border border-slate-300 text-center font-bold">Đợt {idx + 1}</td>
-                          <td className="p-2 border border-slate-300 font-mono">{record.payment_date}</td>
+                          <td className="p-2 border border-slate-300 font-mono">{formatDateVN(record.payment_date)}</td>
                           <td className="p-2 border border-slate-300 text-right font-mono font-bold text-emerald-700">
                             {formatVND(record.amount)}
                           </td>
@@ -281,7 +281,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                   SỔ ĐIỂM DANH & THEO DÕI CHUYÊN CẦN
                 </h2>
                 <div className="text-xs text-slate-600 mt-1">
-                  Lớp: <strong className="text-slate-900">{document.cls.name}</strong> &bull; Ngày: <strong className="font-mono">{document.sessionDate}</strong>
+                  Lớp: <strong className="text-slate-900">{document.cls.name}</strong> &bull; Ngày: <strong className="font-mono">{formatDateVN(document.sessionDate)}</strong>
                 </div>
               </div>
 
@@ -338,7 +338,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                   PHIẾU XÁC NHẬN BẢO LƯU HỌC PHÍ NGOẠI KHÓA
                 </h2>
                 <div className="text-xs text-slate-500 mt-1 font-mono">
-                  Mã phiếu: <strong>{document.credit.credit_code}</strong> &bull; Ngày cấp: {document.credit.issue_date}
+                  Mã phiếu: <strong>{document.credit.credit_code}</strong> &bull; Ngày cấp: {formatDateVN(document.credit.issue_date)}
                 </div>
               </div>
 
@@ -361,7 +361,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-600">Các ngày vắng học:</span>
-                  <span className="font-mono text-slate-900">{document.credit.consecutive_dates.join(', ')}</span>
+                  <span className="font-mono text-slate-900">{document.credit.consecutive_dates.map(d => formatDateVN(d)).join(', ')}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-600">Đơn giá buổi cũ:</span>
@@ -373,7 +373,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({ document, onClose }) => 
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-600">Thời hạn hiệu lực (365 ngày):</span>
-                  <span className="font-mono font-bold text-slate-900">Đến hết ngày {document.credit.expiry_date}</span>
+                  <span className="font-mono font-bold text-slate-900">Đến hết ngày {formatDateVN(document.credit.expiry_date)}</span>
                 </div>
               </div>
 

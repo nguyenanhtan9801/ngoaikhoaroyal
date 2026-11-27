@@ -226,6 +226,7 @@ export const AttendanceManagement: React.FC<AttendanceManagementProps> = ({
             </label>
             <input
               type="date"
+              lang="vi"
               value={sessionDate}
               max={todayStr} // Ràng buộc: Khóa ngày tương lai
               onChange={(e) => setSessionDate(e.target.value)}

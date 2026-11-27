@@ -51,6 +51,9 @@ import {
   createAuditRecord, 
   appendAuditLog,
   formatDateVN,
+  formatTimeVN,
+  getTodayVNISO,
+  addDaysVNISO,
   getClassDaysOfWeek,
   getDayLabel,
   formatDaysListLabel,
@@ -169,7 +172,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           ...prev,
           parentRegistrations: mappedRecords,
         }));
-        setLastSupabaseSyncTime(new Date().toLocaleTimeString('vi-VN'));
+        setLastSupabaseSyncTime(formatTimeVN(new Date()));
         if (showSuccessToast) {
           showToast(`Đã đồng bộ ${mappedRecords.length} hồ sơ từ CSDL Supabase!`, 'success');
         }
@@ -901,7 +904,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
           is_royal_student: isRoyalLead,
           medical_notes: finalMedicalNotes,
           status: 'active',
-          created_at: new Date().toISOString().split('T')[0],
+          created_at: getTodayVNISO(),
         };
       }
 
@@ -968,7 +971,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
       const newEnrollments: Enrollment[] = [];
       const newInvoices: TuitionInvoice[] = [];
       const allocateOfflineInvoiceCode = createOfflineInvoiceCodeAllocator(store.invoices);
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getTodayVNISO();
       const isTrialMode = forceTrial !== undefined
         ? forceTrial
         : selectedClassObjects.some(c => subjectEnrollmentTypes[c.subject_id] === 'trial');
@@ -1131,7 +1134,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
             is_prorated: pricing.isMidCourse || autoCalc.isPartialSchedule,
             prorated_note: proratedNote,
             created_at: todayStr,
-            due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            due_date: addDaysVNISO(7),
           };
 
           if (client) {
@@ -1485,7 +1488,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
     const previews = computeBulkQuickPreview();
     if (previews.length === 0) return;
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayVNISO();
     const staffName = currentUser?.full_name || 'Chuyên viên Tuyển sinh';
 
     const supabaseStudents: any[] = [];
@@ -1636,7 +1639,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               is_prorated: mCls.effectiveSessions < mCls.totalSessions,
               prorated_note: `Xếp lớp nhanh tự động: ${mCls.effectiveSessions}/${mCls.totalSessions} buổi × ${formatVND(mCls.sessionRate)}/buổi`,
               created_at: todayStr,
-              due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              due_date: addDaysVNISO(7),
             });
 
             // KHÔNG gửi invoice_code để Postgres DEFAULT next_invoice_code() tự sinh
@@ -1662,7 +1665,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
               is_prorated: mCls.effectiveSessions < mCls.totalSessions,
               prorated_note: `Xếp lớp nhanh tự động: ${mCls.effectiveSessions}/${mCls.totalSessions} buổi × ${formatVND(mCls.sessionRate)}/buổi`,
               created_at: new Date().toISOString(),
-              due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              due_date: addDaysVNISO(7),
             });
           }
         });
@@ -2514,7 +2517,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       {/* 1. Mã Đơn / Ngày */}
                       <td className="py-3 px-4">
                         <div className="font-mono text-amber-400 font-bold">{lead.registration_code || lead.id}</div>
-                        <div className="text-[10px] text-slate-500">{lead.created_at.split('T')[0]}</div>
+                        <div className="text-[10px] text-slate-500">{formatDateVN(lead.created_at)}</div>
                         {matchRes.isDuplicateSpam && lead.status !== 'canceled' && (
                           <span className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-extrabold">
                             ⚠️ Đơn Trùng Lặp
@@ -2525,7 +2528,7 @@ export const ParentPortalTab: React.FC<ParentPortalTabProps> = ({
                       {/* 2. Học Sinh & Smart Badge */}
                       <td className="py-3 px-4">
                         <div className="font-bold text-white">{lead.student_name.trim()}</div>
-                        <div className="text-[10px] text-slate-400">{lead.student_grade || 'Sinh: ' + lead.student_dob}</div>
+                        <div className="text-[10px] text-slate-400">{lead.student_grade || 'Sinh: ' + formatDateVN(lead.student_dob)}</div>
 
                         {matchedStudent && (
                           <div className="mt-1.5 space-y-1">

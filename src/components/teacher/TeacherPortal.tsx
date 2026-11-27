@@ -54,6 +54,7 @@ import {
   evaluateStudentSessionEligibility,
   loadStore,
   normalizeCampusScope,
+  getTodayVNISO,
 } from '../../lib/storage';
 import {
   ClassroomStaffKind,
@@ -122,7 +123,7 @@ function formatVnDateYmd(ms: number): string {
     for (const p of parts) map[p.type] = p.value;
     return `${map.year}-${map.month}-${map.day}`;
   } catch {
-    return new Date(ms).toISOString().split('T')[0];
+    return getTodayVNISO(new Date(ms));
   }
 }
 
@@ -141,9 +142,7 @@ function formatVnDateDisplay(ms: number): string {
 }
 
 function formatDateYmdToVnShort(ymd: string): string {
-  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
-  const [y, m, d] = ymd.split('-');
-  return `${d}/${m}/${y}`;
+  return formatDateVN(ymd);
 }
 
 function formatCheckinTime(iso?: string | null): string {

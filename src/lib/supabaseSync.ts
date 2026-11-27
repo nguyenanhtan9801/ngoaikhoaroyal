@@ -11,6 +11,7 @@ import {
   TeacherAttendanceRecord,
 } from '../types';
 import { showToast } from './toast';
+import { getTodayVNISO } from './dateUtils';
 
 export interface SyncProgress {
   currentTable: string;
@@ -268,7 +269,7 @@ export async function syncStoreToSupabase(
       unit_price_old: cr.unit_price_old || cr.source_rate || 166250,
       total_credit_amount: cr.total_credit_amount,
       status: cr.status,
-      issue_date: cr.issue_date || new Date().toISOString().split('T')[0],
+      issue_date: cr.issue_date || getTodayVNISO(),
       expires_at: cr.expires_at || cr.expiry_date,
       redeemed_info: cr.redeemed_info || null,
       note: cr.note || null,

@@ -13,6 +13,7 @@ import {
 import { Holiday } from '../../types';
 import { DatePickerVN } from '../common/DatePickerVN';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { getTodayVNISO } from '../../lib/dateUtils';
 
 interface HolidayModalProps {
   isOpen: boolean;
@@ -48,7 +49,7 @@ export const HolidayModal: React.FC<HolidayModalProps> = ({
   defaultAcademicYear = '2026-2027',
   onSave,
 }) => {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getTodayVNISO();
 
   const [title, setTitle] = useState<string>('');
   const [startDate, setStartDate] = useState<string>(todayStr);

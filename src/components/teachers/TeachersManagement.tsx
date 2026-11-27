@@ -2575,6 +2575,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                   <label className="block text-slate-300 font-bold mb-1">Ngày nhận việc (Hire Date)</label>
                   <input
                     type="date"
+                    lang="vi"
                     value={formData.hire_date}
                     onChange={e => setFormData({ ...formData, hire_date: e.target.value })}
                     className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
@@ -2981,6 +2982,7 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                   </label>
                   <input
                     type="date"
+                    lang="vi"
                     required
                     value={contractForm.effective_from}
                     onChange={e =>

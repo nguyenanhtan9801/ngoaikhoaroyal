@@ -10,6 +10,7 @@ import {
   getEnrollmentStartDate,
 } from './storage';
 import { formatCapitalizedName } from './formatters';
+import { formatDateVN, formatTimeVN, normalizeDateISO } from './dateUtils';
 import {
   Campus,
   AcademicTerm,
@@ -79,8 +80,8 @@ export function exportMasterWorkbook(
     'Mã Khóa Học': t.code,
     'Tên Khóa Học': t.name,
     'Năm Học': t.academic_year,
-    'Ngày Bắt Đầu': t.start_date,
-    'Ngày Kết Thúc': t.end_date,
+    'Ngày Bắt Đầu': formatDateVN(t.start_date),
+    'Ngày Kết Thúc': formatDateVN(t.end_date),
     'Trạng Thái Khóa': t.status,
     'Đang Kích Hoạt': t.is_active ? 'CÓ' : 'KHÔNG',
     'Mô Tả': t.description || '',
@@ -204,8 +205,8 @@ export function exportMasterWorkbook(
       'Mã Giáo Viên Chính': teacher?.code || cl.primary_teacher_id,
       'Tên Giáo Viên Chính': teacher?.name || '',
       'Các Thứ Học Trong Tuần': (cl.days_of_week || ['T2', 'T4']).join(', '),
-      'Ngày Khai Giảng': cl.start_date || '',
-      'Ngày Kết Thúc': cl.end_date || '',
+      'Ngày Khai Giảng': formatDateVN(cl.start_date),
+      'Ngày Kết Thúc': formatDateVN(cl.end_date),
       'Sĩ Số Tối Đa': cl.max_students,
       'Tổng Số Buổi': cl.total_sessions,
       'Học Phí Trọn Khóa (VNĐ)': cl.full_course_fee,
@@ -238,7 +239,7 @@ export function exportMasterWorkbook(
     'Mã Học Viên': st.code,
     'Mã Cũ (Nếu Có)': st.previous_student_code || '',
     'Họ Và Tên Học Sinh': st.name,
-    'Ngày Sinh': st.dob,
+    'Ngày Sinh': formatDateVN(st.dob),
     'Giới Tính': st.gender,
     'Mã Cơ Sở': resolveStudentCampusId(st).toUpperCase(),
     'Học Sinh Royal (Cấp Bánh Sữa)': st.is_royal_student ? 'CÓ' : 'KHÔNG',
@@ -247,7 +248,7 @@ export function exportMasterWorkbook(
     'Họ Tên Phụ Huynh': st.parent_name,
     'SĐT Phụ Huynh': st.parent_phone,
     'Trạng Thái': st.status,
-    'Ngày Tạo Hồ Sơ': st.created_at || '',
+    'Ngày Tạo Hồ Sơ': formatDateVN(st.created_at),
   }));
   const ws6 = XLSX.utils.json_to_sheet(ws6Data, { header: ws6Headers });
   XLSX.utils.book_append_sheet(wb, ws6, '06_HOC_SINH');
@@ -277,11 +278,11 @@ export function exportMasterWorkbook(
       'Mã Lớp Học': cls?.id || en.class_id,
       'Tên Lớp Học': cls?.name || '',
       'Số Buổi Đăng Ký': en.registered_sessions,
-      'Ngày Bắt Đầu Học': getEnrollmentStartDate(en, cls) || en.joined_date || '',
+      'Ngày Bắt Đầu Học': formatDateVN(getEnrollmentStartDate(en, cls) || en.joined_date || ''),
       'Thứ Đăng Ký Học': (en.enrolled_days_of_week || cls?.days_of_week || []).join(', '),
       'Học Bán Phần Tuần': en.is_partial_schedule ? 'CÓ' : 'KHÔNG',
       'Đăng Ký Học Thử': en.is_trial ? 'CÓ' : 'KHÔNG',
-      'Ngày Học Thử': en.trial_session_date || '',
+      'Ngày Học Thử': formatDateVN(en.trial_session_date),
       'Trạng Thái Ghi Danh': en.status,
     };
   });
@@ -309,7 +310,7 @@ export function exportMasterWorkbook(
     return {
       'ID Điểm Danh': at.id,
       'Mã Buổi Học': at.session_id || '',
-      'Ngày Buổi Học': at.session_date,
+      'Ngày Buổi Học': formatDateVN(at.session_date),
       'Mã Lớp Học': cls?.id || at.class_id,
       'Tên Lớp Học': cls?.name || '',
       'Mã Học Viên': student?.code || at.student_id,
@@ -343,18 +344,7 @@ export function exportMasterWorkbook(
         ? matched.method
         : null;
     const rawIso = ta.check_in_at || matched?.checked_in_at || null;
-    let vnHhMm = '';
-    if (rawIso) {
-      const dt = new Date(rawIso);
-      if (!Number.isNaN(dt.getTime())) {
-        vnHhMm = dt.toLocaleTimeString('vi-VN', {
-          timeZone: 'Asia/Ho_Chi_Minh',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        });
-      }
-    }
+    const vnHhMm = rawIso ? formatTimeVN(rawIso) : '';
     const checkInTime =
       vnHhMm ||
       (method && ta.check_in_time ? ta.check_in_time : ta.check_in_time && ta.check_in_time !== '16:40' ? ta.check_in_time : '');
@@ -394,7 +384,7 @@ export function exportMasterWorkbook(
     const { checkInTime, methodLabel } = resolveTeacherCheckinForExcel(ta);
     return {
       'ID Ca Dạy': ta.id,
-      'Ngày Giảng Dạy': ta.session_date,
+      'Ngày Giảng Dạy': formatDateVN(ta.session_date),
       'Buổi Thứ': ta.session_number,
       'Mã Khóa Học': term?.code || ta.term_id,
       'Mã Cơ Sở': campus?.code || ta.campus_id,
@@ -459,10 +449,10 @@ export function exportMasterWorkbook(
       'Đã Thanh Toán (VNĐ)': inv.paid_amount,
       'Còn Nợ (VNĐ)': inv.outstanding_amount,
       'Trạng Thái Thanh Toán': inv.payment_status,
-      'Hạn Thanh Toán': inv.due_date,
+      'Hạn Thanh Toán': formatDateVN(inv.due_date),
       'Mã Giao Dịch Ngân Hàng': inv.payment_reference || '',
       'Kế Toán Xác Nhận': inv.verified_by || '',
-      'Ngày Lập Hóa Đơn': inv.created_at,
+      'Ngày Lập Hóa Đơn': formatDateVN(inv.created_at),
     };
   });
   const ws10 = XLSX.utils.json_to_sheet(ws10Data, { header: ws10Headers });
@@ -780,8 +770,8 @@ export async function parseMasterExcelFile(
               code,
               name: String(r['Tên Khóa Học'] || r['name'] || code).trim(),
               academic_year: String(r['Năm Học'] || r['academic_year'] || '2026-2027').trim(),
-              start_date: String(r['Ngày Bắt Đầu'] || r['start_date'] || '2026-09-01').trim(),
-              end_date: String(r['Ngày Kết Thúc'] || r['end_date'] || '2026-12-25').trim(),
+              start_date: normalizeDateISO(r['Ngày Bắt Đầu'] || r['start_date'] || '2026-09-01'),
+              end_date: normalizeDateISO(r['Ngày Kết Thúc'] || r['end_date'] || '2026-12-25'),
               is_active: isActive,
               status: (r['Trạng Thái Khóa'] || (isActive ? 'open_enrollment' : 'draft')) as any,
               description: String(r['Mô Tả'] || r['description'] || '').trim(),
@@ -1035,8 +1025,8 @@ export async function parseMasterExcelFile(
               facility_id: 'fac_01',
               time_slot_id: 'slot_weekday_1',
               days_of_week: rawDays.length > 0 ? rawDays : ['T2', 'T4'],
-              start_date: String(r['Ngày Khai Giảng'] || matchedTerm?.start_date || '2026-09-01').trim(),
-              end_date: String(r['Ngày Kết Thúc'] || matchedTerm?.end_date || '2026-12-25').trim(),
+              start_date: normalizeDateISO(r['Ngày Khai Giảng'] || matchedTerm?.start_date || '2026-09-01'),
+              end_date: normalizeDateISO(r['Ngày Kết Thúc'] || matchedTerm?.end_date || '2026-12-25'),
               primary_teacher_id: matchedTeacher?.id || activeTeachers[0]?.id || '',
               max_students: Number(r['Sĩ Số Tối Đa'] || 25) || 25,
               total_sessions: totalSessions,
@@ -1072,7 +1062,7 @@ export async function parseMasterExcelFile(
               regular_class: regularClass,
               medical_notes: String(r['Lưu Ý Y Tế & Thực Phẩm'] || '').trim(),
             });
-            const dob = String(r['Ngày Sinh'] || r['dob'] || '2016-01-01').trim();
+            const dob = normalizeDateISO(r['Ngày Sinh'] || r['dob'] || '2016-01-01');
             return {
               id: String(r['ID Học Sinh'] || r['id'] || `std_${code.toLowerCase().replace(/[^a-z0-9]/g, '_')}`).trim(),
               code,
@@ -1094,7 +1084,7 @@ export async function parseMasterExcelFile(
               is_royal_student: isRoyal,
               medical_notes: String(r['Lưu Ý Y Tế & Thực Phẩm'] || '').trim(),
               status: 'active',
-              created_at: String(r['Ngày Tạo Hồ Sơ'] || getTodayStrHoChiMinh()).trim(),
+              created_at: normalizeDateISO(r['Ngày Tạo Hồ Sơ'] || getTodayStrHoChiMinh()),
             };
           });
         totalRowsParsed += importedData.students.length;
@@ -1128,11 +1118,11 @@ export async function parseMasterExcelFile(
               student_id: matchedStu?.id || rawStu,
               class_id: matchedCls?.id || rawCls,
               registered_sessions: Number(r['Số Buổi Đăng Ký'] || matchedCls?.total_sessions || 24) || 24,
-              joined_date: String(r['Ngày Bắt Đầu Học'] || r['Ngày Bắt Đầu'] || '2026-09-01').trim(),
+              joined_date: normalizeDateISO(r['Ngày Bắt Đầu Học'] || r['Ngày Bắt Đầu'] || '2026-09-01'),
               enrolled_days_of_week: rawDays.length > 0 ? rawDays : matchedCls?.days_of_week,
               is_partial_schedule: isPartial,
               is_trial: isTrial,
-              trial_session_date: r['Ngày Học Thử'] ? String(r['Ngày Học Thử']).trim() : undefined,
+              trial_session_date: r['Ngày Học Thử'] ? normalizeDateISO(r['Ngày Học Thử']) : undefined,
               status: (r['Trạng Thái Ghi Danh'] || r['Trạng Thái'] || 'active') as any,
             };
           });
@@ -1166,7 +1156,7 @@ export async function parseMasterExcelFile(
               session_id: String(r['Mã Buổi Học'] || `ses_${idx + 1}`).trim(),
               class_id: matchedCls?.id || rawCls,
               student_id: matchedStu?.id || rawStu,
-              session_date: String(r['Ngày Buổi Học']).trim(),
+              session_date: normalizeDateISO(r['Ngày Buổi Học']),
               status,
               note: String(r['Ghi Chú Điểm Danh'] || r['Ghi Chú'] || '').trim(),
               proof_file_name: r['Tệp Minh Chứng'] ? String(r['Tệp Minh Chứng']).trim() : undefined,
@@ -1201,7 +1191,7 @@ export async function parseMasterExcelFile(
               class_id: matchedCls?.id || rawCls,
               term_id: matchedCls?.term_id || primaryTermId,
               campus_id: matchedCls?.campus_id || 'camp_pmh',
-              session_date: String(r['Ngày Giảng Dạy']).trim(),
+              session_date: normalizeDateISO(r['Ngày Giảng Dạy']),
               session_number: Number(r['Buổi Thứ'] || idx + 1) || 1,
               periods_count: Number(r['Số Tiết Quy Đổi'] || 2) || 2,
               assigned_teacher_id: matchedAssigned?.id || rawAssigned,
@@ -1255,10 +1245,10 @@ export async function parseMasterExcelFile(
               paid_amount: paid,
               outstanding_amount: debt,
               payment_status: (r['Trạng Thái Thanh Toán'] || (debt === 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid')) as any,
-              due_date: String(r['Hạn Thanh Toán'] || '2026-09-10').trim(),
+              due_date: normalizeDateISO(r['Hạn Thanh Toán'] || '2026-09-10'),
               payment_reference: r['Mã Giao Dịch Ngân Hàng'] ? String(r['Mã Giao Dịch Ngân Hàng']).trim() : undefined,
               verified_by: r['Kế Toán Xác Nhận'] ? String(r['Kế Toán Xác Nhận']).trim() : undefined,
-              created_at: String(r['Ngày Lập Hóa Đơn'] || getTodayStrHoChiMinh()).trim(),
+              created_at: normalizeDateISO(r['Ngày Lập Hóa Đơn'] || getTodayStrHoChiMinh()),
             };
           });
         totalRowsParsed += importedData.invoices.length;
@@ -1382,18 +1372,7 @@ export function exportTeacherPayrollWorkbook(
         ? matchedCheckin.method
         : null;
     const rawIso = rec.check_in_at || matchedCheckin?.checked_in_at || null;
-    let vnHhMm = '';
-    if (rawIso) {
-      const dt = new Date(rawIso);
-      if (!Number.isNaN(dt.getTime())) {
-        vnHhMm = dt.toLocaleTimeString('vi-VN', {
-          timeZone: 'Asia/Ho_Chi_Minh',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        });
-      }
-    }
+    const vnHhMm = rawIso ? formatTimeVN(rawIso) : '';
     const realCheckInTime =
       vnHhMm ||
       (method && rec.check_in_time ? rec.check_in_time : rec.check_in_time && rec.check_in_time !== '16:40' ? rec.check_in_time : '');
@@ -1401,7 +1380,7 @@ export function exportTeacherPayrollWorkbook(
 
     return {
       'STT': idx + 1,
-      'Ngày Giảng Dạy': rec.session_date,
+      'Ngày Giảng Dạy': formatDateVN(rec.session_date),
       'Buổi Thứ': rec.session_number,
       'Cơ Sở': campus?.code || '',
       'Lớp Ngoại Khóa': cls?.name || '',

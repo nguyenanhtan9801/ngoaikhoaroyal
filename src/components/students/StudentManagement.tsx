@@ -23,6 +23,7 @@ import { checkIsRoyalStudent } from '../../lib/storage';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { formatDateVN, getTodayVNISO } from '../../lib/dateUtils';
 
 interface StudentManagementProps {
   state: AppState;
@@ -145,7 +146,7 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
         student_type: isRoyal ? 'royal' : 'external',
         medical_notes: newStudent.medical_notes || 'Bình thường',
         status: 'active',
-        created_at: new Date().toISOString().split('T')[0]
+        created_at: getTodayVNISO()
       };
 
       onAddStudent(studentToAdd);
@@ -302,7 +303,7 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
                       <td className="py-3.5 px-4">
                         <div className="font-extrabold text-white text-sm">{st.name}</div>
                         <div className="text-[11px] text-slate-400 mt-0.5">
-                          {st.gender} &bull; Sinh: {st.dob}
+                          {st.gender} &bull; Sinh: {formatDateVN(st.dob)}
                         </div>
                       </td>
 
@@ -421,7 +422,7 @@ export const StudentManagement: React.FC<StudentManagementProps> = ({
                       <td className="py-3.5 px-4">
                         <div className="font-extrabold text-white text-sm">{reg.student_name}</div>
                         <div className="text-[11px] text-slate-400 mt-0.5">
-                          Sinh: {reg.dob} &bull; {reg.is_royal ? 'Học sinh Royal' : 'Học sinh ngoài'}
+                          Sinh: {formatDateVN(reg.dob)} &bull; {reg.is_royal ? 'Học sinh Royal' : 'Học sinh ngoài'}
                         </div>
                       </td>
 

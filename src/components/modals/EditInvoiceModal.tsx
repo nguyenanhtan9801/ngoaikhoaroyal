@@ -315,6 +315,7 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
               </label>
               <input
                 type="date"
+                lang="vi"
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-amber-500 focus:outline-none"

@@ -2,6 +2,7 @@ import React from 'react';
 import { Printer, X, GraduationCap, CheckCircle } from 'lucide-react';
 import { TuitionInvoice, MakeupCredit, ClassSession, ClassItem, Student } from '../../types';
 import { AppState } from '../../services/storage';
+import { formatDateVN, getTodayVNISO } from '../../lib/dateUtils';
 
 export type PrintDocumentType = 'invoice' | 'credit' | 'snack' | 'attendance_sheet';
 
@@ -22,7 +23,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
     window.print();
   };
 
-  const todayStr = '14/10/2026';
+  const todayStr = formatDateVN(new Date());
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-y-auto">
@@ -177,7 +178,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                     </div>
                   </div>
                   <div>
-                    <strong>Ngày các buổi nghỉ:</strong> {cred.consecutive_dates.join(', ')}
+                    <strong>Ngày các buổi nghỉ:</strong> {cred.consecutive_dates.map(d => formatDateVN(d)).join(', ')}
                   </div>
                 </div>
 
@@ -196,7 +197,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                   </div>
                   <div className="flex justify-between items-center text-xs text-red-600 font-semibold pt-1 border-t border-gray-200">
                     <span>Hạn sử dụng hiệu lực (365 ngày):</span>
-                    <span>Đến ngày {cred.expiry_date}</span>
+                    <span>Đến ngày {formatDateVN(cred.expiry_date)}</span>
                   </div>
                 </div>
 
@@ -209,7 +210,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
 
           {/* DOCUMENT BODY: TYPE 3 - SNACK PANTRY SLIP */}
           {type === 'snack' && (() => {
-            const dateStr = data as string || '2026-10-14';
+            const dateStr = (data as string) || getTodayVNISO();
             const sessionsOnDate = state.sessions.filter(s => s.session_date === dateStr);
             const totalAllocated = sessionsOnDate.reduce((sum, s) => sum + s.snacks_allocated, 0);
             const totalConsumed = sessionsOnDate.reduce((sum, s) => sum + s.snacks_consumed, 0);
@@ -222,7 +223,7 @@ export const PrintModal: React.FC<PrintModalProps> = ({
                     PHIẾU ĐỐI SOÁT SUẤT BÁNH SỮA VỚI BẾP ĂN
                   </h2>
                   <p className="text-[11px] text-gray-600">
-                    Ngày điểm danh & đối soát: <strong>{dateStr}</strong>
+                    Ngày điểm danh & đối soát: <strong>{formatDateVN(dateStr)}</strong>
                   </p>
                 </div>
 
