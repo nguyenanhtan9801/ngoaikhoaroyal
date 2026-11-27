@@ -62,6 +62,7 @@ import { TuitionInvoice, Teacher, TeacherAttendanceRecord, ExtracurricularClass,
 import { sortByLabelVi } from '../../utils/sortVi';
 import { ViewToggle, ViewMode } from '../ViewToggle';
 import { StudentSearchCombobox } from '../StudentSearchCombobox';
+import { DateInputVN } from '../common/DateInputVN';
 import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import {
@@ -3371,17 +3372,13 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                 <label className="block text-slate-300 font-semibold mb-1">
                   Ngày chuyển lớp (Ngày hiệu lực) <span className="text-rose-400">*</span>
                 </label>
-                <div className="relative">
-                  <input
-                    type="date"
-                      lang="vi"
-                    required
-                    value={transferDate}
-                    onChange={(e) => setTransferDate(e.target.value)}
-                    disabled={currentStudentClasses.length === 0}
-                    className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-                  />
-                </div>
+                <DateInputVN
+                  required
+                  value={transferDate}
+                  onChange={(iso) => setTransferDate(iso)}
+                  disabled={currentStudentClasses.length === 0}
+                  className="px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white focus:outline-none focus:border-amber-500 font-mono text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                />
                 <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
                   Tính số buổi đã học ở lớp cũ trước ngày chuyển &amp; bắt đầu điểm danh lớp mới từ ngày này
                 </p>
@@ -4277,12 +4274,11 @@ export const FinancePayrollTab: React.FC<FinancePayrollTabProps> = ({
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
                       Ngày nộp tiền *
                     </label>
-                    <input
-                      type="date"
-                      lang="vi"
+                    <DateInputVN
+                      required
                       value={paymentDate}
-                      onChange={(e) => setPaymentDate(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
+                      onChange={(iso) => setPaymentDate(iso)}
+                      className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs font-mono focus:outline-none focus:border-emerald-500"
                     />
                   </div>
 

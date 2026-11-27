@@ -24,6 +24,7 @@ import { formatTimeVN, addDaysVNISO, VN_TIMEZONE } from '../../lib/dateUtils';
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { DateInputVN } from '../common/DateInputVN';
 
 interface TeacherCheckinTabProps {
   store: AppStore;
@@ -1442,15 +1443,14 @@ export const TeacherCheckinTab: React.FC<TeacherCheckinTabProps> = ({
                 <label className="block font-bold text-slate-300 mb-1.5">
                   Ngày buổi dạy *
                 </label>
-                <input
-                  type="date"
-                  lang="vi"
+                <DateInputVN
+                  required
                   value={manualSessionDate}
                   min={canSelectPastDateInManual ? minManualDate : vnNow.dateStr}
                   max={vnNow.dateStr}
                   disabled={!canSelectPastDateInManual}
-                  onChange={e => setManualSessionDate(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500 disabled:opacity-60"
+                  onChange={(iso) => setManualSessionDate(iso)}
+                  className="px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500 disabled:opacity-60"
                 />
                 {!canSelectPastDateInManual && (
                   <p className="text-[10px] text-slate-500 mt-1">

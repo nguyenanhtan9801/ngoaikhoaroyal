@@ -17,6 +17,7 @@ import {
 import { AppState } from '../../services/storage';
 import { AttendanceStatus } from '../../types';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { DateInputVN } from '../common/DateInputVN';
 
 interface AttendanceManagementProps {
   state: AppState;
@@ -224,13 +225,11 @@ export const AttendanceManagement: React.FC<AttendanceManagementProps> = ({
             <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-cyan-400" /> Ngày Buổi Học
             </label>
-            <input
-              type="date"
-              lang="vi"
+            <DateInputVN
               value={sessionDate}
-              max={todayStr} // Ràng buộc: Khóa ngày tương lai
-              onChange={(e) => setSessionDate(e.target.value)}
-              className="w-full bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
+              max={todayStr}
+              onChange={(iso) => setSessionDate(iso)}
+              className="bg-[#0B0F19] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500"
             />
             {isFutureDate && (
               <span className="text-[10px] text-rose-400 font-semibold block mt-1">

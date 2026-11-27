@@ -4,6 +4,7 @@ import { getEffectivePrice } from '../../lib/storage';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { AppStore, TuitionInvoice } from '../../types';
 import { showToast } from '../../lib/toast';
+import { DateInputVN } from '../common/DateInputVN';
 
 export interface EditInvoiceModalProps {
   invoice: TuitionInvoice | any;
@@ -313,12 +314,10 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
               <label className="block text-[11px] font-bold text-slate-300 mb-1">
                 Hạn Nộp Học Phí
               </label>
-              <input
-                type="date"
-                lang="vi"
+              <DateInputVN
                 value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-amber-500 focus:outline-none"
+                onChange={(iso) => setDueDate(iso)}
+                className="px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:border-amber-500 focus:outline-none"
               />
             </div>
           </div>

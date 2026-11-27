@@ -66,6 +66,7 @@ import { showToast } from '../../lib/toast';
 import { supabase, getSupabaseClient } from '../../supabaseClient';
 import { EnrollmentModal } from '../modals/EnrollmentModal';
 import { DatePickerVN } from '../common/DatePickerVN';
+import { DateInputVN } from '../common/DateInputVN';
 import { isPrivateStoragePath, resolveSignedFileUrl } from '../../lib/fileStorage';
 import { sortByLabelVi } from '../../utils/sortVi';
 
@@ -258,13 +259,12 @@ const QuickEditRow: React.FC<{ student: Student; onUpdateStore: any }> = ({ stud
         />
       </td>
       <td className="py-2 px-3">
-        <input
-          type="date"
-          lang="vi"
+        <DateInputVN
           value={row.dob}
-          onChange={(e) => setRow({ ...row, dob: e.target.value })}
+          onChange={(iso) => setRow({ ...row, dob: iso })}
           onKeyDown={handleKeyDown}
-          className="w-32 px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs focus:border-cyan-400 focus:outline-none"
+          wrapperClassName="w-36"
+          className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-white text-xs focus:border-cyan-400 focus:outline-none"
         />
       </td>
       <td className="py-2 px-3">
@@ -1995,20 +1995,18 @@ export const StudentsTab: React.FC<StudentsTabProps> = ({
                 </option>
               ))}
             </select>
-            <input
-              type="date"
-          lang="vi"
+            <DateInputVN
               value={startDateFrom}
-              onChange={(e) => setStartDateFrom(e.target.value)}
+              onChange={(iso) => setStartDateFrom(iso)}
+              wrapperClassName="w-34"
               className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 focus:outline-none focus:border-amber-500/50"
               title="Lọc từ ngày bắt đầu"
             />
             <span className="text-slate-500 text-[10px]">→</span>
-            <input
-              type="date"
-          lang="vi"
+            <DateInputVN
               value={startDateTo}
-              onChange={(e) => setStartDateTo(e.target.value)}
+              onChange={(iso) => setStartDateTo(iso)}
+              wrapperClassName="w-34"
               className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-200 focus:outline-none focus:border-amber-500/50"
               title="Lọc đến ngày bắt đầu"
             />

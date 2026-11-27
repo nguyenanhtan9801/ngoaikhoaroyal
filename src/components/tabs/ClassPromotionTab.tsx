@@ -59,6 +59,7 @@ import {
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { sortByLabelVi } from '../../utils/sortVi';
+import { DateInputVN } from '../common/DateInputVN';
 import {
   createOfflineInvoiceCodeAllocator,
   insertInvoicesToSupabaseWithRetry,
@@ -2608,19 +2609,17 @@ export const ClassPromotionTab: React.FC<ClassPromotionTabProps> = ({
                                   <label className="block text-[11px] font-bold text-slate-400 mb-1">
                                     Ngày bắt đầu học
                                   </label>
-                                  <input
-                                    type="date"
-                                    lang="vi"
+                                  <DateInputVN
                                     value={draft.startDate}
                                     min={targetClassStartDate}
                                     max={targetClassEndDate}
-                                    onChange={e =>
+                                    onChange={(iso) =>
                                       updateStudentDraft(student.id, {
                                         startDate:
-                                          e.target.value || targetClassStartDate,
+                                          iso || targetClassStartDate,
                                       })
                                     }
-                                    className="w-full px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-white focus:outline-none focus:border-amber-500"
+                                    className="px-2.5 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-white focus:outline-none focus:border-amber-500"
                                   />
                                 </div>
 

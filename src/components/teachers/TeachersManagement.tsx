@@ -56,6 +56,7 @@ import {
 import { supabase } from '../../supabaseClient';
 import { showToast } from '../../lib/toast';
 import { apiFetchJsonOrThrow } from '../../lib/apiClient';
+import { DateInputVN } from '../common/DateInputVN';
 
 interface TeachersManagementProps {
   store: AppStore;
@@ -2573,12 +2574,10 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
 
                 <div>
                   <label className="block text-slate-300 font-bold mb-1">Ngày nhận việc (Hire Date)</label>
-                  <input
-                    type="date"
-                    lang="vi"
+                  <DateInputVN
                     value={formData.hire_date}
-                    onChange={e => setFormData({ ...formData, hire_date: e.target.value })}
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
+                    onChange={(iso) => setFormData({ ...formData, hire_date: iso })}
+                    className="px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-500"
                   />
                 </div>
 
@@ -2980,15 +2979,13 @@ export const TeachersManagement: React.FC<TeachersManagementProps> = ({
                   <label className="block text-slate-300 font-bold mb-1">
                     Ngày bắt đầu áp dụng (effective_from) *
                   </label>
-                  <input
-                    type="date"
-                    lang="vi"
+                  <DateInputVN
                     required
                     value={contractForm.effective_from}
-                    onChange={e =>
-                      setContractForm({ ...contractForm, effective_from: e.target.value })
+                    onChange={(iso) =>
+                      setContractForm({ ...contractForm, effective_from: iso })
                     }
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-500"
+                    className="px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-500"
                   />
                 </div>
 

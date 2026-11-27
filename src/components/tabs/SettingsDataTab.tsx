@@ -86,6 +86,7 @@ import { AuditLogsTab } from './AuditLogsTab';
 import { UserManagementTab } from './UserManagementTab';
 import { HolidayManagementView } from '../settings/HolidayManagementView';
 import { DatabaseBackupView } from '../settings/DatabaseBackupView';
+import { DateInputVN } from '../common/DateInputVN';
 import { downloadSampleTemplate, parseMasterExcelFile, exportMasterWorkbook } from '../../lib/excel';
 import {
   ROYAL_STANDARDIZED_10_TABLES,
@@ -5405,24 +5406,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Ngày bắt đầu</label>
-                  <input
-                    type="date"
-                    lang="vi"
+                  <DateInputVN
                     required
                     value={cloneFormData.start_date}
-                    onChange={(e) => setCloneFormData({ ...cloneFormData, start_date: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                    onChange={(iso) => setCloneFormData({ ...cloneFormData, start_date: iso })}
+                    className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
                   />
                 </div>
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Ngày kết thúc</label>
-                  <input
-                    type="date"
-                    lang="vi"
+                  <DateInputVN
                     required
                     value={cloneFormData.end_date}
-                    onChange={(e) => setCloneFormData({ ...cloneFormData, end_date: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
+                    onChange={(iso) => setCloneFormData({ ...cloneFormData, end_date: iso })}
+                    className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-cyan-500"
                   />
                 </div>
               </div>
@@ -5613,24 +5610,20 @@ export const SettingsDataTab: React.FC<SettingsDataTabProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Ngày bắt đầu</label>
-                  <input
-                    type="date"
-                    lang="vi"
+                  <DateInputVN
                     required
                     value={termFormData.start_date}
-                    onChange={(e) => setTermFormData({ ...termFormData, start_date: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                    onChange={(iso) => setTermFormData({ ...termFormData, start_date: iso })}
+                    className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Ngày kết thúc</label>
-                  <input
-                    type="date"
-                    lang="vi"
+                  <DateInputVN
                     required
                     value={termFormData.end_date}
-                    onChange={(e) => setTermFormData({ ...termFormData, end_date: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
+                    onChange={(iso) => setTermFormData({ ...termFormData, end_date: iso })}
+                    className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
               </div>

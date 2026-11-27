@@ -12,6 +12,7 @@ import {
   Filter
 } from 'lucide-react';
 import { AppState } from '../../services/storage';
+import { DateInputVN } from '../common/DateInputVN';
 
 interface SnackManagementProps {
   state: AppState;
@@ -111,11 +112,10 @@ export const SnackManagement: React.FC<SnackManagementProps> = ({
 
           <div className="flex items-center gap-2">
             <label className="text-xs text-slate-400">Lọc ngày:</label>
-            <input
-              type="date"
-              lang="vi"
+            <DateInputVN
               value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              onChange={(iso) => setSelectedDate(iso)}
+              wrapperClassName="w-36"
               className="bg-[#0B0F19] border border-slate-700/80 rounded-xl px-2.5 py-1 text-xs text-white"
             />
             {selectedDate && (
